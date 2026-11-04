@@ -44,17 +44,23 @@ herdr-orch/
   bin/horch                              실행 파일. lib 를 sys.path 에 넣고 cli.main 호출
   lib/horch/
     cli.py        명령 파싱, JSON 출력, exit 코드
+    errors.py     HorchError 와 exit 코드
+    paths.py      저장 루트 결정, horch 절대 경로·명령, 버전
+    ids.py        ID 와 시각 생성
+    procs.py      프로세스 생존 확인(pid + 시작 시각)
     store.py      SQLite 연결, 스키마, 마이그레이션, 트랜잭션
-    ids.py        ID 생성
     auth.py       호출자 확인(소유자·워커·외부)
+    runs.py       run-create, run-use, status
     guard.py      launch-guard: 워커 터미널에서 에이전트보다 먼저 돌며 등록 후 exec
-    hcio.py       hc 를 부르는 유일한 모듈: run, get, ls, read, send, kill, rm
+    hcio.py       hc 를 부르는 유일한 모듈: run, get, ls, read, send, kill, rm, server status
     herdr.py      herdr-app 을 부르는 유일한 모듈: status
     agents.py     Claude·Codex 실행 명령 생성
     preamble.py   워커 프리앰블 생성
-    mailbox.py    send, check, ack, wait, 깨우기
+    mailbox.py    메일함 쓰기, Delivery, ack, 대기, 깨우기
+    comms.py      send, check, reply, ask, escalate, done 명령
     workers.py    worker-start, list, show, release, retain, abandon, launching 조정
     liveness.py   생존 판정과 observed 메시지
+    doctor.py     doctor 점검
     skill.md      `horch skill` 이 출력하는 사용법
   skills/herdr-orchestration/SKILL.md    스텁: `horch skill` 을 실행하라는 안내
   tests/
@@ -79,11 +85,11 @@ ID 는 접두사 + 소문자 hex 8자리다: `run-1a2b3c4d`, `task-…`, `dsp-�
 ```
 meta(key PK, value)                            schema_version
 runs(id PK, objective, owner_space, owner_tab, created_at, updated_at)
-bindings(terminal PK, run_id UNIQUE)           소유 관계. 없으면 그 Run 은 소유자 없음
+bindings(terminal PK, run_id UNIQUE, argv)     소유 관계. 없으면 그 Run 은 소유자 없음. argv 는 묶을 때 hc get 으로 읽은 소유자 터미널의 argv(JSON)
 tasks(id PK, run_id, title, spec, status, outcome, created_at, settled_at)
 dispatches(id PK, task_id, run_id, attempt, agent, model, effort, cwd,
            terminal, state, outcome, summary, report_path, files_modified,
-           launcher_pid, launcher_started, created_at, settled_at, closed_at)
+           launch_argv, launcher_pid, launcher_started, created_at, settled_at, closed_at)
                                                UNIQUE INDEX ON dispatches(task_id)
                                                  WHERE state IN ('launching','active'): Task 당 실행 중 Dispatch 하나
 messages(id PK, run_id, mailbox, sender, type, subject, body, reply_to,
@@ -94,6 +100,7 @@ waiters(mailbox, pid, pid_started, terminal, started_at)   check --wait 중인 �
 observations(dispatch_id, kind, key, created_at, PK(dispatch_id, kind, key))
 ```
 
+- `launch_argv` 는 `hc run` 의 `--` 뒤 argv(가드 명령, JSON)다. 생존 판정이 hc 의 `argv` 와 비교한다.
 - `launcher_pid`·`launcher_started` 는 실행자의 pid 와 프로세스 시작 시각이다. pid 와 시작 시각이 모두 같은 프로세스가 살아 있어야 "살아 있다"고 본다(pid 재사용 방지). `waiters` 도 같은 규칙이다.
 - 소유자 터미널은 `bindings` 로만 정한다.
 
@@ -269,7 +276,8 @@ Dispatch:
    - `launching` 이면 `terminal = $HC_TERMINAL_ID`, `active` 로 바꾸고 커밋한다.
    - `active` 이고 `terminal` 이 자신이면 그대로 진행한다(실행자가 먼저 기록한 경우).
    - 그 밖(`launch_failed`, `abandoned`, 다른 터미널의 `active` 등)이면 이유를 출력하고 exit 3.
-3. `os.execvp` 로 에이전트 명령을 실행한다. 가드 프로세스가 에이전트로 바뀌므로 터미널의 실행 프로그램은 에이전트다.
+3. 에이전트 명령의 첫 인자 이름이 `codex` 면 그 바로 뒤에 `-c shell_environment_policy.set.HC_TERMINAL_ID="<자기 주소>"` 를 넣는다. Codex 설정이 `shell_environment_policy.inherit = "core"` 면 Codex 가 실행하는 셸에서 `$HC_TERMINAL_ID` 가 사라지기 때문이다(사전 검증 S2 에서 확인).
+4. `os.execvp` 로 에이전트 명령을 실행한다. 가드 프로세스가 에이전트로 바뀌므로 터미널의 실행 프로그램은 에이전트다.
 
 가드는 Codex 샌드박스 밖(Codex 가 시작되기 전)에서 돈다.
 
@@ -322,12 +330,13 @@ Dispatch:
 
 ### 깨우기
 
-메시지를 쓴 뒤 받는 터미널(Run 메일함이면 소유자, Dispatch 메일함이면 워커)을 깨운다.
+메시지를 쓴 뒤 받는 터미널(Run 메일함이면 소유자, Dispatch 메일함이면 워커)을 깨운다. 단 `reply` 는 깨우지 않는다. reply 는 `check` 에 나오지 않고, 받는 워커는 `ask` 로 1초마다 확인하고 있다.
 
 - 그 메일함에 살아 있는 waiter 가 있으면 깨우지 않는다. 기다리던 프로세스가 직접 받는다.
 - 받는 터미널의 `hc get` 상태가 `idle` 이면 `hc send --if idle <터미널> "[horch] 새 메시지가 있다. 확인: <horch> --home <루트> check[ --dispatch D]"`.
 - 상태가 `error` 면 같은 글을 `--if` 없이 보낸다(hc 는 error 인 에이전트에 입력을 보내 이어가게 한다). `working`·`blocked` 이면 보내지 않는다.
 - 깨우기 실패는 무시하고 결과의 `wake` 필드에 적는다. 메시지는 저장소에 남는다.
+- 환경 변수 `CODEX_SANDBOX` 가 있으면(Codex 샌드박스 안) hc 를 부르지 않고 `wake: "skipped_sandbox"` 로 적는다. 사전 검증 S2 에서 Codex `workspace-write` 샌드박스가 hc 소켓을 막는 것을 확인했다(`cannot start core: Operation not permitted`).
 
 깨우기는 보조 수단이다. 메시지를 놓치지 않는 것은 다음 계약이 보장한다.
 
@@ -356,12 +365,12 @@ Dispatch:
 
 | 판정 | 조건 |
 |---|---|
-| `live` | hc 상태 `live` 이고 원래 프로그램이 돌고 있음. 아직 상태를 보고하지 않은(부팅 중) 에이전트도 `live` 다 |
-| `lost` | hc 상태 `live` 인데 hc 가 원래 프로그램을 복구 셸로 바꿨다고 표시함(코어 크래시·재부팅 뒤 같은 주소에 셸만 남은 경우) |
+| `lost` | hc 상태 `live` 이고, `reason` 이 `stopped_by_restart` 이거나 hc 의 `argv` 가 기록한 argv(Dispatch 는 `launch_argv`, 소유자는 `bindings.argv`)와 다름 |
+| `live` | hc 상태 `live` 이고 `lost` 가 아님. 아직 상태를 보고하지 않은(부팅 중) 에이전트도 `live` 다 |
 | `exited` | hc 상태 `finished` |
 | `unverifiable` | hc 호출 실패, 또는 목록에 주소가 없음(이미 `hc rm` 됐거나 다른 코어) |
 
-상태 보고가 없다는 것만으로는 `lost` 가 아니다. 복구 셸을 가르는 `hc get` 필드는 사전 검증 S4 로 확정한다.
+상태 보고가 없다는 것만으로는 `lost` 가 아니다. 사전 검증 S4(2026-11-04, 격리 `HC_SESSION` 코어, hc 0.1.18)에서 확인한 사실: `--keep` 터미널은 코어 재시작 직후 `reason: "stopped_by_restart"`, `pid: null` 이고, 유예 시간 뒤 복구 셸이 뜨면 `reason` 은 null 로 돌아가고 `argv` 가 셸(`["/bin/zsh","-l"]`)로 바뀐다. 주소와 이름, 라벨은 그대로다. `hc ls` 에는 `argv` 가 없으므로 판정은 대상마다 `hc get` 을 부른다.
 
 ### 상황별 처리
 
@@ -419,9 +428,11 @@ Python 3.11 이상, `hc` 실행과 `hc server status`, `herdr-app status`, 저�
 | ID | 확인할 것 | 실패하면 |
 |---|---|---|
 | S1 | `herdr.space`·`herdr.tab` 라벨과 `--no-parent` 로 띄운 hc 터미널이 그 탭에 pane 으로 붙는가. 가드가 `exec` 한 Claude 가 Herdr 에서 에이전트로 보이고 상태를 보고하는가 | 구현을 멈추고 배치·실행 방식을 다시 설계한다(이 문서를 고친 뒤 진행) |
-| S2 | 가드가 `exec` 한 `codex --no-daemon` 워커가 hc 에 상태를 보고하는가. Codex 가 `workspace-write` 샌드박스에서 실행한 셸에 `$HC_TERMINAL_ID` 가 있고, `--add-dir` 로 DB 에 쓸 수 있고, hc 소켓에 닿는가(`hc get`) | 상태 보고가 없으면 Codex 워커의 `observed blocked`·`error` 를 포기한다. hc 소켓이 막히면 Codex 워커가 보내는 깨우기를 포기한다(코디네이터는 `check --wait` 로 받는다). `$HC_TERMINAL_ID` 가 없거나 DB 에 못 쓰면 Codex 워커 지원을 빼고 이 문서를 고친다 |
+| S2 | 가드가 `exec` 한 `codex --no-daemon` 워커가 hc 에 상태를 보고하는가. 가드가 넣은 `-c shell_environment_policy.set.HC_TERMINAL_ID=...` 로 Codex 셸에 `$HC_TERMINAL_ID` 가 보이는가. `CODEX_SANDBOX` 가 설정되는가 | 상태 보고가 없으면 Codex 워커의 `observed blocked`·`error` 를 포기한다. `$HC_TERMINAL_ID` 주입이 안 되면 Codex 워커 지원을 빼고 이 문서를 고친다. `CODEX_SANDBOX` 가 없으면 샌드박스 감지를 빼고 hc 호출 실패로 처리한다 |
 | S3 | `idle` 인 Claude·Codex 에 `hc send --if idle` 이 사용자 메시지로 들어가는가 | 깨우기를 빼고 9장의 계약에만 의존한다 |
-| S4 | 복구 셸로 바뀐 터미널을 `hc get` 으로 가를 수 있는가(별도 `HC_SESSION` 코어에서) | 구현을 멈추고 생존 판정표와 넘겨받기 규칙을 다시 설계한다(복구 셸을 `live` 로 보면 죽은 코디네이터의 Run 을 넘겨받을 수 없다) |
+| S4 | 끝남(2026-11-04). 10장 생존 판정표에 결과를 반영했다 | — |
+
+S2 중 이미 확인한 것(2026-11-04, `codex exec -s workspace-write --add-dir`, codex-cli 0.166.0): `--add-dir` 경로의 SQLite 쓰기는 된다. 샌드박스 안에서 hc 소켓은 막힌다. 사용자 Codex 설정(`inherit = "core"`)에서는 `$HC_TERMINAL_ID` 가 셸에 전달되지 않는다.
 
 ### 실환경 확인
 
