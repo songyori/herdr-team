@@ -346,7 +346,7 @@ Dispatch:
 
 ### observed
 
-소유자의 `check --wait` 는 기다리는 동안 5초마다 `hc ls --all --json` 을 한 번 불러 그 Run 의 `launching`(조정)·`active` Dispatch 를 판정한다(10장). 다음 경우 `observations` 에 넣고, 새로 넣었을 때만 `observed` 메시지를 Run 메일함에 쓴다.
+소유자의 `check --wait` 는 기다리는 동안 5초마다 그 Run 의 `launching`(조정)·`active` Dispatch 를 판정한다(10장: `hc ls` 에는 `argv` 가 없으므로 대상마다 `hc get`). `launch_failed` Dispatch 가 있으면 `hc ls --all --json` 으로 가드가 거부한 터미널을 찾아 정리한다(5장). 다음 경우 `observations` 에 넣고, 새로 넣었을 때만 `observed` 메시지를 Run 메일함에 쓴다.
 
 | kind | 조건 | key |
 |---|---|---|

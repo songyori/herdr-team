@@ -20,7 +20,7 @@
 - 저장 루트: `--home` → `$HERDR_ORCH_HOME` → `${XDG_STATE_HOME:-~/.local/state}/herdr-orch`, 권한 0700, DB `orch.db`.
 - 상태를 바꾸는 쓰기는 `BEGIN IMMEDIATE` 트랜잭션 안에서, 전이는 `WHERE state = '<이전 상태>'` 조건부로 한다.
 - 버전 `0.1.0` 을 `herdr-orch/lib/horch/paths.py`, `herdr-orch/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` 세 곳에 같게 둔다.
-- 저장소는 공개될 수 있다. 커밋 전에 `git grep -n -I -P '/Users/|/private/tmp|~/Workspace' -- . ':!.codex-reviews'` 가 아무것도 찾지 않아야 한다.
+- 저장소는 공개될 수 있다. 커밋 전에 `git grep -n -I -P '/[U]sers/|/private/[t]mp|~[/]Workspace' -- . ':!.codex-reviews'` 가 아무것도 찾지 않아야 한다.
 - 문서·메시지·주석은 한국어. 명령·코드 식별자는 원문.
 - 작업 브랜치 `design/herdr-orch` 에서 한다. main 에 직접 커밋하지 않는다.
 - **Codex 교차 검증(CLAUDE.md):** 각 태스크의 마지막 단계에서 그 커밋을 `codex review --commit <sha>` 로 검토하고, 지적마다 사실인지 확인한 뒤 고치거나 고치지 않는 이유를 적는다. P0·P1 이 남지 않을 때까지 최대 3 라운드. 3 라운드 뒤에도 남으면 사용자에게 묻는다.
@@ -125,7 +125,7 @@ hc wait spike-s1b --timeout 120
 hc read spike-s1b --lines 20
 ```
 
-Expected: 보낸 글이 사용자 입력으로 들어가고 `OK-S3` 대답이 보인다. 아니면 S3 실패로 기록한다(멈추지 않는다. 깨우기는 보조 수단이다).
+Expected: 보낸 글이 사용자 입력으로 들어가고 `OK-S3` 대답이 보인다. Codex 쪽은 Step 5 끝에서 확인한다. Claude·Codex 모두 들어가지 않으면 S3 실패: 멈추고 사용자에게 보고한다. 사용자가 동의하면 설계 9장 대안대로 깨우기를 빼도록 설계와 Task 6 을 고친 뒤 진행한다.
 
 - [ ] **Step 5: S2 Codex 워커 확인**
 
@@ -145,6 +145,9 @@ hc run --bg --json --no-parent --no-notify --name spike-s2 --cwd "$SP" \
 hc wait spike-s2 --timeout 300
 hc get spike-s2 --json
 hc read spike-s2 --lines 60
+hc send --if idle spike-s2 "OK-S3-CODEX 라고만 대답해"
+hc wait spike-s2 --timeout 120
+hc read spike-s2 --lines 20
 ```
 
 Expected: 화면의 `printenv HC_TERMINAL_ID` 결과가 `hc get` 의 `address` 와 같고 `db ok` 가 보인다. `CODEX_SANDBOX` 값과 `hc get` 의 `status.app`(Codex 상태 보고 여부)을 기록한다.
@@ -169,7 +172,7 @@ Expected: spike 터미널이 목록에 없고 horch-spike space 가 닫힌다.
 
 - S1: <통과/실패>. 라벨 배치 <결과>. 가드식 exec 뒤 `status.app` = `<값>`, `argv` 는 띄운 argv <그대로/바뀜>.
 - S2: <통과/실패>. Codex 셸의 `HC_TERMINAL_ID` <주소와 같음/비어 있음>, DB 쓰기 <됨/안 됨>, `CODEX_SANDBOX` = `<값 또는 없음>`, Codex `status.app` = `<값 또는 없음>`.
-- S3: <통과/실패>. `hc send --if idle` 이 Claude 입력으로 <들어감/안 들어감>.
+- S3: <통과/실패>. `hc send --if idle` 이 Claude 입력으로 <들어감/안 들어감>, Codex 입력으로 <들어감/안 들어감/idle 보고 없음>.
 ```
 
 - [ ] **Step 8: 커밋과 Codex 검토**
@@ -807,7 +810,7 @@ Expected: `Ran 4 tests ... OK`
 - [ ] **Step 7: 커밋과 Codex 검토**
 
 ```bash
-git grep -n -I -P '/Users/|/private/tmp|~/Workspace' -- . ':!.codex-reviews' || true
+git grep -n -I -P '/[U]sers/|/private/[t]mp|~[/]Workspace' -- . ':!.codex-reviews' || true
 git add .claude-plugin herdr-orch
 git commit -m "feat(herdr-orch): 플러그인 골격, CLI JSON 봉투, 테스트 하네스
 
@@ -1620,6 +1623,26 @@ class RunUseTest(HorchCase):
         self.assertEqual(code, 0, out)
         self.assertEqual(self.owner(), "t200")
 
+    def test_owner_changed_during_judgement(self):
+        import os
+        from unittest import mock
+        from horch import runs
+        from horch.errors import HorchError
+        from horch.store import Store
+        with mock.patch.dict(os.environ, dict(self.env, HC_TERMINAL_ID="t200"), clear=True):
+            store = Store(self.home)
+            self.addCleanup(store.close)
+
+            def rebound(*_a, **_k):
+                store.run("UPDATE bindings SET argv=? WHERE run_id=?", ('["/bin/zsh", "-l"]', self.run_id))
+                return "lost", None
+
+            with mock.patch.object(runs.liveness, "probe", side_effect=rebound):
+                with self.assertRaises(HorchError) as cm:
+                    runs.use(store, self.run_id, False)
+        self.assertEqual(cm.exception.code, "owner_changed")
+        self.assertEqual(self.owner(), "t100")
+
     def test_unknown_run(self):
         code, out = self.horch("run-use", "--id", "run-ffffffff", terminal="t200")
         self.assertEqual(code, 2)
@@ -1766,8 +1789,10 @@ def use(store, run_id: str, force: bool) -> dict:
                              "소유자가 끝났다고 확신하면 --force")
     space, tab, argv = _caller_facts(term)
     with store.tx():
-        current = store.one("SELECT terminal FROM bindings WHERE run_id=?", (run_id,))
-        if (current["terminal"] if current else None) != prev:
+        current = store.one("SELECT terminal, argv FROM bindings WHERE run_id=?", (run_id,))
+        now_owner = (current["terminal"], current["argv"]) if current else (None, None)
+        judged = (owner["terminal"], owner["argv"]) if owner else (None, None)
+        if now_owner != judged:
             raise HorchError("owner_changed", "판정하는 동안 소유자가 바뀌었다. 다시 실행한다", CONFLICT)
         _bind(store, term, run_id, argv)
         store.run("UPDATE runs SET owner_space=?, owner_tab=?, updated_at=? WHERE id=?", (space, tab, now(), run_id))
@@ -1957,10 +1982,29 @@ class MailboxTest(HorchCase):
         proc = self.horch_bg("check", "--wait", "--timeout-ms", "10000", terminal="t100")
         self._wait_for_waiter()
         code, sent = self.horch("send", "--to", f"run:{self.run_id}", "--body", "x")
-        self.assertEqual(sent["wake"], "skipped_waiter")
+        self.assertIn(sent["wake"], ("skipped_waiter", "skipped_working"))
         code, out = self.finish(proc)
         self.assertEqual((code, out["count"], out["reason"]), (0, 1, "message"))
         self.assertIsNone(self.db().execute("SELECT 1 FROM waiters").fetchone())
+
+    def test_live_waiter_suppresses_wake(self):
+        from horch import procs
+        self.update_terminal("t100", status="idle")
+        pid, started = procs.me()
+        db = self.db()
+        db.execute("INSERT INTO waiters(mailbox, pid, pid_started, terminal, started_at) VALUES (?, ?, ?, 't100', 'x')",
+                   (f"run:{self.run_id}", pid, started))
+        db.commit()
+        _, out = self.horch("send", "--to", f"run:{self.run_id}", "--body", "x")
+        self.assertEqual(out["wake"], "skipped_waiter")
+        self.assertEqual(self.hc_sent(), [])
+
+    def test_concurrent_checks_share_delivery(self):
+        self.horch("send", "--to", f"run:{self.run_id}", "--body", "x")
+        procs_ = [self.horch_bg("check", terminal="t100") for _ in range(3)]
+        deliveries = {self.finish(p)[1]["delivery"] for p in procs_}
+        self.assertEqual(len(deliveries), 1)
+        self.assertIsNotNone(deliveries.pop())
 
     def test_wait_timeout(self):
         code, out = self.owner_check("--wait", "--timeout-ms", "300")
@@ -2210,8 +2254,7 @@ def send(store, to: str, subject: str | None, body: str) -> dict:
         owner = store.one("SELECT terminal FROM bindings WHERE run_id=?", (ident,))
         if owner and term and owner["terminal"] == term:
             raise HorchError("owner_to_self", "소유자는 자기 Run 메일함에 send 하지 않는다", DENIED)
-        dsp = store.one("SELECT id FROM dispatches WHERE terminal=? AND state='active' AND run_id=?",
-                        (term, ident)) if term else None
+        dsp = store.one("SELECT id FROM dispatches WHERE terminal=? AND state='active'", (term,)) if term else None
         run_id, box = ident, f"run:{ident}"
         sender = f"dispatch:{dsp['id']}" if dsp else f"external:{term or 'none'}"
         dispatch_id = dsp["id"] if dsp else None
@@ -2224,6 +2267,8 @@ def send(store, to: str, subject: str | None, body: str) -> dict:
     else:
         raise HorchError("usage", "--to 는 run:<id> 또는 dispatch:<id> 다", USAGE)
     with store.tx():
+        if kind == "dispatch":
+            auth.require_active(store.one("SELECT id, state FROM dispatches WHERE id=?", (ident,)))
         mid = mailbox.post(store, run_id=run_id, mailbox=box, sender=sender, type="status", subject=subject,
                            body=body, dispatch_id=dispatch_id)
     return {"message": mid, "wake": mailbox.wake(store, box)}
@@ -2664,7 +2709,7 @@ import sys
 import unittest
 from unittest import mock
 
-from tests.helpers import BIN, FAKES, HorchCase
+from tests.helpers import BIN, FAKES, ROOT, HorchCase
 from horch import guard, hcio, procs, workers
 from horch.errors import HorchError
 from horch.store import Store
@@ -2775,6 +2820,27 @@ class WorkerStartCliTest(HorchCase):
         code, res4 = self.horch("worker-start", "--agent", "claude", "--task", task, terminal="t100")
         self.assertEqual((code, res4["error"]["code"]), (3, "task_settled"))
 
+    def test_executor_death_points(self):
+        for point in ("after_create", "after_run", "before_record"):
+            with self.subTest(point=point):
+                code, _ = self.horch("worker-start", "--agent", "claude", "--title", "t", "--spec", "s",
+                                     "--cwd", str(self.tmp), terminal="t100", env={"HORCH_TEST_DIE_AT": point})
+                self.assertEqual(code, 137)
+                did = self.db().execute("SELECT id FROM dispatches WHERE state='launching'").fetchone()["id"]
+                store = Store(self.home)
+                try:
+                    self.assertEqual(workers.reconcile_launching(store, self.run_id), [did])
+                finally:
+                    store.close()
+                self.assertEqual(self.dispatch(did)["state"], "launch_failed")
+                late = [t for t in self.hc_state()["terminals"].values() if t["name"] == did]
+                self.assertEqual(len(late), 0 if point == "after_create" else 1)
+                if late:
+                    rc = subprocess.run([sys.executable, str(BIN), "--home", str(self.home), "launch-guard",
+                                         "--dispatch", did, "--", "claude"], capture_output=True, text=True,
+                                        env=self._env(late[0]["address"], None), timeout=30).returncode
+                    self.assertEqual(rc, 3)
+
     def test_concurrent_retry_creates_one(self):
         out = self.start_worker()
         db = self.db()
@@ -2833,6 +2899,16 @@ class WorkerStartInProcessTest(HorchCase):
             out = self.start()
         self.assertEqual((out["state"], out["terminal"]), ("settled", "t9"))
 
+    def test_abandon_before_executor_records(self):
+        def fake_run(*_a, **_k):
+            did = self.launching_id()
+            self.guard_claims("t9")
+            self.store.run("UPDATE dispatches SET state='abandoned' WHERE id=?", (did,))
+            return {"address": "t9"}
+        with mock.patch.object(workers.hcio, "run_bg", side_effect=fake_run):
+            out = self.start()
+        self.assertEqual((out["state"], out["terminal"]), ("abandoned", "t9"))
+
     def test_terminal_mismatch(self):
         def fake_run(*_a, **_k):
             self.guard_claims("t8")
@@ -2888,13 +2964,41 @@ class ReconcileAndFenceTest(HorchCase):
         self.assertEqual(workers.reconcile_launching(self.store, self.run_id), [])
         self.assertEqual(self.state(), "active")
 
+    def test_guard_and_reconcile_race_one_wins(self):
+        script = ("import sys; sys.path.insert(0, sys.argv[1]); from pathlib import Path;"
+                  "from horch.store import Store; from horch import workers;"
+                  "workers.reconcile_launching(Store(Path(sys.argv[2])), sys.argv[3])")
+        for _ in range(5):
+            self.store.run("UPDATE dispatches SET state='launching', terminal=NULL WHERE id=?", (self.did,))
+            self.dead_launcher()
+            g = subprocess.Popen([sys.executable, str(BIN), "--home", str(self.home), "launch-guard", "--dispatch",
+                                  self.did, "--", "claude"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 env=dict(self.env, HC_TERMINAL_ID="t42"))
+            r = subprocess.Popen([sys.executable, "-c", script, str(ROOT / "lib"), str(self.home), self.run_id],
+                                 env=self.env)
+            rc = g.wait(timeout=30)
+            self.assertEqual(r.wait(timeout=30), 0)
+            self.assertIn((rc, self.state()), ((0, "active"), (3, "launch_failed")))
+
+    def test_old_guard_refused_after_retry(self):
+        self.dead_launcher()
+        workers.reconcile_launching(self.store, self.run_id)
+        with mock.patch.object(workers.hcio, "run_bg", return_value={"address": "t77"}):
+            new = workers.start(self.store, self.run_id, spec=None, title=None, agent="claude", model=None,
+                                effort=None, cwd=str(self.tmp), extra=[], task_id="task-00000001", retry=True)
+        self.assertEqual(new["state"], "active")
+        self.assertEqual(self.guard_cli(), 3)
+        self.assertEqual(self.store.one("SELECT state FROM dispatches WHERE id=?", (new["dispatch"],))["state"], "active")
+
     def test_cleanup_refused_terminals(self):
         self.dead_launcher()
         workers.reconcile_launching(self.store, self.run_id)
-        self.add_terminal("t60", name=self.did, state="finished")
-        self.add_terminal("t61", name=self.did, state="live")
+        labels = {"horch.run": self.run_id, "horch.dispatch": self.did}
+        self.add_terminal("t60", name=self.did, state="finished", labels=labels)
+        self.add_terminal("t61", name=self.did, state="live", labels=labels)
+        self.add_terminal("t62", name=self.did, state="finished")
         self.assertEqual(workers.cleanup_refused(self.store, self.run_id), ["t60"])
-        self.assertEqual(set(self.hc_state()["terminals"]) & {"t60", "t61"}, {"t61"})
+        self.assertEqual(set(self.hc_state()["terminals"]) & {"t60", "t61", "t62"}, {"t61", "t62"})
 
 
 if __name__ == "__main__":
@@ -2915,6 +3019,7 @@ Expected: FAIL (`ImportError: cannot import name 'workers'`)
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sqlite3
 from pathlib import Path
@@ -2941,7 +3046,7 @@ def reconcile_launching(store, run_id: str) -> list[str]:
 
 
 def cleanup_refused(store, run_id: str) -> list[str]:
-    """가드가 거부해 끝난 터미널(이름이 launch_failed Dispatch, 상태 finished)을 hc rm 한다."""
+    """가드가 거부해 끝난 터미널을 hc rm 한다. 이름으로 후보를 찾고 라벨(horch.run·horch.dispatch)과 상태를 get 으로 확인한다."""
     failed = {r["id"] for r in store.all("SELECT id FROM dispatches WHERE run_id=? AND state='launch_failed'", (run_id,))}
     if not failed:
         return []
@@ -2951,12 +3056,17 @@ def cleanup_refused(store, run_id: str) -> list[str]:
         return []
     removed = []
     for t in terminals:
-        if t.get("name") in failed and t.get("state") == "finished":
-            try:
+        if t.get("name") not in failed or t.get("state") != "finished":
+            continue
+        try:
+            info = hcio.get(t["address"])
+            labels = info.get("labels") or {}
+            if (info.get("state") == "finished" and labels.get("horch.run") == run_id
+                    and labels.get("horch.dispatch") in failed):
                 hcio.rm(t["address"])
                 removed.append(t["address"])
-            except hcio.HcFailure:
-                pass
+        except hcio.HcFailure:
+            pass
     return removed
 
 
@@ -2996,6 +3106,12 @@ def _create(store, run_id: str, *, spec, title, agent, model, effort, cwd, task_
     return task_id, dispatch_id, title, spec
 
 
+def _die_at(point: str) -> None:
+    """테스트 전용: HORCH_TEST_DIE_AT 이 point 면 실행자를 그 자리에서 죽인다(설계 12장 장애 시점 재현)."""
+    if os.environ.get("HORCH_TEST_DIE_AT") == point:
+        os._exit(137)
+
+
 def _mark_failed(store, dispatch_id: str) -> str:
     with store.tx():
         store.run("UPDATE dispatches SET state='launch_failed' WHERE id=? AND state='launching'", (dispatch_id,))
@@ -3015,6 +3131,7 @@ def start(store, run_id: str, *, spec, title, agent, model, effort, cwd, extra, 
         reconcile_launching(store, run_id)
     task_id, dispatch_id, title, spec = _create(store, run_id, spec=spec, title=title, agent=agent, model=model,
                                                 effort=effort, cwd=str(cwd_path), task_id=task_id, retry=retry)
+    _die_at("after_create")
     base = {"task": task_id, "dispatch": dispatch_id}
     ddir = store.dispatch_dir(run_id, dispatch_id)
     spec_path = ddir / "spec.md"
@@ -3040,6 +3157,7 @@ def start(store, run_id: str, *, spec, title, agent, model, effort, cwd, extra, 
     address = None
     try:
         result = hcio.run_bg(dispatch_id, str(cwd_path), labels, launch_argv)
+        _die_at("after_run")
         address = result.get("address")
         receipt["result"] = result
         if not address:
@@ -3054,6 +3172,7 @@ def start(store, run_id: str, *, spec, title, agent, model, effort, cwd, extra, 
         address = None
     else:
         write_atomic(ddir / "receipt.json", json.dumps(receipt, ensure_ascii=False, indent=2))
+        _die_at("before_record")
         with store.tx():
             store.run("UPDATE dispatches SET terminal=?, state='active' WHERE id=? AND state='launching'",
                       (address, dispatch_id))
@@ -3334,6 +3453,7 @@ def ask(store, dispatch_id: str, question: str | None, key: str | None, timeout_
         ask_key = _ask_key(question, key)
         try:
             with store.tx():
+                auth.require_active(store.one("SELECT id, state FROM dispatches WHERE id=?", (dispatch_id,)))
                 q = store.one("SELECT * FROM messages WHERE dispatch_id=? AND ask_key=?", (dispatch_id, ask_key))
                 if q is None:
                     mid = mailbox.post(store, run_id=run_id, mailbox=f"run:{run_id}", sender=f"dispatch:{dispatch_id}",
@@ -3377,6 +3497,7 @@ def escalate(store, dispatch_id: str, body: str) -> dict:
     auth.require_active(row)
     run_id = row["run_id"]
     with store.tx():
+        auth.require_active(store.one("SELECT id, state FROM dispatches WHERE id=?", (dispatch_id,)))
         mid = mailbox.post(store, run_id=run_id, mailbox=f"run:{run_id}", sender=f"dispatch:{dispatch_id}",
                            type="escalation", subject=body.splitlines()[0][:80] if body else None, body=body,
                            dispatch_id=dispatch_id)
@@ -3496,6 +3617,7 @@ codex review --commit "$(git rev-parse HEAD)" > .codex-reviews/task-9-r1.md 2>&1
 ```python
 import json
 import os
+import subprocess
 import unittest
 from unittest import mock
 
@@ -3580,6 +3702,8 @@ class ManageTest(HorchCase):
         self.assertIn("worker-release", by[did2]["next"])
         self.assertEqual(by[did3]["attention"], "launch_failed")
         self.assertIn("--retry", by[did3]["next"])
+        retry = subprocess.run(by[did3]["next"], capture_output=True, text=True, env=self._env("t100", None), timeout=30)
+        self.assertEqual(retry.returncode, 0, retry.stdout)
         _, only = self.o("worker-list", "--state", "settled")
         self.assertEqual([w["id"] for w in only["workers"]], [did2])
 
@@ -3695,6 +3819,7 @@ def observe(store, run_id: str) -> list[int]:
 
 ```python
 import json
+import os
 import shutil
 import sqlite3
 import time
@@ -3728,7 +3853,8 @@ def _row_json(r) -> dict:
 def _attention(home, r, verdict: str | None, word: str | None) -> tuple[str | None, list[str] | None]:
     base, d, st = horch_argv(home), r["id"], r["state"]
     if st == "launch_failed":
-        return "launch_failed", [*base, "worker-start", "--task", r["task_id"], "--retry"]
+        return "launch_failed", [*base, "worker-start", "--agent", r["agent"], "--task", r["task_id"], "--retry",
+                                 "--cwd", r["cwd"]]
     if st == "launching":
         return "launching", None
     if st == "active":
@@ -4051,6 +4177,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from . import hcio, herdr
@@ -4075,9 +4202,9 @@ def run(home: Path) -> dict:
     checks.append(_check("herdr_app", ok, detail))
     try:
         home.mkdir(mode=0o700, parents=True, exist_ok=True)
-        probe = home / ".doctor-write-test"
-        probe.write_text("ok")
-        probe.unlink()
+        with tempfile.TemporaryFile(dir=home) as probe:
+            probe.write(b"ok")
+            probe.flush()
         checks.append(_check("home_writable", True, str(home)))
     except OSError as exc:
         checks.append(_check("home_writable", False, f"{home}: {exc}"))
@@ -4131,7 +4258,7 @@ def run(home: Path) -> dict:
      - `error`: 화면을 읽고 이어갈 수 있으면 `send --to dispatch:<d>` 로 지시하고, 아니면 `worker-abandon --kill` 뒤 다시 띄운다.
    - `status`: 참고한다.
 7. 상황이 불분명하면 `horch worker-list` 의 `attention` 과 `next`(다음에 실행할 argv)를 본다. `horch status` 는 읽지 않은 메시지 수와 답 없는 질문을 보여 준다.
-8. 모든 Dispatch 가 `released` 거나 사용자가 남기라고 한 `retained` 일 때만 끝낸다. 사용자에게 Task 마다 결과, 근거, 남은 문제를 보고한다.
+8. `launching`·`active` Dispatch 가 없고 `settled`·`abandoned` Dispatch 를 모두 정리했을 때 끝낸다. 과거의 `launch_failed` 는 끝내는 것을 막지 않는다. `retained` 는 사용자가 남기라고 한 것만 둔다. 사용자에게 Task 마다 최종 결과, 근거, 재시도 여부, 남은 문제를 보고한다.
 
 ## 안전
 
@@ -4249,7 +4376,7 @@ Expected: 전체 OK
 - [ ] **Step 8: 커밋과 Codex 검토**
 
 ```bash
-git grep -n -I -P '/Users/|/private/tmp|~/Workspace' -- . ':!.codex-reviews' || true
+git grep -n -I -P '/[U]sers/|/private/[t]mp|~[/]Workspace' -- . ':!.codex-reviews' || true
 git add README.md herdr-orch
 git commit -m "feat(herdr-orch): doctor, skill 사용법, 스킬 스텁, README
 
@@ -4276,7 +4403,9 @@ Expected: `git grep` 출력 없음.
 - [ ] **Step 1: 버리는 작업 폴더와 space 준비**
 
 ```bash
-E2E="<세션 스크래치패드>/e2e"; mkdir -p "$E2E/repo"; cd "$E2E/repo" && git init -q && echo "# e2e" > README.md && git add . && git commit -qm init
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+E2E="<세션 스크래치패드>/e2e"; mkdir -p "$E2E/repo"
+(cd "$E2E/repo" && git init -q && echo "# e2e" > README.md && git add . && git commit -qm init)
 herdr-app do space.new --name horch-e2e --folder "$E2E/repo"
 ```
 
@@ -4343,6 +4472,7 @@ Expected: e2e 터미널이 남지 않는다.
 - [ ] **Step 6: 전체 테스트와 브랜치 리뷰**
 
 ```bash
+cd "$REPO_ROOT"
 bash herdr-orch/tests/run.sh
 git add -A docs herdr-orch
 git commit -m "docs: herdr-orch 실환경 확인 결과
