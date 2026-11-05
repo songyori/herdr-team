@@ -27,6 +27,7 @@ RENDER_KEYS = {"header", "question", "context", "options", "multiSelect"}
 OPTION_KEYS = {"label", "description"}
 DESCRIPTION_MAX = 300  # 질문 줄과 같은 상한. 선택지 설명으로 context(4000자) 상한을 돌아가지 못하게 한다
 _REPLY_SUBJECT = re.compile(r"\s*reply\b", re.IGNORECASE)
+PARENT_DEPTH = 10  # require_main 이 따라가는 hc parent 단계 상한
 
 
 def _bad_chars(text: str, allow: str = "") -> bool:
@@ -146,23 +147,30 @@ def read_outbox(p) -> list[dict]:
 def append(p, fields: dict, guard=None) -> dict:
     """outbox 에 flock 으로 한 줄을 더한다. guard(entries) 는 같은 잠금 안에서 먼저 부른다.
 
-    ID 는 완결된 줄 수 + 1 이다. 앞 쓰기가 줄 중간에서 끊겼으면 LF 로 닫아 한 줄로 센 뒤 덧붙인다."""
+    ID 는 완결된 줄 수 + 1 이다. 앞 쓰기가 줄 중간에서 끊겼으면(쓰는 쪽은 늘 이 잠금을 쥐므로 잠금 안에서 본 LF 없는
+    끝은 죽은 쓰기다) guard 보다 먼저 LF 를 써서 남긴다. 그래야 guard(중복 검사)와 잠금 없이 읽는 쪽이 같은 줄을 본다."""
     p.ensure_state()
     with flock(p.state / "outbox.lock"):
         try:
             raw = p.outbox.read_bytes()
         except FileNotFoundError:
             raw = b""
-        close = b"\n" if raw and not raw.endswith(b"\n") else b""
-        count, items, _ = _parse(raw + close)
+        if raw and not raw.endswith(b"\n"):
+            _write(p, b"\n")
+            raw += b"\n"
+        count, items, _ = _parse(raw)
         if guard is not None:
             guard([e for _, e in items])
         entry = {"id": f"out-{count + 1:04d}", "at": now(), **fields, "answered": False}
-        with p.outbox.open("ab") as fh:
-            fh.write(close + (json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8"))
-            fh.flush()
-            os.fsync(fh.fileno())
+        _write(p, (json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8"))
     return entry
+
+
+def _write(p, data: bytes) -> None:
+    with p.outbox.open("ab") as fh:
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
 
 
 def cursor(p) -> int:
@@ -171,6 +179,11 @@ def cursor(p) -> int:
         return int(p.cursor.read_text(encoding="utf-8").strip() or 0)
     except (OSError, ValueError):
         return 0
+
+
+def unread(p) -> int:
+    """커서 뒤 완결된 줄 수(읽지 못한 줄도 센다. ID·커서와 같은 기준). 쓰는 중인 마지막 조각은 세지 않는다."""
+    return max(0, _scan(p)[0] - cursor(p))
 
 
 def answer_of(p, oid: str) -> dict | None:
@@ -259,7 +272,7 @@ def _terminal() -> str:
 
 
 def require_main(p) -> str:
-    """메인 터미널에서 불렀는지 확인한다(tell·answer 가 무엇이든 쓰기 전에 부른다). 실수 방지용이다(설계 8.3).
+    """메인 터미널에서 불렀는지 확인한다(tell·answer·watch·reask 가 무엇이든 쓰기 전에 부른다). 실수 방지용이다(설계 8.3).
 
     코디네이터(HTEAM_ROLE·run.json 의 터미널·horch Run 소유자·hc 라벨 hteam.role)와 워커·리뷰어는 메인이 아니다. horch status 는
     launching·active Dispatch 만 알려 주므로, 끝난 Dispatch 의 터미널은 horch 가 워커 터미널을 띄울 때 붙이는 hc 라벨
@@ -277,17 +290,42 @@ def require_main(p) -> str:
     if data.get("dispatch") or data.get("run"):
         who = "워커" if data.get("dispatch") else "Run 소유자(코디네이터)"
         raise HteamError("not_main", f"{term} 은 {who} 터미널이다(메인 전용)", DENIED, hint)
-    try:
-        labels = herdr.get(term).get("labels")
-    except HteamError as exc:
-        raise HteamError("main_unverified", f"hc 로 이 터미널({term})을 확인하지 못했다: {exc.message}", FAIL,
-                         "다시 시도한다") from None
-    labels = labels if isinstance(labels, dict) else {}
-    if labels.get("horch.dispatch"):
-        raise HteamError("not_main", f"{term} 은 horch 가 띄운 워커 터미널이다(메인 전용)", DENIED, hint)
-    if labels.get("hteam.role") == "coordinator":  # bind 전이라 run.json·horch 가 아직 모르는 코디네이터(설계 9.3)
-        raise HteamError("not_main", f"{term} 은 hteam up 이 띄운 코디네이터 터미널이다(메인 전용)", DENIED, hint)
+    # 이 터미널과 hc parent 조상(기본 `hc run` 은 띄운 터미널을 parent 로 남긴다)의 라벨을 본다. --no-parent 로 띄운
+    # 자식은 못 가린다(실수 방지용, 설계 14장). 조상을 끝까지 따라가지 못하면(hc 실패·순환·너무 깊음) 확인 불가다.
+    node, seen = term, {term}
+    for depth in range(PARENT_DEPTH + 1):
+        info = _hc_info(node, term)
+        labels = info.get("labels") if isinstance(info.get("labels"), dict) else {}
+        where = term if node == term else f"{term}(조상 {node} 아래에서 띄움)"
+        if labels.get("horch.dispatch"):
+            raise HteamError("not_main", f"{where} 은 horch 가 띄운 워커 터미널이다(메인 전용)", DENIED, hint)
+        if labels.get("hteam.role") == "coordinator":  # bind 전이라 run.json·horch 가 아직 모르는 코디네이터(설계 9.3)
+            raise HteamError("not_main", f"{where} 은 hteam up 이 띄운 코디네이터 터미널이다(메인 전용)", DENIED, hint)
+        parent = _parent_ref(info.get("parent"))
+        if not parent:
+            return term
+        if parent in seen or depth == PARENT_DEPTH:
+            raise HteamError("main_unverified", f"{term} 의 parent 를 끝까지 따라가지 못했다(순환이거나 {PARENT_DEPTH}단계 넘음)",
+                             FAIL, "메인 세션 터미널에서 실행한다")
+        seen.add(parent)
+        node = parent
     return term
+
+
+def _parent_ref(value) -> str | None:
+    """hc get 의 parent(띄운 터미널 주소). 모르는 모양이면 따라가지 않는다."""
+    if isinstance(value, dict):
+        value = value.get("address")
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _hc_info(node: str, term: str) -> dict:
+    try:
+        return herdr.get(node)
+    except HteamError as exc:
+        what = "이 터미널" if node == term else f"조상 터미널 {node}"
+        raise HteamError("main_unverified", f"hc 로 {what}({term})을 확인하지 못했다: {exc.message}", FAIL,
+                         "다시 시도한다") from None
 
 
 def note_main(p) -> str:
@@ -495,7 +533,9 @@ def _cmd_notify(args) -> dict:
 
 
 def _cmd_watch(args) -> dict:
-    return watch(find_project(args.root))
+    p = find_project(args.root)
+    require_main(p)  # 코디네이터가 wait 와 헷갈려 부르면 잠금·커서를 건드리기 전에 거부한다
+    return watch(p)
 
 
 def _cmd_answer(args) -> dict:
@@ -509,7 +549,9 @@ def _cmd_applied(args) -> dict:
 
 
 def _cmd_reask(args) -> dict:
-    return reask(find_project(args.root))
+    p = find_project(args.root)
+    require_main(p)
+    return reask(p)
 
 
 def register(sub) -> None:

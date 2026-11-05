@@ -605,5 +605,92 @@ class RenderGuardTest(unittest.TestCase):
         self.assertEqual(ok["context"], "표\n\t- 줄")
 
 
+class TornAskTest(LinkCase):
+    """JSON 은 다 썼지만 끝 LF 를 쓰기 전에 끊긴 ask 줄. 재시도(append)가 잠금 안에서 LF 를 먼저 남겨야 한다."""
+
+    def setUp(self):
+        super().setUp()
+        self.env["HTEAM_ASK_TIMEOUT"] = "0.3"
+        self.write_spec("T-001", "planner")
+        state.create(self.p, "T-001", "planner")
+        self.assertEqual(self.hteam("start", "T-001")[0], 0)
+        self.term = self.dispatch_row(self.work_dispatch("T-001"))["terminal"]
+
+    def test_retry_repairs_tail_so_wait_and_answer_find_it(self):
+        line = outbox_line("out-0001", type="ask", **{"from": "T-001"}, round=1, render=render())
+        (self.state_dir / "outbox.jsonl").write_bytes(line)  # 끝 LF 없음
+        code, out = self.hteam("ask-user", "--task", "T-001", "--json", "-", as_=None, terminal=self.term,
+                               stdin=json.dumps(render()))
+        self.assertEqual((code, out["error"]["code"], out["id"]), (3, "question_open", "out-0001"), out)
+        self.assertTrue((self.state_dir / "outbox.jsonl").read_bytes().endswith(b"\n"))
+        code, out = self.hteam("ask-user", "--task", "T-001", "--wait", "out-0001", as_=None, terminal=self.term)
+        self.assertEqual((code, out.get("status")), (4, "waiting"), out)
+        code, out = self.hteam("answer", "out-0001", "서버 DB", as_="main")
+        self.assertEqual(code, 0, out)
+
+
+class CallerTest(LinkCase):
+    """watch·reask 도 메인 전용이다(설계 8.3). 코디네이터가 wait 와 헷갈려 부르면 잠금·커서를 건드리지 않고 exit 5."""
+
+    def test_coordinator_watch_and_reask_refused(self):
+        self.notify_q()
+        code, out = self.hteam("watch", timeout=10)  # 코디네이터 환경
+        self.assertEqual((code, out.get("error", {}).get("code")), (5, "not_main"), out)
+        code, out = self.hteam("watch", as_=None, terminal=COORD, timeout=10)
+        self.assertEqual((code, out.get("error", {}).get("code")), (5, "not_main"), out)
+        code, out = self.hteam("reask")
+        self.assertEqual((code, out.get("error", {}).get("code")), (5, "not_main"), out)
+        self.assertFalse((self.state_dir / "outbox.cursor").exists())
+        code, out = self.hteam("watch", as_="main")  # 메인은 잠금 없이 바로 받는다
+        self.assertEqual((code, [m["id"] for m in out["messages"]]), (0, ["out-0001"]), out)
+
+    def test_unread_counts_complete_lines_after_cursor(self):
+        self.hteam("notify", "--type", "progress", "--body", "하나")
+        with (self.state_dir / "outbox.jsonl").open("ab") as fh:
+            fh.write(b"not json\n")
+        self.hteam("notify", "--type", "progress", "--body", "셋")
+        with (self.state_dir / "outbox.jsonl").open("ab") as fh:
+            fh.write(b'{"id": "out-0004"')  # 쓰는 중인 마지막 조각은 세지 않는다
+        self.assertEqual(outbox.unread(self.p), 3)  # 깨진 줄도 센다(len(read_outbox) 는 2)
+        self.assertEqual(self.hteam("watch", as_="main")[0], 0)
+        self.assertEqual(outbox.unread(self.p), 0)
+
+
+class ParentTest(LinkCase):
+    """hc parent 를 따라 올라가 워커·코디네이터 터미널 아래에서 띄운 터미널을 메인으로 보지 않는다(최대 10단계)."""
+
+    def tell_from(self, term):
+        return self.hteam("tell", "a", as_=None, terminal=term)
+
+    def child(self, address, parent, **kw):
+        self.add_terminal(address, **kw)
+        self.update_terminal(address, parent=parent)
+
+    def test_child_of_worker_or_coordinator_refused(self):
+        self.add_terminal("t50", labels={"horch.run": "r", "horch.dispatch": "dsp-x"})
+        self.child("t51", "t50")
+        self.child("t52", "t51")
+        self.add_terminal("t60", labels={"hteam.role": "coordinator"})
+        self.child("t61", "t60")
+        for term in ("t51", "t52", "t61"):
+            code, out = self.tell_from(term)
+            self.assertEqual((code, out.get("error", {}).get("code")), (5, "not_main"), (term, out))
+        self.assertEqual(self.run_messages(), [])
+
+    def test_plain_parent_chain_is_main(self):
+        self.add_terminal("t70")
+        self.update_terminal("t1", parent="t70")
+        code, out = self.tell_from("t1")
+        self.assertEqual(code, 0, out)
+
+    def test_cycle_or_missing_parent_is_unverified(self):
+        self.child("t80", "t81")
+        self.child("t81", "t80")
+        self.child("t82", "t99")  # 없는 터미널
+        for term in ("t80", "t82"):
+            code, out = self.tell_from(term)
+            self.assertEqual((code, out.get("error", {}).get("code")), (1, "main_unverified"), (term, out))
+
+
 if __name__ == "__main__":
     unittest.main()
