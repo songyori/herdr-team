@@ -566,6 +566,27 @@ class GitioTest(TeamCase):
             gitio.has_head(fresh)
         self.assertEqual((cm.exception.code, cm.exception.exit_code), ("git_failed", 1))
 
+    def test_has_head_without_show_ref_exists(self):
+        """git 2.43 미만은 `show-ref --exists` 를 몰라 exit 129 를 낸다. 그래도 unborn 과 손상 ref 를 가른다."""
+        real = gitio.run
+
+        def old_git(root, *args, **kw):
+            if args[:2] == ("show-ref", "--exists"):
+                return subprocess.CompletedProcess(args, 129, "", "error: unknown option `exists'")
+            return real(root, *args, **kw)
+
+        fresh = self.tmp / "fresh_old"
+        fresh.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main", str(fresh)], check=True, env=self.env)
+        with mock.patch.object(gitio, "run", old_git):
+            self.assertTrue(gitio.has_head(self.proj))
+            self.assertFalse(gitio.has_head(fresh))
+            for junk in ("", "garbage\n"):
+                (fresh / ".git/refs/heads/main").write_text(junk)
+                with self.assertRaises(HteamError) as cm:
+                    gitio.has_head(fresh)
+                self.assertEqual((cm.exception.code, cm.exception.exit_code), ("git_failed", 1))
+
     def test_commit_paths_names_literal_paths(self):
         (self.proj / "a[1].txt").write_text("x\n")
         (self.proj / "a1.txt").write_text("y\n")

@@ -120,6 +120,16 @@ def blob(root, commit: str, path: str) -> str | None:
     return None
 
 
+def _ref_present(root, ref: str) -> bool:
+    """ref 가 느슨한 파일이나 packed-refs 로 존재하는가(깨졌어도). 버전에 기대지 않는다."""
+    from pathlib import Path
+    loose = run(root, "rev-parse", "--git-path", ref).stdout.strip()
+    if (Path(root) / loose).exists():  # git -C 기준 상대 경로이므로 root 에 붙인다(절대 경로면 그대로)
+        return True
+    listed = run(root, "for-each-ref", "--format=%(refname)", ref).stdout.split()
+    return ref in listed
+
+
 def has_head(root) -> bool:
     """커밋이 하나라도 있는가(HEAD 가 태어났는가). 객체는 읽지 않는다.
 
@@ -131,10 +141,17 @@ def has_head(root) -> bool:
         return True
     target = run(root, "symbolic-ref", "-q", "HEAD", check=False)
     if target.returncode == 0:
-        exists = run(root, "show-ref", "--exists", target.stdout.strip(), check=False)
+        ref = target.stdout.strip()
+        exists = run(root, "show-ref", "--exists", ref, check=False)
         if exists.returncode == 2:
             return False
-        detail = (exists.stderr or exists.stdout).strip()
+        if exists.returncode == 129:
+            # git 2.43 미만은 --exists 를 모른다(exit 129). ref 가 있는지(느슨한 파일·packed-refs)로 직접 가른다.
+            if not _ref_present(root, ref):
+                return False
+            detail = "ref 는 있으나 풀리지 않는다"
+        else:
+            detail = (exists.stderr or exists.stdout).strip()
     else:
         detail = (target.stderr or target.stdout).strip()
     raise HteamError("git_failed", f"HEAD 를 풀지 못했다(비거나 깨진 ref?): {detail[-300:]}", FAIL)
