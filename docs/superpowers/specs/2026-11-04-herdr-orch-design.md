@@ -284,10 +284,12 @@ Dispatch:
 ### 에이전트 명령
 
 - Claude: `claude [--model M] [--effort E] [추가 인자...] "<프리앰블>"`
+  - 처음 보는 폴더에서는 폴더 신뢰 확인 창에서 멈춘다(사전 검증 S1). 워커 `--cwd` 는 사용자가 이미 신뢰한 폴더를 쓴다.
 - Codex: `codex --no-daemon -s workspace-write -a never --add-dir <저장 루트> [-m M] [-c model_reasoning_effort=E] [추가 인자...] "<프리앰블>"`
   - `--no-daemon`: 없으면 Codex 의 명령이 hc 밖에서 돌아 `$HC_TERMINAL_ID` 가 없다.
   - `--add-dir`: Codex 샌드박스에서 저장소 DB 에 쓰게 한다.
   - `-a never`: 사람 없이 돈다. 샌드박스 밖 명령은 묻지 않고 실패한다.
+  - 플러그인 hook 이 새로 생기거나 바뀌면 Codex 는 시작할 때 "Hooks need review" 확인 창에서 멈춘다(사전 검증 S2). 설정 키 `bypass_hook_trust` 는 대화형 Codex 에 듣지 않고, 실행 옵션 `--dangerously-bypass-hook-trust` 만 듣는다. 이 옵션은 hook 신뢰 확인만 건너뛰고 샌드박스·승인 정책은 그대로다. horch 는 이 옵션도 스스로 넣지 않는다. 호출자가 `--agent-arg=--dangerously-bypass-hook-trust` 로 넘긴다(herdr-team 은 사용자 설정에 따라 넘긴다).
 - 추가 인자(`--agent-arg`)는 호출자가 정한다. horch 는 권한 우회 플래그를 스스로 넣지 않는다.
 - 모델·effort 를 생략하면 에이전트 기본값이다. 값은 검사하지 않고 그대로 넘긴다.
 
@@ -324,7 +326,7 @@ Dispatch:
 
 1. 7장 규칙대로 (Dispatch, key) 의 질문을 찾거나 만든다. 새 질문이면 `question` 메시지를 Run 메일함에 쓰고 소유자를 깨운다.
 2. 그 질문을 `reply_to` 로 가진 `reply` 를 1초 간격으로 찾는다. 찾으면 답을 돌려준다. reply 는 지우거나 표시하지 않으므로 같은 질문으로 몇 번이든 다시 받을 수 있다.
-3. 기다리는 동안 60초마다, Run 메일함에 살아 있는 waiter 가 없고 소유자가 `idle` 이면 다시 깨운다.
+3. 기다리는 동안 60초마다 소유자를 아래 "깨우기" 규칙대로 다시 깨운다(살아 있는 waiter 가 있거나 `working`·`blocked` 이면 건너뛴다).
 4. 시간이 지나면 exit 4 와 질문 ID. `--resume <id>` 는 1단계 없이 2–3단계만 한다.
 5. 기다리는 동안 Dispatch 가 `active` 가 아니게 되면(abandon) exit 3 으로 끝난다.
 
@@ -334,6 +336,7 @@ Dispatch:
 
 - 그 메일함에 살아 있는 waiter 가 있으면 깨우지 않는다. 기다리던 프로세스가 직접 받는다.
 - 받는 터미널의 `hc get` 상태가 `idle` 이면 `hc send --if idle <터미널> "[horch] 새 메시지가 있다. 확인: <horch> --home <루트> check[ --dispatch D]"`.
+- 상태가 `done` 이면 같은 글을 `--if` 없이 보낸다. `done` 은 "턴을 마쳤지만 사람이 아직 안 봄" 이고, 아무도 보지 않는 pane 의 Claude 는 계속 `done` 에 머문다(사전 검증 S3). `hc send --if` 는 `idle`·`working` 만 받는다. 조회와 전송 사이에 `working` 이 되면 글은 입력 대기열에 들어가 그 턴 뒤에 처리되고, `blocked` 가 되면 hc 가 보내지 않는다.
 - 상태가 `error` 면 같은 글을 `--if` 없이 보낸다(hc 는 error 인 에이전트에 입력을 보내 이어가게 한다). `working`·`blocked` 이면 보내지 않는다.
 - 깨우기 실패는 무시하고 결과의 `wake` 필드에 적는다. 메시지는 저장소에 남는다.
 - 환경 변수 `CODEX_SANDBOX` 가 있으면(Codex 샌드박스 안) hc 를 부르지 않고 `wake: "skipped_sandbox"` 로 적는다. 사전 검증 S2 에서 Codex `workspace-write` 샌드박스가 hc 소켓을 막는 것을 확인했다(`cannot start core: Operation not permitted`).
@@ -376,6 +379,7 @@ Dispatch:
 
 - **워커가 done 없이 끝남**: `observed exited` 를 받은 코디네이터가 `worker-abandon` 한 뒤 `worker-start --task <id>` 로 다시 띄운다.
 - **워커가 blocked**: `observed blocked` 만 보낸다. horch 는 키를 누르지 않는다. 코디네이터가 사람에게 넘길지 정한다.
+- **워커가 시작 확인 창에서 멈춤**: Claude 폴더 신뢰, Codex hook 검토 창 동안에는 에이전트가 상태를 보고하지 않는다(`status` 가 null, 사전 검증 S1·S2). 그래서 `blocked` 로 보이지 않는다. `worker-list` 는 판정이 `live` 인데 상태 보고가 없는 `active` 워커를 `attention: "no_status"`, `next: worker-show --lines 40` 으로 보인다. 띄운 직후 첫 보고 전에도 잠깐 그렇다. horch 는 키를 누르지 않는다. 1분 넘게 이어지면 코디네이터가 화면을 보고 사용자에게 알린다.
 - **워커가 error**: `observed error`. 코디네이터가 `worker-show --lines 80` 으로 화면을 읽고, 이어갈 수 있으면 `send --to dispatch:D` 로 지시한다(9장 깨우기가 error 인 워커에 입력을 보낸다). 이어갈 수 없으면 `worker-abandon --kill` 뒤 `worker-start --task` 로 다시 띄운다.
 - **`worker-abandon`**: 판정이 `exited`·`lost` 면 `abandoned`. `live` 면 `--kill` 이 있어야 하고 `hc kill` 뒤 `abandoned`. `unverifiable` 은 거부(exit 1). 복구 셸(`lost`)은 남아 있으므로 `worker-release` 로 정리한다.
 - **`worker-release`**: `settled`·`retained`·`abandoned` 를 받는다. 다음 순서로 하고, 각 단계는 이미 된 상태를 성공으로 본다.
@@ -415,7 +419,8 @@ Python 3.11 이상, `hc` 실행과 `hc server status`, `herdr-app status`, 저�
 - 경쟁: 가드가 등록하고 워커가 done 한 뒤 실행자가 6단계를 하는 순서, 소유자가 abandon 한 뒤 실행자가 6단계를 하는 순서, hc run 이 실패를 돌려줬는데 가드가 이미 등록한 경우
 - 재호출: done 같은 내용·다른 내용(settled·retained·released 각각), reply 같은 내용·다른 내용, ask 같은 key(질문 직후·답 받은 뒤)·다른 key·같은 key 다른 본문, release 반복
 - ask: 답, 시간 초과(exit 4), `--resume`, 다시 깨우기, abandon 중 종료
-- 깨우기: waiter 있음/없음/죽음, `idle`/`error`/`working`/`blocked`
+- 깨우기: waiter 있음/없음/죽음, `idle`/`done`/`error`/`working`/`blocked`
+- worker-list attention: 상태 보고 없는 `live` `active` 워커는 `no_status`
 - observed: 네 kind 와 중복 제거, `hc ls --all` 사용
 - worker-show: `--lines` 로 `hc read` 화면 포함
 - 생존 판정 네 가지
@@ -433,6 +438,15 @@ Python 3.11 이상, `hc` 실행과 `hc server status`, `herdr-app status`, 저�
 | S4 | 끝남(2026-11-04). 10장 생존 판정표에 결과를 반영했다 | — |
 
 S2 중 이미 확인한 것(2026-11-04, `codex exec -s workspace-write --add-dir`, codex-cli 0.166.0): `--add-dir` 경로의 SQLite 쓰기는 된다. 샌드박스 안에서 hc 소켓은 막힌다. 사용자 Codex 설정(`inherit = "core"`)에서는 `$HC_TERMINAL_ID` 가 셸에 전달되지 않는다.
+
+#### 사전 검증 결과 (2026-11-05, hc 0.1.18, codex-cli 0.166.0)
+
+- S1: 통과. 라벨을 붙인 터미널이 그 탭의 별도 pane 으로 붙었다(`herdr-app ls`). 가드식 exec 뒤 `status.app` = `claude-code`, `argv` 는 띄운 argv 그대로다.
+  - 처음 보는 폴더에서 Claude 는 폴더 신뢰 확인 창에서 멈춘다. 이때 `status` 는 `blocked` 가 아니라 null 이다. 기본 선택이 "No, exit" 라 Enter 만 누르면 Claude 가 끝난다.
+- S2: 통과. Codex 셸의 `HC_TERMINAL_ID` 가 그 터미널 주소와 같다. `--add-dir` DB 쓰기가 된다. `CODEX_SANDBOX` = `seatbelt`. Codex 는 `status.app` = `codex` 로 상태를 보고한다.
+  - 플러그인 hook 이 바뀐 뒤 새 Codex 는 "Hooks need review" 확인 창에서 멈춘다. 이때도 상태 보고가 없다. `--dangerously-bypass-hook-trust` 로 띄우면 확인 창 없이 `idle` 을 보고한다(설정 키 `-c bypass_hook_trust=true` 는 듣지 않았다).
+- S3: Claude 실패, Codex 통과. 턴을 마친 Claude 는 아무도 pane 을 보지 않으면 core 상태가 `done` 에 머물러 `hc send --if idle` 이 `status_mismatch` 로 거부된다. `--if` 없는 `hc send` 는 들어가고 Claude 가 대답한다(입력은 `<hc from="<보낸 터미널>">…</hc>` 로 감싸져 보인다). Codex 는 `done` 뒤 스스로 `idle` 을 보고해 `--if idle` 이 들어갔다.
+  - 대응(사용자 결정, 2026-11-05): 9장 깨우기가 `done` 이면 `--if` 없이 보낸다. 시작 확인 창은 10장 `no_status` 로 드러낸다.
 
 ### 실환경 확인
 

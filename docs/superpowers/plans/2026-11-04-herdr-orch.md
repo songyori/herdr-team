@@ -2031,8 +2031,8 @@ class MailboxTest(HorchCase):
         self.assertEqual((code, out["count"], out["reason"], out["delivery"]), (0, 0, "timeout", None))
 
     def test_wake_by_status(self):
-        cases = [("idle", "sent", "idle"), ("error", "sent", None), ("working", "skipped_working", None),
-                 ("blocked", "skipped_blocked", None)]
+        cases = [("idle", "sent", "idle"), ("done", "sent", None), ("error", "sent", None),
+                 ("working", "skipped_working", None), ("blocked", "skipped_blocked", None)]
         for word, expect, if_ in cases:
             with self.subTest(word=word):
                 st = self.hc_state()
@@ -2243,7 +2243,9 @@ def wake(store, mailbox: str) -> str:
         if word == "idle":
             hcio.send(terminal, text, if_status="idle")
             return "sent"
-        if word == "error":
+        if word in ("done", "error"):
+            # done: 턴을 마쳤지만 아무도 안 본 Claude 는 done 에 머문다(설계 9장, 사전 검증 S3).
+            # hc send --if 는 done 을 받지 않으므로 조건 없이 보낸다.
             hcio.send(terminal, text)
             return "sent"
         return f"skipped_{word or 'unknown'}"
@@ -3628,7 +3630,7 @@ scripts/codex-review.sh commit HEAD
   - `workers.list_rows(store, run_id, states) -> list[dict]` 행: Dispatch 필드 + `title`, `verdict`, `status`, `attention`, `next`(argv 목록 또는 null)
   - `workers.show(store, run_id, dispatch_id, lines) -> {"worker": {... , "hc", "screen"}}`
   - `workers.release/retain(store, run_id, dispatch_id) -> {"dispatch"}`, `workers.abandon(store, run_id, dispatch_id, kill) -> {"dispatch", "verdict"}`
-  - attention 값: `launch_failed`, `launching`, `exited_without_done`, `lost_without_done`, `unverifiable`, `blocked`, `error`, `settled`, `abandoned`, null
+  - attention 값: `launch_failed`, `launching`, `exited_without_done`, `lost_without_done`, `unverifiable`, `blocked`, `error`, `no_status`, `settled`, `abandoned`, null
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
@@ -3726,6 +3728,16 @@ class ManageTest(HorchCase):
         self.assertEqual(retry.returncode, 0, retry.stdout)
         _, only = self.o("worker-list", "--state", "settled")
         self.assertEqual([w["id"] for w in only["workers"]], [did2])
+
+    def test_list_no_status_for_live_worker_without_report(self):
+        self.update_terminal("t9", status=None)
+        _, out = self.o("worker-list")
+        row = {w["id"]: w for w in out["workers"]}[self.did]
+        self.assertEqual((row["verdict"], row["status"], row["attention"]), ("live", None, "no_status"))
+        self.assertEqual(row["next"][-4:], ["--dispatch", self.did, "--lines", "40"])
+        self.update_terminal("t9", status="working")
+        _, out = self.o("worker-list")
+        self.assertIsNone({w["id"]: w for w in out["workers"]}[self.did]["attention"])
 
     def test_show_with_screen(self):
         st = self.hc_state()
@@ -3884,6 +3896,9 @@ def _attention(home, r, verdict: str | None, word: str | None) -> tuple[str | No
             return "unverifiable", [*base, "worker-show", "--dispatch", d]
         if word in ("blocked", "error"):
             return word, [*base, "worker-show", "--dispatch", d, "--lines", "80"]
+        if verdict == "live" and word is None:
+            # 시작 확인 창(Claude 폴더 신뢰, Codex hook 검토)은 상태를 보고하지 않는다(설계 10장)
+            return "no_status", [*base, "worker-show", "--dispatch", d, "--lines", "40"]
         return None, None
     if st in ("settled", "abandoned"):
         return st, [*base, "worker-release", "--dispatch", d]
@@ -4278,6 +4293,7 @@ def run(home: Path) -> dict:
      - `error`: 화면을 읽고 이어갈 수 있으면 `send --to dispatch:<d>` 로 지시하고, 아니면 `worker-abandon --kill` 뒤 다시 띄운다.
    - `status`: 참고한다.
 7. 상황이 불분명하면 `horch worker-list` 의 `attention` 과 `next`(다음에 실행할 argv)를 본다. `horch status` 는 읽지 않은 메시지 수와 답 없는 질문을 보여 준다.
+   `attention: "no_status"` 가 1분 넘게 이어지면 워커가 시작 확인 창(Claude 폴더 신뢰, Codex hook 검토)에서 멈춘 것일 수 있다. `next` 로 화면을 보고 사용자에게 알린다. 키를 대신 누르지 않는다. Codex 워커는 사용자가 허락하면 `--agent-arg=--dangerously-bypass-hook-trust` 로 띄워 hook 검토 창을 건너뛴다.
 8. `launching`·`active` Dispatch 가 없고 `settled`·`abandoned` Dispatch 를 모두 정리했을 때 끝낸다. 과거의 `launch_failed` 는 끝내는 것을 막지 않는다. `retained` 는 사용자가 남기라고 한 것만 둔다. 사용자에게 Task 마다 최종 결과, 근거, 재시도 여부, 남은 문제를 보고한다.
 
 ## 안전
@@ -4441,7 +4457,7 @@ Expected: `{"space", "tab", "terminal"}`. space·tab 라벨 값을 `$S`, `$T` �
 1. run-create --objective "e2e".
 2. 워커 둘을 띄운다(작업 폴더는 현재 폴더):
    - claude 워커(--model haiku, `--agent-arg=--permission-mode=bypassPermissions`): hello.py 에 "hello" 를 출력하는 main 을 만들고 커밋한다. 시작하자마자 ask 로 "출력 문구를 hello 로 할까?" 를 한 번 묻는다.
-   - codex 워커: hello.py 가 생기면 읽고 docs/review.md 에 한 줄 리뷰를 쓴다. 파일이 아직 없으면 ask 로 기다린다. 끝나면 done.
+   - codex 워커(`--agent-arg=--dangerously-bypass-hook-trust`): hello.py 가 생기면 읽고 docs/review.md 에 한 줄 리뷰를 쓴다. 파일이 아직 없으면 ask 로 기다린다. 끝나면 done.
 3. 질문에는 "hello 로 해" 라고 reply 한다.
 4. 둘 다 worker_done 이 오면 결과를 확인하고 둘 다 worker-release 한다.
 5. 마지막으로 `<HORCH> status` 와 `<HORCH> worker-list` 출력을 e2e-result.json 에 저장하고 멈춘다.
