@@ -60,17 +60,12 @@ def _covered(path: str, patterns) -> bool:
 
 
 def target_commits(p, st: dict) -> list[dict]:
-    """base 이후 `[T-xxx]` 로 시작하고 프로젝트 폴더 안을 건드린 커밋. `[T-xxx] review rN:` 은 뺀다(`spec: T-xxx` 는
-    접두사가 달라 빠진다). 같은 저장소의 다른 프로젝트가 같은 태스크 ID 를 써도 섞이지 않게 폴더로 거른다(설계 6.3 3)."""
+    """base 이후 `[T-xxx]` 로 시작하는 커밋. `[T-xxx] review rN:` 은 뺀다(`spec: T-xxx` 는 접두사가 달라 빠진다).
+    건드린 경로로 거르지 않는다: 프로젝트 밖만 고친 태스크 커밋도 사전 검사가 owns 밖으로 지적해야 한다. 그래서 같은
+    저장소의 여러 herdr-team 프로젝트가 태스크 ID 를 겹쳐 쓰면 사전 검사가 거짓으로 실패한다(지원하지 않음, 설계 6.3 3)."""
     tid = st["id"]
-    prefix = gitio.top_prefix(p.root)
-    found = []
-    for sha, subject in gitio.log_since(p.root, st["base"]):
-        if not subject.startswith(f"[{tid}]") or subject.startswith(f"[{tid}] review r"):
-            continue
-        if any(not _outside(f) for f in _rel(prefix, gitio.commit_files(p.root, sha))):
-            found.append({"sha": sha, "subject": subject})
-    return found
+    return [{"sha": sha, "subject": subject} for sha, subject in gitio.log_since(p.root, st["base"])
+            if subject.startswith(f"[{tid}]") and not subject.startswith(f"[{tid}] review r")]
 
 
 def changed_files(p, commits: list[dict]) -> list[str]:

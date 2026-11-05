@@ -538,13 +538,15 @@ class SubdirReviewTest(ReviewCase):
         for needle in ("../README.md", "../other/x.txt", "scratch.log"):
             self.assertIn(needle, body)
 
-    def test_sibling_project_commits_are_not_targets(self):
+    def test_task_commit_only_outside_project_fails_precheck(self):
+        """사전 검사는 태스크 커밋을 경로로 거르지 않는다: 프로젝트 밖만 고친 `[T-001]` 커밋도 owns 밖으로 지적한다
+        (같은 저장소의 여러 herdr-team 프로젝트가 ID 를 겹쳐 쓰는 구성은 지원하지 않는다, 설계 6.3 3)."""
         self.started()
-        self.commit("../other/x.txt", "x\n", "[T-001] 형제 프로젝트의 같은 ID")
+        self.commit("../outside.txt", "x\n", "[T-001] 프로젝트 밖만 고침")
         self.act_work("T-001")
         code, out = self.hteam("review", "T-001")
-        self.assertEqual((code, out.get("status")), (0, "reviewing"), out)
-        self.assertEqual([c["subject"] for c in self.attempt("T-001")["inputs"]["commits"]], ["[T-001] r1 작업"])
+        self.assertEqual((code, out.get("status"), out.get("source")), (0, "changes", "hteam"), out)
+        self.assertIn("owns 밖 경로의 내용이 base 와 다르다: ../outside.txt", out["problems"])
 
     def test_diff_relative_config_does_not_hide_changes(self):
         self.git("config", "diff.relative", "true")  # 리뷰어도 .git/config 에 쓸 수 있다
