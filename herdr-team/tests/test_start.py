@@ -293,30 +293,74 @@ class LaunchRaceTest(StartCase):
         self.assertEqual(st["status"], "launch_failed")
         self.assertIsNone(st["rounds"][0]["work"]["horch_task"])
 
-    def test_barrier_timeout_is_json_error_and_recoverable(self):
-        held = []
-
-        def go(barrier, timeout=600):  # horch 가 끝나지 않는다(자식은 바이트를 기다리며 살아 있다)
-            held.append(barrier)
-            self.addCleanup(barrier.abort)
-            raise subprocess.TimeoutExpired(barrier.proc.args, timeout)
-
+    def test_cancel_cannot_land_between_record_and_byte(self):
+        """기록 직후 시도한 취소는 시작 바이트 뒤에야 저장된다(기록·바이트가 한 태스크 잠금 안). 그러면 horch 는 이미
+        떴으므로 working 으로 두지 않고 exit 3. 기록 전에 저장된 취소는 위 테스트대로 horch 를 띄우지 않는다."""
         self.make_task("T-001")
+        threads, byte_sent_at_cancel = [], []
+        real_record, real_go = launch.Barrier.record, launch.Barrier.go
+
+        def record(barrier):  # 태스크 잠금 안: 다른 실행자(fix·drop)의 취소가 기록 직후 잠금을 기다린다
+            def cancel():
+                with state.edit(self.p, "T-001") as st:
+                    st["rounds"][-1]["work"]["canceled"] = True
+                byte_sent_at_cancel.append(barrier.proc.stdin is None or barrier.proc.stdin.closed)
+            t = __import__("threading").Thread(target=cancel)
+            t.start()
+            threads.append(t)
+            return real_record(barrier)
+
+        def go(barrier, timeout=600):
+            threads[0].join(10)  # 취소가 저장된 뒤에 이어 간다
+            return real_go(barrier, timeout)
+
+        with self.in_process(), mock.patch.object(launch.Barrier, "record", record), \
+                mock.patch.object(launch.Barrier, "go", go):
+            with self.assertRaises(HteamError) as cm:
+                tasks.start(self.p, "T-001", {})
+        self.assertEqual(byte_sent_at_cancel, [True])
+        self.assertEqual((cm.exception.code, cm.exception.exit_code), ("launch_canceled", 3))
+        st = self.task_state("T-001")
+        self.assertEqual((st["status"], st["rounds"][0]["work"]["canceled"]), ("launch_failed", True))
+
+    def test_barrier_timeout_kills_horch_and_recovers_by_title(self):
+        """horch 가 멈추면(hc run 이 끝나지 않음) 자식과 그 프로세스 그룹을 죽이고 거둔 뒤 exit 1 launch_timeout.
+        horch 가 이미 만든 Task·Dispatch 는 제목으로 찾아 같은 Task 를 다시 띄운다."""
+        self.make_task("T-001")
+        with self._hc_locked() as hc:
+            hc["delay"] = {"run": 30}
+        held = []
+        real_go = launch.Barrier.go
+
+        def go(barrier, timeout=600):
+            held.append(barrier)
+            self.addCleanup(lambda: barrier.proc.poll() is None and (barrier.proc.kill(), barrier.proc.wait()))
+            for _ in range(400):  # horch 가 Dispatch 를 만들고 hc run 에서 멈출 때까지
+                if any(c[:1] == ["run"] for c in self.hc_calls()):
+                    break
+                __import__("time").sleep(0.05)
+            return real_go(barrier, 0.5)
+
         with self.in_process(), mock.patch.object(launch.Barrier, "go", go):
             with self.assertRaises(HteamError) as cm:
                 tasks.start(self.p, "T-001", {})
         self.assertEqual((cm.exception.code, cm.exception.exit_code), ("launch_timeout", 1))
-        st = self.task_state("T-001")
-        self.assertEqual(st["status"], "launch_failed")
-        self.assertEqual(st["rounds"][0]["work"]["launched"]["pid"], held[0].pid)
-        # 실행자(이 프로세스)는 제외하고 자식만 본다: 살아 있는 동안은 launching, 끝나면 이어 띄운다
-        with self.in_process():
-            with self.assertRaises(HteamError) as cm:
-                tasks.start(self.p, "T-001", {})
-            self.assertEqual((cm.exception.code, cm.exception.exit_code), ("launching", 3))
-            held[0].abort()
+        self.assertIsNotNone(held[0].proc.returncode)  # 거뒀다
+        for _ in range(100):  # 그룹(hc run 포함)도 남지 않는다(고아 좀비는 init 이 곧 거둔다)
+            try:
+                os.killpg(held[0].pid, 0)
+            except ProcessLookupError:
+                break
+            __import__("time").sleep(0.02)
+        else:
+            self.fail("horch 프로세스 그룹이 남았다")
+        self.assertEqual(self.task_state("T-001")["status"], "launch_failed")
+        with self._hc_locked() as hc:
+            hc["delay"] = {}
+        with self.in_process():  # 실행자(이 프로세스)는 제외된다. 자식이 없으니 바로 복구한다
             out = tasks.start(self.p, "T-001", {})
-        self.assertEqual((out["mode"], out["status"]), ("fresh", "working"), out)
+        self.assertEqual((out["mode"], out["status"]), ("retry", "working"), out)
+        self.assertEqual(len({r["task"] for r in self.horch_tasks()}), 1)
 
 
 class FindTest(unittest.TestCase):
@@ -439,7 +483,8 @@ class StartReadyTest(StartCase):
         self.assertEqual([(f["task"], f["error"]["code"]) for f in out["failed"]], [("T-002", "owns_too_wide")])
 
     def test_bad_state_file_is_one_failure(self):
-        """상태 파일 손상은 그 태스크(와 잠금 검사)만 실패로 두고 끝까지 돈다."""
+        """손상된 상태 파일이 있으면 start-ready 는 멈추지 않고 끝까지 돌며 모두 실패로 알린다: 손상된 태스크 자신,
+        그것에 의존하는 태스크(의존 검사), 나머지(잠금 검사가 실패로 닫힌다). 아무것도 띄우지 않는다."""
         self.make_task("T-001", owns="src/a/**")
         (self.state_dir / "tasks/T-001.json").write_text("{", encoding="utf-8")
         self.make_task("T-002", owns="src/b/**", depends="T-001")
@@ -447,28 +492,91 @@ class StartReadyTest(StartCase):
         code, out = self.hteam("start-ready")
         self.assertEqual((code, out["error"]["code"]), (1, "start_failed"), out)
         self.assertEqual([(f["task"], f["error"]["code"]) for f in out["failed"]],
-                         [("T-002", "bad_state_file"), ("T-003", "bad_state_file")])
+                         [("T-001", "bad_state_file"), ("T-002", "bad_state_file"), ("T-003", "bad_state_file")])
         self.assertEqual(out["started"], [])
 
-    def test_unexpected_error_is_one_failure(self):
-        """장벽 대기 시간 초과 같은 예상 밖 오류도 그 태스크만 실패로 두고 started 를 잃지 않는다."""
-        for tid, owns in (("T-001", "src/a/**"), ("T-002", "src/b/**"), ("T-003", "src/c/**")):
-            self.make_task(tid, owns=owns)
+    def test_only_candidate_corrupt_is_reported(self):
+        """plan.json 이 없고 유일한 태스크의 상태 파일이 손상됐다. 조용히 exit 0 이 아니라 실패로 알린다."""
+        self.make_task("T-001")
+        (self.state_dir / "tasks/T-001.json").write_text("{", encoding="utf-8")
+        code, out = self.hteam("start-ready")
+        self.assertEqual((code, out["error"]["code"]), (1, "start_failed"), out)
+        self.assertEqual([(f["task"], f["error"]["code"]) for f in out["failed"]], [("T-001", "bad_state_file")])
+        self.assertIn("T-001.json", out["failed"][0]["error"]["message"])
+
+    def _start_ready_with_go(self, tid, after_go):
+        """tid 의 장벽은 horch 를 끝까지 돌린 뒤 after_go() 를 부른다(시작 바이트 뒤 오류 흉내)."""
         real_go = launch.Barrier.go
 
         def go(barrier, timeout=600):
-            if "T-002 r1 작업" in barrier.proc.args:
-                self.addCleanup(barrier.abort)
-                raise subprocess.TimeoutExpired(barrier.proc.args, timeout)
-            return real_go(barrier, timeout)
+            res = real_go(barrier, timeout)
+            if f"{tid} r1 작업" in barrier.proc.args:
+                after_go()
+            return res
 
         with self.in_process(), mock.patch.object(launch.Barrier, "go", go):
             with self.assertRaises(HteamError) as cm:
                 tasks.start_ready(self.p)
         self.assertEqual(cm.exception.code, "start_failed")
-        data = cm.exception.data
+        return cm.exception.data
+
+    def test_launch_timeout_is_one_failure(self):
+        """시작 장벽 시간 초과(launch_timeout)도 그 태스크만 실패로 두고 started 를 잃지 않는다."""
+        for tid, owns in (("T-001", "src/a/**"), ("T-002", "src/b/**"), ("T-003", "src/c/**")):
+            self.make_task(tid, owns=owns)
+
+        def timeout():
+            raise subprocess.TimeoutExpired("horch", 600)
+
+        data = self._start_ready_with_go("T-002", timeout)
         self.assertEqual([s["task"] for s in data["started"]], ["T-001", "T-003"])
         self.assertEqual([(f["task"], f["error"]["code"]) for f in data["failed"]], [("T-002", "launch_timeout")])
+
+    def test_unexpected_error_is_one_failure(self):
+        """HteamError 가 아닌 예상 밖 오류(버그)도 internal 실패 한 건으로 두고 계속한다."""
+        for tid, owns in (("T-001", "src/a/**"), ("T-002", "src/b/**"), ("T-003", "src/c/**")):
+            self.make_task(tid, owns=owns)
+
+        def bug():
+            raise RuntimeError("boom")
+
+        data = self._start_ready_with_go("T-002", bug)
+        self.assertEqual([s["task"] for s in data["started"]], ["T-001", "T-003"])
+        self.assertEqual([(f["task"], f["error"]["code"], f["error"]["message"]) for f in data["failed"]],
+                         [("T-002", "internal", "RuntimeError: boom")])
+
+    def test_uncertain_launch_holds_slot_within_call(self):
+        """시작 바이트 뒤 기록 저장이 실패했다(워커는 떴다). 그 태스크는 이 호출이 끝날 때까지 자리를 차지한다."""
+        self.set_max_parallel(1)
+        self.make_task("T-001", owns="src/a/**")
+        self.make_task("T-002", owns="src/b/**")
+        real_save = state.save
+
+        def save(p, st):
+            if st["id"] == "T-001" and st["status"] == "launch_failed" and st["rounds"][-1]["work"]["dispatch"]:
+                raise OSError(28, "No space left on device")
+            return real_save(p, st)
+
+        with self.in_process(), mock.patch.object(state, "save", save):
+            with self.assertRaises(HteamError) as cm:
+                tasks.start_ready(self.p)
+        data = cm.exception.data
+        self.assertEqual(data["started"], [])
+        self.assertEqual([(f["task"], f["error"]["code"]) for f in data["failed"]], [("T-001", "internal")])
+        self.assertEqual({w["task"]: w["reason"] for w in data["waiting"]}, {"T-002": "limit"})
+        self.assertEqual(len(self.horch_tasks()), 1)
+
+    def test_running_dispatch_of_launch_failed_task_counts_across_calls(self):
+        """앞선 실행자가 워커를 띄운 뒤 죽었다(launch_failed, 실행자·자식 없음). horch 에서 그 실행 키가 active 면 센다."""
+        self.set_max_parallel(1)
+        self.make_task("T-001", owns="src/a/**")
+        self.make_task("T-002", owns="src/b/**")
+        self.assertEqual(self.hteam("start", "T-002", env={"HTEAM_TEST_DIE_AT": "after_launch"})[0], 137)
+        code, out = self.hteam("start-ready")
+        self.assertEqual(code, 0, out)
+        self.assertEqual([s["task"] for s in out["started"]], ["T-002"], out)  # 이어 붙였다(새 워커 아님)
+        self.assertEqual({w["task"]: w["reason"] for w in out["waiting"]}, {"T-001": "limit"})
+        self.assertEqual(len(self.horch_tasks()), 1)
 
 
 class ComposeTest(StartCase):
@@ -486,19 +594,24 @@ class ComposeTest(StartCase):
 
 
 class BarrierTest(unittest.TestCase):
-    def test_go_sends_byte_without_closing_stdin_first(self):
-        """Python 3.11 의 communicate() 는 닫힌 stdin 을 flush 하다 ValueError 를 낸다. 장벽은 input= 으로 보낸다."""
-        b = launch.Barrier([sys.executable, "-c", "print('ran')"])
-        seen = []
-        real = b.proc.communicate
+    def test_go_never_communicates_with_closed_stdin(self):
+        """Python 3.11 의 communicate() 는 닫힌 stdin 을 flush 하다 ValueError 를 낸다. 장벽은 바이트를 직접 쓰고
+        stdin 을 닫은 뒤 떼어(None) 둔다. communicate() 는 출력만 읽는다."""
+        for send_first in (False, True):
+            with self.subTest(send_first=send_first):
+                b = launch.Barrier([sys.executable, "-c", "print('ran')"])
+                seen = []
+                real = b.proc.communicate
 
-        def strict(input=None, timeout=None):
-            seen.append((b.proc.stdin.closed, input))
-            return real(input=input, timeout=timeout)
+                def strict(input=None, timeout=None, b=b, real=real, seen=seen):
+                    seen.append((b.proc.stdin, input))
+                    return real(input=input, timeout=timeout)
 
-        b.proc.communicate = strict
-        code, out, _ = b.go(timeout=30)
-        self.assertEqual((code, out.strip(), seen), (0, "ran", [(False, b"x")]))
+                b.proc.communicate = strict
+                if send_first:
+                    b.send()  # hteam 은 기록을 저장한 직후 태스크 잠금 안에서 보낸다
+                code, out, _ = b.go(timeout=30)
+                self.assertEqual((code, out.strip(), seen), (0, "ran", [(None, None)]))
 
     def test_abort_never_runs_child(self):
         with __import__("tempfile").TemporaryDirectory() as d:

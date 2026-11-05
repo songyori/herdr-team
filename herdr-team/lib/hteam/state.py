@@ -87,8 +87,9 @@ def closed_error(st: dict) -> HteamError:
 
 
 @contextlib.contextmanager
-def edit(p, tid: str, expect=None) -> Iterator[dict]:
-    """태스크 잠금 아래에서 읽고, 블록이 예외 없이 끝나면 원자적으로 쓴다. expect 가 있으면 이전 상태를 확인한다."""
+def edit(p, tid: str, expect=None, after_save=None) -> Iterator[dict]:
+    """태스크 잠금 아래에서 읽고, 블록이 예외 없이 끝나면 원자적으로 쓴다. expect 가 있으면 이전 상태를 확인한다.
+    after_save 가 있으면 쓴 뒤 잠금을 쥔 채 after_save(st) 를 부른다(시작 장벽의 시작 바이트)."""
     check_id(tid)
     p.ensure_state()
     with flock(p.task_states / f"{tid}.lock"):
@@ -100,6 +101,8 @@ def edit(p, tid: str, expect=None) -> Iterator[dict]:
                              data={"status": st["status"]})
         yield st
         save(p, st)
+        if after_save is not None:
+            after_save(st)
 
 
 def create(p, tid: str, role: str) -> dict:

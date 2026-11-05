@@ -25,12 +25,16 @@ def lock_conflicts(p, tid: str, owns: list[str]) -> list[dict]:
     return found
 
 
+def _unreadable(p, bad: list[str]) -> HteamError:
+    files = [p.state_path(t).name for t in bad]
+    return HteamError("bad_state_file", f"상태 파일을 읽을 수 없어 잠금을 확인할 수 없다: {', '.join(files)}", FAIL,
+                      "파일을 직접 고치거나 치운 뒤 다시 시도한다", data={"files": files})
+
+
 def _check_locks(p, cfg, spec, owns: list[str]) -> None:
     bad = state.unreadable_ids(p)
     if bad:  # 그 태스크의 잠금(owns·직무)을 알 수 없다. 겹칠 수 있으니 새 작업을 띄우지 않는다
-        files = [p.state_path(t).name for t in bad]
-        raise HteamError("bad_state_file", f"상태 파일을 읽을 수 없어 잠금을 확인할 수 없다: {', '.join(files)}", FAIL,
-                         "파일을 직접 고치거나 치운 뒤 다시 시도한다", data={"files": files})
+        raise _unreadable(p, bad)
     if spec.role == "planner":
         busy = [s["id"] for s in state.all_states(p)
                 if s["id"] != spec.id and s.get("role") == "planner" and s["status"] in state.LOCKING]
@@ -73,20 +77,51 @@ def _new_round(st: dict, n: int, head: str, choice, note=None, supplement=None) 
             "reviews": [], "verdict": None}
 
 
-def occupied(p, tid: str) -> list[str]:
-    """동시 수 상한이 세는 다른 태스크: working, 그리고 지금 띄우는 중인 launch_failed(다른 실행자나 장벽 자식이
-    살아 있다. start 든 start-ready 든). 프로젝트 잠금 안에서 부른다."""
-    found = []
-    for s in state.all_states(p):
-        if s["id"] == tid:
-            continue
-        rd = state.current_round(s)
-        if s["status"] == "working" or (s["status"] == "launch_failed" and rd and dispatch.busy(s, rd["work"])):
-            found.append(s["id"])
-    return found
+LIVE = ("launching", "active")
 
 
-def _prepare_start(p, cfg, spec, choice, cli: dict, limit: int | None = None) -> None:
+class Capacity:
+    """start-ready 한 호출의 동시 수 상한(설계 5.4).
+
+    held: 이 호출에서 시작 바이트를 보낸 뒤 오류가 난(워커가 떴는지 모르는) 태스크. 호출이 끝날 때까지 자리를 차지한다.
+    rows(): horch worker-list. 필요할 때 호출마다 한 번만 묻는다."""
+
+    def __init__(self, h, limit: int):
+        self.h = h
+        self.limit = limit
+        self.held: set[str] = set()
+        self._rows: list[dict] | None = None
+
+    def rows(self) -> list[dict]:
+        if self._rows is None:
+            self._rows = self.h.workers()
+        return self._rows
+
+
+def _may_run(st: dict, cap: Capacity) -> bool:
+    """launch_failed 태스크의 현재 라운드 워커가 떠 있을 수 있나: 실행자·장벽 자식이 살아 있다, 이 호출에서 결과를
+    모르게 됐다, 기록된 horch Task 나 실행 키의 Dispatch 가 launching·active 다."""
+    rd = state.current_round(st)
+    if not rd:
+        return False
+    slot = rd["work"]
+    if dispatch.busy(st, slot) or st["id"] in cap.held:
+        return True
+    if not (slot.get("launched") or slot.get("horch_task")):
+        return False  # 장벽 자식을 기록한 적이 없다: horch 를 실행하지 않았다
+    return any(r.get("state") in LIVE and (r.get("title") == slot["title"] or
+                                           (slot.get("horch_task") and r.get("task") == slot["horch_task"]))
+               for r in cap.rows())
+
+
+def occupied(p, tid: str, cap: Capacity) -> list[str]:
+    """동시 수 상한이 세는 다른 태스크: working, 그리고 워커가 떠 있을 수 있는 launch_failed(_may_run).
+    프로젝트 잠금 안에서 부른다."""
+    return [s["id"] for s in state.all_states(p) if s["id"] != tid and
+            (s["status"] == "working" or (s["status"] == "launch_failed" and _may_run(s, cap)))]
+
+
+def _prepare_start(p, cfg, spec, choice, cli: dict, cap: Capacity | None = None) -> None:
     tid = spec.id
     with state.project_lock(p):
         state.create(p, tid, spec.role)  # 사양만 있고 상태가 없으면 pending 으로 만든다
@@ -115,12 +150,12 @@ def _prepare_start(p, cfg, spec, choice, cli: dict, limit: int | None = None) ->
             else:
                 owns = checked_owns(cfg, spec)
             _check_locks(p, cfg, spec, owns)
-            if limit is not None:
+            if cap is not None:
                 # 상한 검사와 예약(아래 _begin 의 launch_failed·실행자)을 한 프로젝트 잠금 안에서 한다(start-ready 만)
-                busy = occupied(p, tid)
-                if len(busy) >= limit:
-                    raise HteamError("parallel_limit", f"동시 수 상한 {limit} 에 닿았다: {', '.join(busy)}", CONFLICT,
-                                     data={"occupied": busy})
+                busy = occupied(p, tid, cap)
+                if len(busy) >= cap.limit:
+                    raise HteamError("parallel_limit", f"동시 수 상한 {cap.limit} 에 닿았다: {', '.join(busy)}",
+                                     CONFLICT, data={"occupied": busy})
             if not recovering:
                 st["role"] = spec.role  # 워커는 이 사양의 직무로 뜬다. planner 하나 검사가 저장된 직무를 본다
                 head = gitio.head(p.root)
@@ -151,20 +186,21 @@ def run_work(p, cfg, h, tid: str) -> dict:
                 st["rounds"][-1].update(agent=res["agent"], model=res["model"], effort=res["effort"])
             state.move(st, "working", "launched", dispatch=res["dispatch"])
             rd = st["rounds"][-1]
-    except HteamError as exc:
-        dispatch.left_running(exc, res)
-        raise
+    except BaseException as exc:
+        if isinstance(exc, HteamError):
+            dispatch.left_running(exc, res)
+        raise dispatch.mark_started(exc)
     return {"task": tid, "round": rd["round"], "status": "working", "agent": rd["agent"], "model": rd["model"],
             "effort": rd["effort"], **res}
 
 
-def start(p, tid: str, cli: dict, cfg=None, h=None, limit: int | None = None) -> dict:
-    """limit 은 start-ready 만 준다(max_parallel 은 start-ready 만 본다, 설계 5.4)."""
+def start(p, tid: str, cli: dict, cfg=None, h=None, cap: Capacity | None = None) -> dict:
+    """cap 은 start-ready 만 준다(max_parallel 은 start-ready 만 본다, 설계 5.4)."""
     cfg = cfg or config.load(p)
     spec = specs.check(p, cfg, tid)
     choice = config.resolve(cfg, spec.role, spec.front, cli)
     h = h or Horch(p.horch_home)
-    _prepare_start(p, cfg, spec, choice, cli, limit)
+    _prepare_start(p, cfg, spec, choice, cli, cap)
     return run_work(p, cfg, h, tid)
 
 
@@ -192,8 +228,13 @@ def start_ready(p) -> dict:
     한 태스크의 오류(예상 밖 오류 포함)는 그 태스크만 실패로 두고 계속한다."""
     cfg = config.load(p)
     h = Horch(p.horch_home)
+    cap = Capacity(h, cfg.max_parallel)
     started, waiting, failed = [], [], []
-    for tid in plan.order(p):
+    order = plan.order(p)
+    for tid in state.unreadable_ids(p):  # plan.order 는 읽히는 상태만 본다. 손상된 상태 파일도 실패로 알린다
+        if tid not in order:
+            failed.append({"task": tid, "error": _unreadable(p, [tid]).to_json()["error"]})
+    for tid in order:
         try:
             st = state.load(p, tid)
             if not st or st["status"] not in ("pending", "launch_failed"):
@@ -206,17 +247,19 @@ def start_ready(p) -> dict:
             if not deps_met(p, cfg, spec):
                 waiting.append({"task": tid, "reason": "deps", "detail": ", ".join(spec.depends_on)})
                 continue
-            res = start(p, tid, {}, cfg=cfg, h=h, limit=cfg.max_parallel)
+            res = start(p, tid, {}, cfg=cfg, h=h, cap=cap)
             started.append({"task": tid, "round": res["round"], "dispatch": res["dispatch"],
                             "warnings": res["warnings"]})
-        except HteamError as exc:
-            if exc.code in WAIT_CODES:
+        except Exception as exc:
+            if dispatch.maybe_started(exc):
+                cap.held.add(tid)  # 워커가 떴는지 모른다. 이 호출이 끝날 때까지 자리를 차지한다
+            if not isinstance(exc, HteamError):  # 버그·예상 밖 오류도 이 태스크만 실패로 둔다(cli 의 internal 모양)
+                failed.append({"task": tid, "error": {"code": "internal", "message": f"{type(exc).__name__}: {exc}",
+                                                      "hint": ""}})
+            elif exc.code in WAIT_CODES:
                 waiting.append({"task": tid, "reason": WAIT_CODES[exc.code], "detail": exc.message})
             else:
                 failed.append({"task": tid, "error": exc.to_json()["error"]})
-        except Exception as exc:  # 버그·예상 밖 오류도 이 태스크만 실패로 둔다(cli 의 internal 과 같은 모양)
-            failed.append({"task": tid, "error": {"code": "internal", "message": f"{type(exc).__name__}: {exc}",
-                                                  "hint": ""}})
     if failed:
         raise HteamError("start_failed", f"{len(failed)}개 태스크를 띄우지 못했다", FAIL,
                          "실패한 태스크는 hteam status 의 next 를 따른다",

@@ -95,9 +95,10 @@ def check_owner(st: dict, slot: dict) -> None:
 
 
 @contextlib.contextmanager
-def owned(p, tid: str, pick, expect=None) -> Iterator[dict]:
-    """태스크 잠금 아래에서 이전 상태(expect, 끝난 태스크가 아님)와 실행 권한(check_owner)을 확인한 뒤 상태를 내준다."""
-    with state.edit(p, tid, expect=expect) as st:
+def owned(p, tid: str, pick, expect=None, after_save=None) -> Iterator[dict]:
+    """태스크 잠금 아래에서 이전 상태(expect, 끝난 태스크가 아님)와 실행 권한(check_owner)을 확인한 뒤 상태를 내준다.
+    after_save 는 state.edit 에 넘긴다(쓴 뒤 잠금 안에서 부른다)."""
+    with state.edit(p, tid, expect=expect, after_save=after_save) as st:
         if st["status"] in state.CLOSED:
             raise state.closed_error(st)
         check_owner(st, pick(st))
@@ -112,21 +113,49 @@ def left_running(exc: HteamError, info: dict) -> HteamError:
     return exc
 
 
+STARTED = "hteam_start_byte_sent"
+
+
+def mark_started(exc: BaseException) -> BaseException:
+    """시작 바이트를 보낸 뒤의 오류다: 워커가 떴는지 모른다. start-ready 는 그 태스크를 그 호출 동안 동시 수에 센다."""
+    try:
+        setattr(exc, STARTED, True)
+    except Exception:
+        pass
+    return exc
+
+
+def maybe_started(exc: BaseException) -> bool:
+    return bool(getattr(exc, STARTED, False))
+
+
+def _send(barrier):
+    def after_save(_st) -> None:
+        die_at("after_child")
+        barrier.send()
+    return after_save
+
+
 def _run_barrier(p, tid: str, pick, argv: list[str], expect) -> tuple[int, dict]:
     barrier = Barrier(argv)
     try:
-        with owned(p, tid, pick, expect) as st:
+        # 기록을 저장한 직후 같은 태스크 잠금 안에서 시작 바이트를 보낸다. 그래서 fix·drop 의 취소는 기록 전(그러면
+        # 위 검사가 막는다)이나 바이트 뒤(horch 가 떴다. 기록·working 전이가 막는다)에만 저장된다
+        with owned(p, tid, pick, expect, after_save=_send(barrier)) as st:
             pick(st)["launched"] = barrier.record()
-    except BaseException:
+    except BaseException as exc:
+        if barrier.sent:
+            raise mark_started(exc)  # 바이트를 보내다 실패했다. horch 가 떴는지 모른다
         barrier.abort()
         raise
-    die_at("after_child")
     try:
         code, out, err = barrier.go()
     except subprocess.TimeoutExpired:
-        # 자식(horch)은 기록돼 있다. 살아 있는 동안 복구는 launching, 끝나면 제목으로 찾아 이어 한다
-        raise HteamError("launch_timeout", f"{tid} 의 horch worker-start 가 제한 시간 안에 끝나지 않았다", FAIL,
-                         "상태는 launch_failed 그대로다. horch 가 끝난 뒤 같은 명령을 다시 한다") from None
+        barrier.kill()  # 멈춘 horch 가 동시 수 자리를 붙잡지 않게. 그 Dispatch 는 horch 가 launch_failed 로 바꾼다
+        raise mark_started(HteamError("launch_timeout", f"{tid} 의 horch worker-start 가 제한 시간 안에 끝나지 않았다",
+                                      FAIL, "horch 를 끝냈다. 같은 명령을 다시 하면 제목으로 찾아 이어 한다")) from None
+    except BaseException as exc:
+        raise mark_started(exc)
     die_at("after_launch")
     return code, parse(out, err)
 
@@ -170,10 +199,10 @@ def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str |
             else:
                 s["horch_task"] = data.get("task") or s.get("horch_task")
                 s["error"] = {"exit": code, **(data.get("error") or {})}
-    except HteamError as exc:
-        if ok:
+    except BaseException as exc:
+        if ok and isinstance(exc, HteamError):
             left_running(exc, data)
-        raise
+        raise mark_started(exc)
     if not ok:
         err = data.get("error") or {}
         raise HteamError("launch_failed", f"horch worker-start 실패: {err.get('code')}: {err.get('message')}",
