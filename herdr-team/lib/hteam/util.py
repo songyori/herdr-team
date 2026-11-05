@@ -6,6 +6,7 @@ import fcntl
 import json
 import os
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
@@ -79,6 +80,15 @@ def fill(text: str, **values: str) -> str:
 
 
 def die_at(point: str) -> None:
-    """테스트 전용: HTEAM_TEST_DIE_AT 이 point 면 그 자리에서 프로세스를 죽인다(실행자 사망 재현)."""
+    """테스트 전용: HTEAM_TEST_DIE_AT 이 point 면 그 자리에서 프로세스를 죽인다(실행자 사망 재현).
+
+    HTEAM_TEST_PAUSE_AT 이 point 면 `<HTEAM_TEST_PAUSE_FILE>.reached` 를 만들고 HTEAM_TEST_PAUSE_FILE 이 생길 때까지
+    (최대 60초) 멈춘다(겹친 호출 재현)."""
     if os.environ.get("HTEAM_TEST_DIE_AT") == point:
         os._exit(137)
+    if os.environ.get("HTEAM_TEST_PAUSE_AT") == point:
+        gate = Path(os.environ["HTEAM_TEST_PAUSE_FILE"])
+        gate.with_name(gate.name + ".reached").touch()
+        deadline = time.monotonic() + 60
+        while not gate.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)

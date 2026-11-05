@@ -92,7 +92,7 @@ class TeamCase(unittest.TestCase):
         self.set_hc_state({"next": 200, "terminals": {}, "fail": {}, "screens": {}, "sent": []})
         drop = ("HC_TERMINAL_ID", "CODEX_SANDBOX", "HERDR_ORCH_HOME", "XDG_STATE_HOME", "HTEAM_ROLE", "HTEAM_LAUNCH",
                 "HERDR_ORCH_BIN", "HERDR_TEAM_PLUGIN_ROOT", "CLAUDE_PROJECT_DIR", "HTEAM_TEST_DIE_AT", "GIT_DIR",
-                "GIT_WORK_TREE")
+                "GIT_WORK_TREE", "HTEAM_TEST_PAUSE_AT", "HTEAM_TEST_PAUSE_FILE")
         self.env = {k: v for k, v in os.environ.items() if k not in drop}
         self.env.update({
             "PATH": f"{FAKES}{os.pathsep}{HORCH_FAKES}{os.pathsep}{os.environ['PATH']}",

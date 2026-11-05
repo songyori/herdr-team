@@ -6,6 +6,19 @@ import subprocess
 from .errors import FAIL, MISSING, HteamError
 
 
+# 경로를 최상위 기준으로 받는 diff·status 조회에 붙인다. 사용자·리뷰어가 diff.relative=true 를 두면 `git diff` 가
+# 프로젝트 기준 경로만 내고 밖을 숨긴다(.git/config 는 리뷰어도 쓸 수 있다). `--no-relative` 는 git 2.28 부터라 -c 로 끈다.
+ABSOLUTE = ("-c", "diff.relative=false")
+
+
+def _name(args: tuple[str, ...]) -> str:
+    """오류 메시지의 git 하위 명령(앞의 `-c 이름=값` 은 건너뛴다)."""
+    i = 0
+    while i + 1 < len(args) and args[i] == "-c":
+        i += 2
+    return args[i] if i < len(args) else ""
+
+
 def run(root, *args: str, check: bool = True, input: str | None = None) -> subprocess.CompletedProcess:
     try:
         proc = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, input=input,
@@ -13,9 +26,9 @@ def run(root, *args: str, check: bool = True, input: str | None = None) -> subpr
     except FileNotFoundError:
         raise HteamError("git_missing", "git 이 없다", MISSING) from None
     except subprocess.TimeoutExpired:
-        raise HteamError("git_timeout", f"git {args[0]} 이 120초 안에 끝나지 않았다", FAIL) from None
+        raise HteamError("git_timeout", f"git {_name(args)} 이 120초 안에 끝나지 않았다", FAIL) from None
     if check and proc.returncode != 0:
-        raise HteamError("git_failed", f"git {args[0]} 실패: {(proc.stderr or proc.stdout).strip()[-300:]}", FAIL)
+        raise HteamError("git_failed", f"git {_name(args)} 실패: {(proc.stderr or proc.stdout).strip()[-300:]}", FAIL)
     return proc
 
 
@@ -53,31 +66,42 @@ def log_since(root, base: str) -> list[tuple[str, str]]:
 
 
 def commit_files(root, sha: str) -> list[str]:
-    return _z(run(root, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "--root", sha).stdout)
+    """커밋이 바꾼 경로(최상위 기준). 병합 커밋은 첫 부모와 견준다(기본 diff-tree 는 병합에 빈 목록을 낸다).
+    이름 바꾸기는 옛 경로와 새 경로를 다 낸다."""
+    parents = run(root, "rev-list", "--parents", "-n", "1", sha).stdout.split()[1:]
+    if len(parents) > 1:
+        args = ("diff-tree", "-r", "--name-only", "-z", "--no-renames", parents[0], sha)
+    else:
+        args = ("diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "--root", "--no-renames", sha)
+    return _z(run(root, *ABSOLUTE, *args).stdout)
 
 
 def diff_names(root, a: str, b: str) -> list[str]:
-    return _z(run(root, "diff", "--name-only", "-z", a, b).stdout)
+    """a 와 b 사이에 바뀐 경로(최상위 기준, 저장소 전체). 이름 바꾸기는 양쪽 경로를 다 낸다."""
+    return _z(run(root, *ABSOLUTE, "diff", "--name-only", "-z", "--no-renames", a, b).stdout)
 
 
 def _yes_no(proc: subprocess.CompletedProcess, args: tuple[str, ...]) -> bool:
     """exit 0 은 예, 1 은 아니오다. 그 밖(잘못된 리비전 128 등)은 답이 아니라 오류다."""
     if proc.returncode not in (0, 1):
-        raise HteamError("git_failed", f"git {args[0]} 실패: {(proc.stderr or proc.stdout).strip()[-300:]}", FAIL)
+        raise HteamError("git_failed", f"git {_name(args)} 실패: {(proc.stderr or proc.stdout).strip()[-300:]}", FAIL)
     return proc.returncode == 0
 
 
 def differs(root, a: str, b: str, path: str) -> bool:
-    """커밋 a 와 b 사이에 path 의 내용이 다른가."""
-    args = ("diff", "--quiet", a, b, "--", literal(path))
+    """커밋 a 와 b 사이에 path 의 내용이 다른가. path 는 root 기준(`../` 가능)이다. diff.relative=true 면 root 밖
+    경로를 "같다"고 답하므로 끈다."""
+    args = (*ABSOLUTE, "diff", "--quiet", a, b, "--", literal(path))
     return not _yes_no(run(root, *args, check=False), args)
 
 
 def dirty(root, pathspecs: list[str]) -> list[str]:
-    """pathspecs 안의 커밋하지 않은 변경(추적하지 않는 새 파일 포함) 경로."""
+    """pathspecs 안의 커밋하지 않은 변경(추적하지 않는 새 파일 포함) 경로(최상위 기준). 스테이징한 이름 바꾸기는 옛
+    경로를 숨기므로 --no-renames 로 양쪽을 다 낸다(git 2.18 이상)."""
     if not pathspecs:
         return []
-    out = run(root, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", *pathspecs).stdout
+    out = run(root, *ABSOLUTE, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames", "--",
+              *pathspecs).stdout
     entries, found = _z(out), []
     i = 0
     while i < len(entries):
@@ -88,25 +112,14 @@ def dirty(root, pathspecs: list[str]) -> list[str]:
 
 
 def tracked_changes(root) -> list[str]:
-    """HEAD 와 다른 추적 파일(스테이징·작업 트리 모두)."""
-    return _z(run(root, "diff", "--name-only", "-z", "HEAD").stdout)
+    """HEAD 와 다른 추적 파일(스테이징·작업 트리 모두), 최상위 기준, 저장소 전체. 이름 바꾸기는 양쪽 경로를 다 낸다
+    (`git mv 제품 제외경로` 가 옛 경로를 숨기지 못하게)."""
+    return _z(run(root, *ABSOLUTE, "diff", "--name-only", "-z", "--no-renames", "HEAD").stdout)
 
 
 def untracked(root) -> list[str]:
+    """root 아래의 추적하지 않는 파일(무시 규칙 적용), root 기준."""
     return sorted(_z(run(root, "ls-files", "--others", "--exclude-standard", "-z").stdout))
-
-
-def hash_paths(root, paths: list[str]) -> dict[str, str | None]:
-    """작업 트리 파일 내용 해시. 없는 파일은 None."""
-    from pathlib import Path
-    result: dict[str, str | None] = {}
-    present = [p for p in paths if (Path(root) / p).is_file()]
-    for p in paths:
-        result[p] = None
-    if present:
-        hashes = run(root, "hash-object", "--stdin-paths", input="\n".join(present) + "\n").stdout.split()
-        result.update(dict(zip(present, hashes)))
-    return result
 
 
 def blob(root, commit: str, path: str) -> str | None:
@@ -214,8 +227,8 @@ def to_top(prefix: str, path: str) -> str:
 def hash_files(root, paths: list[str]) -> dict[str, str | None]:
     """root 기준 경로(`../` 포함)의 작업 트리 내용 해시(필터 적용, blob 과 견줄 수 있다). 없는 파일은 None.
 
-    `hash-object --stdin-paths` 는 상대 경로를 git 최상위 기준으로 읽는다(root 가 하위 폴더면 hash_paths 는 다른
-    파일을 읽거나 실패한다). 그래서 절대 경로로 넘긴다."""
+    `hash-object --stdin-paths` 는 상대 경로를 git 최상위 기준으로 읽는다(root 가 하위 폴더면 root 기준 경로로는
+    다른 파일을 읽거나 실패한다). 그래서 절대 경로로 넘긴다."""
     import os
     full = {x: os.path.normpath(os.path.join(str(root), x)) for x in paths}
     result: dict[str, str | None] = dict.fromkeys(paths)
@@ -224,8 +237,3 @@ def hash_files(root, paths: list[str]) -> dict[str, str | None]:
         hashes = run(root, "hash-object", "--stdin-paths", input="\n".join(full[x] for x in present) + "\n").stdout.split()
         result.update(zip(present, hashes))
     return result
-
-
-def untracked_all(root) -> list[str]:
-    """저장소 전체의 추적하지 않는 파일(무시 규칙 적용), git 최상위 기준. untracked 는 root 아래만 본다."""
-    return sorted(_z(run(root, "ls-files", "--others", "--exclude-standard", "--full-name", "-z", "--", ":/").stdout))

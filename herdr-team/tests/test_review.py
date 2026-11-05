@@ -1,6 +1,9 @@
 """교차 리뷰(설계 6.1–6.3): 사전 검사, 기준점, 리뷰어 실행·복구, 변조 검사, 판정, 자동 재시도, --retry."""
 import json
+import os
+import time
 import unittest
+from pathlib import Path
 
 from tests.helpers import BASE_CONFIG, TeamCase
 from hteam import gitio, state
@@ -31,6 +34,23 @@ class ReviewCase(TeamCase):
         code, out = self.hteam("review", tid)
         self.assertEqual((code, out.get("status")), (0, "reviewing"), out)
         return out
+
+    def paused(self, point: str, *args: str):
+        """hteam 을 백그라운드로 띄워 point 에서 멈춘다. (프로세스, 풀어 주는 함수, 도착했는지 기다리는 함수)."""
+        gate = self.tmp / f"gate-{point}-{len(args)}-{time.monotonic_ns()}"
+        proc = self.hteam_bg(*args, env={"HTEAM_TEST_PAUSE_AT": point, "HTEAM_TEST_PAUSE_FILE": str(gate)})
+        reached = Path(str(gate) + ".reached")
+
+        def wait(timeout: float = 30) -> bool:
+            end = time.monotonic() + timeout
+            while time.monotonic() < end:
+                if reached.exists():
+                    return True
+                if proc.poll() is not None:
+                    return False
+                time.sleep(0.05)
+            return False
+        return proc, gate.touch, wait
 
 
 class ReviewTest(ReviewCase):
@@ -132,6 +152,15 @@ class PrecheckTest(ReviewCase):
         code, out = self.hteam("review", "T-001")
         self.assertEqual((code, out["status"]), (0, "reviewing"), out)
 
+    def test_merge_commit_changes_are_checked(self):
+        self.started()
+        self.act_work("T-001")
+        self.git("checkout", "-q", "-b", "side")
+        self.commit("README.md", "옆 가지\n", "옆 가지 커밋")  # 접두사 없는 커밋을 [T-001] 병합으로 들여온다
+        self.git("checkout", "-q", "main")
+        self.git("merge", "--no-ff", "-q", "-m", "[T-001] 병합", "side")
+        self.assert_changes("owns 밖 경로의 내용이 base 와 다르다: README.md")
+
     def test_planner_plan_check(self):
         self.started("T-001", "planner")
         bad = '[[task]]\nkey = "a"\nrole = "developer"\n'
@@ -166,6 +195,23 @@ class TamperTest(ReviewCase):
         code, out = self.hteam("review", "T-001", "--retry")
         self.assertEqual((code, out["attempt"]), (0, 2), out)
         self.assertTrue(self.task_state("T-001")["rounds"][0]["reviews"][1]["extra"])
+
+    def test_staged_rename_out_of_product_is_tamper(self):
+        self.reviewing()
+        self.act_review("T-001", "APPROVE")
+        self.git("mv", "src/app.py", "docs/reviews/T-001/hidden.py")  # 리뷰어가 제품 파일을 제외 경로로 옮겼다
+        code, out = self.finish()
+        self.assertEqual((code, out.get("error", {}).get("code")), (1, "review_tampered"), out)
+        self.assertEqual(out["tamper"]["paths"], ["src/app.py"])
+
+    def test_committed_rename_out_of_product_is_tamper(self):
+        self.reviewing()
+        self.act_review("T-001", "APPROVE")
+        self.git("mv", "src/app.py", "docs/reviews/T-001/hidden.py")
+        self.git("commit", "-q", "-m", "리뷰어 커밋")
+        code, out = self.finish()
+        self.assertEqual((code, out.get("error", {}).get("code")), (1, "review_tampered"), out)
+        self.assertEqual(out["tamper"]["paths"], ["src/app.py"])
 
     def test_reviewer_commit_moves_head(self):
         self.reviewing()
@@ -211,6 +257,39 @@ class AttemptTest(ReviewCase):
         self.assertEqual((code, out["verdict"], out["attempt"]), (0, "APPROVE", 3), out)
         self.assertFalse(list((self.proj / "docs/reviews/T-001").glob("r1-a*.md")))
 
+    def test_auto_retry_survives_crash_after_failed_record(self):
+        self.reviewing()
+        self.act_review("T-001", write=False)
+        code, _ = self.hteam("review-finish", "T-001", env={"HTEAM_TEST_DIE_AT": "after_fail"})
+        self.assertEqual(code, 137)
+        self.assertEqual(self.task_state("T-001")["status"], "reviewing")
+        code, out = self.hteam("review-finish", "T-001")  # 자동 재시도가 남아 있다. 띄우기는 review 가 이어 한다
+        self.assertEqual((code, out.get("error", {}).get("code")), (3, "review_not_launched"), out)
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual((code, out.get("attempt"), out.get("status")), (0, 2, "reviewing"), out)
+        self.act_review("T-001", "APPROVE")
+        code, out = self.hteam("review-finish", "T-001")
+        self.assertEqual((code, out.get("status"), out.get("attempt")), (0, "approved", 2), out)
+
+    def test_undecodable_review_file_is_failed_attempt(self):
+        self.reviewing()
+        self.act_review("T-001", write=False)
+        path = self.proj / self.attempt("T-001")["file"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\xff\xfe\nVERDICT: APPROVE\n")
+        code, out = self.hteam("review-finish", "T-001")
+        self.assertEqual((code, out.get("retried"), out.get("failed_attempt")), (0, True, 1), out)
+        self.assertIn("UTF-8", out["reason"])
+
+    @unittest.skipIf(os.geteuid() == 0, "root 는 권한과 무관하게 읽는다")
+    def test_unreadable_review_file_is_failed_attempt(self):
+        self.reviewing()
+        self.act_review("T-001", "APPROVE")
+        (self.proj / self.attempt("T-001")["file"]).chmod(0)
+        code, out = self.hteam("review-finish", "T-001")
+        self.assertEqual((code, out.get("retried"), out.get("failed_attempt")), (0, True, 1), out)
+        self.assertIn("읽지 못했다", out["reason"])
+
     def test_reviewer_exited_without_done(self):
         out = self.reviewing()
         self.update_terminal(out["terminal"], state="finished")
@@ -244,6 +323,21 @@ class RecoveryTest(ReviewCase):
         code, out = self.hteam("review", "T-001")
         self.assertEqual((code, out["attempt"], out["mode"]), (0, 1, "fresh"), out)
         self.assertEqual(self.task_state("T-001")["rounds"][0]["reviews"][0]["baseline"], att["baseline"])
+
+    def test_recorded_recovery_repicks_attempt_under_lock(self):
+        self.reviewing()
+        with state.edit(self.p, "T-001") as st:  # 리뷰 Dispatch 를 기록한 뒤 reviewing 전이 전에 죽었다
+            state.move(st, "working", "test")
+        proc, release, wait = self.paused("recover_recorded", "review", "T-001")
+        self.assertTrue(wait())
+        with state.edit(self.p, "T-001") as st:  # 그 사이 fix 가 취소를 저장하고 새 라운드를 썼다
+            st["rounds"][-1]["reviews"][0]["canceled"] = True
+            st["rounds"].append({"round": 2, "work": {"title": "T-001 r2 작업", "canceled": False}, "reviews": [],
+                                 "verdict": None})
+        release()
+        code, out = self.finish(proc)
+        self.assertEqual((code, out.get("error", {}).get("code")), (3, "attempt_missing"), out)
+        self.assertEqual(self.task_state("T-001")["status"], "working")
 
     def test_dead_after_launch_adopts(self):
         self.worked()
@@ -302,6 +396,40 @@ class CrashResumeTest(ReviewCase):
         self.assertNotIn("review r1", self.git("log", "--format=%s"))
         self.assertEqual(self.task_state("T-001")["status"], "reviewing")
 
+    def test_file_changed_after_verdict_record_is_not_finalized(self):
+        self.reviewing()
+        self.act_review("T-001", "APPROVE")
+        proc, release, wait = self.paused("after_verdict", "review-finish", "T-001")
+        self.assertTrue(wait())
+        (self.proj / "docs/reviews/T-001/r1-a1.md").write_text("VERDICT: REQUEST_CHANGES\n")
+        release()
+        code, out = self.finish(proc)
+        self.assertEqual((code, out.get("retried")), (0, True), out)  # 읽은 바이트와 다른 파일은 최종화하지 않는다
+        self.assertNotIn("review r1", self.git("log", "--format=%s"))
+
+    def test_cancel_during_finish_is_not_undone(self):
+        self.reviewing()
+        self.act_review("T-001", "APPROVE")
+        proc, release, wait = self.paused("after_verdict", "review-finish", "T-001")
+        self.assertTrue(wait())
+        with state.edit(self.p, "T-001") as st:  # drop 이 끝나지 않은 시도에 취소를 저장했다
+            st["rounds"][-1]["reviews"][0]["canceled"] = True
+        release()
+        code, out = self.finish(proc)
+        self.assertEqual((code, out.get("error", {}).get("code")), (3, "round_canceled"), out)
+        self.assertEqual(self.task_state("T-001")["status"], "reviewing")
+        self.assertNotIn("review r1", self.git("log", "--format=%s"))
+
+    def test_resume_after_commit_reports_commit(self):
+        self.reviewing()
+        self.act_review("T-001", "APPROVE")
+        code, _ = self.hteam("review-finish", "T-001", env={"HTEAM_TEST_DIE_AT": "after_commit"})
+        self.assertEqual(code, 137)
+        sha = self.head()
+        code, out = self.hteam("review-finish", "T-001")
+        self.assertEqual((code, out.get("status"), out.get("commit")), (0, "approved", sha), out)
+        self.assertEqual(self.head(), sha)
+
     def test_end_evidence_kept_when_dying_before_release(self):
         out = self.reviewing()
         self.update_terminal(out["terminal"], state="finished")
@@ -331,6 +459,26 @@ class CrashResumeTest(ReviewCase):
         self.assertEqual((code, out["retried"]), (0, True), out)  # 이전 APPROVE 를 읽지 않는다
 
 
+class OverlapTest(ReviewCase):
+    def test_overlapping_finishes_are_serialized(self):
+        """첫 호출이 판정을 읽기 전에 멈춘 사이 둘째 호출이 판정을 기록하고 파일을 옮기면, 옛 시도 정보를 쥔 첫 호출이
+        파일 없음으로 a2 를 띄우고 둘째가 approved 로 옮겨 승인된 태스크에 리뷰어가 남는다."""
+        self.reviewing()
+        self.act_review("T-001", "APPROVE")
+        first, release_first, wait_first = self.paused("before_verdict", "review-finish", "T-001")
+        self.assertTrue(wait_first())
+        second, release_second, wait_second = self.paused("after_move", "review-finish", "T-001")
+        reached = wait_second(timeout=3)  # 직렬화되면 첫 호출이 끝날 때까지 여기 오지 못한다
+        release_first()
+        code1, out1 = self.finish(first)
+        release_second()
+        code2, out2 = self.finish(second)
+        st = self.task_state("T-001")
+        self.assertEqual(len(st["rounds"][0]["reviews"]), 1, (out1, out2))  # a2 를 띄우지 않았다
+        self.assertEqual((st["status"], sorted([code1, code2])), ("approved", [0, 3]), (out1, out2))
+        self.assertFalse(reached)
+
+
 class SubdirReviewTest(ReviewCase):
     """프로젝트가 git 저장소의 하위 디렉터리에 있다. owns·리뷰 입력·변조 경로는 프로젝트 기준이고(프로젝트 밖은 `../`),
     git 출력과 blob 은 최상위 기준이다. `**/*.md` owns 는 `../README.md` 에도 글자로는 맞지만 프로젝트 밖이라 owns 밖이다."""
@@ -353,10 +501,11 @@ class SubdirReviewTest(ReviewCase):
         self.assertEqual(list(att["baseline"]["dirty"]), ["../README.md"])
         self.assertIsNotNone(att["baseline"]["dirty"]["../README.md"])
         self.assertIn("`src/app.py`", (self.state_dir / "tasks/T-001/r1-review-a1.md").read_text())
+        # 프로젝트 밖의 추적하지 않는 새 파일은 보지 않는다(설계 6.3 3)
         self.act_review("T-001", "APPROVE", extra={"write": {"scratch.log": "x\n", "../top.log": "x\n"}})
         code, out = self.hteam("review-finish", "T-001")
         self.assertEqual((code, out["status"], out["file"], out["warnings"]),
-                         (0, "approved", "docs/reviews/T-001/r1.md", ["../top.log", "scratch.log"]), out)
+                         (0, "approved", "docs/reviews/T-001/r1.md", ["scratch.log"]), out)
         self.assertEqual(self.git("show", "--name-only", "--format=", "HEAD").split(), ["sub/docs/reviews/T-001/r1.md"])
 
     def test_precheck_flags_paths_outside_project(self):
@@ -369,13 +518,60 @@ class SubdirReviewTest(ReviewCase):
         self.assertIn("owns 안에 커밋하지 않은 변경이 있다: src/app.py", out["problems"])
         self.assertEqual(self.git("show", "--name-only", "--format=", "HEAD").split(), ["sub/docs/reviews/T-001/r1.md"])
 
-    def test_tamper_inside_and_outside_project(self):
+    def test_tamper_is_scoped_to_project(self):
         self.reviewing()
         # 프로젝트 안 추적 파일을 지우고(기준 blob 을 최상위 경로로 읽어야 잡힌다) 프로젝트 밖 추적 파일을 바꾼다
         self.act_review("T-001", "APPROVE", extra={"delete": ["src/app.py"], "write": {"../README.md": "리뷰어\n"}})
         code, out = self.hteam("review-finish", "T-001")
         self.assertEqual((code, out["error"]["code"]), (1, "review_tampered"), out)
-        self.assertEqual(out["tamper"]["paths"], ["../README.md", "src/app.py"])
+        self.assertEqual(out["tamper"]["paths"], ["src/app.py"])  # 프로젝트 밖은 경고다
+        self.assertEqual(self.attempt("T-001")["warnings"], ["../README.md"])
+
+    def test_outside_changes_during_review_are_warnings(self):
+        self.reviewing()
+        self.commit("../other/x.txt", "x\n", "형제 프로젝트 커밋")  # 리뷰 중 저장소의 다른 곳에서 커밋했다
+        self.act_review("T-001", "APPROVE", extra={"write": {"../README.md": "다른 사람\n", "scratch.log": "x\n"}})
+        code, out = self.hteam("review-finish", "T-001")
+        self.assertEqual((code, out["status"], out["warnings"]),
+                         (0, "approved", ["../README.md", "../other/x.txt", "scratch.log"]), out)
+        body = self.git("log", "-1", "--format=%b")
+        for needle in ("../README.md", "../other/x.txt", "scratch.log"):
+            self.assertIn(needle, body)
+
+    def test_sibling_project_commits_are_not_targets(self):
+        self.started()
+        self.commit("../other/x.txt", "x\n", "[T-001] 형제 프로젝트의 같은 ID")
+        self.act_work("T-001")
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual((code, out.get("status")), (0, "reviewing"), out)
+        self.assertEqual([c["subject"] for c in self.attempt("T-001")["inputs"]["commits"]], ["[T-001] r1 작업"])
+
+    def test_diff_relative_config_does_not_hide_changes(self):
+        self.git("config", "diff.relative", "true")  # 리뷰어도 .git/config 에 쓸 수 있다
+        self.started()
+        self.act_work("T-001", files={"src/app.py": "x\n", "../README.md": "바꿈\n"})
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual((code, out.get("status")), (0, "changes"), out)
+        self.assertIn("owns 밖 경로의 내용이 base 와 다르다: ../README.md", out["problems"])
+
+    def test_diff_relative_config_does_not_hide_tamper(self):
+        self.reviewing()
+        self.act_review("T-001", "APPROVE", extra={"write": {"src/app.py": "리뷰어가 고침\n"}})
+        self.git("config", "diff.relative", "true")
+        code, out = self.hteam("review-finish", "T-001")
+        self.assertEqual((code, out.get("error", {}).get("code")), (1, "review_tampered"), out)
+        self.assertEqual(out["tamper"]["paths"], ["src/app.py"])
+
+    def test_precheck_crash_before_commit_keeps_problems(self):
+        """owns 가 `**/*.md` 라 커밋 전에 죽으면 남은 rN.md 가 owns 안 미커밋 변경으로 보일 수 있다."""
+        self.started()
+        self.act_work("T-001")
+        (self.proj / "src/app.py").write_text("커밋 안 함\n")
+        code, _ = self.hteam("review", "T-001", env={"HTEAM_TEST_DIE_AT": "after_precheck_write"})
+        self.assertEqual(code, 137)
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual((code, out["status"]), (0, "changes"), out)
+        self.assertEqual(out["problems"], ["owns 안에 커밋하지 않은 변경이 있다: src/app.py"])
 
 
 class GitPathTest(unittest.TestCase):
