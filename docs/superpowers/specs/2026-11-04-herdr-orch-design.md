@@ -283,13 +283,14 @@ Dispatch:
 
 ### 에이전트 명령
 
-- Claude: `claude [--model M] [--effort E] [추가 인자...] "<프리앰블>"`
+- Claude: `claude [--model M] [--effort E] [추가 인자...] -- "<프리앰블>"`
   - 처음 보는 폴더에서는 폴더 신뢰 확인 창에서 멈춘다(사전 검증 S1). 워커 `--cwd` 는 사용자가 이미 신뢰한 폴더를 쓴다.
-- Codex: `codex --no-daemon -s workspace-write -a never --add-dir <저장 루트> [-m M] [-c model_reasoning_effort=E] [추가 인자...] "<프리앰블>"`
+- Codex: `codex --no-daemon -s workspace-write -a never --add-dir <저장 루트> [-m M] [-c model_reasoning_effort=E] [추가 인자...] -- "<프리앰블>"`
   - `--no-daemon`: 없으면 Codex 의 명령이 hc 밖에서 돌아 `$HC_TERMINAL_ID` 가 없다.
   - `--add-dir`: Codex 샌드박스에서 저장소 DB 에 쓰게 한다.
   - `-a never`: 사람 없이 돈다. 샌드박스 밖 명령은 묻지 않고 실패한다.
   - 플러그인 hook 이 새로 생기거나 바뀌면 Codex 는 시작할 때 "Hooks need review" 확인 창에서 멈춘다(사전 검증 S2). 설정 키 `bypass_hook_trust` 는 대화형 Codex 에 듣지 않고, 실행 옵션 `--dangerously-bypass-hook-trust` 만 듣는다. 이 옵션은 hook 신뢰 확인만 건너뛰고 샌드박스·승인 정책은 그대로다. horch 는 이 옵션도 스스로 넣지 않는다. 호출자가 `--agent-arg=--dangerously-bypass-hook-trust` 로 넘긴다(herdr-team 은 사용자 설정에 따라 넘긴다).
+- 프리앰블 앞의 `--` 는 추가 인자가 값을 여러 개 받는 옵션(Claude `--add-dir <dirs...>` 등)으로 끝나도 프리앰블을 그 값으로 먹지 않게 한다(두 CLI 모두 `--` 뒤 프롬프트를 받는다, 2026-11-05 확인).
 - 추가 인자(`--agent-arg`)는 호출자가 정한다. horch 는 권한 우회 플래그를 스스로 넣지 않는다.
 - 모델·effort 를 생략하면 에이전트 기본값이다. 값은 검사하지 않고 그대로 넘긴다.
 
