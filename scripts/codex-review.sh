@@ -60,12 +60,16 @@ import json, sys
 labels = json.load(sys.stdin)["labels"]
 print(labels["herdr.space"], labels["herdr.tab"])')
 
-# hc 터미널 이름은 코어 전체에서 유일해야 한다. 같은 리뷰를 동시에 띄워도 겹치지 않게 접미사를 붙인다.
-sfx=$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')
+# hc 터미널 이름은 코어 전체에서 유일해야 한다. 접미사는 저장소 경로에서 만든다.
+# 다른 worktree 의 같은 리뷰는 함께 돌고, 같은 저장소의 같은 리뷰는 결과 파일이 겹치므로 두 번째가 거부된다.
+sfx=$(printf '%s' "$root" | shasum | cut -c1-4)
 tname=$(printf 'codex-%s' "$name" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9_\n-' '-' | cut -c1-27)-$sfx
 mkdir -p "$out"
 
-hc run --bg --json --no-notify --outlive-parent --rm --cwd "$root" --name "$tname" \
+if ! res=$(hc run --bg --json --no-notify --outlive-parent --rm --cwd "$root" --name "$tname" \
   --label "herdr.space=$space" --label "herdr.tab=$tab" \
-  -- "$root/scripts/codex-review.sh" __run "$name" "${cmd[@]}" |
-  python3 -c 'import json, sys; print(json.load(sys.stdin)["address"])'
+  -- "$root/scripts/codex-review.sh" __run "$name" "${cmd[@]}" 2>&1); then
+  echo "리뷰를 시작하지 못했다. name_taken 이면 같은 리뷰($name)가 이미 돌고 있다: $res" >&2
+  exit 1
+fi
+printf '%s' "$res" | python3 -c 'import json, sys; print(json.load(sys.stdin)["address"])'
