@@ -271,10 +271,10 @@ acceptance = ["…", "…"]
 
 1. 설정과 사양을 검사한다(4.2, 5.1). 상태가 `pending`·`launch_failed` 여야 한다(아니면 exit 3).
 2. 잠금: 이 태스크의 owns 가 잠금을 가진 다른 태스크의 owns 와 겹치면 exit 3.
-3. 실행 키(`T-xxx rN 작업`), 실행자 pid·시작 시각, 라운드 번호, base(첫 라운드면 지금 HEAD), round_base(지금 HEAD)를 `launch_failed` 와 함께 먼저 쓴다. hteam 은 horch 를 자식 프로세스로 부르고, 그 자식의 pid·시작 시각도 부르자마자 기록한다. 같은 키의 hteam 실행자나 horch 자식이 아직 살아 있으면 exit 3 `launching`(복구는 둘 다 끝난 것을 확인한 뒤에만 한다. horch 자식이 Task 를 만들기 전에 hteam 만 죽어도 중복 Task 가 생기지 않게).
+3. 실행 키(`T-xxx rN 작업`), 실행자 pid·시작 시각, 라운드 번호, base(첫 라운드면 지금 HEAD), round_base(지금 HEAD)를 `launch_failed` 와 함께 먼저 쓴다. hteam 은 horch 를 시작 장벽을 둔 자식 프로세스로 부른다: 자식은 먼저 stdin 에서 한 바이트를 기다리고, hteam 은 자식의 pid·시작 시각을 상태 파일에 쓴 다음에야 그 바이트를 보낸다. 자식은 바이트를 받으면 horch 로 exec 하고(pid 가 그대로 horch 프로세스가 된다), EOF 를 받으면(hteam 이 기록 전에 죽음) horch 를 실행하지 않고 끝난다. 그래서 상태 파일에 자식 pid 가 없으면 horch 는 실행되지 않은 것이다. 같은 키의 hteam 실행자나 기록된 horch 자식이 아직 살아 있으면 exit 3 `launching`. 복구는 둘 다 끝난 것을 확인한 뒤에만 한다.
 4. 워커 사양을 조립해(5.5) `state/tasks/T-xxx/rN-work.md` 에 쓴다.
 5. `horch worker-start --agent <worker> --title "T-xxx rN 작업" --spec-file <그 파일> [--model M] [--effort E] --cwd <프로젝트 루트> [--agent-arg=…]...`(`[agents.<worker>].args`).
-   같은 키의 horch Task 가 이미 있으면 새로 만들지 않는다. 상태 파일에 기록돼 있지 않으면(기록 전에 실행자가 죽음) 이전 실행자와 horch 자식이 모두 끝난 것을 확인한 뒤 `horch worker-list` 에서 그 제목으로 찾는다. 같은 제목이 둘 이상이면 가장 최근 것을 쓰고 나머지는 경고로 보고한다. 그 Task 의 최신 Dispatch 가 `launching`·`active`·`settled`·`retained` 면 새로 띄우지 않고 그것을 이 라운드의 워커로 기록한다. `launch_failed`·`abandoned` 면 `horch worker-start --task <그 Task> --retry --agent … --cwd … [--model …] [--effort …] [--agent-arg=…]...` 로 같은 Task 를 다시 띄운다(horch 펜스가 옛 Dispatch 의 늦은 가드를 막는다).
+   같은 키의 horch Task 가 이미 있으면 새로 만들지 않는다. 상태 파일에 Task 가 기록돼 있지 않으면: 자식 pid 도 없으면 horch 가 실행되지 않았으므로 그냥 새로 띄운다. 자식 pid 가 있으면 그 자식과 이전 실행자가 모두 끝난 것을 확인한 뒤 `horch worker-list` 에서 그 제목으로 찾는다. 같은 제목이 둘 이상이면 가장 최근 것을 쓰고 나머지는 경고로 보고한다. 그 Task 의 최신 Dispatch 가 `launching`·`active`·`settled`·`retained` 면 새로 띄우지 않고 그것을 이 라운드의 워커로 기록한다. `launch_failed`·`abandoned` 면 `horch worker-start --task <그 Task> --retry --agent … --cwd … [--model …] [--effort …] [--agent-arg=…]...` 로 같은 Task 를 다시 띄운다(horch 펜스가 옛 Dispatch 의 늦은 가드를 막는다).
 6. 성공하면 상태를 `working` 으로, horch Task·Dispatch ID 를 라운드 기록에 쓴다. 실패하면 `launch_failed` 와 horch 오류 JSON 을 남기고 exit 1(horch 의 exit 12 는 그대로 12).
 
 `hteam start-ready`: `tasks.toml` 순서(없으면 ID 순)로 `pending`·`launch_failed` 태스크마다 사양 → 의존 → 잠금 → 동시 수 상한(`working` 수 < `max_parallel`)을 차례로 보고 통과한 것을 `start` 한다. 결과에 시작한 태스크와 남은 태스크의 대기 사유(`spec`·`deps`·`lock`·`limit`). 하나가 실패해도 나머지는 계속하고, 하나라도 실패하면 exit 1. `max_parallel` 은 `start-ready` 만 본다(`start`·`fix` 는 보지 않는다). 코디네이터는 accept·fix·drop·승인 답 뒤마다 부른다.
@@ -308,6 +308,7 @@ horch 프리앰블(herdr-orch 설계 8장)이 이 사양 앞에 붙어 `horch` �
 
 작업 워커가 `worker_done`(succeeded)을 보내면 코디네이터가 부른다. 리뷰어를 띄우고 바로 돌아온다.
 
+0. 이 라운드에 끝나지 않은 시도 기록이 있으면(앞 호출이 기록 뒤 죽음) 1–5 를 건너뛰고 복구만 한다: 시도 기록에 `launched`(horch 를 부른 표시와 자식 pid)가 없으면 저장된 기준점과 입력으로 프롬프트 파일을 다시 만들어 7 부터 한다. 있으면 5.4 와 같은 규칙으로 기존 리뷰 Dispatch 를 제목으로 찾아 이어 붙이고 8 을 한다(찾은 Dispatch 가 이미 끝났으면 상태를 `reviewing` 으로 바꾼 뒤 코디네이터가 `review-finish` 를 부르게 한다). 사전 검사와 새 기준점은 만들지 않는다.
 1. 상태가 `working` 이고, 이 태스크에 진행 중 리뷰가 없어야 한다(아니면 exit 3). `hteam review T --retry` 는 `reviewing` 에서 리뷰가 실패·무효로 멈춘 뒤 사용자가 다시 하라고 했을 때만 쓴다(시도 번호를 하나 올리고 시도 상한을 그 한 번만 넘긴다).
 2. 작업 Dispatch 를 `horch worker-retain` 한다(리뷰 동안 pane 을 남긴다). 실패해도 계속한다.
 3. 리뷰 대상 커밋: base 이후 `[T-xxx]` 로 시작하는 커밋. `spec: T-xxx` 와 `[T-xxx] review rN:` 커밋은 뺀다.
@@ -317,7 +318,7 @@ horch 프리앰블(herdr-orch 설계 8장)이 이 사양 앞에 붙어 `horch` �
    - planner 태스크인데 `tasks.toml` 이 `plan check` 를 통과하지 못한다(accept 뒤에는 고칠 수 없으므로 여기서 막는다).
    - owns 안에 커밋하지 않은 변경이 있다. 성공 보고 뒤라 워커에게 되돌려 보낼 수 없으므로(retain 된 Dispatch 에는 send 할 수 없다) `changes` 로 보내고 수정 라운드가 커밋한다.
 5. 변조 기준점: HEAD 와 추적 파일 내용 해시, 그리고 그때 진행 중인 다른 태스크 목록. `.herdr-team/`, `docs/reviews/`, 다른 진행 중 태스크의 owns·보고서는 뺀다.
-6. 끝나지 않은 시도 기록(K)이 이미 있으면(앞 호출이 기록 뒤 죽음) 새로 만들지 않는다: 그 시도의 기준점·결과 파일을 그대로 두고 7 의 복구 규칙(제목으로 찾기)만 한다. 없으면 시도 번호 K 를 정하고, 기준점(5)·결과 경로 `docs/reviews/T-xxx/rN-aK.md`·실행 키를 시도 기록에 먼저 쓴 뒤, 그 결과 경로가 남아 있으면 지우고, 리뷰 프롬프트를 조립해(6.2) `state/tasks/T-xxx/rN-review-aK.md` 에 쓴다. 5 의 기준점은 새 시도일 때만 만든다.
+6. 끝나지 않은 시도 기록(K)이 이미 있으면(앞 호출이 기록 뒤 죽음) 새로 만들지 않는다: 그 시도의 기준점·결과 파일을 그대로 두고 7 의 복구 규칙(제목으로 찾기)만 한다. 없으면 시도 번호 K 를 정하고, 기준점(5)·결과 경로 `docs/reviews/T-xxx/rN-aK.md`·실행 키·프롬프트를 만들 입력(대상 커밋 목록, 바뀐 파일)을 시도 기록에 먼저 쓴 뒤, 그 결과 경로가 남아 있으면 지우고, 리뷰 프롬프트를 조립해(6.2) `state/tasks/T-xxx/rN-review-aK.md` 에 쓴다. 5 의 기준점은 새 시도일 때만 만든다. 7 은 5.4 와 같은 시작 장벽으로 부르고, 부르기 직전에 시도 기록에 `launched` 를 쓴다.
 7. `horch worker-start --agent <반대쪽> --title "T-xxx rN 리뷰 aK" --spec-file <그 파일> --model … --effort … --cwd <루트> [--agent-arg=…]...`.
 8. 상태를 `reviewing` 으로, 리뷰 Dispatch 를 라운드 기록에 쓴다. 실행 키와 복구는 5.4 와 같다(제목 `T-xxx rN 리뷰 aK` 로 찾는다).
 
@@ -415,7 +416,7 @@ Codex 리뷰어에게는 `AGENTS.md` 의 리뷰어 규칙도 적용된다(9.1). 
 
 ### 8.2 루프와 `hteam wait`
 
-코디네이터는 `hteam wait` 를 늘 하나 백그라운드로 띄운다. `hteam wait [--ack <delivery>]` 는 `horch check --wait --timeout-ms <T> [--ack …]` 를 부르고, 받은 메시지마다 `hteam` 필드를 붙여 출력한다. `hteam wait` 는 전체 대기 시간(기본 3600초) 안에서 `horch check --wait` 를 60초씩 나눠 부르고, 그 사이마다 horch `worker-list` 를 본다. 메시지가 오면 바로 돌려준다. 메시지가 없어도 손볼 일이 생기면 `reason: attention` 으로 돌려준다: `no_status` 가 60초 넘게 이어진 행, `launch_failed` 행. 그래서 대기 중에 새로 띄운 워커가 시작 확인 창에서 멈춰도(상태 보고가 없어 메시지가 오지 않는다) 늦어도 2분 안에 알 수 있다. 전체 시간이 지나면 `reason: timeout`.
+코디네이터는 `hteam wait` 를 늘 하나 백그라운드로 띄운다. `hteam wait [--ack <delivery>]` 는 `horch check --wait --timeout-ms <T> [--ack …]` 를 부르고, 받은 메시지마다 `hteam` 필드를 붙여 출력한다. `hteam wait` 는 전체 대기 시간(기본 3600초) 안에서 `horch check --wait` 를 60초씩 나눠 부르고, 그 사이마다 horch `worker-list` 를 본다. 메시지가 오면 바로 돌려준다. 메시지가 없어도 손볼 일이 생기면 `reason: attention` 으로 돌려준다: `no_status` 가 60초 넘게 이어진 행, `launch_failed` 행. 단 hteam 이 아직 끝내지 않은 태스크(`done`·`dropped` 가 아님)의 현재 라운드·현재 시도 Dispatch 만 센다(버린 태스크나 지난 시도의 실패 행은 알리지 않는다). 그래서 대기 중에 새로 띄운 워커가 시작 확인 창에서 멈춰도(상태 보고가 없어 메시지가 오지 않는다) 늦어도 2분 안에 알 수 있다. 전체 시간이 지나면 `reason: timeout`.
 
 ```json
 {"delivery": 12, "count": 1, "reason": "message",
