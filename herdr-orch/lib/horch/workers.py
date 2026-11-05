@@ -45,7 +45,7 @@ def cleanup_refused(store, run_id: str) -> list[str]:
             info = hcio.get(t["address"])
             labels = info.get("labels") or {}
             if (info.get("state") == "finished" and labels.get("horch.run") == run_id
-                    and labels.get("horch.dispatch") in failed):
+                    and labels.get("horch.dispatch") == t["name"]):
                 hcio.rm(t["address"])
                 removed.append(t["address"])
         except hcio.HcFailure:
@@ -56,6 +56,7 @@ def cleanup_refused(store, run_id: str) -> list[str]:
 def _create(store, run_id: str, *, spec, title, agent, model, effort, cwd, task_id, retry) -> tuple[str, str, str, str]:
     """Task·Dispatch 를 한 트랜잭션에서 만든다. 재시도 허용 검사도 이 안에서 다시 한다."""
     pid, started = procs.me()
+    given_task = bool(task_id)
     dispatch_id, ts = new_id("dsp"), now()
     try:
         with store.tx():
@@ -85,6 +86,9 @@ def _create(store, run_id: str, *, spec, title, agent, model, effort, cwd, task_
                       "launcher_pid, launcher_started, created_at) VALUES (?,?,?,?,?,?,?,?,'launching',?,?,?)",
                       (dispatch_id, task_id, run_id, attempt, agent, model, effort, cwd, pid, started, ts))
     except sqlite3.IntegrityError as exc:
+        # 한 Task 에 실행 중 Dispatch 는 하나뿐이라는 부분 유일 인덱스 위반(또는 --task 지정)만 task_busy 다. 나머지는 버그라 그대로 올린다
+        if not (given_task or "dispatches.task_id" in str(exc)):
+            raise
         raise HorchError("task_busy", f"Task {task_id} 에 이미 실행 중인 Dispatch 가 있다", CONFLICT) from exc
     return task_id, dispatch_id, title, spec
 
@@ -99,6 +103,13 @@ def _mark_failed(store, dispatch_id: str) -> str:
     with store.tx():
         store.run("UPDATE dispatches SET state='launch_failed' WHERE id=? AND state='launching'", (dispatch_id,))
     return store.one("SELECT state FROM dispatches WHERE id=?", (dispatch_id,))["state"]
+
+
+def _record_active(store, dispatch_id: str, address: str) -> None:
+    """hc run 이 성공한 뒤 터미널을 기록한다(조건부 launching→active. 가드가 먼저 등록했으면 그대로 둔다)."""
+    with store.tx():
+        store.run("UPDATE dispatches SET terminal=?, state='active' WHERE id=? AND state='launching'",
+                  (address, dispatch_id))
 
 
 def start(store, run_id: str, *, spec, title, agent, model, effort, cwd, extra, task_id, retry) -> dict:
@@ -116,10 +127,44 @@ def start(store, run_id: str, *, spec, title, agent, model, effort, cwd, extra, 
                                                 effort=effort, cwd=str(cwd_path), task_id=task_id, retry=retry)
     _die_at("after_create")
     base = {"task": task_id, "dispatch": dispatch_id}
+    progress: dict = {"ran": False, "terminal": None}  # hc run 이 성공했는지(성공 뒤에는 실패로 바꾸지 않는다)
+    try:
+        return _launch(store, run_id, exe, base, progress, spec=spec, agent=agent, model=model, effort=effort,
+                       extra=extra, cwd_path=cwd_path)
+    except Exception as exc:
+        # 생성 뒤 어떤 오류든 호출자가 task·dispatch 를 알 수 있어야 한다(모르면 --task 없이 재시도해 워커가 중복된다)
+        data = {**base, **({"terminal": progress["terminal"]} if progress["terminal"] else {})}
+        if isinstance(exc, HorchError):
+            exc.data = {**data, **exc.data}
+            err = exc
+        elif progress["ran"]:
+            err = HorchError("record_failed", f"hc run 은 성공했으나 기록 중 오류: {type(exc).__name__}: {exc}", FAIL,
+                             "dispatch 는 launching 이다. 가드가 등록했으면 active 로 보인다", data=data)
+        else:
+            err = HorchError("launch_failed", f"실행 준비 중 오류: {type(exc).__name__}: {exc}", FAIL, data=data)
+        if not progress["ran"]:
+            try:
+                _mark_failed(store, dispatch_id)  # 조건부 쓰기. 늦은 가드는 펜스가 거부한다
+            except Exception:
+                pass
+        if err is exc:
+            raise
+        raise err from exc
+
+
+def _best_effort_receipt(path: Path, receipt: dict, warnings: list[str]) -> None:
+    try:
+        write_atomic(path, json.dumps(receipt, ensure_ascii=False, indent=2))
+    except OSError as exc:
+        warnings.append(f"receipt.json 을 쓰지 못했다: {exc}")
+
+
+def _launch(store, run_id, exe, base, progress, *, spec, agent, model, effort, extra, cwd_path) -> dict:
+    dispatch_id = base["dispatch"]
     ddir = store.dispatch_dir(run_id, dispatch_id)
     spec_path = ddir / "spec.md"
     write_atomic(spec_path, spec)
-    text = preamble.render(task_id=task_id, dispatch_id=dispatch_id, spec_path=str(spec_path),
+    text = preamble.render(task_id=base["task"], dispatch_id=dispatch_id, spec_path=str(spec_path),
                            horch=horch_cmd(store.home))
     write_atomic(ddir / "preamble.md", text)
     if shutil.which(exe) is None:
@@ -137,6 +182,7 @@ def start(store, run_id: str, *, spec, title, agent, model, effort, cwd, extra, 
     with store.tx():
         store.run("UPDATE dispatches SET launch_argv=? WHERE id=?", (json.dumps(launch_argv), dispatch_id))
     receipt = {"dispatch": dispatch_id, "argv": launch_argv, "labels": labels, "cwd": str(cwd_path)}
+    warnings: list[str] = []
     address = None
     try:
         result = hcio.run_bg(dispatch_id, str(cwd_path), labels, launch_argv)
@@ -148,20 +194,23 @@ def start(store, run_id: str, *, spec, title, agent, model, effort, cwd, extra, 
     except (hcio.HcFailure, HorchError) as exc:
         kind = exc.kind if isinstance(exc, hcio.HcFailure) else exc.code
         receipt["error"] = {"kind": kind, "message": str(exc)}
-        write_atomic(ddir / "receipt.json", json.dumps(receipt, ensure_ascii=False, indent=2))
+        _best_effort_receipt(ddir / "receipt.json", receipt, warnings)
         if _mark_failed(store, dispatch_id) == "launch_failed":
             code = exc.exit_code if isinstance(exc, HorchError) else FAIL
             raise HorchError("launch_failed", f"hc run 실패: {kind}", code, data=base) from exc
         address = None
     else:
-        write_atomic(ddir / "receipt.json", json.dumps(receipt, ensure_ascii=False, indent=2))
+        progress["ran"], progress["terminal"] = True, address
+        _best_effort_receipt(ddir / "receipt.json", receipt, warnings)  # 실패해도 hc run 은 이미 성공했다
         _die_at("before_record")
-        with store.tx():
-            store.run("UPDATE dispatches SET terminal=?, state='active' WHERE id=? AND state='launching'",
-                      (address, dispatch_id))
+        _record_active(store, dispatch_id, address)
     row = store.one("SELECT state, terminal FROM dispatches WHERE id=?", (dispatch_id,))
+    if address is not None and row["state"] == "launch_failed":
+        raise HorchError("launch_failed", "실행자가 죽은 것으로 판정돼 launch_failed 가 됐다. 가드가 거부한다", FAIL,
+                         data={**base, "terminal": address})
     if address is not None and row["terminal"] != address:
         raise HorchError("terminal_mismatch", f"가드가 등록한 터미널 {row['terminal']} 와 hc 주소 {address} 가 다르다",
                          FAIL, data=base)
     return {**base, "terminal": row["terminal"], "state": row["state"], "placement": placement,
-            "warning": None if placement == "pane" else "소유자 탭을 몰라 pane 없이 띄웠다(herdr 라벨 없음)"}
+            "warning": None if placement == "pane" else "소유자 탭을 몰라 pane 없이 띄웠다(herdr 라벨 없음)",
+            "warnings": warnings}

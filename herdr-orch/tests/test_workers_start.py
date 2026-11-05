@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import unittest
@@ -7,8 +8,18 @@ from unittest import mock
 
 from tests.helpers import BIN, FAKES, ROOT, HorchCase
 from horch import guard, hcio, procs, workers
-from horch.errors import HorchError
+from horch.errors import MISSING, HorchError
 from horch.store import Store
+
+
+def _reap(proc: subprocess.Popen) -> None:
+    """타임아웃 등으로 테스트가 중단돼도 자식 프로세스를 남기지 않는다."""
+    if proc.poll() is None:
+        proc.kill()
+    proc.wait()
+    for stream in (proc.stdout, proc.stderr):
+        if stream:
+            stream.close()
 
 
 class WorkerStartCliTest(HorchCase):
@@ -92,6 +103,11 @@ class WorkerStartCliTest(HorchCase):
         receipt = self.home / "runs" / self.run_id / "dispatches" / out["dispatch"] / "receipt.json"
         self.assertEqual(json.loads(receipt.read_text())["error"]["kind"], "spawn_failed")
 
+    def test_unknown_task(self):
+        code, out = self.horch("worker-start", "--agent", "claude", "--task", "task-zzzzzzzz", terminal="t100")
+        self.assertEqual((code, out["error"]["code"]), (2, "unknown_task"))
+        self.assertEqual(self.db().execute("SELECT COUNT(*) FROM dispatches").fetchone()[0], 0)
+
     def test_retry_rules(self):
         out = self.start_worker()
         task, did = out["task"], out["dispatch"]
@@ -144,6 +160,8 @@ class WorkerStartCliTest(HorchCase):
         db.commit()
         args = ("worker-start", "--agent", "claude", "--task", out["task"], "--retry", "--cwd", str(self.tmp))
         procs_ = [self.horch_bg(*args, terminal="t100") for _ in range(2)]
+        for p in procs_:
+            self.addCleanup(_reap, p)
         codes = sorted(self.finish(p)[0] for p in procs_)
         self.assertEqual(codes, [0, 3])
         n = db.execute("SELECT COUNT(*) FROM dispatches WHERE task_id=? AND state IN ('launching','active')",
@@ -214,6 +232,75 @@ class WorkerStartInProcessTest(HorchCase):
                 self.start()
         self.assertEqual(cm.exception.code, "terminal_mismatch")
 
+    # --- 생성 뒤 오류: task·dispatch 를 항상 돌려준다 ---
+    def test_spec_write_oserror_marks_failed_with_ids(self):
+        real = workers.write_atomic
+
+        def boom(path, text, *a, **k):
+            if str(path).endswith("spec.md"):
+                raise OSError("disk full")
+            return real(path, text, *a, **k)
+        with mock.patch.object(workers, "write_atomic", side_effect=boom):
+            with self.assertRaises(HorchError) as cm:
+                self.start()
+        exc = cm.exception
+        self.assertEqual(exc.exit_code, 1)
+        self.assertEqual(exc.code, "launch_failed")
+        row = self.store.one("SELECT id, task_id, state FROM dispatches")
+        self.assertEqual((exc.data["task"], exc.data["dispatch"]), (row["task_id"], row["id"]))
+        self.assertEqual(row["state"], "launch_failed")
+
+    def test_receipt_write_oserror_after_run_is_warning(self):
+        real = workers.write_atomic
+
+        def boom(path, text, *a, **k):
+            if str(path).endswith("receipt.json"):
+                raise OSError("disk full")
+            return real(path, text, *a, **k)
+        with mock.patch.object(workers.hcio, "run_bg", return_value={"address": "t9"}), \
+                mock.patch.object(workers, "write_atomic", side_effect=boom):
+            out = self.start()
+        self.assertEqual((out["state"], out["terminal"]), ("active", "t9"))
+        self.assertTrue(out["task"] and out["dispatch"])
+        self.assertTrue(any("receipt" in w for w in out["warnings"]), out)
+        self.assertEqual(self.store.one("SELECT state FROM dispatches WHERE id=?", (out["dispatch"],))["state"], "active")
+
+    def test_record_failure_after_run_keeps_launching_and_returns_ids(self):
+        with mock.patch.object(workers.hcio, "run_bg", return_value={"address": "t9"}), \
+                mock.patch.object(workers, "_record_active", side_effect=sqlite3.OperationalError("locked")):
+            with self.assertRaises(HorchError) as cm:
+                self.start()
+        data = cm.exception.data
+        self.assertEqual(data["terminal"], "t9")
+        row = self.store.one("SELECT id, state FROM dispatches")
+        self.assertEqual((data["dispatch"], row["state"]), (row["id"], "launching"))
+
+    def test_hc_missing_is_launch_failed_exit_12(self):
+        err = HorchError("hc_missing", "hc 실행 파일을 찾지 못했다", MISSING)
+        with mock.patch.object(workers.hcio, "run_bg", side_effect=err):
+            with self.assertRaises(HorchError) as cm:
+                self.start()
+        self.assertEqual((cm.exception.code, cm.exception.exit_code), ("launch_failed", 12))
+        row = self.store.one("SELECT id, state FROM dispatches")
+        self.assertEqual((cm.exception.data["dispatch"], row["state"]), (row["id"], "launch_failed"))
+
+    def test_launch_failed_at_record_time(self):
+        def fake_run(*_a, **_k):
+            self.store.run("UPDATE dispatches SET state='launch_failed' WHERE id=?", (self.launching_id(),))
+            return {"address": "t9"}
+        with mock.patch.object(workers.hcio, "run_bg", side_effect=fake_run):
+            with self.assertRaises(HorchError) as cm:
+                self.start()
+        self.assertEqual((cm.exception.code, cm.exception.exit_code), ("launch_failed", 1))
+        self.assertIn("dispatch", cm.exception.data)
+
+    def test_other_integrity_error_not_task_busy(self):
+        self.add_dispatch(self.run_id)  # dsp-00000001 이 이미 있다
+        real = workers.new_id
+        with mock.patch.object(workers, "new_id", side_effect=lambda p: "dsp-00000001" if p == "dsp" else real(p)):
+            with self.assertRaises(sqlite3.IntegrityError):
+                self.start()
+
 
 class ReconcileAndFenceTest(HorchCase):
     def setUp(self):
@@ -270,8 +357,10 @@ class ReconcileAndFenceTest(HorchCase):
             g = subprocess.Popen([sys.executable, str(BIN), "--home", str(self.home), "launch-guard", "--dispatch",
                                   self.did, "--", "claude"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                  env=dict(self.env, HC_TERMINAL_ID="t42"))
+            self.addCleanup(_reap, g)
             r = subprocess.Popen([sys.executable, "-c", script, str(ROOT / "lib"), str(self.home), self.run_id],
                                  env=self.env)
+            self.addCleanup(_reap, r)
             rc = g.wait(timeout=30)
             self.assertEqual(r.wait(timeout=30), 0)
             self.assertIn((rc, self.state()), ((0, "active"), (3, "launch_failed")))
@@ -295,6 +384,16 @@ class ReconcileAndFenceTest(HorchCase):
         self.add_terminal("t62", name=self.did, state="finished")
         self.assertEqual(workers.cleanup_refused(self.store, self.run_id), ["t60"])
         self.assertEqual(set(self.hc_state()["terminals"]) & {"t60", "t61", "t62"}, {"t61", "t62"})
+
+    def test_cleanup_requires_label_for_this_dispatch(self):
+        self.dead_launcher()
+        workers.reconcile_launching(self.store, self.run_id)
+        other = self.add_dispatch(self.run_id, did="dsp-00000002", terminal=None, state="launch_failed")
+        # 이름은 self.did 인데 horch.dispatch 라벨은 다른(실패한) Dispatch 를 가리킨다 -> 지우지 않는다
+        self.add_terminal("t63", name=self.did, state="finished",
+                          labels={"horch.run": self.run_id, "horch.dispatch": other})
+        self.assertEqual(workers.cleanup_refused(self.store, self.run_id), [])
+        self.assertIn("t63", self.hc_state()["terminals"])
 
 
 if __name__ == "__main__":
