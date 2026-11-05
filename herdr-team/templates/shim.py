@@ -52,8 +52,8 @@ def installed():
 
 def plugin_root():
     override = os.environ.get("HERDR_TEAM_PLUGIN_ROOT")
-    if override:
-        return Path(override)
+    if override:  # 사용자가 직접 준 경로다. bin/hteam 이 없으면 다른 곳으로 넘어가지 않고 실패한다
+        return Path(override) if Path(override, "bin", "hteam").is_file() else None
     marker = Path(os.path.abspath(__file__)).parent.parent / "state" / "plugin-root"
     try:
         recorded = marker.read_text(encoding="utf-8").strip()
@@ -70,8 +70,12 @@ def plugin_root():
 
 root = plugin_root()
 if root is None:
+    override = os.environ.get("HERDR_TEAM_PLUGIN_ROOT")
     sys.stdout.write(json.dumps({"ok": False, "error": {
-        "code": "plugin_missing", "message": "herdr-team 플러그인을 찾지 못했다",
-        "hint": "/plugin install herdr-team@herdr-team"}}, ensure_ascii=False) + "\n")
+        "code": "plugin_missing",
+        "message": (f"HERDR_TEAM_PLUGIN_ROOT({override}) 에 bin/hteam 이 없다" if override
+                    else "herdr-team 플러그인을 찾지 못했다"),
+        "hint": ("HERDR_TEAM_PLUGIN_ROOT 를 고치거나 지운다" if override
+                 else "/plugin install herdr-team@herdr-team")}}, ensure_ascii=False) + "\n")
     sys.exit(12)
 os.execv(sys.executable, [sys.executable, str(root / "bin" / "hteam"), *sys.argv[1:]])

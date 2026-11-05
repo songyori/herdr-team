@@ -35,7 +35,7 @@ argument-hint: "<프로젝트 설명>"
 - 직무별 owns: `.herdr-team/config.toml` 의 `[roles.*].owns`. 예: Next.js 면 developer `["src/**", "app/**", "package.json"]`.
 - 추가 직무: 기본 직무(planner·developer·tester)로 부족할 때만. `.herdr-team/roles/<직무>.md`(기본 직무 문서와 같은 절 구성)와 config 항목을 같이 만든다.
 - 필요한 도구(Chrome DevTools MCP 등). 이미 설치된 것은 넣지 않는다. 넣는다면 프로젝트 범위(`.mcp.json`)로만 넣는다.
-- Claude 권한 모드(`[agents.claude].args`): 워커는 사람 없이 돌므로 `--permission-mode=bypassPermissions` 가 필요할 수 있다. 넣으면 워커가 사용자의 git·클라우드 자격 증명과 셸 환경을 그대로 쓴다는 위험을 표에 적는다. 사용자가 승인했을 때만 넣는다.
+- Claude 권한 모드(`[agents.claude].args`): 워커는 사람 없이 돌므로 `--permission-mode=bypassPermissions` 가 필요할 수 있다. `[agents.claude].args` 는 워커·리뷰어뿐 아니라 코디네이터에도 붙는다. 넣으면 워커·리뷰어·코디네이터가 확인 없이 사용자의 git·클라우드 자격 증명과 셸 환경을 그대로 쓴다는 위험을 표에 적는다. 사용자가 승인했을 때만 넣는다.
 - AskUserQuestion 한 번으로 승인받는다. 선택지 "전부 승인 (추천)", "바꾸지 않고 진행". 일부 제외는 Other 로 받는다.
 - 승인된 항목을 적용한다. 실패해도 멈추지 않고 결과를 표에 남긴다.
 - 바꾸는 곳은 이 프로젝트 안뿐이다. 사용자 전역 설정(`~/.claude/`, `~/.claude.json`, `~/.codex/`)을 고치지 않는다. Codex 의 폴더 신뢰를 한꺼번에 허용하는 설정("Trust all" 류)이나 샌드박스·승인 우회 설정을 쓰지 않는다.
@@ -43,8 +43,12 @@ argument-hint: "<프로젝트 설명>"
 ## 5. 코디네이터
 1. `.herdr-team/bin/hteam up --wait-run 180` 을 Bash `timeout: 240000` 으로 실행한다.
    - exit 4 면 코디네이터 pane 이 확인 창(폴더 신뢰 등)에서 멈췄을 수 있다. 사용자에게 그 pane 을 보고 직접 답해 달라고 알린다. 키를 대신 누르지 않는다.
-   - exit 3 `coordinator_unverifiable` 이면 이전 코디네이터의 상태를 확인할 수 없다. 사용자에게 그 터미널(`terminal`)이 끝났는지 묻고, 끝났다고 하면 `.herdr-team/bin/hteam up --force --wait-run 180` 을 실행한다.
+   - exit 3 `coordinator_unverifiable` 이면 이전 코디네이터의 상태를 확인할 수 없다. 사용자에게 그 터미널(`terminal`)이 끝났는지 묻고, 끝났다고 하면 `.herdr-team/bin/hteam up --force --wait-run 180` 을 실행한다. 아니면 그대로 둔다.
+   - exit 3 `launch_raced` 면 다른 `hteam up` 이 동시에 코디네이터를 띄웠거나 코디네이터가 bind 했다. `.herdr-team/bin/hteam up --wait-run 180` 을 한 번 더 실행한다(살아 있으면 다시 띄우지 않는다).
+   - exit 1 `launch_uncertain` 이면 코디네이터가 떴는지 확인하지 못했다. 사용자에게 팀 탭에 `name` pane 이 있는지 보라고 알린다. 떴다면 스스로 bind 한다. 아니면 180초 뒤 `/herdr-team:up` 이 새로 띄운다.
 2. Bash `run_in_background: true` 로 `.herdr-team/bin/hteam watch` 를 띄운다. 이후 watch 가 끝날 때마다 CLAUDE.md 의 "메인 규칙"대로 처리하고 다시 띄운다.
+
+5단계가 어떻게 끝나도(exit 1·3·4 포함) 6단계로 간다. setup-mode 를 켠 채 두지 않는다. 코디네이터가 아직 없으면 6단계 보고에 그 상태와 "`/herdr-team:up` 으로 다시 띄운다"를 적는다.
 
 ## 6. 마무리
 1. `.herdr-team/bin/hteam setup-done` 을 실행한다.
