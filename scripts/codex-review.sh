@@ -60,7 +60,9 @@ import json, sys
 labels = json.load(sys.stdin)["labels"]
 print(labels["herdr.space"], labels["herdr.tab"])')
 
-tname=$(printf 'codex-%s' "$name" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9_\n-' '-' | cut -c1-32)
+# hc 터미널 이름은 코어 전체에서 유일해야 한다. 같은 리뷰를 동시에 띄워도 겹치지 않게 접미사를 붙인다.
+sfx=$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')
+tname=$(printf 'codex-%s' "$name" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9_\n-' '-' | cut -c1-27)-$sfx
 mkdir -p "$out"
 
 hc run --bg --json --no-notify --outlive-parent --rm --cwd "$root" --name "$tname" \
