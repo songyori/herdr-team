@@ -1,0 +1,74 @@
+"""Run 생성과 넘겨받기(설계 6장). status 는 Task 6 에서 더한다."""
+from __future__ import annotations
+
+import json
+
+from . import auth, hcio, liveness
+from .errors import CONFLICT, FAIL, USAGE, HorchError
+from .ids import new_id, now
+
+
+def _caller_facts(terminal: str) -> tuple[str | None, str | None, list[str] | None]:
+    try:
+        info = hcio.get(terminal)
+    except hcio.HcFailure as exc:
+        raise HorchError("hc_unavailable", f"호출자 터미널 {terminal} 을 hc 에서 읽지 못했다: {exc.kind}", FAIL) from exc
+    labels = info.get("labels") or {}
+    return labels.get("herdr.space"), labels.get("herdr.tab"), info.get("argv")
+
+
+def run_json(store, run_id: str) -> dict:
+    row = store.one("SELECT * FROM runs WHERE id=?", (run_id,))
+    owner = store.one("SELECT terminal FROM bindings WHERE run_id=?", (run_id,))
+    return {"id": row["id"], "objective": row["objective"], "owner": owner["terminal"] if owner else None,
+            "owner_space": row["owner_space"], "owner_tab": row["owner_tab"], "created_at": row["created_at"]}
+
+
+def _bind(store, terminal: str, run_id: str, argv) -> None:
+    """트랜잭션 안에서 부른다. 호출자의 이전 binding 과 그 Run 의 이전 binding 을 지운다."""
+    store.run("DELETE FROM bindings WHERE terminal=?", (terminal,))
+    store.run("DELETE FROM bindings WHERE run_id=?", (run_id,))
+    store.run("INSERT INTO bindings(terminal, run_id, argv) VALUES (?,?,?)", (terminal, run_id, json.dumps(argv)))
+
+
+def create(store, objective: str) -> dict:
+    term = auth.require_terminal()
+    auth.refuse_worker(store, term)
+    space, tab, argv = _caller_facts(term)
+    run_id, ts = new_id("run"), now()
+    with store.tx():
+        store.run("INSERT INTO runs(id, objective, owner_space, owner_tab, created_at, updated_at) "
+                  "VALUES (?,?,?,?,?,?)", (run_id, objective, space, tab, ts, ts))
+        _bind(store, term, run_id, argv)
+    return {"run": run_json(store, run_id), "placement": "pane" if space and tab else "none"}
+
+
+def use(store, run_id: str, force: bool) -> dict:
+    term = auth.require_terminal()
+    auth.refuse_worker(store, term)
+    if not store.one("SELECT 1 FROM runs WHERE id=?", (run_id,)):
+        raise HorchError("unknown_run", f"Run {run_id} 가 없다", USAGE)
+    # 이미 자기 것이면 아무것도 바꾸지 않는다. hc 를 부르지 않으므로 hc 장애에도 성공한다.
+    mine = store.one("SELECT 1 FROM bindings WHERE run_id=? AND terminal=?", (run_id, term))
+    if mine:
+        return {"run": run_json(store, run_id), "previous_owner": term, "previous_verdict": None}
+    space, tab, argv = _caller_facts(term)
+    # 설계 6장: binding 조회, 생존 판정, 허용 검사, 갱신을 한 BEGIN IMMEDIATE 안에서 한다.
+    # 판정하는 동안 다른 쓰기(같은 terminal·argv 로 다시 묶기 포함)는 binding 을 바꾸지 못한다.
+    # 판정은 hc get 한 번이다.
+    with store.tx():
+        owner = store.one("SELECT terminal, argv FROM bindings WHERE run_id=?", (run_id,))
+        prev = owner["terminal"] if owner else None
+        if prev == term:
+            return {"run": run_json(store, run_id), "previous_owner": prev, "previous_verdict": None}
+        verdict = None
+        if prev:
+            verdict, _ = liveness.probe(prev, liveness.loads_argv(owner["argv"]))
+            if verdict == "live":
+                raise HorchError("owner_alive", f"Run {run_id} 의 소유자 {prev} 가 살아 있다", CONFLICT)
+            if verdict == "unverifiable" and not force:
+                raise HorchError("owner_unverifiable", f"소유자 {prev} 의 상태를 확인할 수 없다", CONFLICT,
+                                 "소유자가 끝났다고 확신하면 --force")
+        _bind(store, term, run_id, argv)
+        store.run("UPDATE runs SET owner_space=?, owner_tab=?, updated_at=? WHERE id=?", (space, tab, now(), run_id))
+    return {"run": run_json(store, run_id), "previous_owner": prev, "previous_verdict": verdict}

@@ -6,6 +6,7 @@ import json
 import signal
 import sys
 
+from . import runs
 from .errors import FAIL, USAGE, HorchError
 from .paths import VERSION, resolve_home
 from .store import Store
@@ -21,6 +22,11 @@ def build_parser() -> Parser:
     p.add_argument("--home")
     sub = p.add_subparsers(dest="cmd", required=True, parser_class=Parser)
     sub.add_parser("version")
+    s = sub.add_parser("run-create")
+    s.add_argument("--objective", required=True)
+    s = sub.add_parser("run-use")
+    s.add_argument("--id", required=True)
+    s.add_argument("--force", action="store_true")
     # --- 명령 파서 끝 ---
     return p
 
@@ -38,6 +44,10 @@ def _dispatch(args) -> dict:
 
 
 def _with_store(args, store: Store) -> dict:
+    if args.cmd == "run-create":
+        return runs.create(store, args.objective)
+    if args.cmd == "run-use":
+        return runs.use(store, args.id, args.force)
     # --- 저장소 명령 끝 ---
     raise HorchError("usage", f"알 수 없는 명령: {args.cmd}", USAGE)
 
