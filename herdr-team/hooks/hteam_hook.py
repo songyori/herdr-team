@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""herdr-team Claude Code 훅(설계 9.4). 사용법: hteam_hook.py <session-start|role-mark|guard|stop>
+
+`.herdr-team/config.toml` 이 없는 프로젝트에서는 아무것도 하지 않는다.
+훅 오류로 세션이 막히면 안 되므로 예외는 state/hook-errors.log 에 남기고 통과시킨다. 실수 방지용이지 보안 경계가 아니다.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+import traceback
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+
+from hteam import herdr, outbox, roles  # noqa: E402
+from hteam.errors import HteamError  # noqa: E402
+from hteam.paths import PLUGIN_ROOT, SHIM, Project  # noqa: E402
+from hteam.util import now, read_json, write_atomic, write_json  # noqa: E402
+
+EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+SETUP_PREFIXES = (".herdr-team/", ".claude/", "docs/superpowers/")
+SETUP_FILES = {"CLAUDE.md", "AGENTS.md", ".gitignore"}
+STATE_DIR = ".herdr-team/state"
+HORCH_RE = re.compile(r"(^|[\s;&|(`'\"/])horch(?=$|[\s;&|)`'\"])")
+SESSION_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+# 캐시하는 역할. 코디네이터는 캐시하지 않는다(늘 환경 변수와 nonce 로 본다)
+CACHED_RE = re.compile(r"^(main|reviewer|worker(:[a-z][a-z0-9-]*)?)$")
+NOISE_RE = re.compile(r"[\s#*_>|\-`]+")
+FINGERPRINT = 80  # 정규화한 render.context 앞 80자가 메인 텍스트에 있으면 보여 준 것으로 본다
+TAIL_BYTES = 1 << 20
+
+
+def find_project(payload: dict) -> Project | None:
+    start = Path(os.environ.get("CLAUDE_PROJECT_DIR") or payload.get("cwd") or os.getcwd()).resolve()
+    for folder in (start, *start.parents):
+        if (folder / ".herdr-team" / "config.toml").is_file():
+            return Project(folder)
+    return None
+
+
+def log_error(p: Project, text: str) -> None:
+    """state/hook-errors.log 에 남긴다. 남기지 못해도 훅은 계속한다."""
+    event = sys.argv[1] if len(sys.argv) > 1 else "?"
+    try:
+        p.ensure_state()
+        with p.hook_errors.open("a", encoding="utf-8") as fh:
+            fh.write(f"{now()} {event}\n{text.rstrip()}\n\n")
+    except OSError:
+        pass
+
+
+def _session(payload: dict) -> str | None:
+    sid = payload.get("session_id")
+    return sid if isinstance(sid, str) and SESSION_RE.match(sid) and ".." not in sid else None
+
+
+def role_of(p: Project, payload: dict, *, fresh: bool = False) -> str:
+    """코디네이터 환경 → 캐시 → 판별. 확실할 때만 state/sessions/<session id> 에 캐시한다.
+
+    fresh(SessionStart): 캐시를 믿지 않고 지운 뒤 다시 판별한다. `claude --continue`·`--resume` 은 session id 를 그대로
+    이어 쓰므로 다른 터미널(워커 등)에서 쓰던 캐시가 남아 있을 수 있다. run.json 을 읽지 못해 코디네이터인지 확인할 수
+    없으면 오류를 남기고 모름(unknown)으로 둔다."""
+    sid = _session(payload)
+    cache = p.sessions / sid if sid else None
+    if fresh and cache is not None:
+        cache.unlink(missing_ok=True)
+    try:
+        if roles.coordinator_env(p):
+            return "coordinator"
+    except HteamError as exc:
+        log_error(p, f"역할 판별: {exc.code}: {exc.message}")
+        return "unknown"
+    if cache is not None and cache.is_file():
+        cached = cache.read_text(encoding="utf-8").strip()
+        if CACHED_RE.match(cached):
+            return cached
+    role, sure = roles.detect(p)
+    if sure and role and cache is not None:
+        p.ensure_state()
+        write_atomic(cache, role + "\n")
+    return role or "unknown"
+
+
+def where(p: Project, raw) -> tuple[str, str | None]:
+    """("inside", 프로젝트 기준 상대 경로) | ("outside", None) | ("unknown", None).
+
+    `..` 와 심볼릭 링크는 실제 경로로 푼 뒤 판단한다. 풀 수 없으면 unknown(허용으로 다루지 않는다): 빈 값·문자열이
+    아님·NUL 문자·심볼릭 링크 순환(Python 3.13 부터 resolve() 가 오류 없이 링크를 남긴다) 등."""
+    if not isinstance(raw, str) or not raw:
+        return "unknown", None
+    try:
+        path = Path(raw)
+        if not path.is_absolute():
+            path = p.root / path
+        real = path.resolve()
+        if any(part.is_symlink() for part in (real, *real.parents)):
+            return "unknown", None
+    except (OSError, RuntimeError, ValueError):
+        return "unknown", None
+    try:
+        rel = real.relative_to(p.root)
+    except ValueError:
+        return "outside", None
+    return "inside", rel.as_posix()
+
+
+def deny(reason: str) -> dict:
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                   "permissionDecisionReason": reason}}
+
+
+def _transcript_text(path) -> str | None:
+    """transcript(JSONL) 끝부분의 assistant text. 읽지 못하면 None(판단 불가 → 통과)."""
+    if not isinstance(path, str) or not path or not Path(path).is_file():
+        return None
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - TAIL_BYTES))
+            data = fh.read()
+    except OSError:
+        return None
+    texts = []
+    for raw in data.split(b"\n")[1 if size > TAIL_BYTES else 0:]:
+        line = raw.decode("utf-8", errors="replace").strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            return None
+        message = entry.get("message") if isinstance(entry, dict) and entry.get("type") == "assistant" else None
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, list):
+            texts += [b["text"] for b in content if isinstance(b, dict) and b.get("type") == "text"
+                      and isinstance(b.get("text"), str)]
+    return "\n".join(texts)
+
+
+def _denied_ids(p: Project) -> list:
+    data = read_json(p.context_denied, {})
+    ids = data.get("ids") if isinstance(data, dict) else None
+    return ids if isinstance(ids, list) else []
+
+
+def context_guard(p: Project, payload: dict, tool_input: dict):
+    """메인이 render.context 를 먼저 보여 주지 않고 그 질문을 물으면 그 질문에 한해 한 번 거부한다."""
+    questions = tool_input.get("questions")
+    asked = {q["question"].strip() for q in questions if isinstance(q, dict) and isinstance(q.get("question"), str)} \
+        if isinstance(questions, list) else set()
+    if not asked:
+        return None
+    denied = _denied_ids(p)
+    items = [q for q in outbox.open_questions(p)
+             if q["id"] not in denied and isinstance(q.get("render"), dict)
+             and isinstance(q["render"].get("context"), str) and NOISE_RE.sub("", q["render"]["context"])
+             and q["render"].get("question", "").strip() in asked]
+    if not items:
+        return None
+    text = _transcript_text(payload.get("transcript_path"))
+    if text is None:
+        return None
+    shown = NOISE_RE.sub("", text)
+    unshown = [q for q in items if NOISE_RE.sub("", q["render"]["context"])[:FINGERPRINT] not in shown]
+    if not unshown:
+        return None
+    write_json(p.context_denied, {"ids": [*denied, *(q["id"] for q in unshown)]})  # 임시 파일 + os.replace
+    blocks = "\n\n".join(f"[{q['id']}]\n{q['render']['context']}" for q in unshown)
+    return deny("이 질문에는 먼저 보여 줄 `render.context` 가 있다. 아래 내용을 요약하거나 바꾸지 말고 평문으로 그대로 "
+                f"출력한 뒤 같은 render 로 AskUserQuestion 을 다시 부른다([out-id] 줄은 출력하지 않는다).\n\n{blocks}")
+
+
+def guard(p: Project, payload: dict):
+    role = role_of(p, payload)
+    tool = payload.get("tool_name") or ""
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        tool_input = {}
+    if tool == "AskUserQuestion":
+        if role == "main":
+            return context_guard(p, payload, tool_input)
+        if role == "coordinator":
+            return deny("코디네이터는 사용자에게 직접 묻지 않는다. 질문 JSON(render)을 "
+                        f"`{SHIM} notify --type question --json -` 의 표준 입력으로 메인에 올린다(coordinator.md \"메인에 묻기\").")
+        if role in ("worker:planner", "worker:director"):
+            return deny("기획·디렉터 워커는 AskUserQuestion 을 쓰지 않는다. 질문 JSON 을 "
+                        f"`{SHIM} ask-user --task T-xxx --json -` 의 표준 입력으로 보낸다(직무 문서, Bash timeout 600000).")
+        if role == "reviewer":
+            return deny("리뷰어는 묻지 않는다. 판단할 수 없는 것은 리뷰 파일에 적고 판정을 마친다.")
+        if role.startswith("worker"):
+            return deny("워커는 사용자에게 직접 묻지 않는다. 프리앰블의 ask 명령(horch ask)으로 코디네이터에게 묻는다.")
+        return None
+    if tool in EDIT_TOOLS:
+        raw = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
+        kind, rel = where(p, raw)
+        folded = (rel or "").casefold()  # 대소문자를 가리지 않는 파일 시스템(macOS 기본)에서 `State/` 도 같은 폴더다
+        if kind == "inside" and (folded == STATE_DIR or folded.startswith(STATE_DIR + "/")):
+            return deny("`.herdr-team/state/` 는 hteam 이 관리한다. 직접 고치지 않는다. 복구는 `hteam status` 의 next 를 따른다.")
+        if role == "coordinator" and not (kind == "inside" and rel.startswith(".herdr-team/")):
+            shown = rel if kind == "inside" else repr(raw)
+            return deny(f"코디네이터는 `.herdr-team/` 밖({shown})을 고치지 않는다. 프로젝트 밖과 풀 수 없는 경로도 같다. "
+                        "`hteam task new` 로 워커에게 맡긴다.")
+        if role == "main" and not p.setup_mode.exists():
+            if kind == "unknown":
+                return deny(f"경로를 확인할 수 없다({raw!r}). 메인은 제품 파일을 고치지 않는다.")
+            # 프로젝트 밖(스크래치 파일 등)은 이 프로젝트의 제품 파일이 아니므로 막지 않는다
+            if kind == "inside" and rel not in SETUP_FILES and not rel.startswith(SETUP_PREFIXES):
+                return deny(f"메인은 제품 파일({rel})을 고치지 않는다. `{SHIM} tell \"<요청>\"` 으로 코디네이터에게 넘긴다.")
+        return None
+    command = tool_input.get("command")
+    if tool == "Bash" and role == "main" and isinstance(command, str) and HORCH_RE.search(command):
+        return deny(f"메인은 horch 를 직접 부르지 않는다(Run 에 묶이면 깨우기 글이 사용자 입력란에 들어온다). "
+                    f"`{SHIM} tell \"<글>\"` 을 쓴다.")
+    return None
+
+
+def session_start(p: Project, payload: dict):
+    p.ensure_state()
+    write_atomic(p.plugin_root_file, str(PLUGIN_ROOT) + "\n")
+    if role_of(p, payload, fresh=True) != "main":
+        return None
+    lines = ["herdr-team 프로젝트다. 너는 메인이다(사용자와 대화하는 세션). 첫 지시가 코디네이터나 워커 지시면 이 안내를 무시한다.",
+             f"- 먼저 `/herdr-team:up` 을 실행한다. 산출물 작업은 `{SHIM} tell \"<요청>\"` 으로 코디네이터에게 넘긴다."]
+    asked = len(outbox.open_questions(p))
+    if asked:
+        lines.append(f"- 답하지 않은 질문이 {asked}건 있다. `/herdr-team:up` 이 `hteam reask` 로 다시 보여 준다.")
+    return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "\n".join(lines)}}
+
+
+def role_mark(p: Project, payload: dict):
+    role_of(p, payload)  # 아직 캐시가 없으면 이번 프롬프트에서 다시 판별한다
+    return None
+
+
+def stop(p: Project, payload: dict):
+    """메인이고 코디네이터가 살아 있는데 watch 가 없으면 턴을 끝내지 못하게 한다. stop_hook_active 면 다시 막지 않는다.
+
+    watch 생존은 watch.pid 기록(pid + 시작 시각)으로 본다. 죽었거나 pid 가 다른 프로세스에 다시 쓰였으면 watch 가 없다.
+    run.json 을 읽지 못하면 bad_run_file 이 오류 기록으로 남고 막지 않는다."""
+    if payload.get("stop_hook_active") or p.setup_mode.exists() or role_of(p, payload) != "main":
+        return None
+    if outbox.watch_alive(p):
+        return None
+    run = outbox._run(p)
+    if not run.get("coordinator_terminal") or \
+            herdr.probe(run["coordinator_terminal"], run.get("coordinator_argv")) != "live":
+        return None
+    return {"decision": "block",
+            "reason": f"herdr-team: watch 가 꺼져 있다. Bash `run_in_background: true` 로 `{SHIM} watch` 를 띄우고 턴을 "
+                      "끝낸다. 이미 받은 메시지가 있으면 사용자에게 먼저 전한다."}
+
+
+HANDLERS = {"session-start": session_start, "role-mark": role_mark, "guard": guard, "stop": stop}
+
+
+def main() -> int:
+    if len(sys.argv) != 2 or sys.argv[1] not in HANDLERS:
+        return 0
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+        p = find_project(payload) if isinstance(payload, dict) else None
+    except (ValueError, OSError, TypeError):
+        return 0
+    if p is None:
+        return 0
+    try:
+        out = HANDLERS[sys.argv[1]](p, payload)
+    except Exception as exc:  # noqa: BLE001  훅은 세션을 막지 않는다
+        code = f"{exc.code}\n" if isinstance(exc, HteamError) else ""
+        log_error(p, code + traceback.format_exc())
+        return 0
+    if out:
+        print(json.dumps(out, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
