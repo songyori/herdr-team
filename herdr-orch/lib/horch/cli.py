@@ -6,7 +6,7 @@ import json
 import signal
 import sys
 
-from . import comms, runs
+from . import comms, guard, runs
 from .errors import FAIL, USAGE, HorchError
 from .paths import VERSION, resolve_home
 from .store import Store
@@ -68,6 +68,32 @@ def _with_store(args, store: Store) -> dict:
     raise HorchError("usage", f"알 수 없는 명령: {args.cmd}", USAGE)
 
 
+def _guard_argv(argv: list[str]) -> tuple[str | None, str, list[str]] | None:
+    """launch-guard 는 argparse 를 거치지 않는다. -- 뒤 에이전트 인자를 그대로 넘기려고."""
+    head = argv[:2] if argv[:1] == ["--home"] and len(argv) >= 2 else []
+    rest = argv[len(head):]
+    if not rest or rest[0] != "launch-guard":
+        return None
+    rest = rest[1:]
+    if "--" not in rest:
+        raise HorchError("usage", "launch-guard 는 -- 뒤에 에이전트 명령이 필요하다", USAGE)
+    cut = rest.index("--")
+    opts, agent = rest[:cut], rest[cut + 1:]
+    if len(opts) != 2 or opts[0] != "--dispatch":
+        raise HorchError("usage", "형식: launch-guard --dispatch <id> -- <에이전트 명령>", USAGE)
+    return (head[1] if head else None), opts[1], agent
+
+
+def _run_guard(home_arg: str | None, dispatch_id: str, agent_argv: list[str]) -> int:
+    try:
+        store = Store(resolve_home(home_arg))
+        guard.run(store, dispatch_id, agent_argv)  # 성공하면 돌아오지 않는다
+    except HorchError as exc:
+        print(f"[horch] launch-guard: {exc.message}", flush=True)
+        return exc.exit_code
+    return FAIL
+
+
 def _emit(obj: dict) -> None:
     sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
     sys.stdout.flush()
@@ -75,6 +101,13 @@ def _emit(obj: dict) -> None:
 
 def main(argv: list[str]) -> int:
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    try:
+        guard_args = _guard_argv(argv)
+    except HorchError as exc:
+        print(f"[horch] launch-guard: {exc.message}", flush=True)
+        return exc.exit_code
+    if guard_args is not None:
+        return _run_guard(*guard_args)
     try:
         args = build_parser().parse_args(argv)
         result = _dispatch(args)
