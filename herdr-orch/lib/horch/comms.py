@@ -38,6 +38,10 @@ def send(store, to: str, subject: str | None, body: str) -> dict:
         raise HorchError("usage", "--to 는 run:<id> 또는 dispatch:<id> 다", USAGE)
     with store.tx():
         if kind == "dispatch":
+            # 확인과 트랜잭션 사이에 run-use 로 소유가 옮겨졌을 수 있다. 쓰기 직전에 다시 확인한다.
+            if auth.owner_run_id(store) != run_id:
+                raise HorchError("not_owner", f"이 터미널은 더는 Run {run_id} 의 소유자가 아니다", DENIED,
+                                 "run-create 또는 run-use 를 먼저 한다")
             auth.require_active(store.one("SELECT id, state FROM dispatches WHERE id=?", (ident,)))
         mid = mailbox.post(store, run_id=run_id, mailbox=box, sender=sender, type="status", subject=subject,
                            body=body, dispatch_id=dispatch_id)

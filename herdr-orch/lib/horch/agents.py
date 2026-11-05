@@ -7,6 +7,15 @@ from .errors import USAGE, HorchError
 
 AGENTS = {"claude": "claude", "codex": "codex"}
 
+# 호출자가 이 옵션을 주면 기본 -s·-a 를 빼야 한다(겹치면 Codex 가 시작 전에 exit 2 로 끝난다).
+# --dangerously-bypass-approvals-and-sandbox 는 -a 와 충돌하고 -s 도 대신한다.
+# --yolo·--full-auto 는 같은 계열 별칭·조합으로 보고 둘 다 뺀다(--full-auto 는 현재 도움말에 없어 보수적으로 처리).
+_BYPASS = {"--dangerously-bypass-approvals-and-sandbox", "--yolo", "--full-auto"}
+
+
+def _has(extra: list[str], names: set[str]) -> bool:
+    return any(a in names or a.split("=", 1)[0] in names for a in extra if a.startswith("-"))
+
 
 def executable(agent: str) -> str:
     try:
@@ -25,7 +34,12 @@ def build(agent: str, *, model: str | None, effort: str | None, extra: list[str]
         if effort:
             argv += ["--effort", effort]
     else:
-        argv = [exe, "--no-daemon", "-s", "workspace-write", "-a", "never", "--add-dir", str(home)]
+        argv = [exe, "--no-daemon"]
+        if not _has(extra, _BYPASS | {"-s", "--sandbox"}):
+            argv += ["-s", "workspace-write"]
+        if not _has(extra, _BYPASS | {"-a", "--ask-for-approval"}):
+            argv += ["-a", "never"]
+        argv += ["--add-dir", str(home)]
         if model:
             argv += ["-m", model]
         if effort:

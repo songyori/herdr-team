@@ -27,6 +27,32 @@ class AgentsTest(unittest.TestCase):
         self.assertEqual(argv, ["codex", "--no-daemon", "-s", "workspace-write", "-a", "never", "--add-dir", "/h",
                                 "-m", "gpt-5.5", "-c", "model_reasoning_effort=high", "--", "P"])
 
+    def _codex(self, extra):
+        return agents.build("codex", model=None, effort=None, extra=extra, preamble="P", home=Path("/h"))
+
+    def test_codex_caller_sandbox_omits_default_sandbox(self):
+        for opt in (["-s", "read-only"], ["--sandbox", "read-only"], ["--sandbox=read-only"], ["--full-auto"]):
+            with self.subTest(opt=opt):
+                self.assertNotIn("workspace-write", self._codex(opt))
+
+    def test_codex_exact_argv_per_conflict(self):
+        base = ["codex", "--no-daemon"]
+        tail = ["--add-dir", "/h"]
+        self.assertEqual(self._codex(["-s", "read-only"]),
+                         base + ["-a", "never"] + tail + ["-s", "read-only", "--", "P"])
+        self.assertEqual(self._codex(["--sandbox=read-only"]),
+                         base + ["-a", "never"] + tail + ["--sandbox=read-only", "--", "P"])
+        self.assertEqual(self._codex(["-a", "on-request"]),
+                         base + ["-s", "workspace-write"] + tail + ["-a", "on-request", "--", "P"])
+        self.assertEqual(self._codex(["--ask-for-approval=on-request"]),
+                         base + ["-s", "workspace-write"] + tail + ["--ask-for-approval=on-request", "--", "P"])
+        for flag in ("--dangerously-bypass-approvals-and-sandbox", "--yolo", "--full-auto"):
+            self.assertEqual(self._codex([flag]), base + tail + [flag, "--", "P"])
+        self.assertEqual(self._codex(["-s", "read-only", "-a", "never"]),
+                         base + tail + ["-s", "read-only", "-a", "never", "--", "P"])
+        self.assertEqual(self._codex(["--x"]),
+                         base + ["-s", "workspace-write", "-a", "never"] + tail + ["--x", "--", "P"])
+
     def test_unknown(self):
         with self.assertRaises(HorchError) as cm:
             agents.executable("gemini")

@@ -321,6 +321,23 @@ class MailboxTest(HorchCase):
         self.assertIsNone(self.db().execute("SELECT 1 FROM deliveries").fetchone())
         self.assertIsNone(self.db().execute("SELECT 1 FROM messages WHERE delivery_id IS NOT NULL").fetchone())
 
+    def test_send_to_dispatch_rechecks_ownership_inside_tx(self):
+        """소유권 확인과 트랜잭션 사이에 binding 이 옮겨지면 옛 소유자의 send 는 exit 5 이고 기록되지 않는다."""
+        from horch import comms
+        from horch.errors import HorchError
+        did = self.add_dispatch(self.run_id)
+        store = self._store_as("t100")
+        real_tx = store.tx
+
+        def moving_tx():
+            store.run("UPDATE bindings SET terminal='t200' WHERE run_id=?", (self.run_id,))
+            return real_tx()
+
+        with mock.patch.object(store, "tx", moving_tx), self.assertRaises(HorchError) as cm:
+            comms.send(store, f"dispatch:{did}", None, "옛 소유자")
+        self.assertEqual((cm.exception.exit_code, cm.exception.code), (5, "not_owner"))
+        self.assertIsNone(self.db().execute("SELECT 1 FROM messages WHERE mailbox=?", (f"dispatch:{did}",)).fetchone())
+
     def test_wait_survives_brief_lock(self):
         # 대기 중 다른 쓰기가 잠금을 busy_timeout 보다 오래 쥐어도 그 폴링만 건너뛰고 계속 기다린다
         from horch import mailbox
