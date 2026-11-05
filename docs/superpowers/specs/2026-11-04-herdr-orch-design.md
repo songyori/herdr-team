@@ -291,6 +291,7 @@ Dispatch:
   - `--no-daemon`: 없으면 Codex 의 명령이 hc 밖에서 돌아 `$HC_TERMINAL_ID` 가 없다.
   - `--add-dir`: Codex 샌드박스에서 저장소 DB 에 쓰게 한다.
   - `-a never`: 사람 없이 돈다. 샌드박스 밖 명령은 묻지 않고 실패한다.
+  - 호출자가 추가 인자로 샌드박스·승인을 직접 고르면(`-s`·`--sandbox`, `-a`·`--ask-for-approval`, `--dangerously-bypass-approvals-and-sandbox` 등) 겹치는 기본 `-s workspace-write`·`-a never` 는 넣지 않는다. 겹치면 Codex 가 시작 전에 exit 2 로 끝난다(브랜치 리뷰에서 재현).
   - 플러그인 hook 이 새로 생기거나 바뀌면 Codex 는 시작할 때 "Hooks need review" 확인 창에서 멈춘다(사전 검증 S2). 설정 키 `bypass_hook_trust` 는 대화형 Codex 에 듣지 않고, 실행 옵션 `--dangerously-bypass-hook-trust` 만 듣는다. 그러나 이 옵션은 검토하지 않은 hook 을 실행해, 깨진 hook 이 워커의 셸 명령을 모두 막을 수 있다(실환경 확인: Node 버전이 맞지 않는 context-mode hook). 그래서 워커에는 `--disable=hooks`(hook 을 끄고 확인 창도 없앤다, codex-cli 0.166 에서 확인)를 권한다. horch 는 이 옵션도 스스로 넣지 않는다. 호출자가 `--agent-arg=--disable=hooks` 로 넘긴다(herdr-team 은 사용자 설정에 따라 넘긴다). 처음 보는 폴더의 Codex 폴더 신뢰 창은 이 옵션으로도 사라지지 않으므로 워커 `--cwd` 는 이미 신뢰한 폴더를 쓴다.
 - 프리앰블 앞의 `--` 는 추가 인자가 값을 여러 개 받는 옵션(Claude `--add-dir <dirs...>` 등)으로 끝나도 프리앰블을 그 값으로 먹지 않게 한다(두 CLI 모두 `--` 뒤 프롬프트를 받는다, 2026-11-05 확인).
 - 추가 인자(`--agent-arg`)는 호출자가 정한다. horch 는 권한 우회 플래그를 스스로 넣지 않는다.
@@ -474,6 +475,7 @@ hc 0.1.18, Claude Code 2.1.318(코디네이터 Opus, 워커 haiku), codex-cli 0.
   5. 하네스의 GateGuard hook 이 코디네이터와 Claude 워커의 첫 Bash·Write 를 막았다. 둘 다 요구한 사실을 적고 다시 실행해 이어갔다.
   6. 사소한 것. `doctor` 의 `herdr_app` detail 이 `{` 다(`herdr-app status` 의 JSON 첫 줄만 담는다). `HC_TERMINAL_ID` 가 없을 때 `not_this_worker` 메시지는 "이 터미널(없음)" 이고 hint 가 비어 있다.
 - 후속 조치(2026-11-05): 2 는 Codex 워커에 `--dangerously-bypass-hook-trust` 대신 `--disable=hooks` 를 권하도록 8장과 스킬을 바꿨다. 3 은 사용자 결정으로 `observed idle` 을 더했다(9장·10장). 4 는 스킬에서 abandon 을 "정리"라 부르지 않고 `abandoned` 도 `worker-release` 해야 끝난다고 적었다. 6 은 doctor detail 과 not_this_worker 힌트를 고쳤다.
+- `observed idle` 실환경 확인(2026-11-05): 소유자 터미널에서 haiku 워커 하나에 done 없이 멈추라는 spec 을 줬다. 워커는 첫 턴 뒤 hc 상태 `done`, `turn` 1(정수)을 보고했다. 소유자의 `check --wait` 가 첫 판정에서 바로 `observed` `{"kind": "idle", "key": "1", "status": "done"}` 을 받았고, `worker-list` 는 `attention: "idle"`, `next: worker-show --lines 40` 을 보였다. `worker-abandon --kill` 과 `worker-release` 로 정리했다.
 
 ### Codex 교차 검증
 
