@@ -52,6 +52,51 @@ class ObserveTest(HorchCase):
         liveness.observe(self.store, self.run_id)
         self.assertEqual(self.kinds(), [("blocked", "2")])
 
+    def test_idle_once_per_turn(self):
+        # done 없이 턴을 마친 워커: 턴마다 한 번만 보낸다. 아무도 안 보는 Claude 는 done 에 머문다
+        self.update_terminal("t9", status="idle", turn=3)
+        liveness.observe(self.store, self.run_id)
+        liveness.observe(self.store, self.run_id)
+        self.assertEqual(self.kinds(), [("idle", "3")])
+        self.update_terminal("t9", status="done")  # 같은 턴의 done 은 새 사건이 아니다
+        liveness.observe(self.store, self.run_id)
+        self.assertEqual(self.kinds(), [("idle", "3")])
+        self.update_terminal("t9", status="done", turn=4)
+        liveness.observe(self.store, self.run_id)
+        self.assertEqual(self.kinds(), [("idle", "3"), ("idle", "4")])
+        body = json.loads(self.store.all("SELECT body FROM messages WHERE type='observed' ORDER BY id")[-1]["body"])
+        self.assertEqual(body, {"dispatch": self.did, "kind": "idle", "key": "4", "terminal": "t9", "status": "done"})
+        row = self.store.one("SELECT mailbox, sender, dispatch_id FROM messages WHERE type='observed' ORDER BY id DESC")
+        self.assertEqual(tuple(row), (f"run:{self.run_id}", "horch", self.did))
+
+    def test_idle_skipped_before_first_turn_and_while_working(self):
+        for turn in (0, None):  # 첫 턴 전 idle 은 아직 일을 시작하지 않은 것이다
+            self.update_terminal("t9", status="idle", turn=turn)
+            liveness.observe(self.store, self.run_id)
+        self.update_terminal("t9", status="working", turn=3)
+        liveness.observe(self.store, self.run_id)
+        self.assertEqual(self.kinds(), [])
+
+    def test_idle_skipped_when_dispatch_no_longer_active(self):
+        self.update_terminal("t9", status="idle", turn=3)
+        self.store.run("UPDATE dispatches SET state='settled' WHERE id=?", (self.did,))
+        self.assertEqual(liveness.observe_one(self.store, self.run_id, self.did), [])
+        # 판정하는 사이 done 으로 settled 가 됐다
+        self.store.run("UPDATE dispatches SET state='active' WHERE id=?", (self.did,))
+        real = liveness.probe
+
+        def probe_then_settle(*a, **kw):
+            res = real(*a, **kw)
+            db = self.db()
+            db.execute("UPDATE dispatches SET state='settled' WHERE id=?", (self.did,))
+            db.commit()
+            return res
+
+        with mock.patch.object(liveness, "probe", probe_then_settle):
+            liveness.observe(self.store, self.run_id)
+        self.assertEqual(self.kinds(), [])
+        self.assertEqual(self.store.all("SELECT * FROM observations"), [])
+
     def test_no_event_when_dispatch_changes_during_probe(self):
         self.update_terminal("t9", state="finished")
         real = liveness.probe
@@ -308,6 +353,27 @@ class ManageTest(HorchCase):
         self.update_terminal("t9", status="working")
         _, out = self.o("worker-list")
         self.assertIsNone({w["id"]: w for w in out["workers"]}[self.did]["attention"])
+
+    def test_list_idle_attention_for_turn_without_done(self):
+        def row():
+            _, out = self.o("worker-list")
+            r = {w["id"]: w for w in out["workers"]}[self.did]
+            return r["attention"], r["next"]
+
+        for word in ("idle", "done"):
+            self.update_terminal("t9", status=word, turn=2)
+            attention, nxt = row()
+            self.assertEqual(attention, "idle", word)
+            self.assertEqual(nxt[-5:], ["worker-show", "--dispatch", self.did, "--lines", "40"])
+        self.update_terminal("t9", status="idle", turn=0)  # 첫 턴 전: 아직 일을 시작하지 않았다
+        self.assertEqual(row(), (None, None))
+        self.update_terminal("t9", status="blocked", turn=2)  # blocked·error 가 먼저다
+        self.assertEqual(row()[0], "blocked")
+        _, shown = self.o("worker-show", "--dispatch", self.did, "--lines", "0")
+        self.assertEqual(shown["worker"]["attention"], "blocked")
+        self.update_terminal("t9", status="done", turn=2)
+        self.set_state("settled")  # done 을 보낸 워커는 idle 이 아니다
+        self.assertEqual(row()[0], "settled")
 
     def test_show_with_screen(self):
         st = self.hc_state()

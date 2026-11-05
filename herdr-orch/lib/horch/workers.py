@@ -324,7 +324,8 @@ def _row_json(r) -> dict:
             "settled_at": r["settled_at"], "closed_at": r["closed_at"]}
 
 
-def _attention(home, r, verdict: str | None, word: str | None) -> tuple[str | None, list[str] | None]:
+def _attention(home, r, verdict: str | None, info: dict | None) -> tuple[str | None, list[str] | None]:
+    word = liveness.status_word(info)
     base, d, st = horch_argv(home), r["id"], r["state"]
     if st == "launch_failed":
         if r["attempt"] != r["last_attempt"] or r["task_status"] != "open":
@@ -345,6 +346,9 @@ def _attention(home, r, verdict: str | None, word: str | None) -> tuple[str | No
             return "unverifiable", [*base, "worker-show", "--dispatch", d]
         if word in ("blocked", "error"):
             return word, [*base, "worker-show", "--dispatch", d, "--lines", "80"]
+        if verdict == "live" and liveness.idle_turn(info) is not None:
+            # done 없이 턴을 마쳤다(설계 10장). 화면을 보고 이어가게 하거나 사용자에게 알린다
+            return "idle", [*base, "worker-show", "--dispatch", d, "--lines", "40"]
         if verdict == "live" and word is None:
             # 시작 확인 창(Claude 폴더 신뢰, Codex hook 검토)은 상태를 보고하지 않는다(설계 10장)
             return "no_status", [*base, "worker-show", "--dispatch", d, "--lines", "40"]
@@ -361,7 +365,7 @@ def _describe(store, r) -> tuple[dict, dict | None]:
         verdict, info = liveness.probe(r["terminal"], liveness.loads_argv(r["launch_argv"]))
     word = liveness.status_word(info)
     item["verdict"], item["status"] = verdict, word
-    item["attention"], item["next"] = _attention(store.home, r, verdict, word)
+    item["attention"], item["next"] = _attention(store.home, r, verdict, info)
     return item, info
 
 

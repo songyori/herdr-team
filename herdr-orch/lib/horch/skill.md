@@ -26,14 +26,15 @@
    - `worker_done`: body 의 `outcome`·`summary`·`report_path` 를 읽고 결과를 직접 확인한다. 그다음 `horch worker-release --dispatch <d>`(사용자가 남기라고 했을 때만 `worker-retain`).
    - `escalation`: `horch send --to dispatch:<d> --body "<지시>"` 로 지시하거나 사용자에게 넘긴다.
    - `observed`: body 의 `kind` 를 본다.
-     - `exited`·`lost`: `horch worker-abandon --dispatch <d>` 로 정리한 뒤, 옛 Dispatch 를 `horch worker-show --dispatch <d> --lines 0` 으로 읽어 `agent`·`model`·`effort`·`cwd`·`agent_args` 를 그대로 넘겨 다시 띄운다: `horch worker-start --agent <agent> --task <task> --cwd <cwd> [--model <model>] [--effort <effort>] [--agent-arg=<각 인자>]...`. 값을 빼면 작업 폴더가 코디네이터의 것으로 바뀌고 모델·인자가 초기화된다. `--retry` 는 이전 Dispatch 가 `launch_failed` 일 때만 필요하다(abandon 뒤에는 필요 없다).
+     - `exited`·`lost`: `horch worker-abandon --dispatch <d>` 로 `abandoned` 표시를 한다. 터미널은 남으므로 그 Dispatch 는 나중에 `horch worker-release --dispatch <d>` 해야 한다. 옛 Dispatch 를 `horch worker-show --dispatch <d> --lines 0` 으로 읽어 `agent`·`model`·`effort`·`cwd`·`agent_args` 를 그대로 넘겨 다시 띄운다: `horch worker-start --agent <agent> --task <task> --cwd <cwd> [--model <model>] [--effort <effort>] [--agent-arg=<각 인자>]...`. 값을 빼면 작업 폴더가 코디네이터의 것으로 바뀌고 모델·인자가 초기화된다. `--retry` 는 이전 Dispatch 가 `launch_failed` 일 때만 필요하다(abandon 뒤에는 필요 없다).
+     - `idle`: 워커가 done 없이 턴을 끝냈다. `horch worker-show --dispatch <d> --lines 40` 으로 화면을 보고, 남은 일이 있으면 `horch send --to dispatch:<d> --body "<지시>"` 로 이어가게 하고(깨우기가 입력을 보낸다), 일을 끝냈는데 done 을 잊었으면 done 하라고 보내고, 막혔으면 사용자에게 알린다.
      - `blocked`: 사람의 결정(권한 등)이 필요하다. `horch worker-show --dispatch <d> --lines 80` 으로 화면을 보고 사용자에게 알린다. horch 는 키를 누르지 않는다.
-     - `error`: 화면을 읽고 이어갈 수 있으면 `send --to dispatch:<d>` 로 지시하고, 아니면 `worker-abandon --kill` 뒤 다시 띄운다.
+     - `error`: 화면을 읽고 이어갈 수 있으면 `send --to dispatch:<d>` 로 지시하고, 아니면 `worker-abandon --kill` 뒤 다시 띄운다(abandon 한 Dispatch 는 나중에 `worker-release` 한다).
    - `status`: 참고한다.
 7. 상황이 불분명하면 `horch worker-list` 의 `attention` 과 `next`(다음에 실행할 argv)를 본다. `horch status` 는 읽지 않은 메시지 수와 답 없는 질문을 보여 준다.
-   `attention: "no_status"` 가 1분 넘게 이어지면 워커가 시작 확인 창(Claude 폴더 신뢰, Codex hook 검토)에서 멈춘 것일 수 있다. `next` 로 화면을 보고 사용자에게 알린다. 키를 대신 누르지 않는다. Codex 워커는 사용자가 허락하면 `--agent-arg=--dangerously-bypass-hook-trust` 로 띄워 hook 검토 창을 건너뛴다.
+   `attention: "no_status"` 가 1분 넘게 이어지면 워커가 시작 확인 창(Claude 폴더 신뢰, Codex hook 검토)에서 멈춘 것일 수 있다. `next` 로 화면을 보고 사용자에게 알린다. 키를 대신 누르지 않는다. Codex 워커는 사용자가 허락하면 `--agent-arg=--disable=hooks` 로 띄워 hook 검토 창을 없앤다. `--dangerously-bypass-hook-trust` 는 검토하지 않은 hook 을 실행해, 깨진 hook(예: Node 버전이 맞지 않는 hook)이 워커의 셸 명령을 모두 막을 수 있다. `--disable=hooks` 는 hook 을 끄고 확인 창도 없앤다(codex-cli 0.166 에서 확인). 처음 보는 폴더의 Codex 폴더 신뢰 창은 이 인자로도 사라지지 않는다.
    `launch_failed` 의 `next` 는 그 Task 의 최신 시도일 때만 나오며 `--model`·`--effort`·`--agent-arg` 를 그대로 넘긴다. `worker-release` 가 exit 1 `terminal_mismatch` 면 주소가 다른 터미널을 가리킨다: 아무것도 지우지 말고 사용자에게 알린다.
-8. `launching`·`active` Dispatch 가 없고 `settled`·`abandoned` Dispatch 를 모두 정리했을 때 끝낸다. 과거의 `launch_failed` 는 끝내는 것을 막지 않는다. `retained` 는 사용자가 남기라고 한 것만 둔다. 사용자에게 Task 마다 최종 결과, 근거, 재시도 여부, 남은 문제를 보고한다.
+8. `launching`·`active` Dispatch 가 없고 `settled`·`abandoned` Dispatch 를 모두 `worker-release` 로 정리했을 때 끝낸다. `abandoned` 도 `worker-release` 해야 정리된 것이다. 과거의 `launch_failed` 는 끝내는 것을 막지 않는다. `retained` 는 사용자가 남기라고 한 것만 둔다. 사용자에게 Task 마다 최종 결과, 근거, 재시도 여부, 남은 문제를 보고한다.
 
 ## 안전
 
@@ -46,7 +47,7 @@
 
 ## 워커 의무
 
-프리앰블이 우선한다. 요약: spec 의 일만 한다. 막히면 `ask` 로 묻고 기다린다(대화형 질문 도구 금지). 체크포인트마다 `check --dispatch` 와 `--ack`. 범위 밖이면 `escalate`. 끝나면 `done` 을 보내고(출력을 못 받았으면 같은 인자로 다시), 그 뒤에는 기다린다. 다른 워커를 띄우지 않는다.
+프리앰블이 우선한다. 요약: spec 의 일만 한다. 막히면 `ask` 로 묻고 기다린다(대화형 질문 도구 금지). horch 는 셸 명령으로 실행한다. 체크포인트마다 `check --dispatch` 와 `--ack`. 범위 밖이면 `escalate`. 끝나면 `done` 을 보내고(출력을 못 받았으면 같은 인자로 다시), 그 뒤에는 기다린다. 다른 워커를 띄우지 않는다.
 
 ## 명령
 
@@ -59,7 +60,7 @@
 | `check [--wait] [--ack] [--timeout-ms]` | 코디네이터 | Run 메일함 |
 | `reply --id --body` | 코디네이터 | 질문에 답 |
 | `send --to run:<id>\|dispatch:<id> --body [--subject]` | 누구나(dispatch 는 코디네이터) | 상태 메시지 |
-| `worker-release` / `worker-retain` / `worker-abandon [--kill]` | 코디네이터 | 정리 |
+| `worker-release` / `worker-retain` / `worker-abandon [--kill]` | 코디네이터 | release 는 터미널을 닫고 끝낸다. retain 은 남긴다. abandon 은 `abandoned` 표시만 한다(뒤에 release) |
 | `ask` / `check --dispatch` / `escalate` / `done` | 워커 | 프리앰블 참고 |
 | `status` / `doctor` / `skill` | 누구나 | 상태, 점검, 이 문서 |
 

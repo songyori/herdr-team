@@ -8,6 +8,7 @@ from pathlib import Path
 with open(Path(os.environ.get("FAKE_HC_DIR", ".")) / "herdr-calls.jsonl", "a") as f:
     f.write(json.dumps(sys.argv[1:]) + "\n")
 if sys.argv[1:2] == ["status"]:
-    print("layout: main")
+    # 실제 herdr-app status 처럼 여러 줄 JSON 을 낸다(실환경 확인)
+    print(json.dumps({"running": True, "version": "0.9.0", "spaces": [{"id": "spA"}, {"id": "spB"}]}, indent=2))
     sys.exit(0)
 sys.exit(2)

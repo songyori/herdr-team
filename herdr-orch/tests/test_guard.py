@@ -40,7 +40,8 @@ class PreambleTest(unittest.TestCase):
                        "H --home /h ask --dispatch dsp-1", "--resume",
                        "H --home /h check --dispatch dsp-1", "--ack",
                        "H --home /h escalate --dispatch dsp-1",
-                       "H --home /h done --dispatch dsp-1 --outcome", "AskUserQuestion", "다른 워커를 띄우지 않는다"):
+                       "H --home /h done --dispatch dsp-1 --outcome", "AskUserQuestion", "다른 워커를 띄우지 않는다",
+                       "horch 는 셸 명령으로 실행한다"):
             self.assertIn(needle, text)
 
 
@@ -117,6 +118,7 @@ class GuardCliTest(HorchCase):
         code, out = self.guard("claude", "--add-dir", "/x", "--", "P")
         self.assertEqual(code, 0, out)
         self.assertEqual(json.loads(out)["argv"], ["--add-dir", "/x", "--", "P"])
+        self.tearDown()  # 첫 임시 폴더를 지운 뒤 새로 준비한다(그냥 setUp 하면 ResourceWarning)
         self.setUp()
         code, out = self.guard("codex", "--add-dir", "/x", "--", "P")
         self.assertEqual(code, 0, out)

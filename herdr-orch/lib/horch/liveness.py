@@ -1,4 +1,4 @@
-"""생존 판정(설계 10장)과 observed 감시(설계 9장)."""
+"""생존 판정(설계 10장)과 observed 감시(설계 9장: blocked·error·idle·exited·lost)."""
 from __future__ import annotations
 
 import json
@@ -16,6 +16,20 @@ def status_word(info: dict | None) -> str | None:
     if isinstance(status, str):
         return status
     return None
+
+
+def idle_turn(info: dict | None) -> int | None:
+    """done 없이 턴을 마친 워커의 turn 번호(설계 9장 observed idle). 아니면 None.
+
+    상태 idle 또는 done(아무도 보지 않는 Claude 는 done 에 머문다)이고 turn 이 1 이상이어야 한다.
+    turn 이 없거나 0 이면 첫 턴 전(시작 직후의 idle)이므로 사건이 아니다. 판정 live 와 active 는 호출자가 본다.
+    """
+    if status_word(info) not in ("idle", "done"):
+        return None
+    turn = info.get("turn")
+    if isinstance(turn, bool) or not isinstance(turn, int) or turn < 1:
+        return None
+    return turn
 
 
 def verdict(info: dict | None, expected_argv: list[str] | None) -> str:
@@ -68,6 +82,10 @@ def observe_one(store, run_id: str, dispatch_id: str, timeout: float | None = No
         turn = info.get("turn")
         if turn is not None:  # turn 이 없으면 같은 사건을 가를 key 가 없다. 모름이므로 보내지 않는다
             events.append((word, str(turn)))
+    idle_at = idle_turn(info) if verdict_ == "live" else None
+    if idle_at is not None:
+        # done 없이 턴을 마쳤다. key 가 turn 이라 턴마다 한 번만 보낸다(같은 턴의 idle·done 은 한 사건)
+        events.append(("idle", str(idle_at)))
     if verdict_ in ("exited", "lost"):
         events.append((verdict_, verdict_))
     created: list[int] = []

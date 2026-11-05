@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 import unittest
+from unittest import mock
 
 from tests.helpers import BIN, FAKES, ROOT, HorchCase
 
@@ -37,14 +38,28 @@ class MetaTest(HorchCase):
             "`warnings`(목록, 예: 영수증 기록 실패)",
             "exit 5(`binding_moved`·`not_owner`)",
             "`terminal_mismatch`",
-            "--agent-arg=--dangerously-bypass-hook-trust",
             "worker-show --dispatch <d> --lines 0",
             "--cwd <cwd> [--model <model>] [--effort <effort>] [--agent-arg=<각 인자>]...",
             "`skill` 을 뺀 모든 명령은 JSON 한 개를 출력한다",
             "사용자의 자격 증명(git, 클라우드 인증, 셸 환경)",
             'attention: "no_status"',
+            # 실환경 확인 뒤 보강: done 없이 멈춘 워커, abandon 뒤 release, Codex hook
+            "- `idle`: 워커가 done 없이 턴을 끝냈다. `horch worker-show --dispatch <d> --lines 40` 으로 화면을 보고",
+            "(깨우기가 입력을 보낸다)",
+            "일을 끝냈는데 done 을 잊었으면 done 하라고 보내고, 막혔으면 사용자에게 알린다.",
+            "`abandoned` 도 `worker-release` 해야 정리된 것이다.",
+            "사용자가 허락하면 `--agent-arg=--disable=hooks`",
+            "`--dangerously-bypass-hook-trust` 는 검토하지 않은 hook 을 실행해, 깨진 hook(예: Node 버전이 맞지 않는 hook)이 "
+            "워커의 셸 명령을 모두 막을 수 있다.",
+            "`--disable=hooks` 는 hook 을 끄고 확인 창도 없앤다",
+            "horch 는 셸 명령으로 실행한다",
         ):
             self.assertIn(needle, proc.stdout)
+        self.assertNotIn("--agent-arg=--dangerously-bypass-hook-trust", proc.stdout)
+        # abandon 은 abandoned 표시일 뿐이다. abandon 을 "정리" 라 부르면 release 없이 끝낸다(실환경 확인)
+        for line in proc.stdout.splitlines():
+            if "worker-abandon" in line:
+                self.assertNotIn("정리", line, line)
 
     def test_skill_stub(self):
         text = (ROOT / "skills" / "herdr-orchestration" / "SKILL.md").read_text(encoding="utf-8")
@@ -57,6 +72,9 @@ class MetaTest(HorchCase):
         names = {c["name"]: c["ok"] for c in out["checks"]}
         for name in ("python", "hc", "hc_server", "herdr_app", "home_writable", "ps", "claude", "codex", "codex_no_daemon"):
             self.assertTrue(names[name], name)
+        # 가짜 herdr-app status 는 실제처럼 여러 줄 JSON 을 낸다. 첫 글자 "{" 가 아니라 한 줄 요약을 보인다
+        detail = {c["name"]: c["detail"] for c in out["checks"]}["herdr_app"]
+        self.assertEqual(detail, "running true, version 0.9.0, spaces 2개")
 
     def test_doctor_unhealthy_without_herdr_app(self):
         bin_dir = self.tmp / "bin"
@@ -84,6 +102,29 @@ class MetaTest(HorchCase):
         self.assertFalse(names["herdr_app"])
         for name in ("python", "hc", "home_writable", "ps"):
             self.assertIn(name, names)
+
+
+class HerdrStatusTest(unittest.TestCase):
+    def status(self, stdout: str, stderr: str = "", code: int = 0):
+        from horch import herdr
+        done = subprocess.CompletedProcess(["herdr-app", "status"], code, stdout, stderr)
+        with mock.patch.object(herdr.subprocess, "run", return_value=done):
+            return herdr.app_status()
+
+    def test_multiline_json_is_summarized(self):
+        text = json.dumps({"running": True, "spaces": [{"id": "a"}], "app": {"x": 1}, "pid": 7}, indent=2)
+        self.assertEqual(self.status(text), (True, "running true, spaces 1개, pid 7"))
+
+    def test_json_without_scalars_is_ok(self):
+        self.assertEqual(self.status(json.dumps({"app": {"x": 1}}, indent=2)), (True, "ok"))
+
+    def test_json_error_shows_message(self):
+        err = json.dumps({"error": {"kind": "no_app", "message": "앱이 떠 있지 않다"}}, indent=2)
+        self.assertEqual(self.status("", err, 1), (False, "앱이 떠 있지 않다"))
+
+    def test_plain_text_keeps_first_line(self):
+        self.assertEqual(self.status("layout: main\nspaces: 2\n"), (True, "layout: main"))
+        self.assertEqual(self.status("", "", 3), (False, "exit 3"))
 
 
 if __name__ == "__main__":

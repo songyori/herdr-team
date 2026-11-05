@@ -55,8 +55,15 @@ class CommsTest(HorchCase):
 
     def test_done_rules(self):
         self.add_terminal("t50")
-        code, _ = self.horch("done", "--dispatch", self.did, "--outcome", "succeeded", "--summary", "s", terminal="t50")
-        self.assertEqual(code, 5)
+        code, out = self.horch("done", "--dispatch", self.did, "--outcome", "succeeded", "--summary", "s", terminal="t50")
+        self.assertEqual((code, out["error"]["code"]), (5, "not_this_worker"))
+        # $HC_TERMINAL_ID 가 없는 도구(Codex node_repl 등)에서 부른 경우도 같은 오류다. 힌트가 셸 명령을 알려 준다
+        code, none = self.horch("done", "--dispatch", self.did, "--outcome", "succeeded", "--summary", "s")
+        self.assertEqual((code, none["error"]["code"]), (5, "not_this_worker"))
+        for err in (out["error"], none["error"]):
+            self.assertIn("워커 터미널에서만", err["hint"])
+            self.assertIn("셸 명령", err["hint"])
+            self.assertIn("HC_TERMINAL_ID", err["hint"])
         db = self.db()
         db.execute("UPDATE dispatches SET state='abandoned' WHERE id=?", (self.did,))
         db.commit()

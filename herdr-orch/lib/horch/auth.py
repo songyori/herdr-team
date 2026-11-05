@@ -46,7 +46,9 @@ def worker_dispatch(store, dispatch_id: str) -> sqlite3.Row:
         raise HorchError("unknown_dispatch", f"Dispatch {dispatch_id} 가 없다", USAGE)
     term = caller()
     if not row["terminal"] or row["terminal"] != term:
-        raise HorchError("not_this_worker", f"Dispatch {dispatch_id} 는 이 터미널({term or '없음'})의 것이 아니다", DENIED)
+        raise HorchError("not_this_worker", f"Dispatch {dispatch_id} 는 이 터미널({term or '없음'})의 것이 아니다", DENIED,
+                         "이 명령은 그 Dispatch 의 워커 터미널에서만 한다. Codex 는 셸 명령으로 부른다"
+                         "(node_repl 등 다른 도구에는 HC_TERMINAL_ID 가 없다)")
     return row
 
 
