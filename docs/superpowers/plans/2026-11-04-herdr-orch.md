@@ -23,7 +23,7 @@
 - 저장소는 공개될 수 있다. 커밋 전에 `git grep -n -I -P '/[U]sers/|/private/[t]mp|~[/]Workspace' -- . ':!.codex-reviews'` 가 아무것도 찾지 않아야 한다.
 - 문서·메시지·주석은 한국어. 명령·코드 식별자는 원문.
 - 작업 브랜치 `design/herdr-orch` 에서 한다. main 에 직접 커밋하지 않는다.
-- **Codex 교차 검증(CLAUDE.md):** 각 태스크의 마지막 단계에서 그 커밋을 `scripts/codex-review.sh commit HEAD` 로 검토한다. 스크립트는 같은 탭에 pane 을 띄우고 터미널 주소를 출력한다. `hc wait <주소> --timeout 3600` 을 백그라운드로 걸고 끝나기를 붙잡고 기다리지 않는다. 결과는 `.codex-reviews/commit-<sha 7자>.md` 다. 결과를 읽고 지적마다 사실인지 확인한 뒤 고치거나 고치지 않는 이유를 적는다. P0·P1 이 남지 않을 때까지 최대 3 라운드. 3 라운드 뒤에도 남으면 사용자에게 묻는다.
+- **Codex 교차 검증(CLAUDE.md):** 각 태스크의 마지막 단계에서 그 커밋을 `scripts/codex-review.sh commit HEAD` 로 검토한다. 스크립트는 같은 space 의 "리뷰" 탭에 pane 을 띄우고 터미널 주소를 출력한다. `hc wait <주소> --timeout 3600` 을 백그라운드로 걸고 끝나기를 붙잡고 기다리지 않는다. 결과는 `.codex-reviews/commit-<sha 7자>.md` 다. 결과를 읽고 지적마다 사실인지 확인한 뒤 고치거나 고치지 않는 이유를 적는다. P0·P1 이 남지 않을 때까지 최대 3 라운드. 3 라운드 뒤에도 남으면 사용자에게 묻는다.
 - 테스트 실행: `bash herdr-orch/tests/run.sh` (저장소 루트에서). 실제 hc·Herdr 상태를 건드리지 않는다(가짜 `hc`·`herdr-app`·`claude`·`codex` 사용).
 
 ## File Structure

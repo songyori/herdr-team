@@ -23,7 +23,7 @@ Claude 가 만든 산출물은 Codex 가 검증한다. 다음 네 시점에 반�
 | 태스크 커밋마다 | 그 커밋 | `scripts/codex-review.sh commit <sha>` |
 | main 병합 전 | 브랜치 전체 | `scripts/codex-review.sh base main` |
 
-- 리뷰는 셸 백그라운드가 아니라 Herdr pane 에서 돌린다. 스크립트가 호출한 터미널과 같은 탭에 pane 을 띄우고 터미널 주소를 출력한다. 끝나면 pane 이 닫힌다.
+- 리뷰는 셸 백그라운드가 아니라 Herdr pane 에서 돌린다. 스크립트가 호출한 터미널과 같은 space 의 "리뷰" 탭에 pane 을 띄우고 터미널 주소를 출력한다. 화면은 지금 탭에 머문다. 끝나면 pane 이 닫히고, 마지막 리뷰가 끝나면 "리뷰" 탭도 사라진다.
 - 리뷰가 끝나기를 붙잡고 기다리지 않는다. `hc wait <주소> --timeout 3600` 을 백그라운드로 걸어 끝났다는 알림만 받고, 그동안 다른 일을 한다.
 - 결과는 `.codex-reviews/<이름>.md`, 전체 출력은 `.log`, 종료 코드는 `.exit` 에 남는다. 커밋 리뷰 이름은 `commit-<sha 7자>`, 브랜치 리뷰는 `base-<브랜치>` 다.
 

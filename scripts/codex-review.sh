@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Codex 리뷰를 Herdr pane 에서 돌린다.
-# 호출한 터미널과 같은 탭에 pane 이 생기고, 리뷰가 끝나면 pane 이 닫힌다.
+# 호출한 터미널과 같은 space 의 "리뷰" 탭에 pane 이 생기고, 리뷰가 끝나면 pane 이 닫힌다.
+# 화면은 지금 탭에 머문다. 마지막 리뷰가 끝나면 "리뷰" 탭도 사라진다.
 #
 # 사용:
 #   scripts/codex-review.sh doc <이름> <프롬프트 파일>   문서 리뷰(read-only 샌드박스)
@@ -54,11 +55,32 @@ esac
 
 [[ -n "${HC_TERMINAL_ID:-}" ]] || { echo "Herdr 터미널 안에서 실행해야 한다(HC_TERMINAL_ID 없음)" >&2; exit 2; }
 
-# 호출한 터미널의 space·tab 라벨을 붙이면 같은 탭에 pane 으로 뜬다.
-read -r space tab < <(hc get "$HC_TERMINAL_ID" --json | python3 -c '
+# 호출한 터미널의 space 를 읽는다. 리뷰는 그 space 의 "리뷰" 탭에 pane 으로 뜬다.
+space=$(hc get "$HC_TERMINAL_ID" --json | python3 -c '
 import json, sys
-labels = json.load(sys.stdin)["labels"]
-print(labels["herdr.space"], labels["herdr.tab"])')
+print(json.load(sys.stdin)["labels"]["herdr.space"])')
+
+# "리뷰" 탭이 있으면 거기에 더한다. 없으면 새 탭 id 를 만든다(Herdr 가 모르는 id 는 새 탭이 된다).
+tab_name="리뷰"
+tab=$(herdr-app ls 2>/dev/null | python3 -c '
+import json, sys
+space, name = sys.argv[1], sys.argv[2]
+try:
+    spaces = json.load(sys.stdin)["spaces"]
+except ValueError:
+    spaces = []
+for sp in spaces:
+    if sp["id"] == space:
+        for t in sp["tabs"]:
+            if t["name"] == name:
+                print(t["id"])
+                raise SystemExit
+' "$space" "$tab_name")
+new_tab=0
+if [[ -z "$tab" ]]; then
+  tab=tb$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+  new_tab=1
+fi
 
 # hc 터미널 이름은 코어 전체에서 유일해야 한다. 접미사는 저장소 경로와 자르기 전 리뷰 이름에서 만든다.
 # 다른 worktree 나 다른 리뷰는 함께 돌고, 같은 저장소의 같은 리뷰는 결과 파일이 겹치므로 두 번째가 거부된다.
@@ -71,5 +93,12 @@ if ! res=$(hc run --bg --json --no-notify --outlive-parent --rm --cwd "$root" --
   -- "$root/scripts/codex-review.sh" __run "$name" "${cmd[@]}" 2>&1); then
   echo "리뷰를 시작하지 못했다. name_taken 이면 같은 리뷰($name)가 이미 돌고 있다: $res" >&2
   exit 1
+fi
+# 새 탭이면 이름을 붙인다. 탭이 화면에 생길 때까지 잠깐 다시 시도하고, 끝내 안 되면 번호 이름으로 둔다.
+if [[ $new_tab == 1 ]]; then
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    herdr-app do tab.rename --id "$tab" --name "$tab_name" >/dev/null 2>&1 && break
+    sleep 0.3
+  done
 fi
 printf '%s' "$res" | python3 -c 'import json, sys; print(json.load(sys.stdin)["address"])'
