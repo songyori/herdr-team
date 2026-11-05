@@ -336,7 +336,7 @@ Dispatch:
 
 - 그 메일함에 살아 있는 waiter 가 있으면 깨우지 않는다. 기다리던 프로세스가 직접 받는다.
 - 받는 터미널의 `hc get` 상태가 `idle` 이면 `hc send --if idle <터미널> "[horch] 새 메시지가 있다. 확인: <horch> --home <루트> check[ --dispatch D]"`.
-- 상태가 `done` 이면 같은 글을 `--if` 없이 보낸다. `done` 은 "턴을 마쳤지만 사람이 아직 안 봄" 이고, 아무도 보지 않는 pane 의 Claude 는 계속 `done` 에 머문다(사전 검증 S3). `hc send --if` 는 `idle`·`working` 만 받는다. 조회와 전송 사이에 `working` 이 되면 글은 입력 대기열에 들어가 그 턴 뒤에 처리되고, `blocked` 가 되면 hc 가 보내지 않는다.
+- 상태가 `done` 이면 같은 글을 `--if` 없이 보낸다. 상태 보고가 없으면(null, 시작 확인 창) 보내지 않는다(`skipped_unknown`). `done` 은 "턴을 마쳤지만 사람이 아직 안 봄" 이고, 아무도 보지 않는 pane 의 Claude 는 계속 `done` 에 머문다(사전 검증 S3). `hc send --if` 는 `idle`·`working` 만 받는다. 조회와 전송 사이에 `working` 이 되면 글은 입력 대기열에 들어가 그 턴 뒤에 처리되고, `blocked` 가 되면 hc 가 보내지 않는다.
 - 상태가 `error` 면 같은 글을 `--if` 없이 보낸다(hc 는 error 인 에이전트에 입력을 보내 이어가게 한다). `working`·`blocked` 이면 보내지 않는다.
 - 깨우기 실패는 무시하고 결과의 `wake` 필드에 적는다. 메시지는 저장소에 남는다.
 - 환경 변수 `CODEX_SANDBOX` 가 있으면(Codex 샌드박스 안) hc 를 부르지 않고 `wake: "skipped_sandbox"` 로 적는다. 사전 검증 S2 에서 Codex `workspace-write` 샌드박스가 hc 소켓을 막는 것을 확인했다(`cannot start core: Operation not permitted`).
@@ -434,14 +434,14 @@ Python 3.11 이상, `hc` 실행과 `hc server status`, `herdr-app status`, 저�
 |---|---|---|
 | S1 | `herdr.space`·`herdr.tab` 라벨과 `--no-parent` 로 띄운 hc 터미널이 그 탭에 pane 으로 붙는가. 가드가 `exec` 한 Claude 가 Herdr 에서 에이전트로 보이고 상태를 보고하는가 | 구현을 멈추고 배치·실행 방식을 다시 설계한다(이 문서를 고친 뒤 진행) |
 | S2 | 가드가 `exec` 한 `codex --no-daemon` 워커가 hc 에 상태를 보고하는가. 가드가 넣은 `-c shell_environment_policy.set.HC_TERMINAL_ID=...` 로 Codex 셸에 `$HC_TERMINAL_ID` 가 보이는가. `CODEX_SANDBOX` 가 설정되는가 | 상태 보고가 없으면 Codex 워커의 `observed blocked`·`error` 를 포기한다. `$HC_TERMINAL_ID` 주입이 안 되면 Codex 워커 지원을 빼고 이 문서를 고친다. `CODEX_SANDBOX` 가 없으면 샌드박스 감지를 빼고 hc 호출 실패로 처리한다 |
-| S3 | `idle` 인 Claude·Codex 에 `hc send --if idle` 이 사용자 메시지로 들어가는가 | 깨우기를 빼고 9장의 계약에만 의존한다 |
+| S3 | `idle` 인 Claude·Codex 에 `hc send --if idle` 이 사용자 메시지로 들어가는가 | 끝남(2026-11-05). Claude 는 `done` 에 머물러 실패했고, 9장 깨우기가 `done` 이면 `--if` 없이 보내도록 바꿨다(아래 결과) |
 | S4 | 끝남(2026-11-04). 10장 생존 판정표에 결과를 반영했다 | — |
 
 S2 중 이미 확인한 것(2026-11-04, `codex exec -s workspace-write --add-dir`, codex-cli 0.166.0): `--add-dir` 경로의 SQLite 쓰기는 된다. 샌드박스 안에서 hc 소켓은 막힌다. 사용자 Codex 설정(`inherit = "core"`)에서는 `$HC_TERMINAL_ID` 가 셸에 전달되지 않는다.
 
 #### 사전 검증 결과 (2026-11-05, hc 0.1.18, codex-cli 0.166.0)
 
-- S1: 통과. 라벨을 붙인 터미널이 그 탭의 별도 pane 으로 붙었다(`herdr-app ls`). 가드식 exec 뒤 `status.app` = `claude-code`, `argv` 는 띄운 argv 그대로다.
+- S1: 통과. 라벨을 붙인 터미널이 그 탭의 별도 pane 으로 붙었다(`herdr-app ls`. 창이 새 프레임을 그리지 않아 스크린샷으로는 확인하지 못했다). 가드식 exec 뒤 `status.app` = `claude-code`, `argv` 는 띄운 argv 그대로다.
   - 처음 보는 폴더에서 Claude 는 폴더 신뢰 확인 창에서 멈춘다. 이때 `status` 는 `blocked` 가 아니라 null 이다. 기본 선택이 "No, exit" 라 Enter 만 누르면 Claude 가 끝난다.
 - S2: 통과. Codex 셸의 `HC_TERMINAL_ID` 가 그 터미널 주소와 같다. `--add-dir` DB 쓰기가 된다. `CODEX_SANDBOX` = `seatbelt`. Codex 는 `status.app` = `codex` 로 상태를 보고한다.
   - 플러그인 hook 이 바뀐 뒤 새 Codex 는 "Hooks need review" 확인 창에서 멈춘다. 이때도 상태 보고가 없다. `--dangerously-bypass-hook-trust` 로 띄우면 확인 창 없이 `idle` 을 보고한다(설정 키 `-c bypass_hook_trust=true` 는 듣지 않았다).

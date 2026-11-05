@@ -70,6 +70,8 @@ docs/superpowers/specs/2026-11-04-herdr-orch-design.md   사전 검증 결과 �
 
 ### Task 1: 사전 검증 S1–S3 (실제 Herdr)
 
+**끝남(2026-11-05, 커밋 b6ccb67).** 결과와 대응은 설계 12장 "사전 검증 결과" 에 있다. 아래 단계는 기록용이며 다시 실행하지 않는다. 실제로는 신뢰 대화상자 동안 `status` 가 null 이었고, 기본 선택이 "No, exit" 라 `down enter` 가 필요했고, 대답 뒤 Claude 상태는 `done` 이었다.
+
 설계 12장 S1–S3 을 실제 Herdr 에서 확인하고 결과를 설계에 적는다. S4 와 S2 일부는 이미 끝났다(설계 10장·12장). 코드는 만들지 않는다. **S1 이 실패하면 여기서 멈추고 사용자에게 보고한다.** S2 의 `$HC_TERMINAL_ID` 주입이 실패해도 멈추고 보고한다.
 
 **Files:**
@@ -4469,7 +4471,7 @@ hc run --bg --json --no-parent --name e2e-coord --cwd "$E2E/repo" \
   claude --permission-mode bypassPermissions "$(cat "$E2E/coord-prompt.md")"
 ```
 
-코디네이터와 Claude 워커는 사람 없이 돌아야 하므로 권한 확인을 끈다(`bypassPermissions`). 이 저장소는 버리는 시험 저장소라서 허용한다. 실제 프로젝트에 같은 설정을 쓰지 않는다. 새 폴더라 폴더 신뢰 대화상자에서 멈추면 `hc read` 로 확인한 뒤 `hc keys <터미널> enter` 로 신뢰한다(워커 터미널도 같다).
+코디네이터와 Claude 워커는 사람 없이 돌아야 하므로 권한 확인을 끈다(`bypassPermissions`). 이 저장소는 버리는 시험 저장소라서 허용한다. 실제 프로젝트에 같은 설정을 쓰지 않는다. 새 폴더라 폴더 신뢰 대화상자에서 멈추면 `hc read` 로 커서 위치를 확인한 뒤 `hc keys <터미널> down enter` 로 "Yes, I trust this folder" 를 고른다(기본 선택이 "No, exit" 라 Enter 만 누르면 Claude 가 끝난다. 워커 터미널도 같다).
 
 - [ ] **Step 3: 진행 관찰**
 
