@@ -319,6 +319,24 @@ class TeamCase(unittest.TestCase):
                               text=True, env=env, timeout=60)
         return proc.returncode, _parse(proc.stdout, proc.stderr)
 
+    # --- 태스크 흐름(Task 6 부터) ---
+    def work_dispatch(self, tid: str) -> str:
+        return self.task_state(tid)["rounds"][-1]["work"]["dispatch"]
+
+    def act_work(self, tid: str, files: dict | None = None, *, outcome: str = "succeeded", commit: bool = True,
+                 report: str | None = None) -> tuple[int, dict]:
+        """현재 라운드 작업 워커가 owns 안에 커밋하고 보고서를 쓴 뒤 done 한다."""
+        st = self.task_state(tid)
+        rnd = st["round"]
+        rel = f"docs/tasks/{tid}/report.md"
+        action = {"write": files if files is not None else {"src/app.py": f"print('hello r{rnd}')\n"},
+                  "report": report if report is not None else f"## r{rnd}\n- 바꾼 파일: src/app.py\n",
+                  "report_path": rel,
+                  "done": {"outcome": outcome, "summary": f"{tid} r{rnd} 끝", "report_path": rel}}
+        if commit:
+            action["commit"] = f"[{tid}] r{rnd} 작업"
+        return self.act(self.work_dispatch(tid), action)
+
 
 def _parse(stdout: str, stderr: str) -> dict:
     for line in reversed(stdout.strip().splitlines()):

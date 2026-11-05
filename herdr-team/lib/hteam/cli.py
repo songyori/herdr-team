@@ -17,6 +17,7 @@ from .paths import VERSION
 COMMAND_MODULES: tuple[str, ...] = (
     "specs",
     "plan",
+    "tasks",
 )
 
 
