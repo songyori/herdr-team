@@ -1,5 +1,4 @@
 """상태 파일(설계 5.3), 사양 검사(5.1), task new."""
-import json
 import threading
 import unittest
 
@@ -75,6 +74,47 @@ class StateTest(TeamCase):
             state.require(self.p, "T-999")
         self.assertEqual(ctx.exception.code, "unknown_task")
 
+    def _write_state(self, tid, text):
+        self.p.ensure_state()
+        self.p.state_path(tid).write_text(text, encoding="utf-8")
+
+    def test_corrupt_state_file_is_its_own_error(self):
+        for text in ("{ not json", "[]", "\"x\"", "\xff"):
+            self._write_state("T-001", text)
+            for fn in (state.load, state.require):
+                with self.assertRaises(HteamError) as ctx:
+                    fn(self.p, "T-001")
+                self.assertEqual((ctx.exception.code, ctx.exception.exit_code), ("bad_state_file", 1), text)
+        self.assertIsNone(state.load(self.p, "T-002"))  # 없는 파일은 None
+
+    def test_create_refuses_existing_corrupt_file(self):
+        self._write_state("T-001", "{ not json")
+        with self.assertRaises(HteamError) as ctx:
+            state.create(self.p, "T-001", "developer")
+        self.assertEqual(ctx.exception.exit_code, 3)
+        self.assertEqual(self.p.state_path("T-001").read_text(), "{ not json")
+
+    def test_corrupt_state_number_not_reused(self):
+        self._write_state("T-005", "{ not json")
+        self._write_state("T-006", "[]")
+        self.assertEqual(state.all_states(self.p), [])
+        self.assertEqual(specs.next_id(self.p), "T-007")
+
+    def test_all_states_without_id_do_not_crash(self):
+        state.create(self.p, "T-001", "developer")
+        self._write_state("T-002", "{}")
+        self.assertEqual([s["id"] for s in state.all_states(self.p)], ["T-001"])
+        self.assertEqual(specs.next_id(self.p), "T-003")
+
+    def test_bad_task_id_rejected(self):
+        for bad in ("../run", "T-1", "X-001", "T-001/x"):
+            for call in (lambda t: state.load(self.p, t), lambda t: state.require(self.p, t),
+                         lambda t: state.create(self.p, t, "developer"),
+                         lambda t: state.edit(self.p, t).__enter__()):
+                with self.assertRaises(HteamError) as ctx:
+                    call(bad)
+                self.assertEqual((ctx.exception.code, ctx.exception.exit_code), ("bad_task_id", 2), bad)
+
 
 class SpecTest(TeamCase):
     def setUp(self):
@@ -126,6 +166,54 @@ class SpecTest(TeamCase):
         with self.assertRaises(HteamError) as ctx:
             specs.load(self.p, "X-1")
         self.assertEqual(ctx.exception.code, "bad_task_id")
+
+    def test_code_fence_headers_are_not_sections(self):
+        body = VALID_BODY.replace("- python3 src/app.py 가 hello 를 출력한다.",
+                                  "템플릿:\n```markdown\n## Target\n<x>\n\n## Change\n<y>\n```\n- 통과")
+        self.write_spec("T-001", body=body, commit=False)
+        spec = specs.check(self.p, self.cfg, "T-001")
+        self.assertEqual(spec.sections["Target"], "src/app.py")
+        self.assertIn("## Change", spec.sections["Acceptance"])
+
+    def test_markup_only_placeholder_is_empty(self):
+        for ph in ("- <완료를 증명할 테스트>", "* **<x>**", "1. <x>", "> <x>", "- _<x>_ -"):
+            body = VALID_BODY.replace("- python3 src/app.py 가 hello 를 출력한다.", ph)
+            self.write_spec("T-001", body=body, commit=False)
+            with self.assertRaises(HteamError, msg=ph) as ctx:
+                specs.check(self.p, self.cfg, "T-001")
+            self.assertEqual(ctx.exception.data["problems"], ["## Acceptance 절이 비었거나 <…> 자리표시뿐이다"], ph)
+
+    def test_load_unreadable_spec_is_bad_spec(self):
+        path = self.proj / ".herdr-team" / "tasks" / "T-001.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"---\xff\xfe\n")
+        with self.assertRaises(HteamError) as ctx:
+            specs.load(self.p, "T-001")
+        self.assertEqual((ctx.exception.code, ctx.exception.exit_code), ("bad_spec", 2))
+        path.unlink()
+        path.mkdir()
+        with self.assertRaises(HteamError) as ctx:
+            specs.load(self.p, "T-001")
+        self.assertEqual((ctx.exception.code, ctx.exception.exit_code), ("bad_spec", 2))
+        path.rmdir()
+        path.write_text("---\n", encoding="utf-8")
+        path.chmod(0)
+        try:
+            with self.assertRaises(HteamError) as ctx:
+                specs.load(self.p, "T-001")
+            self.assertEqual((ctx.exception.code, ctx.exception.exit_code), ("bad_spec", 2))
+        finally:
+            path.chmod(0o644)
+
+    def test_new_rejects_any_line_break_in_title_and_owns(self):
+        for sep in ("\r", "\x0b", "\x0c", "\x1c", "\x85", "\u2028", "\n"):
+            with self.assertRaises(HteamError, msg=repr(sep)) as ctx:
+                specs.new(self.p, self.cfg, "developer", f"a{sep}role: nope")
+            self.assertEqual(ctx.exception.exit_code, 2)
+            with self.assertRaises(HteamError, msg=repr(sep)) as ctx:
+                specs.new(self.p, self.cfg, "developer", "ok", owns=[f"src/**{sep}role: nope"])
+            self.assertEqual(ctx.exception.exit_code, 2)
+        self.assertEqual(specs.list_ids(self.p), [])
 
 
 class TaskNewTest(TeamCase):

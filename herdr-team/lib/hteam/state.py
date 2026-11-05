@@ -9,7 +9,7 @@ import json
 import re
 from typing import Iterator
 
-from .errors import CONFLICT, USAGE, HteamError
+from .errors import CONFLICT, FAIL, USAGE, HteamError
 from .util import flock, now, read_json, write_atomic
 
 STATUSES = ("pending", "working", "launch_failed", "reviewing", "approved", "changes", "awaiting_user", "done",
@@ -37,8 +37,37 @@ def project_lock(p) -> Iterator[None]:
         yield
 
 
+def check_id(tid: str) -> None:
+    """경로를 만들기 전에 태스크 ID 모양을 확인한다(`../run` 같은 값 차단)."""
+    if not isinstance(tid, str) or not ID_RE.fullmatch(tid):
+        raise HteamError("bad_task_id", f"태스크 ID 는 T- 와 숫자 3자리 이상이다: {tid!r}", USAGE)
+
+
+def _read_state(path, tid: str) -> dict | None:
+    """없으면 None. 읽을 수 없거나 JSON 객체가 아니면 bad_state_file(없는 것으로 보지 않는다)."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise _corrupt(path, tid, str(exc)) from None
+    try:
+        st = json.loads(text)
+    except ValueError as exc:
+        raise _corrupt(path, tid, f"JSON 이 아니다: {exc}") from None
+    if not isinstance(st, dict):
+        raise _corrupt(path, tid, "JSON 객체가 아니다")
+    return st
+
+
+def _corrupt(path, tid: str, why: str, exit_code: int = FAIL) -> HteamError:
+    return HteamError("bad_state_file", f"{tid} 상태 파일이 손상됐다({path.name}): {why}", exit_code,
+                      "파일을 직접 고치거나 치운 뒤 다시 시도한다")
+
+
 def load(p, tid: str) -> dict | None:
-    return read_json(p.state_path(tid), None)
+    check_id(tid)
+    return _read_state(p.state_path(tid), tid)
 
 
 def require(p, tid: str) -> dict:
@@ -60,6 +89,7 @@ def closed_error(st: dict) -> HteamError:
 @contextlib.contextmanager
 def edit(p, tid: str, expect=None) -> Iterator[dict]:
     """태스크 잠금 아래에서 읽고, 블록이 예외 없이 끝나면 원자적으로 쓴다. expect 가 있으면 이전 상태를 확인한다."""
+    check_id(tid)
     p.ensure_state()
     with flock(p.task_states / f"{tid}.lock"):
         st = require(p, tid)
@@ -73,10 +103,16 @@ def edit(p, tid: str, expect=None) -> Iterator[dict]:
 
 
 def create(p, tid: str, role: str) -> dict:
-    """없을 때만 pending 으로 만든다. 있으면 그대로 돌려준다."""
+    """없을 때만 pending 으로 만든다. 있으면 그대로 돌려준다. 손상된 파일이 있으면 덮어쓰지 않고 exit 3 이다."""
+    check_id(tid)
     p.ensure_state()
     with flock(p.task_states / f"{tid}.lock"):
-        st = load(p, tid)
+        try:
+            st = load(p, tid)
+        except HteamError as exc:
+            if exc.code == "bad_state_file":
+                exc.exit_code = CONFLICT
+            raise
         if st is None:
             st = new(tid, role)
             save(p, st)
@@ -89,16 +125,21 @@ def move(st: dict, to: str, event: str, **info) -> None:
     st["status"] = to
 
 
-def all_states(p) -> list[dict]:
+def state_ids(p) -> list[str]:
+    """상태 파일 이름의 ID. 손상된 파일도 센다(번호 재사용 방지)."""
     if not p.task_states.is_dir():
         return []
+    return sorted((f.stem for f in p.task_states.glob("T-*.json") if ID_RE.fullmatch(f.stem)), key=id_number)
+
+
+def all_states(p) -> list[dict]:
+    """읽히는 상태만 ID 순으로 돌려준다. 손상됐거나 id 가 파일 이름과 다른 파일은 건너뛴다."""
     found = []
-    for path in p.task_states.glob("T-*.json"):
-        if ID_RE.fullmatch(path.stem):
-            st = read_json(path, None)
-            if isinstance(st, dict):
-                found.append(st)
-    return sorted(found, key=lambda s: id_number(s["id"]))
+    for tid in state_ids(p):
+        st = read_json(p.state_path(tid), None)
+        if isinstance(st, dict) and st.get("id") == tid:
+            found.append(st)
+    return found
 
 
 def current_round(st: dict) -> dict | None:

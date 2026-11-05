@@ -12,6 +12,8 @@ ID_RE = re.compile(r"T-\d{3,}")
 SECTIONS = ("Target", "Change", "Constraints", "Acceptance")
 LIST_KEYS = ("owns", "depends_on")
 PLACEHOLDER_RE = re.compile(r"<[^<>\n]*>")
+# 자리표시를 지운 뒤 남는 목록·강조·인용 서식과 공백. 이것뿐이면 빈 절이다.
+MARKUP_RE = re.compile(r"(?m)^\s*\d+[.)](?=\s)|[\s\-*_+>`~|]")
 NEW_BODY = """## Target
 <대상 파일·컴포넌트·환경>
 
@@ -42,6 +44,11 @@ def _bad(message: str) -> HteamError:
     return HteamError("bad_spec", message, USAGE)
 
 
+def _one_line(text: str) -> bool:
+    """splitlines 가 나누는 모든 줄바꿈(\\r, \\x0b, \\x0c, \\x85, \\u2028 …)이 없다."""
+    return text.splitlines() == [text]
+
+
 def parse(text: str) -> Spec:
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
@@ -64,9 +71,19 @@ def parse(text: str) -> Spec:
         raise _bad(f"front matter 에 {', '.join(missing)} 가 없다")
     body = "\n".join(lines[end + 1:]).strip("\n") + "\n"
     sections: dict[str, str] = {}
-    current, buf = None, []
+    current, buf, fence = None, [], None
     for line in body.splitlines():
-        m = re.match(r"^## (.+?)\s*$", line)
+        # 코드 블록 안의 `## ...` 는 절 머리가 아니다.
+        fm = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if fm:
+            if fence is None:
+                fence = fm.group(1)[0]
+            elif fm.group(1)[0] == fence:
+                fence = None
+            if current is not None:
+                buf.append(line)
+            continue
+        m = None if fence else re.match(r"^## (.+?)\s*$", line)
         if m:
             if current is not None:
                 sections[current] = "\n".join(buf).strip()
@@ -86,7 +103,7 @@ def problems(spec: Spec) -> list[str]:
         text = spec.sections.get(name)
         if text is None:
             found.append(f"## {name} 절이 없다")
-        elif not PLACEHOLDER_RE.sub("", text).strip():
+        elif not MARKUP_RE.sub("", PLACEHOLDER_RE.sub("", text)):
             found.append(f"## {name} 절이 비었거나 <…> 자리표시뿐이다")
     if spec.front.get("worker") not in (None, "claude", "codex"):
         found.append(f"worker 는 claude·codex 중 하나다: {spec.front['worker']!r}")
@@ -102,6 +119,8 @@ def load(p, tid: str) -> Spec:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         raise HteamError("unknown_task", f"{tid} 사양이 없다({path.relative_to(p.root)})", USAGE) from None
+    except (OSError, ValueError) as exc:  # 디렉터리, 권한, UTF-8 아님
+        raise _bad(f"{path.name} 을 읽지 못했다: {exc}") from None
     spec = parse(text)
     if spec.id != tid:
         raise _bad(f"{path.name} 의 id 가 {spec.id} 다")
@@ -132,7 +151,7 @@ def list_ids(p) -> list[str]:
 
 
 def next_id(p) -> str:
-    known = list_ids(p) + [s["id"] for s in state.all_states(p)]
+    known = list_ids(p) + state.state_ids(p)
     n = max((state.id_number(t) for t in known), default=0) + 1
     return f"T-{n:03d}"
 
@@ -152,8 +171,11 @@ def render(tid: str, role: str, title: str, body: str, *, owns: list[str] | None
 
 def new(p, cfg, role: str, title: str, owns: list[str] | None = None, depends: list[str] | None = None) -> dict:
     cfg.role(role)
-    if not title.strip() or "\n" in title:
+    if not title.strip() or not _one_line(title):
         raise HteamError("bad_title", "제목은 비지 않은 한 줄이다", USAGE)
+    for glob in owns or []:
+        if not _one_line(glob):
+            raise _bad(f"owns 값은 한 줄이다: {glob!r}")
     for dep in depends or []:
         if not ID_RE.fullmatch(dep):
             raise HteamError("bad_task_id", f"depends_on 의 {dep!r} 는 태스크 ID 가 아니다", USAGE)
