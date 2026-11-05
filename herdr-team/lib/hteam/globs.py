@@ -94,13 +94,15 @@ def any_overlap(xs, ys) -> list[tuple[str, str]]:
 def within(inner: str, outer: str) -> bool:
     """inner 가 outer 안에 있다고 확실할 때만 True(보수적). 판단할 수 없으면 False.
 
-    같은 glob, 와일드카드 없는 경로가 outer 에 맞을 때, outer 가 `<고정 접두사>**` 이고 inner 의 고정 접두사가
-    그 접두사로 시작할 때만 안이다(설계 4.1: front matter owns 는 직무 owns 를 좁힌다). owns_problem 에 걸리면 안이 아니다."""
+    같은 glob, 둘 다 고정 경로이고 inner 가 outer 와 같거나 그 아래일 때, outer 가 `<고정 접두사>**` 이고 inner 의
+    고정 접두사가 그 접두사로 시작할 때만 안이다(설계 4.1: front matter owns 는 직무 owns 를 좁힌다). 고정 경로 inner 는
+    그 아래 전체(git·matches)라 outer 가 그 전체를 덮어야 한다: `src/a.py` 는 `src/*.py` 안이 아니다.
+    owns_problem 에 걸리면 안이 아니다."""
     if owns_problem(inner) or owns_problem(outer):
         return False
     if inner == outer:
         return True
-    if literal_prefix(inner) == inner:
+    if literal_prefix(inner) == inner and literal_prefix(outer) == outer:
         return matches(inner, outer)
     head = outer[:-2]
     return outer.endswith("**") and literal_prefix(outer) == head and literal_prefix(inner).startswith(head)

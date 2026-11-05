@@ -244,6 +244,19 @@ class SpecTest(TeamCase):
             self.assertEqual(ctx.exception.exit_code, 2)
         self.assertEqual(specs.list_ids(self.p), [])
 
+    def test_owns_rules_in_problems_and_new(self):
+        # 읽기는 되지만(진단용) start 전 검사와 task new 는 owns 규칙(globs.owns_problem)으로 막는다
+        self.write_spec("T-001", owns="src/, src/[ab]/**", commit=False)
+        spec = specs.load(self.p, "T-001")
+        self.assertEqual(spec.owns, ["src/", "src/[ab]/**"])
+        found = "\n".join(specs.problems(spec))
+        self.assertIn("owns 'src/'", found)
+        self.assertIn("owns 'src/[ab]/**'", found)
+        for owns in (["src/../x/**"], ["src/[ab]/**"], ["src/"]):
+            with self.assertRaises(HteamError, msg=owns) as ctx:
+                specs.new(self.p, self.cfg, "developer", "ok", owns=owns)
+            self.assertEqual((ctx.exception.code, ctx.exception.exit_code), ("bad_spec", 2))
+
 
 class TaskNewTest(TeamCase):
     def setUp(self):

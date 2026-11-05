@@ -110,8 +110,25 @@ def hash_paths(root, paths: list[str]) -> dict[str, str | None]:
 
 
 def blob(root, commit: str, path: str) -> str | None:
-    proc = run(root, "rev-parse", "--verify", "-q", f"{commit}:{path}", check=False)
-    return proc.stdout.strip() if proc.returncode == 0 else None
+    """commit 의 path(git 최상위 기준, 글자 그대로) 객체 ID. 없다고 확인되면 None. git 이 읽지 못하면(잘못된 리비전,
+    손상·권한) git_failed 다. `rev-parse commit:path` 는 둘을 같은 exit 1 로 내서 ls-tree 를 쓴다."""
+    out = run(root, "ls-tree", "-z", "--full-tree", commit, "--", literal(path)).stdout
+    for entry in _z(out):
+        meta, _, name = entry.partition("\t")
+        if name == path:
+            return meta.split()[2]
+    return None
+
+
+def has_head(root) -> bool:
+    """커밋이 하나라도 있는가(HEAD 가 태어났는가). 객체는 읽지 않는다."""
+    args = ("rev-parse", "--verify", "-q", "HEAD")
+    return _yes_no(run(root, *args, check=False), args)
+
+
+def top_prefix(root) -> str:
+    """root 의 git 최상위 기준 경로(`sub/` 꼴, 최상위면 빈 문자열). root 기준 경로를 blob 에 넘길 때 앞에 붙인다."""
+    return run(root, "rev-parse", "--show-prefix").stdout.rstrip("\n")
 
 
 def is_ancestor(root, a: str, b: str) -> bool:

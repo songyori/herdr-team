@@ -6,7 +6,9 @@ from dataclasses import dataclass, field
 
 from . import config, roles, state
 from .errors import CONFLICT, USAGE, HteamError
+from .globs import owns_problem
 from .paths import find_project
+from .util import read_json
 
 ID_RE = re.compile(r"T-\d{3,}")
 SECTIONS = ("Target", "Change", "Constraints", "Acceptance")
@@ -113,6 +115,7 @@ def problems(spec: Spec) -> list[str]:
     if spec.front.get("worker") not in (None, "claude", "codex"):
         found.append(f"worker 는 claude·codex 중 하나다: {spec.front['worker']!r}")
     found += [f"depends_on 의 {d!r} 는 태스크 ID 가 아니다" for d in spec.depends_on if not ID_RE.fullmatch(d)]
+    found += [f"owns {o!r}: {why}" for o in spec.owns or [] if (why := owns_problem(o))]
     return found
 
 
@@ -155,8 +158,16 @@ def list_ids(p) -> list[str]:
     return sorted(ids, key=state.id_number)
 
 
+def _pending_ids(p) -> list[str]:
+    """멈춘 plan apply 가 plan.json pending 에 잡아 둔 ID. 사양·상태 파일이 아직 없어도 다른 태스크가 쓰지 않는다."""
+    plan = read_json(p.plan_file, None)
+    pending = plan.get("pending") if isinstance(plan, dict) else None
+    return [r["id"] for r in pending if isinstance(r, dict) and ID_RE.fullmatch(str(r.get("id")))] \
+        if isinstance(pending, list) else []
+
+
 def next_id(p) -> str:
-    known = list_ids(p) + state.state_ids(p)
+    known = list_ids(p) + state.state_ids(p) + _pending_ids(p)
     n = max((state.id_number(t) for t in known), default=0) + 1
     return f"T-{n:03d}"
 
@@ -179,8 +190,9 @@ def new(p, cfg, role: str, title: str, owns: list[str] | None = None, depends: l
     if not title.strip() or not _one_line(title):
         raise HteamError("bad_title", "제목은 비지 않은 한 줄이다", USAGE)
     for glob in owns or []:
-        if not _one_line(glob):
-            raise _bad(f"owns 값은 한 줄이다: {glob!r}")
+        why = owns_problem(glob)
+        if why:
+            raise _bad(f"owns {glob!r}: {why}")
     for dep in depends or []:
         if not ID_RE.fullmatch(dep):
             raise HteamError("bad_task_id", f"depends_on 의 {dep!r} 는 태스크 ID 가 아니다", USAGE)

@@ -6,6 +6,7 @@ import tomllib
 from dataclasses import dataclass
 
 from .errors import USAGE, HteamError
+from .globs import owns_problem
 
 AGENTS = ("claude", "codex")
 CLAUDE_ONLY = ("director", "designer")  # Claude Design 을 쓰는 직무(설계 4.2, 11장)
@@ -63,6 +64,8 @@ def validate(raw: dict) -> list[str]:
             errors.append(f"roles.{name} 는 worker = \"claude\" 만 된다(Claude Design 을 쓴다)")
         if not _str_list(role.get("owns"), nonempty=True):
             errors.append(f"roles.{name}.owns 는 비지 않은 문자열 목록이다")
+        else:  # 태스크 owns 와 같은 규칙. 어기면 owns_too_wide 가 아니라 설정 오류로 알린다
+            errors += [f"roles.{name}.owns {o!r}: {why}" for o in role["owns"] if (why := owns_problem(o))]
     approval = raw.get("user_approval_roles", [])
     if not _str_list(approval, nonempty=False):
         errors.append("user_approval_roles 는 문자열 목록이다")

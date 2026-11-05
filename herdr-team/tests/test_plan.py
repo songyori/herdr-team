@@ -347,9 +347,76 @@ class PlanApplyTest(TeamCase):
             tasks_dir.chmod(0o755)
         self.assertNotEqual(code, 0, out)
         self.assertTrue((self.state_dir / "plan.json").exists())
-        code, out = self.hteam("plan", "apply", "--append")
-        self.assertEqual((code, out["applied"]), (0, []), out)
+        code, out = self.hteam("plan", "apply", "--append")  # pending 이 남아 있어 그 apply 를 마저 끝낸다
+        self.assertEqual((code, out["applied"]), (0, [{"key": "a", "id": "T-001"}, {"key": "b", "id": "T-002"}]), out)
         self.assertEqual([self.task_state(t)["status"] for t in ("T-001", "T-002")], ["pending", "pending"])
+
+    def die(self, point):
+        code, out = self.hteam("plan", "apply", env={"HTEAM_TEST_DIE_AT": point})
+        self.assertEqual(code, 137, out)
+
+    def pending(self):
+        return json.loads((self.state_dir / "plan.json").read_text()).get("pending")
+
+    def test_pending_ids_are_reserved_for_task_new(self):
+        self.write_plan([task("a"), task("b", "tester", ["tests/**"])])
+        self.die("plan_before_commit")
+        (self.proj / ".herdr-team/tasks/T-002.md").unlink()  # T-002 를 쓰기 전에 죽은 것과 같다(pending 에만 있다)
+        code, out = self.hteam("task", "new", "--role", "developer", "--title", "손으로")
+        self.assertEqual((code, out.get("id")), (0, "T-003"), out)
+        hand = (self.proj / ".herdr-team/tasks/T-003.md").read_text()
+        code, out = self.hteam("plan", "apply")
+        self.assertEqual((code, out["applied"]), (0, [{"key": "a", "id": "T-004"}, {"key": "b", "id": "T-005"}]), out)
+        self.assertEqual((self.proj / ".herdr-team/tasks/T-003.md").read_text(), hand)
+
+    def test_rollback_leaves_foreign_spec_alone(self):
+        self.write_plan([task("a"), task("b", "tester", ["tests/**"])])
+        self.die("plan_before_commit")
+        self.write_spec("T-002", commit=False)  # 같은 ID 를 다른 길로 쓴 사양(plan_key 없음)
+        code, out = self.hteam("plan", "apply")
+        self.assertEqual((code, out["error"]["code"]), (3, "plan_id_taken"), out)
+        self.assertEqual(self.spec_files(), ["T-001.md", "T-002.md"])
+        self.assertEqual([r["id"] for r in self.pending()], ["T-001", "T-002"])
+
+    def test_resume_refuses_foreign_committed_spec(self):
+        self.write_plan([task("a"), task("b", "tester", ["tests/**"])])
+        self.die("plan_after_commit")
+        self.write_spec("T-002")  # 커밋된 T-002 를 plan_key 없는 사양으로 바꿔 커밋
+        code, out = self.hteam("plan", "apply")
+        self.assertEqual((code, out["error"]["code"]), (3, "plan_id_taken"), out)
+        self.assertEqual([r["id"] for r in self.pending()], ["T-001", "T-002"])
+
+    def test_git_read_error_during_recovery_keeps_everything(self):
+        self.write_plan([task("a")])
+        self.die("plan_after_commit")
+        tree = self.git("rev-parse", "HEAD:.herdr-team/tasks").strip()
+        obj = self.proj / ".git/objects" / tree[:2] / tree[2:]
+        obj.chmod(0o000)  # 트리 객체를 읽지 못하게 한다
+        try:
+            code, out = self.hteam("plan", "apply")
+        finally:
+            obj.chmod(0o444)
+        self.assertEqual((code, out["error"]["code"]), (1, "git_failed"), out)
+        self.assertEqual(self.spec_files(), ["T-001.md"])
+        self.assertEqual(self.git("status", "--porcelain", "--", ".herdr-team"), "")
+        self.assertEqual([r["id"] for r in self.pending()], ["T-001"])
+        code, out = self.hteam("plan", "apply")
+        self.assertEqual((code, out["applied"]), (0, [{"key": "a", "id": "T-001"}]), out)
+
+    def test_plain_apply_resumes_after_state_failure(self):
+        self.write_plan([task("a")])
+        tasks_dir = self.state_dir / "tasks"
+        tasks_dir.mkdir(parents=True, exist_ok=True)
+        tasks_dir.chmod(0o555)  # 커밋 뒤 상태 파일을 만들지 못하게 한다
+        try:
+            code, out = self.hteam("plan", "apply")
+        finally:
+            tasks_dir.chmod(0o755)
+        self.assertNotEqual(code, 0, out)
+        code, out = self.hteam("plan", "apply")
+        self.assertEqual((code, out["applied"]), (0, [{"key": "a", "id": "T-001"}]), out)
+        self.assertEqual(self.task_state("T-001")["status"], "pending")
+        self.assertIsNone(self.pending())
 
     def test_apply_reads_tasks_once_under_project_lock(self):
         self.write_plan([task("a")])
@@ -386,7 +453,12 @@ class OwnsWithinTest(TeamCase):
         from hteam.globs import within
         self.assertTrue(within("src/auth/**", "src/**"))
         self.assertTrue(within("src/*.py", "src/**"))
-        self.assertTrue(within("src/a.py", "src/*.py"))
+        # 와일드카드 없는 owns 는 그 아래 전체(git·matches)다. outer 가 그 전체를 덮어야(`**`, `<접두사>/**`) 안이다
+        self.assertFalse(within("src/a.py", "src/*.py"))
+        self.assertFalse(within("src/auth", "src/*"))
+        self.assertTrue(within("src/auth", "src/**"))
+        self.assertTrue(within("src/a/b", "src/a"))
+        self.assertTrue(within("package.json", "package.json"))
         self.assertTrue(within("src/**", "src/**"))
         self.assertFalse(within("**", "src/**"))
         self.assertFalse(within("srcx/**", "src/**"))
@@ -398,6 +470,30 @@ class OwnsWithinTest(TeamCase):
         cfg = config.load(Project(self.proj))
         errs = plan.validate(cfg, [task("a", owns=["**"])])[0]
         self.assertEqual(errs, ["a: owns 가 직무 developer 의 owns 를 넘거나 판단할 수 없다: **"])
+
+
+class SubdirPlanTest(TeamCase):
+    """프로젝트가 git 저장소의 하위 디렉터리에 있다. 사양 경로는 프로젝트 기준, HEAD 의 경로는 git 최상위 기준이다."""
+
+    def setUp(self):
+        super().setUp()
+        self.proj = self.proj / "sub"
+        self.proj.mkdir()
+        self.init_project()
+        self.setup_run()
+
+    def test_resume_after_commit_in_subdir_project(self):
+        path = self.proj / "docs/planning/tasks.toml"
+        path.parent.mkdir(parents=True)
+        path.write_text(toml([task("a")]), encoding="utf-8")
+        code, out = self.hteam("plan", "apply", env={"HTEAM_TEST_DIE_AT": "plan_after_commit"})
+        self.assertEqual(code, 137, out)
+        sha = self.head()
+        code, out = self.hteam("plan", "apply")
+        self.assertEqual((code, out["applied"], out["commit"]), (0, [{"key": "a", "id": "T-001"}], sha), out)
+        self.assertTrue((self.proj / ".herdr-team/tasks/T-001.md").exists())
+        self.assertEqual(self.git("status", "--porcelain", "--", ".herdr-team"), "")
+        self.assertEqual(self.task_state("T-001")["status"], "pending")
 
 
 class GitioTest(TeamCase):
@@ -413,6 +509,15 @@ class GitioTest(TeamCase):
             with self.assertRaises(HteamError) as cm:
                 call()
             self.assertEqual((cm.exception.code, cm.exception.exit_code), ("git_failed", 1))
+
+    def test_blob_tells_absent_from_error(self):
+        head = self.head()
+        self.assertIsNotNone(gitio.blob(self.proj, head, "README.md"))
+        self.assertIsNone(gitio.blob(self.proj, head, "nope.md"))
+        self.assertIsNone(gitio.blob(self.proj, head, "README.m?"))  # 경로는 글자 그대로다
+        with self.assertRaises(HteamError) as cm:
+            gitio.blob(self.proj, "no-such-rev", "README.md")
+        self.assertEqual((cm.exception.code, cm.exception.exit_code), ("git_failed", 1))
 
     def test_commit_paths_names_literal_paths(self):
         (self.proj / "a[1].txt").write_text("x\n")

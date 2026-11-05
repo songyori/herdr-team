@@ -222,13 +222,38 @@ def _rel(p, tid: str) -> str:
 
 
 def _committed(p, files: list[str]) -> list[str]:
-    return [f for f in files if gitio.blob(p.root, "HEAD", f)]
+    """files(프로젝트 기준) 가운데 HEAD 에 있는 것. 없다고 확인된 것만 빠진다. git 이 읽지 못하면 git_failed 로
+    멈춘다(되돌리지 않는다). 프로젝트가 git 하위 디렉터리일 수 있어 git 최상위 기준 경로로 바꿔 찾는다."""
+    if not files or not gitio.has_head(p.root):
+        return []
+    top = gitio.top_prefix(p.root)
+    return [f for f in files if gitio.blob(p.root, "HEAD", top + f)]
+
+
+def _check_ours(p, pending: list[dict], need_file: bool) -> None:
+    """pending ID 의 사양이 그 apply 가 쓴 것(front matter plan_key 가 pending key)인지 본다. 다른 길로 같은 ID 를
+    쓴 사양이면 지우거나 받아들이지 않고 멈춘다. need_file 이 거짓이면 아직 쓰지 않은(없는) 사양은 넘어간다."""
+    taken = []
+    for r in pending:
+        path = p.spec_path(r["id"])
+        if not need_file and not path.exists():
+            continue
+        try:
+            key = specs.parse(path.read_text(encoding="utf-8")).front.get("plan_key")
+        except (OSError, ValueError, HteamError):
+            key = None
+        if key != r["key"]:
+            taken.append(r["id"])
+    if taken:
+        raise HteamError("plan_id_taken", f"앞선 plan apply 가 잡아 둔 {', '.join(taken)} 에 그 apply 가 쓰지 않은 사양이 "
+                         "있다", CONFLICT, "그 사양을 다른 ID 로 옮기거나 치운 뒤 다시 plan apply 한다")
 
 
 def _rollback(p, plan: dict) -> dict | None:
     """커밋 전에 멈춘 apply 를 되돌린다: 그 실행이 쓴 사양을 인덱스에서 빼고 지운 뒤 plan.json 에서 뺀다.
     plan.json 은 마지막에 쓴다. 중간에 실패하면 pending 이 남아 다음 apply 가 마저 되돌린다."""
     pending = plan["pending"]
+    _check_ours(p, pending, need_file=False)
     files = [_rel(p, r["id"]) for r in pending]
     gitio.unstage(p.root, files)
     for f in files:
@@ -244,15 +269,19 @@ def _rollback(p, plan: dict) -> dict | None:
 
 def _settle(p, plan: dict) -> tuple[dict | None, dict | None]:
     """앞선 apply 가 남긴 pending 을 정리한다. 사양이 모두 HEAD 에 있으면 커밋 뒤에 멈춘 것이라 마저 끝내고
-    (그 결과를 돌려준다), 하나도 없으면 커밋 전에 멈춘 것이라 되돌린다."""
-    files = [_rel(p, r["id"]) for r in plan["pending"]]
+    (상태를 만든 뒤 pending 을 지우고 그 결과를 돌려준다), 하나도 없으면 커밋 전에 멈춘 것이라 되돌린다."""
+    pending = plan["pending"]
+    files = [_rel(p, r["id"]) for r in pending]
     done = _committed(p, files)
     if not done:
         return _rollback(p, plan), None
     if len(done) != len(files):
         raise HteamError("plan_incomplete", f"앞선 plan apply 의 사양 일부만 커밋돼 있다: {', '.join(done)}", CONFLICT,
                          "남은 사양을 커밋하거나 커밋한 사양을 되돌린 뒤 다시 plan apply 한다")
-    resumed = {"applied": [{"key": r["key"], "id": r["id"]} for r in plan["pending"]],
+    _check_ours(p, pending, need_file=True)
+    for r in pending:
+        state.create(p, r["id"], r["role"])
+    resumed = {"applied": [{"key": r["key"], "id": r["id"]} for r in pending],
                "commit": gitio.last_commit(p.root, files[0])}
     plan = {k: v for k, v in plan.items() if k != "pending"}
     write_json(p.plan_file, plan)
@@ -261,8 +290,9 @@ def _settle(p, plan: dict) -> tuple[dict | None, dict | None]:
 
 def _planned_specs(p) -> list[str]:
     found = []
+    committed = set(_committed(p, [_rel(p, tid) for tid in specs.list_ids(p)]))
     for tid in specs.list_ids(p):
-        if not _committed(p, [_rel(p, tid)]):
+        if _rel(p, tid) not in committed:
             continue  # 커밋하지 않은 사양은 계획이 아니다(멈춘 apply 가 남긴 파일이 재시도를 막지 않게)
         try:
             if specs.load(p, tid).front.get("plan_key"):
@@ -276,8 +306,9 @@ def apply(p, cfg, append: bool) -> dict:
     """tasks.toml 을 프로젝트 잠금 아래에서 한 번 읽어 검사하고 적용한다.
 
     실패할 수 있는 일(검사, 사양 왕복, digest)은 쓰기 전에 끝낸다. 쓰기 순서: plan.json(이번 태스크를 pending 으로)
-    → 사양 → 경로 지정 커밋 → pending 지움 → pending 상태. 커밋이 실패하면 이번에 쓴 것을 되돌린다. 커밋 앞뒤에서
-    프로세스가 죽으면 다음 apply 가 pending 을 보고 되돌리거나 마저 끝낸다. 상태 만들기는 늘 다시 해도 된다."""
+    → 사양 → 경로 지정 커밋 → pending 상태 파일 → pending 지움. 커밋이 실패하면 이번에 쓴 것을 되돌린다. 커밋 앞뒤에서
+    프로세스가 죽으면 다음 apply(--append 없이도)가 pending 을 보고 되돌리거나 마저 끝낸다. 상태 만들기는 늘 다시 해도
+    된다. pending ID 는 specs.next_id 가 예약한다."""
     path = p.root / PLAN_FILE
     with state.project_lock(p):
         tasks = read_tasks(path)
@@ -318,7 +349,7 @@ def apply(p, cfg, append: bool) -> dict:
         for t in fresh:
             known[t["key"]] = {"id": mapping[t["key"]], "digest": digest(t)}
         plan["order"] = [t["key"] for t in tasks]
-        plan["pending"] = [{"key": t["key"], "id": mapping[t["key"]]} for t in fresh]
+        plan["pending"] = [{"key": t["key"], "id": mapping[t["key"]], "role": t["role"]} for t in fresh]
         files = [_rel(p, tid) for tid in texts]
         write_json(p.plan_file, plan)
         try:
@@ -336,10 +367,10 @@ def apply(p, cfg, append: bool) -> dict:
                     exc.hint = f"되돌리지 못했다({again}). 원인을 없애고 다시 plan apply 하면 마저 정리한다"
             raise
         die_at("plan_after_commit")
-        del plan["pending"]
-        write_json(p.plan_file, plan)
         for t in fresh:
             state.create(p, mapping[t["key"]], t["role"])
+        del plan["pending"]
+        write_json(p.plan_file, plan)
     applied = [{"key": t["key"], "id": mapping[t["key"]]} for t in fresh]
     return {"applied": (resumed["applied"] if resumed else []) + applied, "commit": sha, "groups": groups}
 

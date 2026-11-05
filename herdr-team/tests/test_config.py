@@ -61,6 +61,10 @@ class ConfigTest(TeamCase):
                        "user_approval_roles 의 designer", "agents.gemini"):
             self.assertIn(needle, errs)
 
+    def test_role_owns_rules(self):
+        errs = "\n".join(self.errors(BASE_CONFIG.replace('"docs/qa/**"', '"docs/qa/"')))
+        self.assertIn("roles.tester.owns 'docs/qa/'", errs)
+
     def test_director_designer_claude_only(self):
         errs = self.errors(FULL.replace('title = "디자인"', 'title = "디자인"\nworker = "codex"'))
         self.assertTrue(any("roles.designer" in e and "claude" in e for e in errs), errs)
