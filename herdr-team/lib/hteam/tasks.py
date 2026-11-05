@@ -277,16 +277,17 @@ def _slots(st: dict) -> list[dict]:
     return [s for rd in st.get("rounds", []) for s in (rd["work"], *rd["reviews"])]
 
 
-def _round_targets(h, st: dict, *, kill: bool) -> dict[str, list[str]]:
+def _round_targets(h, st: dict, *, kill: bool, rows: list[dict] | None = None) -> dict[str, list[str]]:
     """정리할 Dispatch: {실행 키: [Dispatch, …]}. 모든 라운드의 모든 실행 기록(작업·리뷰 시도)을 본다.
 
     고르는 기준은 horch 의 실제 상태다(cleaned 표시가 아니다): 기록된 horch Task 의 모든 시도, Task 가 기록되지 않았으면
     그 실행 키(제목)의 모든 Task 의 시도(dispatch.slot_rows) 가운데 active·settled·retained·abandoned. 그래서 앞선
     fix·drop 이 멈춘 뒤 다시 불러도, 같은 Task 를 다시 띄워 남은 이전 시도가 있어도 빠짐없이 정리한다.
     launch_failed 는 건드리지 않는다. 실행자가 살아 있거나 launching 이면 exit 3 launching, kill 없는 active 는
-    exit 3 worker_active."""
+    exit 3 worker_active. rows 를 주면 worker-list 를 다시 묻지 않는다."""
     slots = _slots(st)
-    rows = h.workers() if slots else []
+    if rows is None:
+        rows = h.workers() if slots else []
     targets: dict[str, list[str]] = {}
     for slot in slots:
         if dispatch.busy(st, slot):
@@ -310,11 +311,38 @@ def _release(p, h, tid: str, targets: dict[str, list[str]], *, kill: bool) -> li
     released = []
     for title, dids in targets.items():
         released += [dispatch.cleanup(h, did, kill=kill) for did in dids]
+        die_at("after_release")
         with state.edit(p, tid) as cur:
             for slot in _slots(cur):
                 if slot["title"] == title:
                     slot["cleaned"] = True
     return released
+
+
+def _record_cleaned(p, tid: str, st: dict, rows: list[dict], targets: dict[str, list[str]]) -> None:
+    """앞 호출이 release 한 뒤 cleaned 를 쓰기 전에 멈췄으면 그 실행 기록은 다시 고를 대상이 없다. 그런 기록에 cleaned 를
+    쓴다(기록만 바꾼다). horch 에 그 기록의 Dispatch 가 있고 모두 released·launch_failed 이며 released 가 하나라도
+    있어야 한다. 그래서 살아 있는 Dispatch 가 있는 기록이나 launch_failed 뿐인 기록(horch 에 맡김)에는 쓰지 않는다."""
+    done = set()
+    for slot in _slots(st):
+        mine = dispatch.slot_rows(rows, slot)
+        if slot["title"] in targets or slot.get("cleaned") or not mine:
+            continue
+        if all(r["state"] in ("released", "launch_failed") for r in mine) and \
+                any(r["state"] == "released" for r in mine):
+            done.add(slot["title"])
+    if done:
+        with state.edit(p, tid) as cur:
+            for slot in _slots(cur):
+                if slot["title"] in done:
+                    slot["cleaned"] = True
+
+
+def _launch_view(st: dict) -> tuple:
+    """사전 검사가 본 것: 상태·라운드·실행자, 실행 기록마다 horch Task·Dispatch·장벽 자식·결과·취소."""
+    return (st["status"], st["round"], st.get("launcher"),
+            [(s["title"], s.get("horch_task"), s.get("dispatch"), s.get("launched"), s.get("result"), s.get("canceled"))
+             for s in _slots(st)])
 
 
 def _cancel_open(st: dict) -> None:
@@ -336,8 +364,10 @@ def _cancel_open(st: dict) -> None:
 def _changed(tid: str, seen: dict, cur: dict) -> HteamError:
     if cur["status"] in state.CLOSED:
         return state.closed_error(cur)
-    return HteamError("state_changed", f"{tid} 가 정리하는 사이 바뀌었다({seen['status']} r{seen['round']} → "
-                      f"{cur['status']} r{cur['round']})", CONFLICT,
+    what = f"{seen['status']} r{seen['round']} → {cur['status']} r{cur['round']}"
+    if (seen["status"], seen["round"]) == (cur["status"], cur["round"]):
+        what = f"{cur['status']} r{cur['round']} 의 실행 기록"
+    return HteamError("state_changed", f"{tid} 가 이 명령이 본 뒤 바뀌었다({what})", CONFLICT,
                       "다른 명령이 이 태스크를 바꿨다. hteam status 로 확인한 뒤 다시 한다", data={"status": cur["status"]})
 
 
@@ -351,28 +381,38 @@ def _close_round(p, h, tid: str, *, kill: bool, check=None, seen: dict | None = 
     """fix·drop 이 공유하는 순서 규칙(설계 6.4):
     1) 바꾸기 전에 거부할 것을 확인한다(대상 미리 고르기: launching, kill 없는 active. check).
     2) 끝나지 않은 실행 키·리뷰 시도의 취소를 먼저 저장한다(이후 start·review 가 그 기록으로 Dispatch 를 띄우지 않는다).
+       저장하는 태스크 잠금 안에서 1) 이 본 상태·라운드·실행 기록(_launch_view)이 그대로인지 본다. 그 사이 start 등이
+       워커를 띄웠으면 1) 의 판단이 맞지 않으므로 아무것도 바꾸지 않고 exit 3 state_changed.
     3) 취소 뒤 대상을 다시 골라 정리한다. 그 사이 상태·라운드가 바뀌었으면(다른 명령) 정리하지 않고 exit 3.
     호출자는 이것이 끝난 뒤에만 _closing 으로 마지막 전이(dropped 또는 새 라운드)를 쓴다. 어디서 멈춰도 같은 명령을 다시
     부르면 이어 한다.
 
     check(st) 는 취소를 저장하는 태스크 잠금 안에서 먼저 부른다(거부하면 아무것도 바꾸지 않는다). seen 에 취소 때 본
-    상태·라운드를 채운다. 진행 중인 review-finish 와 겹치지 않게 finish 잠금 안에서 한다. 잠금 순서(프로젝트 → finish →
+    상태·라운드를 채운다. review·review-finish 와 겹치지 않게 finish 잠금 안에서 한다. 잠금 순서(프로젝트 → finish →
     태스크)를 지키려고 프로젝트 잠금은 쥐지 않는다."""
     seen = {} if seen is None else seen
     with state.finish_lock(p, tid):
-        _round_targets(h, state.require(p, tid), kill=kill)
+        before = state.require(p, tid)
+        _round_targets(h, before, kill=kill)
+        die_at("before_cancel")
         with state.edit(p, tid) as cur:
             if cur["status"] in state.CLOSED:
                 raise state.closed_error(cur)
             if check is not None:
                 check(cur)
+            if _launch_view(cur) != _launch_view(before):
+                raise _changed(tid, before, cur)
             _cancel_open(cur)
             seen.update(status=cur["status"], round=cur["round"])
         die_at("after_cancel")
         cur = state.require(p, tid)
         if (cur["status"], cur["round"]) != (seen["status"], seen["round"]):
             raise _changed(tid, seen, cur)  # 취소 전에 다른 명령이 라운드를 쓰고 띄운 워커는 이 명령의 대상이 아니다
-        return _release(p, h, tid, _round_targets(h, cur, kill=kill), kill=kill)
+        rows = h.workers() if _slots(cur) else []
+        targets = _round_targets(h, cur, kill=kill, rows=rows)
+        released = _release(p, h, tid, targets, kill=kill)
+        _record_cleaned(p, tid, cur, rows, targets)
+        return released
 
 
 @contextlib.contextmanager
@@ -433,9 +473,25 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
     return run_work(p, cfg, h, tid)
 
 
+def _live_error(tid: str, slot: dict, row: dict) -> HteamError:
+    did = row["id"]
+    if row["state"] == "launching":
+        return HteamError("launching", f"{tid} 의 Dispatch {did}({slot['title']})가 아직 launching 이다", CONFLICT,
+                          "끝난 뒤 다시 한다", data={"dispatch": did})
+    return HteamError("worker_active", f"{tid} 의 Dispatch {did}({slot['title']})가 아직 active 다. 살아 있는 워커가 "
+                      "파일을 고칠 수 있어 owns 잠금을 풀지 않는다", CONFLICT,
+                      f"워커를 끝낸 뒤 다시 한다: horch worker-abandon --dispatch {did} --kill 뒤 horch worker-release "
+                      f"--dispatch {did}. 태스크를 버리려면 hteam drop {tid} --force", data={"dispatch": did})
+
+
 def accept(p, tid: str) -> dict:
     """approved → done(승인 직무면 awaiting_user), awaiting_user → done(설계 6.4). 작업 Dispatch 를 release 한다
-    (같은 horch Task 의 이전 시도도). 정리하지 못하면 경고로 남기고 cleaned 는 쓰지 않는다. 전이는 한다."""
+    (같은 horch Task 의 이전 시도도).
+
+    태스크의 작업·리뷰 Dispatch 가 하나라도 launching·active 면(review 는 retain 실패를 견디므로 approved 에도 작업
+    워커가 살아 있을 수 있다) 아무것도 바꾸지 않고 exit 3 이다. 닫으면 owns 잠금이 풀리고 fix·drop 도 task_closed 라
+    그 워커를 정리할 길이 없다. worker-list 를 묻지 못하면 확인할 수 없으므로 역시 바꾸지 않는다. 끝난 Dispatch 의
+    release 실패는 Dispatch 마다 경고로 남기고 cleaned 는 쓰지 않는다. 전이는 한다."""
     cfg = config.load(p)
     st = state.require(p, tid)
     if st["status"] in state.CLOSED:
@@ -444,19 +500,28 @@ def accept(p, tid: str) -> dict:
         raise HteamError("bad_state", f"{tid} 는 {st['status']} 다(accept 는 approved·awaiting_user 에서)", CONFLICT,
                          data={"status": st["status"]})
     to = "awaiting_user" if st["status"] == "approved" and cfg.is_approval(st["role"]) else "done"
+    h = Horch(p.horch_home)
+    rows = h.workers()
+    for slot in _slots(st):
+        for row in dispatch.slot_rows(rows, slot):
+            if row["state"] in ("launching", "active"):
+                raise _live_error(tid, slot, row)
     warnings: list[str] = []
     slot = work_slot(st)
     cleaned = bool(slot.get("cleaned"))
     if not cleaned:
-        try:
-            h = Horch(p.horch_home)
-            for row in dispatch.slot_rows(h.workers(), slot):
-                if row["state"] not in ("launch_failed", "released"):  # launching·active 는 cleanup 이 거부한다
-                    dispatch.cleanup(h, row["id"], kill=False)
-            cleaned = True
-        except HteamError as exc:
-            warnings.append(f"작업 Dispatch({slot['title']})를 정리하지 못했다: {exc.message}")
+        cleaned = True
+        for row in dispatch.slot_rows(rows, slot):
+            if row["state"] not in dispatch.CLEANABLE:
+                continue
+            try:  # 한 Dispatch 의 실패가 나머지(이전 시도)의 release 를 막지 않게 하나씩
+                dispatch.cleanup(h, row["id"], kill=False)
+            except HteamError as exc:
+                cleaned = False
+                warnings.append(f"작업 Dispatch {row['id']}({slot['title']})를 정리하지 못했다: {exc.message}")
     with state.edit(p, tid, expect={st["status"]}) as cur:
+        if cur["round"] != st["round"]:  # 멈춘 사이 다음 라운드가 같은 상태에 닿았다. 본 적 없는 라운드를 닫지 않는다
+            raise _changed(tid, st, cur)
         work_slot(cur)["cleaned"] = cleaned
         state.move(cur, to, "accept")
     return {"task": tid, "status": to, "warnings": warnings}

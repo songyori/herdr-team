@@ -6,7 +6,7 @@ git 출력(최상위 기준)은 gitio.from_top 으로 바꾸고, 프로젝트 �
 blob 에는 gitio.to_top 으로 최상위 기준 경로를 넘긴다.
 
 잠금 순서: finish 잠금(state.finish_lock, state/tasks/T-xxx.finish.lock) → 태스크 잠금. 프로젝트 잠금은 쓰지 않는다.
-fix·drop 도 취소·정리하는 동안 finish 잠금을 잡는다(설계 6.4).
+review·review-finish 는 호출 내내, fix·drop 은 취소·정리하는 동안 finish 잠금을 잡는다(설계 6.4).
 """
 from __future__ import annotations
 
@@ -306,6 +306,14 @@ def _recover(p, cfg, h, st: dict, att: dict) -> dict:
 
 
 def review(p, tid: str, retry: bool = False) -> dict:
+    """처음 읽은 라운드로 판정·시도·상태를 쓰므로 호출 내내 finish 잠금을 쥔다(설계 6.4). 라운드를 닫는 fix·drop 의
+    취소·정리도 같은 잠금 안에서 하므로, 이 호출이 도는 동안 새 라운드가 생기지 않는다(옛 review 가 새 라운드에
+    판정을 쓰지 않는다). 잠금 순서는 finish → 태스크다. review-finish 의 자동 재시도는 이 함수를 거치지 않는다."""
+    with state.finish_lock(p, tid):
+        return _review(p, tid, retry)
+
+
+def _review(p, tid: str, retry: bool) -> dict:
     cfg = config.load(p)
     st = state.require(p, tid)
     if st["status"] in state.CLOSED:

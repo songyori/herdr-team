@@ -1,8 +1,8 @@
 """태스크 상태 파일(설계 5.3). 태스크마다 flock, 이전 상태 확인, 임시 파일 + os.replace. 프로젝트 잠금(13장).
 
 잠금 순서는 늘 프로젝트 잠금(state/lock) → finish 잠금(state/tasks/T-xxx.finish.lock) → 태스크 잠금
-(state/tasks/T-xxx.lock)이다. 뒤 잠금을 쥔 채 앞 잠금을 기다리지 않는다. finish 잠금은 review-finish 가 호출 내내,
-fix·drop 이 취소·정리하는 동안 잡는다. 읽기는 잠금 없이 한다.
+(state/tasks/T-xxx.lock)이다. 뒤 잠금을 쥔 채 앞 잠금을 기다리지 않는다. finish 잠금은 review·review-finish 가
+호출 내내, fix·drop 이 취소·정리하는 동안 잡는다. 읽기는 잠금 없이 한다.
 """
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ def check_id(tid: str) -> None:
 
 @contextlib.contextmanager
 def finish_lock(p, tid: str) -> Iterator[None]:
-    """태스크마다 review-finish 와 fix·drop 의 취소·정리를 한 번에 하나로(설계 6.3·6.4). 태스크 잠금보다 먼저,
+    """태스크마다 review·review-finish 와 fix·drop 의 취소·정리를 한 번에 하나로(설계 6.3·6.4). 태스크 잠금보다 먼저,
     프로젝트 잠금보다 뒤에 잡는다."""
     check_id(tid)
     p.ensure_state()

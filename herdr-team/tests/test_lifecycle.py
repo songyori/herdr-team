@@ -1,5 +1,6 @@
 """accept·fix·drop(설계 6.4)와 수정 라운드."""
 import contextlib
+import fcntl
 import os
 import subprocess
 import sys
@@ -9,7 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests.helpers import BASE_CONFIG, TeamCase
-from hteam import dispatch, procs, state, tasks
+from hteam import dispatch, horch, procs, review, state, tasks
 from hteam.errors import HteamError
 from hteam.paths import Project
 
@@ -63,6 +64,33 @@ class LifeCase(TeamCase):
             return False
         return proc, gate.touch, wait
 
+    def lock_file(self, which: str, tid: str = "T-001") -> Path:
+        return {"project": self.state_dir / "lock", "finish": self.state_dir / "tasks" / f"{tid}.finish.lock",
+                "task": self.state_dir / "tasks" / f"{tid}.lock"}[which]
+
+    def held(self, which: str, tid: str = "T-001") -> bool:
+        """다른 프로세스가 그 잠금을 쥐고 있나(LOCK_NB 로 잡아 본다. 잡히면 바로 놓는다). 시간에 기대지 않는다."""
+        with open(self.lock_file(which, tid), "a+") as fh:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(fh, fcntl.LOCK_UN)
+            return False
+
+    def first_call_then(self, name: str, hook):
+        """tasks.<name> 의 첫 호출이 끝난 직후 hook() 을 한 번 부르는 대역(경합 지점에 끼어든다)."""
+        real = getattr(tasks, name)
+        calls = []
+
+        def wrapper(*a, **kw):
+            res = real(*a, **kw)
+            if not calls:
+                calls.append(1)
+                hook()
+            return res
+        return mock.patch.object(tasks, name, wrapper)
+
 
 class AcceptTest(LifeCase):
     config = BASE_CONFIG.replace("user_approval_roles = []", 'user_approval_roles = ["tester"]')
@@ -110,6 +138,59 @@ class AcceptTest(LifeCase):
         self.assertEqual((self.dispatch_row(first)["state"], self.dispatch_row(out_d := self.work_dispatch("T-001"))
                           ["state"]), ("released", "released"))
         self.assertNotEqual(first, out_d)
+
+    def test_accept_refuses_live_work_worker(self):
+        """retain 실패를 견딘 review 로 작업 워커가 active 인 채 approved 가 됐다. accept 는 owns 잠금을 풀지 않고
+        exit 3 이다. 워커를 정리한 뒤에는 된다."""
+        self.write_spec("T-001")
+        state.create(self.p, "T-001", "developer")
+        did = self.hteam("start", "T-001")[1]["dispatch"]
+        rel = "docs/tasks/T-001/report.md"
+        code, out = self.act(did, {"write": FILES["developer"], "report": "## r1\n", "report_path": rel,
+                                   "commit": "[T-001] r1 작업"})  # done 없이 커밋만 했다: 워커는 active
+        self.assertEqual(code, 0, out)
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual((code, out["status"]), (0, "reviewing"), out)
+        self.assertTrue(out["warnings"])  # worker-retain 실패
+        self.act_review("T-001", "APPROVE")
+        self.assertEqual(self.hteam("review-finish", "T-001")[1]["status"], "approved")
+        before = self.task_state("T-001")
+        code, out = self.hteam("accept", "T-001")
+        self.assertEqual((code, out["error"]["code"], out.get("dispatch")), (3, "worker_active", did), out)
+        self.assertIn(did, out["error"]["hint"])
+        self.assertEqual(self.task_state("T-001"), before)  # 아무것도 바꾸지 않았다
+        self.assertEqual(self.dispatch_row(did)["state"], "active")
+        self.assertEqual(self.horch("worker-abandon", "--dispatch", did, "--kill")[0], 0)
+        code, out = self.hteam("accept", "T-001")
+        self.assertEqual((code, out["status"], out["warnings"]), (0, "done", []), out)
+        self.assertEqual(self.dispatch_row(did)["state"], "released")
+
+    def test_accept_refuses_if_round_changed(self):
+        """멈춘 accept 가 r1 을 본 뒤 그 사이 r2 가 같은 상태에 닿았으면 r2 를 닫지 않는다."""
+        self.to_verdict()
+
+        def next_round():
+            with state.edit(self.p, "T-001") as st:
+                st["rounds"].append({**st["rounds"][0], "round": 2, "work": dispatch.new_slot("T-001 r2 작업"),
+                                     "reviews": []})
+                st["round"] = 2
+
+        real = horch.Horch.workers
+        calls = []
+
+        def workers(h, states=None):
+            rows = real(h, states)
+            if not calls:
+                calls.append(1)
+                next_round()
+            return rows
+
+        with self.in_process(), mock.patch.object(horch.Horch, "workers", workers):
+            with self.assertRaises(HteamError) as cm:
+                tasks.accept(self.p, "T-001")
+        self.assertEqual((cm.exception.code, cm.exception.exit_code), ("state_changed", 3))
+        st = self.task_state("T-001")
+        self.assertEqual((st["status"], st["round"], st["rounds"][1]["work"]["cleaned"]), ("approved", 2, False))
 
 
 class FixTest(LifeCase):
@@ -293,6 +374,15 @@ class DropRerunTest(LifeCase):
             hc["fail"].clear()
         self.assert_dropped_and_clean(work, rev)
 
+    def test_rerun_after_dying_between_release_and_cleaned_record(self):
+        """release 뒤 cleaned 를 쓰기 전에 죽었다. 다시 부르면 그 Dispatch 는 대상이 아니지만 기록에는 cleaned 를 쓴다."""
+        work, rev = self.reviewing()
+        code, _ = self.hteam("drop", "T-001", "--force", env={"HTEAM_TEST_DIE_AT": "after_release"})
+        self.assertEqual(code, 137)
+        self.assertEqual(self.dispatch_row(work)["state"], "released")  # 첫 대상(작업)은 release 했다
+        self.assertFalse(self.task_state("T-001")["rounds"][0]["work"]["cleaned"])
+        self.assert_dropped_and_clean(work, rev)
+
 
 class CloseOrderTest(LifeCase):
     """fix·drop 의 순서 규칙: 취소 저장 → 정리 → 마지막 전이. 어디서 멈춰도 복구가 되살리지 않고 다시 부르면 끝난다."""
@@ -436,29 +526,177 @@ class CloseRaceTest(LifeCase):
                 self.assertEqual(self.task_state(tid)["status"], "launch_failed")
 
 
+class PrecheckRaceTest(LifeCase):
+    """사전 검사(대상 미리 고르기)와 취소 저장 사이에 다른 명령이 실행 기록을 바꿨으면 아무것도 바꾸지 않고 exit 3."""
+
+    def test_drop_refuses_if_start_lands_before_cancel(self):
+        self.write_spec("T-001")
+        state.create(self.p, "T-001", "developer")
+        drop, go, wait = self.paused("before_cancel", "drop", "T-001")
+        self.assertTrue(wait())  # pending 을 사전 검사했다
+        code, out = self.hteam("start", "T-001")  # 그 사이 start 가 워커를 띄운다
+        self.assertEqual(code, 0, out)
+        go()
+        code, res = self.finish(drop)
+        self.assertEqual((code, res["error"]["code"]), (3, "state_changed"), res)
+        st = self.task_state("T-001")
+        self.assertEqual((st["status"], st["rounds"][0]["work"]["canceled"]), ("working", False))
+        self.act_work("T-001")
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual((code, out["status"]), (0, "reviewing"), out)  # 실패한 drop 이 라운드를 막지 않는다
+
+    def test_drop_refuses_if_recovery_lands_before_cancel(self):
+        self.write_spec("T-001")
+        state.create(self.p, "T-001", "developer")
+        self.fail_hc("run", "boom")
+        self.hteam("start", "T-001")  # launch_failed
+        with self._hc_locked() as hc:
+            hc["fail"].clear()
+        drop, go, wait = self.paused("before_cancel", "drop", "T-001")
+        self.assertTrue(wait())
+        code, out = self.hteam("start", "T-001")  # 그 사이 같은 Task 를 다시 띄워 working
+        self.assertEqual((code, out["mode"]), (0, "retry"), out)
+        go()
+        code, res = self.finish(drop)
+        self.assertEqual((code, res["error"]["code"]), (3, "state_changed"), res)
+        self.assertFalse(self.task_state("T-001")["rounds"][0]["work"]["canceled"])
+        self.assertEqual(self.dispatch_row(out["dispatch"])["state"], "active")
+
+    def test_launch_record_change_with_same_status_refuses(self):
+        """상태·라운드가 같아도 실행 기록(horch Task·Dispatch·장벽 자식)이 바뀌었으면 취소하지 않는다."""
+        self.write_spec("T-001")
+        state.create(self.p, "T-001", "developer")
+        self.fail_hc("run", "boom")
+        self.hteam("start", "T-001")
+
+        def recorded():  # 같은 Task 를 다시 띄운 실행자가 working 전이 전에 Dispatch 를 기록했다
+            with state.edit(self.p, "T-001") as st:
+                st["rounds"][0]["work"]["dispatch"] = "dsp-new"
+
+        with self.in_process(), self.first_call_then("_round_targets", recorded):
+            with self.assertRaises(HteamError) as cm:
+                tasks.drop(self.p, "T-001", False)
+        self.assertEqual((cm.exception.code, cm.exception.exit_code), ("state_changed", 3))
+        st = self.task_state("T-001")
+        self.assertEqual((st["status"], st["rounds"][0]["work"]["canceled"]), ("launch_failed", False))
+
+    def test_fix_check_refusal_leaves_state_untouched(self):
+        """사전 검사 뒤 상태가 reviewing 이 됐다. fix 의 check= 가 거부하고 아무것도 바꾸지 않는다(정리도 안 한다)."""
+        self.write_spec("T-001")
+        state.create(self.p, "T-001", "developer")
+        did = self.hteam("start", "T-001")[1]["dispatch"]
+        self.act_work("T-001", outcome="failed")
+
+        def reviewing():
+            with state.edit(self.p, "T-001") as st:
+                state.move(st, "reviewing", "review")
+
+        with self.in_process(), self.first_call_then("_round_targets", reviewing):
+            with self.assertRaises(HteamError) as cm:
+                tasks.fix(self.p, "T-001", note=None, supplement=None, force_round=False, cli={})
+        self.assertEqual((cm.exception.code, cm.exception.exit_code), ("bad_state", 3))
+        st = self.task_state("T-001")
+        self.assertEqual((st["status"], st["round"], st["rounds"][0]["work"]["canceled"]), ("reviewing", 1, False))
+        self.assertEqual(self.dispatch_row(did)["state"], "settled")
+
+
+class ReviewRoundTest(LifeCase):
+    def test_old_review_cannot_judge_new_round(self):
+        """r1 의 review 가 사전 검사 중이다. review 는 호출 내내 finish 잠금을 쥐므로 fix 는 취소·새 라운드를 쓰지 못하고
+        기다린다. 그래서 r1 의 판정은 r1 에만 쓰이고, 그 뒤 fix 가 r2 를 띄운다(r2 는 판정 없이 working)."""
+        self.write_spec("T-001")
+        state.create(self.p, "T-001", "developer")
+        self.hteam("start", "T-001")
+        self.act_work("T-001", commit=False)  # 대상 커밋이 없다: 사전 검사가 REQUEST_CHANGES
+        rev, go, wait = self.paused("after_precheck_write", "review", "T-001")
+        self.assertTrue(wait())
+        self.assertTrue(self.held("finish"))
+        self.assertFalse(self.held("project"))
+        fix = self.hteam_bg("fix", "T-001", "--note", "다시")
+        go()
+        code, out = self.finish(rev)
+        self.assertEqual((code, out["status"], out["round"]), (0, "changes", 1), out)
+        code, out = self.finish(fix)
+        self.assertEqual((code, out["round"], out["status"]), (0, 2, "working"), out)
+        st = self.task_state("T-001")
+        self.assertEqual((st["status"], st["rounds"][0]["verdict"], st["rounds"][1]["verdict"]),
+                         ("working", "REQUEST_CHANGES", None))
+        self.assertEqual(self.dispatch_row(out["dispatch"])["state"], "active")
+
+
+class FinishAfterCancelTest(LifeCase):
+    def reviewed(self):
+        self.write_spec("T-001")
+        state.create(self.p, "T-001", "developer")
+        self.hteam("start", "T-001")
+        self.act_work("T-001")
+        self.hteam("review", "T-001")
+        self.act_review("T-001", "APPROVE")
+
+    def test_review_finish_after_drop_cancel_changes_nothing(self):
+        self.reviewed()
+        code, _ = self.hteam("drop", "T-001", "--force", env={"HTEAM_TEST_DIE_AT": "after_cancel"})
+        self.assertEqual(code, 137)
+        before, head = self.task_state("T-001"), self.head()
+        code, out = self.hteam("review-finish", "T-001")
+        self.assertEqual((code, out["error"]["code"]), (3, "no_open_review"), out)  # 취소된 시도는 열린 시도가 아니다
+        self.assertEqual((self.task_state("T-001"), self.head()), (before, head))
+
+    def test_cancel_landing_mid_finish_is_round_canceled(self):
+        """finish 잠금이 막는 경로지만 방어를 확인한다: 판정을 쓰기 전에 취소가 끼면 exit 3 round_canceled."""
+        self.reviewed()
+
+        def tamper(p, tid, base, real=review.tamper_check):
+            with state.edit(self.p, tid) as st:
+                st["rounds"][-1]["reviews"][-1]["canceled"] = True
+            return real(p, tid, base)
+
+        with self.in_process(), mock.patch.object(review, "tamper_check", tamper):
+            with self.assertRaises(HteamError) as cm:
+                review.review_finish(self.p, "T-001")
+        self.assertEqual((cm.exception.code, cm.exception.exit_code), ("round_canceled", 3))
+        st = self.task_state("T-001")
+        self.assertEqual((st["status"], st["rounds"][0]["verdict"], self.attempt("T-001")["result"]),
+                         ("reviewing", None, None))
+
+
 class FinishLockTest(LifeCase):
-    def test_drop_waits_for_running_review_finish_without_blocking_others(self):
-        """잠금 순서 프로젝트 → finish → 태스크. drop 은 진행 중인 review-finish 가 끝날 때까지 취소하지 않고 기다린다.
-        기다리는 동안 프로젝트 잠금·태스크 잠금을 쥐지 않는다(다른 start 가 돌고, review-finish 가 교착하지 않는다)."""
+    """잠금 순서 프로젝트 → finish → 태스크. gate 파일로 멈추고 flock 탐침으로 본다(시간에 기대지 않는다)."""
+
+    def reviewing(self):
         self.write_spec("T-001")
         state.create(self.p, "T-001", "developer")
         work = self.hteam("start", "T-001")[1]["dispatch"]
         self.act_work("T-001")
         self.hteam("review", "T-001")
+        return work
+
+    def test_cancel_and_cleanup_hold_only_the_finish_lock(self):
+        work = self.reviewing()
+        drop, go, wait = self.paused("before_cancel", "drop", "T-001", "--force")
+        self.assertTrue(wait())
+        # finish 잠금을 쥐었으므로 review-finish·review 는 이 취소·정리가 끝난 뒤에 돈다. 프로젝트·태스크 잠금은 쥐지 않는다
+        self.assertEqual((self.held("finish"), self.held("project"), self.held("task")), (True, False, False))
+        go()
+        code, res = self.finish(drop)
+        self.assertEqual((code, res["status"]), (0, "dropped"), res)
+        self.assertFalse(self.held("finish"))
+        self.assertEqual(self.dispatch_row(work)["state"], "released")
+
+    def test_drop_after_running_review_finish(self):
+        work = self.reviewing()
         self.act_review("T-001", "APPROVE")
         fin, go, wait = self.paused("before_verdict", "review-finish", "T-001")
         self.assertTrue(wait())
-        drop = self.hteam_bg("drop", "T-001", "--force")
+        self.assertEqual((self.held("finish"), self.held("project"), self.held("task")), (True, False, False))
+        drop = self.hteam_bg("drop", "T-001", "--force")  # finish 잠금을 기다린다
         self.write_spec("T-002", "tester")
         state.create(self.p, "T-002", "tester")
-        code, out = self.hteam("start", "T-002")
+        code, out = self.hteam("start", "T-002")  # 기다리는 drop 은 프로젝트 잠금을 쥐지 않는다
         self.assertEqual(code, 0, out)
-        time.sleep(0.5)
-        self.assertIsNone(drop.poll())
-        self.assertFalse(self.attempt("T-001")["canceled"])
         go()
         code, res = self.finish(fin)
-        self.assertEqual((code, res["status"]), (0, "approved"), res)
+        self.assertEqual((code, res["status"]), (0, "approved"), res)  # drop 이 판정 전에 취소하지 않았다
         code, res = self.finish(drop)
         self.assertEqual((code, res["status"]), (0, "dropped"), res)
         self.assertEqual(self.dispatch_row(work)["state"], "released")
