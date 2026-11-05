@@ -1872,7 +1872,7 @@ scripts/codex-review.sh commit HEAD
   - `mailbox.BATCH = 50`, `mailbox.poll_interval() -> float` (`HORCH_POLL`, 기본 1.0), `mailbox.sweep_interval() -> float` (`HORCH_SWEEP_INTERVAL`, 기본 5.0), `mailbox.rewake_interval() -> float` (`HORCH_REWAKE_INTERVAL`, 기본 60.0)
   - `mailbox.post(store, *, run_id, mailbox, sender, type, body, subject=None, reply_to=None, dispatch_id=None, ask_key=None) -> int` (호출자가 트랜잭션을 연다)
   - `mailbox.take(store, mailbox) -> {"delivery", "messages", "count"}`, `mailbox.ack(store, mailbox, delivery) -> None`
-  - `mailbox.check(store, mailbox, *, wait=False, timeout_ms=900000, ack_id=None, terminal=None, on_tick=None) -> {"delivery", "messages", "count", "reason"}` (`reason`: `message`·`empty`·`timeout`)
+  - `mailbox.check(store, mailbox, *, wait=False, timeout_ms=900000, ack_id=None, terminal=None, on_tick=None, guard=None) -> {"delivery", "messages", "count", "reason"}` (`guard`: Task 6 리뷰 수정. 매 폴링마다 불러 소유권 이동을 막는다) (`reason`: `message`·`empty`·`timeout`)
   - `mailbox.has_live_waiter(store, mailbox) -> bool`, `mailbox.wake(store, mailbox) -> str` (`sent`, `skipped_sandbox`, `skipped_waiter`, `skipped_<상태>`, `no_target`, `failed_<kind>`)
   - `mailbox.message_json(row) -> dict` (`id, type, sender, subject, body, reply_to, dispatch, created_at`)
   - `comms.send(store, to, subject, body) -> {"message", "wake"}`, `comms.check(store, *, dispatch, wait, timeout_ms, ack) -> dict`
@@ -4033,21 +4033,19 @@ def abandon(store, run_id: str, dispatch_id: str, kill: bool) -> dict:
 
 - [ ] **Step 5: 소유자 check --wait 에 sweep 연결**
 
-`herdr-orch/lib/horch/comms.py` 의 import 를 `from . import auth, mailbox, workers` 로 바꾸고, `check` 의 마지막 두 줄
+`herdr-orch/lib/horch/comms.py` 의 import 에 `workers` 를 더하고(`from . import auth, mailbox, workers`), `check` 의 마지막 줄(Task 6 리뷰 수정으로 `guard=still_owner` 가 붙어 있다)
 
 ```python
-    run_id = auth.owner_run_id(store)
     return mailbox.check(store, f"run:{run_id}", wait=wait, timeout_ms=timeout_ms, ack_id=ack,
-                         terminal=auth.caller())
+                         terminal=auth.caller(), guard=still_owner)
 ```
 
-을 다음으로 바꾼다:
+을 다음으로 바꾼다(`guard` 는 그대로 둔다):
 
 ```python
-    run_id = auth.owner_run_id(store)
     tick = (lambda: workers.sweep(store, run_id)) if wait else None
     return mailbox.check(store, f"run:{run_id}", wait=wait, timeout_ms=timeout_ms, ack_id=ack,
-                         terminal=auth.caller(), on_tick=tick)
+                         terminal=auth.caller(), guard=still_owner, on_tick=tick)
 ```
 
 - [ ] **Step 6: cli 에 명령 연결**
