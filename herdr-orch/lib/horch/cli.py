@@ -8,9 +8,9 @@ import signal
 import sys
 from pathlib import Path
 
-from . import agents, auth, comms, guard, runs, workers
+from . import agents, auth, comms, doctor, guard, runs, workers
 from .errors import FAIL, USAGE, HorchError
-from .paths import VERSION, resolve_home
+from .paths import VERSION, horch_cmd, resolve_home
 from .store import Store
 
 
@@ -80,6 +80,8 @@ def build_parser() -> Parser:
     s = sub.add_parser("worker-abandon")
     s.add_argument("--dispatch", required=True)
     s.add_argument("--kill", action="store_true")
+    sub.add_parser("doctor")
+    sub.add_parser("skill")
     # --- 명령 파서 끝 ---
     return p
 
@@ -88,6 +90,8 @@ def _dispatch(args) -> dict:
     home = resolve_home(args.home)
     if args.cmd == "version":
         return {"version": VERSION}
+    if args.cmd == "doctor":
+        return doctor.run(home)
     # --- 저장소 없는 명령 끝 ---
     store = Store(home)
     try:
@@ -166,6 +170,11 @@ def _run_guard(home_arg: str | None, dispatch_id: str, agent_argv: list[str]) ->
     return FAIL
 
 
+def skill_text(home) -> str:
+    body = (Path(__file__).resolve().parent / "skill.md").read_text(encoding="utf-8")
+    return f"HORCH: {horch_cmd(home)}\n(horch {VERSION})\n\n{body}"
+
+
 def _emit(obj: dict) -> None:
     sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
     sys.stdout.flush()
@@ -182,6 +191,9 @@ def main(argv: list[str]) -> int:
         return _run_guard(*guard_args)
     try:
         args = build_parser().parse_args(argv)
+        if args.cmd == "skill":
+            sys.stdout.write(skill_text(resolve_home(args.home)))
+            return 0
         result = _dispatch(args)
     except HorchError as exc:
         _emit(exc.to_json())
