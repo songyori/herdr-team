@@ -43,31 +43,57 @@ def reconcile_launching(store, run_id: str) -> list[str]:
     return changed
 
 
-def cleanup_refused(store, run_id: str, deadline: float | None = None) -> list[str]:
+def cleanup_refused(store, run_id: str, deadline: float | None = None, until: float | None = None,
+                    pending: list[str] | None = None) -> list[str]:
     """가드가 거부해 끝난 터미널을 hc rm 한다. 이름으로 후보를 찾고 라벨(horch.run·horch.dispatch)과 상태를 get 으로 확인한다.
-    deadline(monotonic) 이 있으면 그때까지만 hc 를 부르고 남은 후보는 다음에 한다."""
+    until(monotonic) 은 새 hc 호출을 시작해도 되는 한계다(틱 예산): 넘으면 새 호출을 시작하지 않는다.
+    deadline(monotonic) 은 이미 시작한 호출 하나가 살 수 있는 한계다(호출당 SWEEP_HC_TIMEOUT_S 와 deadline 중 이른 쪽).
+    pending 목록(호출 사이에 이어 쓴다)에는 확인을 마치고 rm 만 남은 주소를 둔다: 다음 틱이 ls·get 없이 rm 부터 한다."""
+    if pending is None:
+        pending = []
+
+    def may_start() -> bool:
+        return not _expired(until) and not _expired(deadline)
+
+    removed: list[str] = []
+
+    def drain() -> bool:
+        """pending 의 rm 을 모두 시도한다. 시작을 못 하면 False."""
+        for addr in list(pending):
+            if not may_start():
+                return False
+            try:
+                hcio.rm(addr, timeout=_hc_timeout(deadline))
+                removed.append(addr)
+                pending.remove(addr)
+            except hcio.HcFailure:
+                pending.remove(addr)
+        return True
+
+    if not drain():
+        return removed
     failed = {r["id"] for r in store.all("SELECT id FROM dispatches WHERE run_id=? AND state='launch_failed'", (run_id,))}
-    if not failed or _expired(deadline):
-        return []
+    if not failed or not may_start():
+        return removed
     try:
         terminals = hcio.ls_all(timeout=_hc_timeout(deadline))
     except hcio.HcFailure:
-        return []
-    removed = []
+        return removed
     for t in terminals:
         if t.get("name") not in failed or t.get("state") != "finished":
             continue
-        if _expired(deadline):
+        if not may_start():
             break
         try:
             info = hcio.get(t["address"], timeout=_hc_timeout(deadline))
-            labels = info.get("labels") or {}
-            if (info.get("state") == "finished" and labels.get("horch.run") == run_id
-                    and labels.get("horch.dispatch") == t["name"]):
-                hcio.rm(t["address"], timeout=_hc_timeout(deadline))
-                removed.append(t["address"])
         except hcio.HcFailure:
-            pass
+            continue
+        labels = info.get("labels") or {}
+        if (info.get("state") == "finished" and labels.get("horch.run") == run_id
+                and labels.get("horch.dispatch") == t["name"]):
+            pending.append(t["address"])
+            if not drain():
+                break
     return removed
 
 
@@ -251,6 +277,7 @@ class Sweep:
     def __init__(self, store, run_id: str):
         self.store, self.run_id = store, run_id
         self.queue: list[str] = []
+        self.pending_rm: list[str] = []  # 확인을 마쳤고 rm 만 남은 거부 터미널(틱을 넘겨 이어 간다)
 
     def _cursor_key(self) -> str:
         return f"sweep_cursor:{self.run_id}"
@@ -277,8 +304,10 @@ class Sweep:
         until = min(deadline, time.monotonic() + mailbox.poll_interval())
         if not self.queue:
             reconcile_launching(self.store, self.run_id)
-            cleanup_refused(self.store, self.run_id, deadline=until)
+            cleanup_refused(self.store, self.run_id, deadline=deadline, until=until, pending=self.pending_rm)
             self.queue = self._order()
+        elif self.pending_rm:
+            cleanup_refused(self.store, self.run_id, deadline=deadline, until=until, pending=self.pending_rm)
         while self.queue and not _expired(until):
             created_at, did = self.queue.pop(0)
             liveness.observe_one(self.store, self.run_id, did, timeout=_hc_timeout(deadline))
