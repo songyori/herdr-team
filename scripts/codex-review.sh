@@ -60,10 +60,10 @@ import json, sys
 labels = json.load(sys.stdin)["labels"]
 print(labels["herdr.space"], labels["herdr.tab"])')
 
-# hc 터미널 이름은 코어 전체에서 유일해야 한다. 접미사는 저장소 경로에서 만든다.
-# 다른 worktree 의 같은 리뷰는 함께 돌고, 같은 저장소의 같은 리뷰는 결과 파일이 겹치므로 두 번째가 거부된다.
-sfx=$(printf '%s' "$root" | shasum | cut -c1-4)
-tname=$(printf 'codex-%s' "$name" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9_\n-' '-' | cut -c1-27)-$sfx
+# hc 터미널 이름은 코어 전체에서 유일해야 한다. 접미사는 저장소 경로와 자르기 전 리뷰 이름에서 만든다.
+# 다른 worktree 나 다른 리뷰는 함께 돌고, 같은 저장소의 같은 리뷰는 결과 파일이 겹치므로 두 번째가 거부된다.
+sfx=$(printf '%s\n%s' "$root" "$name" | shasum | cut -c1-6)
+tname=$(printf 'codex-%s' "$name" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9_\n-' '-' | cut -c1-25)-$sfx
 mkdir -p "$out"
 
 if ! res=$(hc run --bg --json --no-notify --outlive-parent --rm --cwd "$root" --name "$tname" \
