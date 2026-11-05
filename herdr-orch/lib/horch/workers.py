@@ -1,13 +1,14 @@
-"""워커 실행(설계 8장), launching 조정과 가드 거부 정리(설계 5장). 목록·정리 명령은 Task 10 에서 더한다."""
+"""워커 실행(설계 8장), launching 조정과 가드 거부 정리(설계 5장). 목록·정리·sweep."""
 from __future__ import annotations
 
 import json
 import os
 import shutil
 import sqlite3
+import time
 from pathlib import Path
 
-from . import agents, hcio, preamble, procs
+from . import agents, auth, hcio, liveness, mailbox, preamble, procs
 from .errors import CONFLICT, FAIL, MISSING, USAGE, HorchError
 from .ids import new_id, now
 from .paths import horch_argv, horch_cmd
@@ -214,3 +215,165 @@ def _launch(store, run_id, exe, base, progress, *, spec, agent, model, effort, e
     return {**base, "terminal": row["terminal"], "state": row["state"], "placement": placement,
             "warning": None if placement == "pane" else "소유자 탭을 몰라 pane 없이 띄웠다(herdr 라벨 없음)",
             "warnings": warnings}
+
+
+def sweep(store, run_id: str) -> None:
+    """소유자의 check --wait 가 주기적으로 부른다."""
+    reconcile_launching(store, run_id)
+    cleanup_refused(store, run_id)
+    liveness.observe(store, run_id)
+
+
+def _row_json(r) -> dict:
+    return {"id": r["id"], "task": r["task_id"], "attempt": r["attempt"], "agent": r["agent"], "model": r["model"],
+            "effort": r["effort"], "cwd": r["cwd"], "terminal": r["terminal"], "state": r["state"],
+            "outcome": r["outcome"], "summary": r["summary"], "report_path": r["report_path"],
+            "files_modified": json.loads(r["files_modified"] or "[]"), "created_at": r["created_at"],
+            "settled_at": r["settled_at"], "closed_at": r["closed_at"]}
+
+
+def _attention(home, r, verdict: str | None, word: str | None) -> tuple[str | None, list[str] | None]:
+    base, d, st = horch_argv(home), r["id"], r["state"]
+    if st == "launch_failed":
+        return "launch_failed", [*base, "worker-start", "--agent", r["agent"], "--task", r["task_id"], "--retry",
+                                 "--cwd", r["cwd"]]
+    if st == "launching":
+        return "launching", None
+    if st == "active":
+        if verdict in ("exited", "lost"):
+            return f"{verdict}_without_done", [*base, "worker-abandon", "--dispatch", d]
+        if verdict == "unverifiable":
+            return "unverifiable", [*base, "worker-show", "--dispatch", d]
+        if word in ("blocked", "error"):
+            return word, [*base, "worker-show", "--dispatch", d, "--lines", "80"]
+        if verdict == "live" and word is None:
+            # 시작 확인 창(Claude 폴더 신뢰, Codex hook 검토)은 상태를 보고하지 않는다(설계 10장)
+            return "no_status", [*base, "worker-show", "--dispatch", d, "--lines", "40"]
+        return None, None
+    if st in ("settled", "abandoned"):
+        return st, [*base, "worker-release", "--dispatch", d]
+    return None, None
+
+
+def _describe(store, r) -> tuple[dict, dict | None]:
+    item = _row_json(r)
+    verdict, info = None, None
+    if r["state"] in ("active", "settled", "retained", "abandoned") and r["terminal"]:
+        verdict, info = liveness.probe(r["terminal"], liveness.loads_argv(r["launch_argv"]))
+    word = liveness.status_word(info)
+    item["verdict"], item["status"] = verdict, word
+    item["attention"], item["next"] = _attention(store.home, r, verdict, word)
+    return item, info
+
+
+def list_rows(store, run_id: str, states: list[str] | None) -> list[dict]:
+    reconcile_launching(store, run_id)
+    cleanup_refused(store, run_id)
+    sql = "SELECT d.*, t.title FROM dispatches d JOIN tasks t ON t.id = d.task_id WHERE d.run_id=?"
+    params: list = [run_id]
+    if states:
+        sql += f" AND d.state IN ({','.join('?' * len(states))})"
+        params += list(states)
+    rows = []
+    for r in store.all(sql + " ORDER BY d.created_at, d.id", params):
+        item, _ = _describe(store, r)
+        item["title"] = r["title"]
+        rows.append(item)
+    return rows
+
+
+def show(store, run_id: str, dispatch_id: str, lines: int) -> dict:
+    reconcile_launching(store, run_id)
+    auth.owned_dispatch(store, run_id, dispatch_id)
+    r = store.one("SELECT d.*, t.title FROM dispatches d JOIN tasks t ON t.id = d.task_id WHERE d.id=?", (dispatch_id,))
+    item, info = _describe(store, r)
+    item["title"] = r["title"]
+    item["hc"] = {k: info.get(k) for k in ("state", "status", "reason", "turn", "exit_code")} if info else None
+    item["screen"] = None
+    if lines and r["terminal"]:
+        try:
+            item["screen"] = hcio.read(r["terminal"], lines)
+        except hcio.HcFailure as exc:
+            item["screen_error"] = exc.kind
+    return {"worker": item}
+
+
+def _kill_ok(terminal: str) -> None:
+    try:
+        hcio.kill(terminal)
+    except hcio.HcFailure as exc:
+        if exc.kind not in ("not_found", "finished"):
+            raise HorchError("hc_failed", f"hc kill {terminal} 실패: {exc.kind}", FAIL) from exc
+
+
+def _rm_ok(terminal: str) -> None:
+    last = None
+    for _ in range(10):
+        try:
+            hcio.rm(terminal)
+            return
+        except hcio.HcFailure as exc:
+            if exc.kind == "not_found":
+                return
+            last = exc
+            time.sleep(mailbox.poll_interval())
+    raise HorchError("hc_failed", f"hc rm {terminal} 실패: {last.kind}", FAIL)
+
+
+def _fetch(store, dispatch_id: str) -> dict:
+    return _row_json(store.one("SELECT * FROM dispatches WHERE id=?", (dispatch_id,)))
+
+
+def release(store, run_id: str, dispatch_id: str) -> dict:
+    r = auth.owned_dispatch(store, run_id, dispatch_id)
+    if r["state"] == "released":
+        return {"dispatch": _row_json(r)}
+    if r["state"] not in ("settled", "retained", "abandoned"):
+        raise HorchError("not_releasable", f"Dispatch {dispatch_id} 는 {r['state']} 라 정리할 수 없다", CONFLICT)
+    if r["terminal"]:
+        try:
+            info = hcio.get(r["terminal"])
+        except hcio.HcFailure as exc:
+            if exc.kind != "not_found":
+                raise HorchError("hc_failed", f"hc get {r['terminal']} 실패: {exc.kind}", FAIL) from exc
+            info = None
+        if info is not None:
+            if info.get("state") == "live":
+                _kill_ok(r["terminal"])
+            _rm_ok(r["terminal"])
+    with store.tx():
+        store.run("UPDATE dispatches SET state='released', closed_at=? WHERE id=? "
+                  "AND state IN ('settled','retained','abandoned')", (now(), dispatch_id))
+    return {"dispatch": _fetch(store, dispatch_id)}
+
+
+def retain(store, run_id: str, dispatch_id: str) -> dict:
+    r = auth.owned_dispatch(store, run_id, dispatch_id)
+    if r["state"] == "retained":
+        return {"dispatch": _row_json(r)}
+    if r["state"] != "settled":
+        raise HorchError("not_settled", f"Dispatch {dispatch_id} 는 {r['state']} 라 남길 수 없다", CONFLICT)
+    with store.tx():
+        store.run("UPDATE dispatches SET state='retained' WHERE id=? AND state='settled'", (dispatch_id,))
+    return {"dispatch": _fetch(store, dispatch_id)}
+
+
+def abandon(store, run_id: str, dispatch_id: str, kill: bool) -> dict:
+    r = auth.owned_dispatch(store, run_id, dispatch_id)
+    if r["state"] == "abandoned":
+        return {"dispatch": _row_json(r), "verdict": None}
+    if r["state"] != "active":
+        raise HorchError("not_active", f"Dispatch {dispatch_id} 는 {r['state']} 다", CONFLICT)
+    verdict, _ = liveness.probe(r["terminal"], liveness.loads_argv(r["launch_argv"]))
+    if verdict == "unverifiable":
+        raise HorchError("unverifiable", f"워커 터미널 {r['terminal']} 의 상태를 확인할 수 없다", FAIL)
+    if verdict == "live":
+        if not kill:
+            raise HorchError("worker_alive", f"워커 {r['terminal']} 가 살아 있다", CONFLICT, "끝내려면 --kill")
+        _kill_ok(r["terminal"])
+    with store.tx():
+        store.run("UPDATE dispatches SET state='abandoned' WHERE id=? AND state='active'", (dispatch_id,))
+    row = store.one("SELECT * FROM dispatches WHERE id=?", (dispatch_id,))
+    if row["state"] != "abandoned":
+        raise HorchError("state_changed", f"그 사이 Dispatch 가 {row['state']} 가 됐다", CONFLICT)
+    return {"dispatch": _row_json(row), "verdict": verdict}

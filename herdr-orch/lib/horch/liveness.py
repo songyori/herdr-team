@@ -1,4 +1,4 @@
-"""생존 판정(설계 10장). observe 는 Task 10 에서 더한다."""
+"""생존 판정(설계 10장)과 observed 감시(설계 9장)."""
 from __future__ import annotations
 
 import json
@@ -50,3 +50,29 @@ def probe(terminal: str | None, expected_argv: list[str] | None) -> tuple[str, d
 
 def loads_argv(text: str | None) -> list[str] | None:
     return json.loads(text) if text else None
+
+
+def observe(store, run_id: str) -> list[int]:
+    """active Dispatch 를 판정해 새 사건이면 observed 메시지를 Run 메일함에 쓴다(설계 9장)."""
+    from . import mailbox  # mailbox 가 이 모듈을 import 하므로 여기서 가져온다
+    from .ids import now
+    created: list[int] = []
+    for row in store.all("SELECT id, terminal, launch_argv FROM dispatches WHERE run_id=? AND state='active'", (run_id,)):
+        verdict_, info = probe(row["terminal"], loads_argv(row["launch_argv"]))
+        word = status_word(info)
+        events = []
+        if verdict_ == "live" and word in ("blocked", "error"):
+            events.append((word, str(info.get("turn"))))
+        if verdict_ in ("exited", "lost"):
+            events.append((verdict_, verdict_))
+        for kind, key in events:
+            with store.tx():
+                cur = store.run("INSERT OR IGNORE INTO observations(dispatch_id, kind, key, created_at) VALUES (?,?,?,?)",
+                                (row["id"], kind, key, now()))
+                if cur.rowcount:
+                    body = json.dumps({"dispatch": row["id"], "kind": kind, "key": key, "terminal": row["terminal"],
+                                       "status": word}, ensure_ascii=False)
+                    created.append(mailbox.post(store, run_id=run_id, mailbox=f"run:{run_id}", sender="horch",
+                                                type="observed", subject=f"{kind} {row['id']}", body=body,
+                                                dispatch_id=row["id"]))
+    return created

@@ -69,6 +69,17 @@ def build_parser() -> Parser:
     s.add_argument("--summary", required=True)
     s.add_argument("--report-path")
     s.add_argument("--files-modified", action="append", default=[])
+    s = sub.add_parser("worker-list")
+    s.add_argument("--state", action="append")
+    s = sub.add_parser("worker-show")
+    s.add_argument("--dispatch", required=True)
+    s.add_argument("--lines", type=int, default=40)
+    for name in ("worker-release", "worker-retain"):
+        s = sub.add_parser(name)
+        s.add_argument("--dispatch", required=True)
+    s = sub.add_parser("worker-abandon")
+    s.add_argument("--dispatch", required=True)
+    s.add_argument("--kill", action="store_true")
     # --- 명령 파서 끝 ---
     return p
 
@@ -115,6 +126,16 @@ def _with_store(args, store: Store) -> dict:
         return comms.escalate(store, args.dispatch, args.body)
     if args.cmd == "done":
         return comms.done(store, args.dispatch, args.outcome, args.summary, args.report_path, args.files_modified)
+    if args.cmd == "worker-list":
+        return {"workers": workers.list_rows(store, auth.owner_run_id(store), args.state)}
+    if args.cmd == "worker-show":
+        return workers.show(store, auth.owner_run_id(store), args.dispatch, args.lines)
+    if args.cmd == "worker-release":
+        return workers.release(store, auth.owner_run_id(store), args.dispatch)
+    if args.cmd == "worker-retain":
+        return workers.retain(store, auth.owner_run_id(store), args.dispatch)
+    if args.cmd == "worker-abandon":
+        return workers.abandon(store, auth.owner_run_id(store), args.dispatch, args.kill)
     # --- 저장소 명령 끝 ---
     raise HorchError("usage", f"알 수 없는 명령: {args.cmd}", USAGE)
 
