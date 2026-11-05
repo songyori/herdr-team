@@ -1,7 +1,9 @@
 """owns glob 겹침(설계 5.2), plan check 규칙, plan apply·--append."""
+import errno
 import fcntl
 import json
 import os
+import pathlib
 import subprocess
 import unittest
 from unittest import mock
@@ -403,6 +405,40 @@ class PlanApplyTest(TeamCase):
         code, out = self.hteam("plan", "apply")
         self.assertEqual((code, out["applied"]), (0, [{"key": "a", "id": "T-001"}]), out)
 
+    def test_failed_spec_write_leaves_no_partial_spec(self):
+        self.write_plan([task("a"), task("b", "tester", ["tests/**"])])
+        p = Project(self.proj)
+        real = pathlib.Path.write_text
+
+        def disk_full(path, data, *args, **kwargs):  # T-002 사양을 쓰다가 디스크가 찬다
+            if "T-002.md" in path.name:
+                real(path, data[:10], *args, **kwargs)
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return real(path, data, *args, **kwargs)
+
+        with mock.patch.object(pathlib.Path, "write_text", disk_full), \
+                mock.patch.dict(os.environ, self.env, clear=True), self.assertRaises(OSError):
+            plan.apply(p, config.load(p), False)
+        self.assertEqual(sorted(f.name for f in (self.proj / ".herdr-team/tasks").iterdir()), [])
+        code, out = self.hteam("plan", "apply")
+        self.assertEqual((code, out["applied"]), (0, [{"key": "a", "id": "T-001"}, {"key": "b", "id": "T-002"}]), out)
+        self.assertEqual(self.git("status", "--porcelain", "--untracked-files=all", "--", ".herdr-team"), "")
+
+    def test_broken_head_ref_is_an_error_not_unborn(self):
+        self.write_plan([task("a")])
+        self.die("plan_after_commit")
+        ref = self.proj / ".git/refs/heads/main"
+        sha = ref.read_text()
+        for broken in ("", "garbage\n"):  # 커밋 직후 전원이 나가 비거나 깨진 브랜치 ref
+            ref.write_text(broken)
+            code, out = self.hteam("plan", "apply")
+            self.assertEqual((code, out["error"]["code"]), (1, "git_failed"), (broken, out))
+            self.assertEqual(self.spec_files(), ["T-001.md"])
+            self.assertEqual([r["id"] for r in self.pending()], ["T-001"])
+        ref.write_text(sha)
+        code, out = self.hteam("plan", "apply")
+        self.assertEqual((code, out["applied"], out["commit"]), (0, [{"key": "a", "id": "T-001"}], sha.strip()), out)
+
     def test_plain_apply_resumes_after_state_failure(self):
         self.write_plan([task("a")])
         tasks_dir = self.state_dir / "tasks"
@@ -517,6 +553,17 @@ class GitioTest(TeamCase):
         self.assertIsNone(gitio.blob(self.proj, head, "README.m?"))  # 경로는 글자 그대로다
         with self.assertRaises(HteamError) as cm:
             gitio.blob(self.proj, "no-such-rev", "README.md")
+        self.assertEqual((cm.exception.code, cm.exception.exit_code), ("git_failed", 1))
+
+    def test_has_head_unborn_only_when_branch_ref_is_missing(self):
+        self.assertTrue(gitio.has_head(self.proj))
+        fresh = self.tmp / "fresh"
+        fresh.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main", str(fresh)], check=True, env=self.env)
+        self.assertFalse(gitio.has_head(fresh))
+        (fresh / ".git/refs/heads/main").write_text("garbage\n")
+        with self.assertRaises(HteamError) as cm:
+            gitio.has_head(fresh)
         self.assertEqual((cm.exception.code, cm.exception.exit_code), ("git_failed", 1))
 
     def test_commit_paths_names_literal_paths(self):

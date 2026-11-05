@@ -182,7 +182,7 @@ owns = ["tests/**", "docs/qa/**"]
 - 우선순위(값마다 따로): `hteam start`·`fix` 의 `--model`·`--effort`·`--worker` > 태스크 front matter(`worker`, `claude_model` 등) > `[roles.<직무>]` > `[defaults]`.
 - `[agents.<에이전트>].args`: 그 에이전트를 띄울 때마다(작업·리뷰·코디네이터) horch `--agent-arg` 로 넘기는 인자(코디네이터는 `hc run` 인자). horch 는 우회 플래그를 스스로 넣지 않으므로 권한 모드는 여기서 정한다. Claude 의 `--permission-mode=bypassPermissions` 는 init 이 위험을 설명하고 사용자가 승인했을 때만 넣는다(9.1).
 - `[agents.codex].args` 기본 `--disable=hooks`: Codex 의 hook 검토 창과, 검토하지 않은 hook 이 셸 명령을 막는 문제를 피한다(herdr-orch 실환경 확인 결과).
-- `owns`: 비면 안 된다. 태스크 front matter(와 tasks.toml)로 좁힐 수 있고 넓힐 수는 없다. 판정은 보수적이다: 같은 glob, 직무 glob 에 맞는 고정 경로, 직무 glob 이 `<고정 접두사>**` 일 때 고정 접두사가 그것으로 시작하는 glob 만 안으로 본다. 판단할 수 없으면 거부한다(`plan check`, `start` 가 exit 2).
+- `owns`: 비면 안 된다. 태스크 front matter(와 tasks.toml)로 좁힐 수 있고 넓힐 수는 없다. 판정은 보수적이다: 같은 glob, 직무의 고정 경로와 같거나 그 아래인 고정 경로, 직무 glob 이 `**` 이거나 `<고정 접두사>/**` 일 때 고정 접두사가 그것으로 시작하는 glob·경로만 안으로 본다. 와일드카드 없는 경로는 git pathspec 처럼 그 아래 전체를 뜻하므로 `src/a.py` 는 `src/*.py` 안이 아니다. 판단할 수 없으면 거부한다(`plan check`, `start` 가 exit 2). owns 값에는 `[ ] { } , \`, 빈·`.`·`..` 마디, 앞뒤 `/`, 마디 일부인 `**` 를 쓰지 않는다(git 과 다르게 읽히거나 front matter 에서 갈라진다. 어기면 `plan check`·`task new`·사양 검사·설정 검사가 거부한다).
 - `max_parallel`: `start-ready` 가 동시에 둘 `working` 태스크 수 상한(1 이상).
 - `user_approval_roles`: 리뷰 승인 뒤 `done` 대신 `awaiting_user` 로 가는 직무. `[roles]` 에 있는 직무만.
 - `[image]`: `hteam image` 가 쓰는 Codex 모델·effort. 없으면 `[defaults]` 의 `codex_*`.
@@ -526,7 +526,7 @@ orca-team 0.3 의 인터뷰를 옮긴다. 직무 문서 `roles/planner.md` 가 �
 2. **톤 시안**: 서로 다른 톤 3안(색·글꼴·밀도·모서리·그림자 중 2가지 이상 다름) × 대표 화면 3개(대표·조밀·입력) = 9프레임을 한 캔버스에. 원본은 `pilots/`. 세부 수정 피드백이면 수정안 1개("확정 / 다시 수정"), 방향 전환이면 새 3안. 확정까지 반복하고 피드백과 결정은 `direction.md` 에.
 3. **디자인 시스템**: Claude Design 의 Design System 타입(Artifact `quickstart`·`list scope: types` 로 찾는다). 토큰(밝은 테마 필수), 상태별 미리보기가 있는 컴포넌트(기본·hover·focus·disabled·error), 아이콘 세트(Lucide·Phosphor·Tabler 중 하나)를 담은 README, 대비 4.5:1·3:1. Codex 가 claude.ai 를 볼 수 없으므로 `docs/design/system/`(`tokens.json`, `README.md`, `components/`)에 사본을 둔다. 확정되면 `direction.md` 에 `design_system_url: <URL>` 줄.
 
-디렉터는 래스터 에셋을 만들지 않는다. 승인 직무가 아니다(APPROVE 뒤 바로 `done`). `tasks.toml` 의 디렉터 태스크 owns 는 `docs/design/{direction.md,references.md,board/**,pilots/**,system/**}` 로 좁힌다.
+디렉터는 래스터 에셋을 만들지 않는다. 승인 직무가 아니다(APPROVE 뒤 바로 `done`). `tasks.toml` 의 디렉터 태스크 owns 는 `["docs/design/direction.md", "docs/design/references.md", "docs/design/board/**", "docs/design/pilots/**", "docs/design/system/**"]` 로 좁힌다(owns 에는 `{…}`·쉼표를 쓰지 않는다. 4.1).
 
 ### 11.2 디자인 (designer)
 

@@ -121,9 +121,23 @@ def blob(root, commit: str, path: str) -> str | None:
 
 
 def has_head(root) -> bool:
-    """커밋이 하나라도 있는가(HEAD 가 태어났는가). 객체는 읽지 않는다."""
+    """커밋이 하나라도 있는가(HEAD 가 태어났는가). 객체는 읽지 않는다.
+
+    HEAD 가 가리키는 브랜치 ref 가 아예 없을 때(unborn)만 False 다. 비거나 깨진 ref 파일(커밋 직후 전원 끊김)도
+    `rev-parse --verify` 는 unborn 과 같은 exit 1 이라, `symbolic-ref` 와 `show-ref --exists`(없음 2, 오류 1)로
+    가른다. 그 밖에 HEAD 를 풀지 못하면 git_failed 다."""
     args = ("rev-parse", "--verify", "-q", "HEAD")
-    return _yes_no(run(root, *args, check=False), args)
+    if _yes_no(run(root, *args, check=False), args):
+        return True
+    target = run(root, "symbolic-ref", "-q", "HEAD", check=False)
+    if target.returncode == 0:
+        exists = run(root, "show-ref", "--exists", target.stdout.strip(), check=False)
+        if exists.returncode == 2:
+            return False
+        detail = (exists.stderr or exists.stdout).strip()
+    else:
+        detail = (target.stderr or target.stdout).strip()
+    raise HteamError("git_failed", f"HEAD 를 풀지 못했다(비거나 깨진 ref?): {detail[-300:]}", FAIL)
 
 
 def top_prefix(root) -> str:

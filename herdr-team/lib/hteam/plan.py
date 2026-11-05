@@ -11,7 +11,7 @@ from . import config, gitio, roles, specs, state
 from .errors import CONFLICT, USAGE, HteamError
 from .globs import any_overlap, owns_problem, within
 from .paths import find_project
-from .util import die_at, read_json, write_json
+from .util import die_at, read_json, write_atomic, write_json
 
 PLAN_FILE = "docs/planning/tasks.toml"
 KEY_RE = re.compile(r"[a-z0-9-]+")
@@ -355,7 +355,7 @@ def apply(p, cfg, append: bool) -> dict:
         try:
             p.tasks.mkdir(parents=True, exist_ok=True)
             for tid, text in texts.items():
-                p.spec_path(tid).write_text(text, encoding="utf-8")
+                write_atomic(p.spec_path(tid), text)  # 쓰다 멈춰도 반쪽 사양이 제 경로에 남지 않는다(_check_ours 가 남으로 본다)
             die_at("plan_before_commit")
             sha = gitio.commit_paths(p.root, files, f"[plan] apply: {len(fresh)} tasks")
         except (HteamError, OSError) as exc:
