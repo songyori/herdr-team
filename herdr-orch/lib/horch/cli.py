@@ -8,6 +8,7 @@ import sys
 
 from .errors import FAIL, USAGE, HorchError
 from .paths import VERSION, resolve_home
+from .store import Store
 
 
 class Parser(argparse.ArgumentParser):
@@ -29,7 +30,16 @@ def _dispatch(args) -> dict:
     if args.cmd == "version":
         return {"version": VERSION}
     # --- 저장소 없는 명령 끝 ---
-    raise HorchError("usage", f"알 수 없는 명령: {args.cmd} (home {home})", USAGE)
+    store = Store(home)
+    try:
+        return _with_store(args, store)
+    finally:
+        store.close()
+
+
+def _with_store(args, store: Store) -> dict:
+    # --- 저장소 명령 끝 ---
+    raise HorchError("usage", f"알 수 없는 명령: {args.cmd}", USAGE)
 
 
 def _emit(obj: dict) -> None:
