@@ -3863,7 +3863,8 @@ def _prepare_start(p, cfg, spec, choice, cli: dict) -> None:
                 rd = st["rounds"][-1]
                 slot = rd["work"]
                 if slot.get("canceled"):
-                    raise HteamError("launch_canceled", f"{slot['title']} 실행 키가 취소됐다", CONFLICT)
+                    raise HteamError("launch_canceled", f"{slot['title']} 실행 키가 취소됐다", CONFLICT,
+                                     "앞선 fix·drop 이 끝나지 않았다. 같은 명령을 다시 한다")
                 if dispatch.busy(st, slot):
                     raise HteamError("launching", f"{slot['title']} 를 띄우는 실행자가 아직 살아 있다", CONFLICT,
                                      "끝날 때까지 기다린 뒤 다시 한다")
@@ -4662,6 +4663,10 @@ def review(p, tid: str, retry: bool = False) -> dict:
     cfg.role(spec.role)
     h = Horch(p.horch_home)
     rd = state.current_round(st)
+    if rd and (rd["work"].get("canceled") or any(a.get("canceled") for a in rd["reviews"])):
+        # fix·drop 이 이 라운드를 닫는 중이다(취소를 저장한 뒤 멈췄다). 리뷰어를 띄우지 않는다
+        raise HteamError("round_canceled", f"{tid} r{rd['round']} 의 실행 키가 취소됐다", CONFLICT,
+                         "앞선 fix·drop 이 끝나지 않았다. 같은 명령을 다시 한다")
     att = state.open_attempt(rd)
     if att and not retry:
         return _recover(p, cfg, h, st, att)
@@ -4880,7 +4885,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam
 
 ### Task 8: `accept`, `fix`, `drop`
 
-설계 6.4. `accept`: approved → done(승인 직무면 awaiting_user), awaiting_user → done. 작업 Dispatch 를 release 한다(실패하면 경고). `fix`: changes·launch_failed·working·awaiting_user 에서 새 라운드. 이전 작업 Dispatch 는 settled·retained·abandoned 면 release, active 면 `worker-abandon --kill` 뒤 release. `round >= max_rounds` 면 exit 3 `max_rounds`(`--force-round` 는 한 라운드만 넘긴다, awaiting_user 는 상한을 보지 않는다). `--supplement T-yyy` 는 라운드 기록과 수정 블록에 디렉터 보강 반영을 적는다(1단계는 기록과 안내만, 보강 흐름은 3단계). `fix` 는 입력 검사(owns 범위·잠금)를 이전 워커 정리보다 먼저 한다. 정리 대상은 현재 라운드에서 `cleaned` 가 아닌 실행 기록 전부(작업과 끝나지 않은 리뷰 시도, 취소 여부와 상관없이)이고, 기록되지 않은 Dispatch(기록 전에 죽은 실행자가 띄운 것)도 저장된 Task 나 실행 키(제목)로 찾는다. 정리한 기록마다 `cleaned` 를 쓰고, 모두 정리한 뒤에만 새 라운드를 쓴다(이전 워커·리뷰어와 새 워커가 함께 돌지 않게). `drop [--force]`: 같은 규칙으로 대상을 고른 뒤(그래서 취소를 기록하고 정리 중에 멈춘 drop 을 다시 부르면 취소된 시도의 리뷰어도 정리한다) 끝나지 않은 작업 실행 키와 리뷰 시도를 먼저 canceled 로 표시하고, active 는 `--force` 일 때만 abandon --kill 뒤 release, settled·retained·abandoned 는 release, launch_failed 는 건드리지 않는다. 기록 전에 죽은 실행자가 띄운 Dispatch 는 제목으로 찾는다. launching 이면 exit 3. 모든 대상의 정리를 확인한 뒤에만 `dropped` 로 바꾼다(장애 재현 지점 `after_cancel`).
+설계 6.4. `accept`: approved → done(승인 직무면 awaiting_user), awaiting_user → done. 작업 Dispatch 를 release 한다(실패하면 경고). `fix`: changes·launch_failed·working·awaiting_user 에서 새 라운드. 이전 작업 Dispatch 는 settled·retained·abandoned 면 release, active 면 `worker-abandon --kill` 뒤 release. `round >= max_rounds` 면 exit 3 `max_rounds`(`--force-round` 는 한 라운드만 넘긴다, awaiting_user 는 상한을 보지 않는다). `--supplement T-yyy` 는 라운드 기록과 수정 블록에 디렉터 보강 반영을 적는다(1단계는 기록과 안내만, 보강 흐름은 3단계). `fix`·`drop` 은 한 순서 규칙(`_close_round`)을 공유한다: 1) 바꾸기 전에 거부할 것을 확인한다(fix 는 owns 범위·잠금, 둘 다 launching, drop 은 `--force` 없는 active). 2) 현재 라운드의 끝나지 않은 작업 실행 키와 리뷰 시도의 `canceled` 를 먼저 저장한다(이후 `start`·`review` 복구가 그 기록으로 Dispatch 를 되살리지 않는다. 취소된 기록이 있는 라운드에는 `review` 가 exit 3 `round_canceled`). 3) 취소 뒤 대상을 다시 골라 정리한다. 대상은 horch 의 실제 상태로 고른다: 모든 라운드의 실행 기록마다 기록된 horch Task 의 모든 시도(Task 가 없으면 실행 키의 모든 Task) 가운데 active·settled·retained·abandoned. `cleaned` 는 기록일 뿐 대상 선택에 쓰지 않는다. active 는 fix 는 늘, drop 은 `--force` 일 때만 abandon --kill 뒤 release, settled·retained·abandoned 는 release, launch_failed 는 건드리지 않는다. 4) 그다음에만 마지막 전이(새 라운드 또는 `dropped`)를 쓴다. 어디서 멈추거나 실패해도 같은 명령(또는 fix·drop 중 다른 것)을 다시 부르면 이어 한다(장애 재현 지점 `after_cancel`).
 
 **Files:**
 - Modify: `herdr-team/lib/hteam/dispatch.py`(끝에 `cleanup`), `herdr-team/lib/hteam/tasks.py`(fix·accept·drop 과 명령)
@@ -4891,7 +4896,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam
 - Produces:
   - `dispatch.slot_row(rows, slot) -> dict | None`(기록된 Task 의 최신 시도, 없으면 실행 키로 찾은 것, 그것도 없으면 기록된 Dispatch)
   - `dispatch.cleanup(h, did, *, kill) -> {"dispatch", "before", "state", "outcome"}`(launching 이면 exit 3 `launching`, active 이고 kill 이 아니면 exit 3 `worker_active`)
-  - `tasks._round_targets(h, st, *, kill) -> list[(실행 키, Dispatch)]`(현재 라운드에서 `cleaned` 가 아닌 기록), `tasks._release(p, h, tid, targets, *, kill) -> list[dict]`(정리할 때마다 `cleaned`), `tasks._cancel_open(st)`
+  - `tasks._round_targets(h, st, *, kill) -> dict[실행 키, list[Dispatch]]`(horch 상태로 고른 정리 대상), `tasks._release(p, h, tid, targets, *, kill) -> list[dict]`(한 기록의 Dispatch 를 모두 정리하면 `cleaned`), `tasks._cancel_open(st)`, `tasks._close_round(p, h, tid, *, kill) -> list[dict]`(확인 → 취소 저장 → 다시 골라 정리)
   - `tasks.FIX_FROM`, `tasks.fix(p, tid, *, note, supplement, force_round, cli) -> dict`(Task 6 `run_work` 결과), `tasks.accept(p, tid) -> {"task", "status", "warnings"}`, `tasks.drop(p, tid, force) -> {"task", "status": "dropped", "released"}`
   - 명령: `hteam fix T [--note N] [--supplement T-yyy] [--force-round] [--model M] [--effort E] [--worker W]`, `hteam accept T`, `hteam drop T [--force]`(코디네이터)
 
@@ -5124,6 +5129,77 @@ class DropRerunTest(LifeCase):
         self.assert_dropped_and_clean(work, rev)
 
 
+class CloseOrderTest(LifeCase):
+    """fix·drop 의 순서 규칙: 취소 저장 → 정리 → 마지막 전이. 어디서 멈춰도 복구가 되살리지 않고 다시 부르면 끝난다."""
+
+    def active_rows(self):
+        _, rows = self.horch("worker-list")
+        return [r["id"] for r in rows["workers"] if r["state"] == "active"]
+
+    def test_fix_failing_after_cleanup_blocks_recovery_then_rerun_finishes(self):
+        self.write_spec("T-001")
+        state.create(self.p, "T-001", "developer")
+        self.hteam("start", "T-001", env={"HTEAM_TEST_DIE_AT": "after_launch"})  # 기록되지 않은 워커
+        old = self.active_rows()[0]
+        doc = self.team / "roles" / "developer.md"
+        doc.rename(self.tmp / "developer.md")
+        code, out = self.hteam("fix", "T-001", "--note", "x")  # 정리 뒤 새 라운드 작성이 실패한다
+        self.assertEqual((code, out["error"]["code"]), (2, "no_role_doc"), out)
+        st = self.task_state("T-001")
+        self.assertEqual((st["status"], st["round"], st["rounds"][0]["work"]["canceled"]), ("launch_failed", 1, True))
+        self.assertEqual(self.dispatch_row(old)["state"], "released")
+        code, out = self.hteam("start", "T-001")
+        self.assertEqual((code, out["error"]["code"]), (3, "launch_canceled"))  # 취소된 실행 키는 되살리지 않는다
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual((code, out["error"]["code"]), (3, "round_canceled"))
+        self.assertEqual(self.active_rows(), [])
+        (self.tmp / "developer.md").rename(doc)
+        code, out = self.hteam("fix", "T-001", "--note", "x")
+        self.assertEqual((code, out["round"], self.active_rows()), (0, 2, [out["dispatch"]]), out)
+
+    def test_fix_failing_in_working_then_drop_finishes(self):
+        self.write_spec("T-001")
+        state.create(self.p, "T-001", "developer")
+        did = self.hteam("start", "T-001")[1]["dispatch"]
+        (self.team / "roles" / "developer.md").unlink()
+        code, out = self.hteam("fix", "T-001")
+        self.assertEqual((code, out["error"]["code"]), (2, "no_role_doc"))
+        self.assertEqual(self.dispatch_row(did)["state"], "released")
+        code, out = self.hteam("drop", "T-001")
+        self.assertEqual((code, out["status"]), (0, "dropped"), out)
+
+    def test_close_releases_older_attempts_of_same_task(self):
+        self.write_spec("T-001")
+        state.create(self.p, "T-001", "developer")
+        self.hteam("start", "T-001", env={"HTEAM_TEST_DIE_AT": "after_launch"})
+        first = self.active_rows()[0]
+        self.assertEqual(self.horch("worker-abandon", "--dispatch", first, "--kill")[0], 0)  # 코디네이터가 버렸다
+        code, out = self.hteam("start", "T-001")
+        self.assertEqual((code, out["mode"]), (0, "retry"), out)  # 같은 Task 를 다시 띄웠다
+        code, out = self.hteam("drop", "T-001", "--force")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(sorted(r["dispatch"] for r in out["released"]), sorted([first, out_d := self.work_dispatch("T-001")]))
+        self.assertEqual((self.dispatch_row(first)["state"], self.dispatch_row(out_d)["state"]), ("released", "released"))
+
+    def test_failed_drop_blocks_review_retry(self):
+        self.write_spec("T-001")
+        state.create(self.p, "T-001", "developer")
+        self.hteam("start", "T-001")
+        self.act_work("T-001")
+        self.hteam("review", "T-001")
+        self.act_review("T-001", write=False)
+        self.assertTrue(self.hteam("review-finish", "T-001")[1]["retried"])  # a1 실패, a2 진행 중
+        self.fail_hc("get", "boom")
+        self.assertEqual(self.hteam("drop", "T-001", "--force")[0], 1)  # 취소를 저장한 뒤 정리 중 실패
+        with self._hc_locked() as hc:
+            hc["fail"].clear()
+        code, out = self.hteam("review", "T-001", "--retry")
+        self.assertEqual((code, out["error"]["code"]), (3, "round_canceled"))
+        code, out = self.hteam("drop", "T-001", "--force")
+        self.assertEqual((code, out["status"]), (0, "dropped"), out)
+        self.assertEqual(self.active_rows(), [])
+
+
 class FixOpenReviewTest(LifeCase):
     def test_fix_cleans_unrecorded_reviewer(self):
         self.write_spec("T-001")
@@ -5305,7 +5381,8 @@ def _prepare_start(p, cfg, spec, choice, cli: dict) -> None:
                 rd = st["rounds"][-1]
                 slot = rd["work"]
                 if slot.get("canceled"):
-                    raise HteamError("launch_canceled", f"{slot['title']} 실행 키가 취소됐다", CONFLICT)
+                    raise HteamError("launch_canceled", f"{slot['title']} 실행 키가 취소됐다", CONFLICT,
+                                     "앞선 fix·drop 이 끝나지 않았다. 같은 명령을 다시 한다")
                 if dispatch.busy(st, slot):
                     raise HteamError("launching", f"{slot['title']} 를 띄우는 실행자가 아직 살아 있다", CONFLICT,
                                      "끝날 때까지 기다린 뒤 다시 한다")
@@ -5414,44 +5491,60 @@ def start_ready(p) -> dict:
 FIX_FROM = ("changes", "launch_failed", "working", "awaiting_user")
 
 
-def _round_targets(h, st: dict, *, kill: bool) -> list[tuple[str, str]]:
-    """현재 라운드에서 정리하지 않은(cleaned 가 아닌) 실행 기록의 Dispatch: [(실행 키, Dispatch)].
+def _round_targets(h, st: dict, *, kill: bool) -> dict[str, list[str]]:
+    """정리할 Dispatch: {실행 키: [Dispatch, …]}. 모든 라운드의 모든 실행 기록(작업·리뷰 시도)을 본다.
 
-    취소(canceled) 여부와 상관없이 고른다: 앞선 drop·fix 가 취소를 기록한 뒤 정리 중에 멈췄으면 다시 부를 때 남은 것을
-    정리해야 한다. 기록되지 않은 Dispatch(기록 전에 죽은 실행자가 띄운 것)도 저장된 Task·실행 키로 찾는다.
-    아무것도 바꾸기 전에 launching(exit 3)과 kill 없는 active(exit 3 worker_active)를 거부한다."""
-    rd = state.current_round(st)
-    slots = [s for s in ([rd["work"], *rd["reviews"]] if rd else []) if not s.get("cleaned")]
+    고르는 기준은 horch 의 실제 상태다(cleaned 표시가 아니다): 기록된 horch Task 의 모든 시도, Task 가 기록되지 않았으면
+    그 실행 키(제목)의 모든 Task 의 시도 가운데 active·settled·retained·abandoned. 그래서 앞선 fix·drop 이 멈춘 뒤 다시
+    불러도, 같은 Task 를 다시 띄워 남은 이전 시도가 있어도 빠짐없이 정리한다.
+    launching(exit 3)과 kill 없는 active(exit 3 worker_active)는 거부한다."""
+    slots = [s for rd in st.get("rounds", []) for s in (rd["work"], *rd["reviews"])]
     rows = h.workers() if slots else []
-    targets = []
+    targets: dict[str, list[str]] = {}
     for slot in slots:
         if dispatch.busy(st, slot):
             raise HteamError("launching", f"{slot['title']} 를 띄우는 실행자가 아직 살아 있다", CONFLICT, "나중에 다시 한다")
-        row = dispatch.slot_row(rows, slot)
-        if row is None:
-            continue
-        did = row["id"]
-        if row["state"] == "launching":
-            raise HteamError("launching", f"Dispatch {did} 가 아직 launching 이다", CONFLICT, "나중에 다시 한다")
-        if row["state"] == "active" and not kill:
-            raise HteamError("worker_active", f"Dispatch {did} 가 아직 active 다", CONFLICT,
-                             "워커를 끝내고 버리려면 --force")
-        if row["state"] in ("active", "settled", "retained", "abandoned"):
-            targets.append((slot["title"], did))
+        if slot.get("horch_task"):
+            mine = [r for r in rows if r.get("task") == slot["horch_task"]]
+        elif slot.get("launched"):
+            mine = [r for r in rows if r.get("title") == slot["title"]]  # 기록 전에 죽은 실행자가 띄운 것
+        else:
+            mine = []
+        for row in mine:
+            did = row["id"]
+            if row["state"] == "launching":
+                raise HteamError("launching", f"Dispatch {did} 가 아직 launching 이다", CONFLICT, "나중에 다시 한다")
+            if row["state"] == "active" and not kill:
+                raise HteamError("worker_active", f"Dispatch {did} 가 아직 active 다", CONFLICT,
+                                 "워커를 끝내고 버리려면 --force")
+            if row["state"] in ("active", "settled", "retained", "abandoned"):
+                targets.setdefault(slot["title"], []).append(did)
     return targets
 
 
-def _release(p, h, tid: str, targets: list[tuple[str, str]], *, kill: bool) -> list[dict]:
-    """대상을 하나씩 정리하고 정리한 실행 기록마다 cleaned 를 쓴다. 실패하면 예외(다시 부르면 남은 것만 한다)."""
+def _release(p, h, tid: str, targets: dict[str, list[str]], *, kill: bool) -> list[dict]:
+    """대상을 정리한다. 한 실행 기록의 Dispatch 를 모두 정리하면 그 기록에 cleaned 를 쓴다(기록일 뿐 대상 선택에는
+    쓰지 않는다). 실패하면 예외(다시 부르면 horch 상태로 남은 것을 다시 고른다)."""
     released = []
-    for title, did in targets:
-        released.append(dispatch.cleanup(h, did, kill=kill))
+    for title, dids in targets.items():
+        released += [dispatch.cleanup(h, did, kill=kill) for did in dids]
         with state.edit(p, tid) as cur:
-            crd = cur["rounds"][-1]
-            for slot in [crd["work"], *crd["reviews"]]:
+            for slot in [s for rd in cur["rounds"] for s in (rd["work"], *rd["reviews"])]:
                 if slot["title"] == title:
                     slot["cleaned"] = True
     return released
+
+
+def _close_round(p, h, tid: str, *, kill: bool) -> list[dict]:
+    """fix·drop 이 공유하는 순서 규칙(설계 6.4):
+    1) 바꾸기 전에 거부할 것을 확인한다(대상 미리 고르기). 2) 끝나지 않은 실행 키·리뷰 시도의 취소를 먼저 저장한다
+    (이후 start·review 가 그 기록으로 Dispatch 를 되살리지 않는다). 3) 취소 뒤 대상을 다시 골라 정리한다.
+    호출자는 이것이 끝난 뒤에만 마지막 전이(dropped 또는 새 라운드)를 쓴다. 어디서 멈춰도 같은 명령을 다시 부르면 이어 한다."""
+    _round_targets(h, state.require(p, tid), kill=kill)
+    with state.edit(p, tid) as cur:
+        _cancel_open(cur)
+    die_at("after_cancel")
+    return _release(p, h, tid, _round_targets(h, state.require(p, tid), kill=kill), kill=kill)
 
 
 def _cancel_open(st: dict) -> None:
@@ -5488,11 +5581,10 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
     _check_locks(p, cfg, spec, owns)
     # 이전 라운드의 작업 워커와 끝나지 않은 리뷰어(기록되지 않은 것 포함)를 모두 정리한 뒤에만 새 라운드를 쓴다
     # (이전 워커와 새 워커가 같은 폴더에서 함께 일하지 않게). 일하는 중이면 abandon --kill 뒤 release
-    _release(p, h, tid, _round_targets(h, st, kill=True), kill=True)
+    _close_round(p, h, tid, kill=True)
     with state.project_lock(p):
         with state.edit(p, tid, expect=FIX_FROM) as st:
             _check_locks(p, cfg, spec, owns)
-            _cancel_open(st)
             old = st["status"]
             rd = _new_round(st, st["round"] + 1, gitio.head(p.root), choice, note=note, supplement=supplement)
             text = compose.work_spec(p, cfg, spec, rd, owns)
@@ -5535,11 +5627,7 @@ def drop(p, tid: str, force: bool) -> dict:
     st = state.require(p, tid)
     if st["status"] in state.CLOSED:
         raise state.closed_error(st)
-    targets = _round_targets(h, st, kill=force)
-    with state.edit(p, tid) as cur:  # 먼저 취소 표시: 이후 start·review 가 복구하지 않는다
-        _cancel_open(cur)
-    die_at("after_cancel")
-    released = _release(p, h, tid, targets, kill=force)  # 모든 대상의 정리를 확인한 뒤에만 dropped
+    released = _close_round(p, h, tid, kill=force)  # 모든 대상의 정리를 확인한 뒤에만 dropped
     with state.edit(p, tid) as cur:
         state.move(cur, "dropped", "drop", force=force)
     return {"task": tid, "status": "dropped", "released": released}
@@ -6690,6 +6778,14 @@ class WhichStatusTest(CoordCase):
         self.assertIsNone(nxt["T-002"][0])
         self.assertIn("max_rounds", nxt["T-002"][1])
 
+    def test_status_hint_for_round_being_closed(self):
+        self.started()
+        with state.edit(self.p, "T-001") as st:
+            st["rounds"][0]["work"]["canceled"] = True  # fix·drop 이 취소를 저장한 뒤 멈췄다
+        task = self.hteam("status")[1]["tasks"][0]
+        self.assertIsNone(task["next"])
+        self.assertIn("같은 명령을 다시 한다", task["hint"])
+
     def test_status_from_main_and_broken_config(self):
         self.started()
         (self.team / "config.toml").write_text("max_parallel = [")
@@ -6977,13 +7073,13 @@ def next_step(cfg, st: dict, by_task: dict[str, dict], have_rows: bool) -> tuple
     if s in state.CLOSED or not rd:
         return None, None
     slot = rd["work"]
+    if (slot.get("canceled") and s in ("launch_failed", "working")) or any(a.get("canceled") for a in rd["reviews"]):
+        return None, "앞선 fix·drop 이 끝나지 않았다(실행 키가 취소됐다). 같은 명령을 다시 한다"
 
     def latest(horch_task):
         return by_task.get(horch_task) if horch_task else None
 
     if s == "launch_failed":
-        if slot.get("canceled"):
-            return None, "실행 키가 취소됐다"
         if dispatch.busy(st, slot):
             return None, "띄우는 중이다(launching)"
         return H("start", tid), None
@@ -8742,7 +8838,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: 통과 확인**
 
 Run: `bash herdr-team/tests/run.sh && bash herdr-orch/tests/run.sh`
-Expected: 둘 다 전체 OK(herdr-team 171 tests, herdr-orch 202 tests).
+Expected: 둘 다 전체 OK(herdr-team 176 tests, herdr-orch 202 tests).
 
 - [ ] **Step 5: 커밋(구현자는 여기서 멈춘다)**
 
