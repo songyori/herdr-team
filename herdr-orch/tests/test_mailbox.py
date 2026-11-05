@@ -252,7 +252,7 @@ class MailboxTest(HorchCase):
         self.assertEqual((out["run"]["id"], out["run"]["unread"]), (self.run_id, 1))
         did = self.add_dispatch(self.run_id)
         _, wout = self.horch("status", terminal="t9")
-        self.assertEqual(wout["dispatch"], {"id": did, "state": "active"})
+        self.assertEqual(wout["dispatch"], {"id": did, "state": "active", "task": "task-00000001", "title": "t"})
         _, none = self.horch("status")
         self.assertEqual((none["terminal"], none["run"]), (None, None))
 

@@ -213,5 +213,34 @@ class RunUseTest(HorchCase):
         self.assertEqual(out["error"]["code"], "unknown_run")
 
 
+class WorkerStatusTest(HorchCase):
+    """워커 터미널의 status 는 Dispatch 의 horch Task ID 와 제목을 준다(herdr-team 역할 판별, 하위 호환)."""
+
+    def test_worker_status_has_task_and_title(self):
+        self.make_owner()
+        out = self.start_worker(title="T-003 r2 작업")
+        code, st = self.horch("status", terminal=out["terminal"])
+        self.assertEqual(code, 0, st)
+        self.assertEqual(st["dispatch"], {"id": out["dispatch"], "state": "active", "task": out["task"],
+                                          "title": "T-003 r2 작업"})
+        self.assertIsNone(st["run"])  # 워커는 Run 소유자가 아니다
+
+    def test_finished_dispatch_is_not_reported(self):
+        self.make_owner()
+        out = self.start_worker(title="T-003 r1 작업")
+        code, _ = self.horch("done", "--dispatch", out["dispatch"], "--outcome", "succeeded", "--summary", "s",
+                             terminal=out["terminal"])
+        self.assertEqual(code, 0)
+        _, st = self.horch("status", terminal=out["terminal"])
+        self.assertIsNone(st["dispatch"])
+
+    def test_owner_status_keeps_old_keys(self):
+        run_id = self.make_owner()
+        code, st = self.horch("status", terminal="t100")
+        self.assertEqual(code, 0, st)
+        self.assertEqual(set(st), {"ok", "terminal", "dispatch", "run"})
+        self.assertEqual(st["run"]["id"], run_id)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -83,9 +83,12 @@ def status(store) -> dict:
     out = {"terminal": term, "dispatch": None, "run": None}
     if not term:
         return out
-    worker = store.one("SELECT id, state FROM dispatches WHERE terminal=? AND state IN ('launching','active')", (term,))
+    # task·title: herdr-team 훅이 워커 역할(태스크·라운드·종류)을 판별한다(herdr-team 설계 3.3, 9.4)
+    worker = store.one("SELECT d.id, d.state, d.task_id, t.title FROM dispatches d JOIN tasks t ON t.id = d.task_id "
+                       "WHERE d.terminal=? AND d.state IN ('launching','active')", (term,))
     if worker:
-        out["dispatch"] = {"id": worker["id"], "state": worker["state"]}
+        out["dispatch"] = {"id": worker["id"], "state": worker["state"], "task": worker["task_id"],
+                           "title": worker["title"]}
     binding = store.one("SELECT run_id FROM bindings WHERE terminal=?", (term,))
     if not binding:
         return out
