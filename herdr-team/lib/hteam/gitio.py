@@ -12,6 +12,8 @@ def run(root, *args: str, check: bool = True, input: str | None = None) -> subpr
                               timeout=120)
     except FileNotFoundError:
         raise HteamError("git_missing", "git 이 없다", MISSING) from None
+    except subprocess.TimeoutExpired:
+        raise HteamError("git_timeout", f"git {args[0]} 이 120초 안에 끝나지 않았다", FAIL) from None
     if check and proc.returncode != 0:
         raise HteamError("git_failed", f"git {args[0]} 실패: {(proc.stderr or proc.stdout).strip()[-300:]}", FAIL)
     return proc
@@ -58,9 +60,17 @@ def diff_names(root, a: str, b: str) -> list[str]:
     return _z(run(root, "diff", "--name-only", "-z", a, b).stdout)
 
 
+def _yes_no(proc: subprocess.CompletedProcess, args: tuple[str, ...]) -> bool:
+    """exit 0 은 예, 1 은 아니오다. 그 밖(잘못된 리비전 128 등)은 답이 아니라 오류다."""
+    if proc.returncode not in (0, 1):
+        raise HteamError("git_failed", f"git {args[0]} 실패: {(proc.stderr or proc.stdout).strip()[-300:]}", FAIL)
+    return proc.returncode == 0
+
+
 def differs(root, a: str, b: str, path: str) -> bool:
     """커밋 a 와 b 사이에 path 의 내용이 다른가."""
-    return run(root, "diff", "--quiet", a, b, "--", literal(path), check=False).returncode == 1
+    args = ("diff", "--quiet", a, b, "--", literal(path))
+    return not _yes_no(run(root, *args, check=False), args)
 
 
 def dirty(root, pathspecs: list[str]) -> list[str]:
@@ -105,14 +115,26 @@ def blob(root, commit: str, path: str) -> str | None:
 
 
 def is_ancestor(root, a: str, b: str) -> bool:
-    return run(root, "merge-base", "--is-ancestor", a, b, check=False).returncode == 0
+    args = ("merge-base", "--is-ancestor", a, b)
+    return _yes_no(run(root, *args, check=False), args)
 
 
 def commit_paths(root, paths: list[str], subject: str, body: str | None = None) -> str:
-    """경로 지정 커밋. 다른 워커가 스테이징한 파일을 담지 않는다."""
-    run(root, "add", "--", *paths)
+    """경로 지정 커밋. 다른 워커가 스테이징한 파일을 담지 않는다. 경로의 `*?[` 가 glob 으로 읽히지 않게 literal 로 넘긴다."""
+    named = [literal(p) for p in paths]
+    run(root, "add", "--", *named)
     args = ["commit", "-q", "-m", subject]
     if body:
         args += ["-m", body]
-    run(root, *args, "--", *paths)
+    run(root, *args, "--", *named)
     return head(root)
+
+
+def unstage(root, paths: list[str]) -> None:
+    """HEAD 에 없는 새 파일을 인덱스에서만 뺀다(작업 트리 파일은 그대로). 인덱스에 없으면 넘어간다."""
+    run(root, "rm", "--cached", "-q", "-f", "--ignore-unmatch", "--", *[literal(p) for p in paths])
+
+
+def last_commit(root, path: str) -> str | None:
+    """path 를 마지막으로 바꾼 커밋. 없으면 None."""
+    return run(root, "log", "-1", "--format=%H", "--", literal(path)).stdout.strip() or None
