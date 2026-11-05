@@ -175,7 +175,7 @@ class WorkerStartInProcessTest(HorchCase):
     def setUp(self):
         super().setUp()
         self.run_id = self.make_owner("t100")
-        patcher = mock.patch.dict(os.environ, self.env, clear=True)
+        patcher = mock.patch.dict(os.environ, {**self.env, "HC_TERMINAL_ID": "t100"}, clear=True)
         patcher.start()
         self.addCleanup(patcher.stop)
         self.store = Store(self.home)
@@ -294,6 +294,27 @@ class WorkerStartInProcessTest(HorchCase):
         self.assertEqual((cm.exception.code, cm.exception.exit_code), ("launch_failed", 1))
         self.assertIn("dispatch", cm.exception.data)
 
+    def test_binding_moved_before_create_tx_is_not_owner(self):
+        # worker-start 의 첫 소유 확인 뒤 run-use 로 바인딩이 옮겨지면 옛 Run 에 아무것도 만들지 않는다
+        other = self.make_owner("t200")
+        real_tx = self.store.tx
+        state = {"moved": False}
+
+        def moving_tx():
+            if not state["moved"]:
+                state["moved"] = True
+                self.store.run("DELETE FROM bindings WHERE terminal='t200'")  # run_id 는 UNIQUE
+                self.store.run("UPDATE bindings SET run_id=? WHERE terminal='t100'", (other,))
+            return real_tx()
+        with mock.patch.object(self.store, "tx", side_effect=moving_tx), \
+                mock.patch.object(workers.hcio, "run_bg") as run_bg:
+            with self.assertRaises(HorchError) as cm:
+                self.start()
+        self.assertEqual((cm.exception.code, cm.exception.exit_code), ("not_owner", 5))
+        run_bg.assert_not_called()
+        self.assertEqual(self.store.one("SELECT COUNT(*) AS n FROM tasks WHERE run_id=?", (self.run_id,))["n"], 0)
+        self.assertEqual(self.store.one("SELECT COUNT(*) AS n FROM dispatches WHERE run_id=?", (self.run_id,))["n"], 0)
+
     def test_other_integrity_error_not_task_busy(self):
         self.add_dispatch(self.run_id)  # dsp-00000001 이 이미 있다
         real = workers.new_id
@@ -307,7 +328,7 @@ class ReconcileAndFenceTest(HorchCase):
         super().setUp()
         self.run_id = self.make_owner("t100")
         self.did = self.add_dispatch(self.run_id, terminal=None, state="launching")
-        patcher = mock.patch.dict(os.environ, self.env, clear=True)
+        patcher = mock.patch.dict(os.environ, {**self.env, "HC_TERMINAL_ID": "t100"}, clear=True)
         patcher.start()
         self.addCleanup(patcher.stop)
         self.store = Store(self.home)

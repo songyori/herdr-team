@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 from . import agents, auth, hcio, liveness, mailbox, preamble, procs
-from .errors import CONFLICT, FAIL, MISSING, USAGE, HorchError
+from .errors import CONFLICT, DENIED, FAIL, MISSING, USAGE, HorchError
 from .ids import new_id, now
 from .paths import horch_argv, horch_cmd
 from .store import write_atomic
@@ -117,6 +117,10 @@ def _create(store, run_id: str, *, spec, title, agent, model, effort, extra, cwd
     dispatch_id, ts = new_id("dsp"), now()
     try:
         with store.tx():
+            # 첫 소유 확인과 이 트랜잭션 사이에 run-use 로 바인딩이 옮겨졌을 수 있다. 만들기 직전에 다시 확인한다.
+            if auth.owner_run_id(store) != run_id:
+                raise HorchError("not_owner", f"이 터미널은 더는 Run {run_id} 의 소유자가 아니다", DENIED,
+                                 "run-create 또는 run-use 를 먼저 한다")
             if task_id:
                 task = store.one("SELECT * FROM tasks WHERE id=? AND run_id=?", (task_id, run_id))
                 if not task:

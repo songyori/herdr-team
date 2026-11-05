@@ -53,6 +53,26 @@ class AgentsTest(unittest.TestCase):
         self.assertEqual(self._codex(["--x"]),
                          base + ["-s", "workspace-write", "-a", "never"] + tail + ["--x", "--", "P"])
 
+    def test_codex_attached_short_forms_and_approve_for_me(self):
+        base = ["codex", "--no-daemon"]
+        tail = ["--add-dir", "/h"]
+        cases = [
+            (["-sread-only"], ["-a", "never"]),
+            (["-s=read-only"], ["-a", "never"]),
+            (["-anever"], ["-s", "workspace-write"]),
+            (["-a=on-request"], ["-s", "workspace-write"]),
+            (["--approve-for-me"], []),
+        ]
+        for extra, defaults in cases:
+            with self.subTest(extra=extra):
+                self.assertEqual(self._codex(extra), base + defaults + tail + extra + ["--", "P"])
+
+    def test_codex_non_conflicting_dash_s_a_prefixes_keep_defaults(self):
+        for extra in (["--search"], ["--add-dir", "/x"], ["-C", "/x"], ["--sandbox-x"]):
+            with self.subTest(extra=extra):
+                argv = self._codex(extra)
+                self.assertEqual(argv[2:6], ["-s", "workspace-write", "-a", "never"])
+
     def test_unknown(self):
         with self.assertRaises(HorchError) as cm:
             agents.executable("gemini")
