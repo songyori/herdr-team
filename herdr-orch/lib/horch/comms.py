@@ -69,6 +69,10 @@ def reply(store, question_id: int, body: str) -> dict:
     existing = None
     try:
         with store.tx():
+            # 확인과 트랜잭션 사이에 run-use 로 소유가 옮겨졌을 수 있다. 쓰기 직전에 다시 확인한다.
+            if auth.owner_run_id(store) != run_id:
+                raise HorchError("not_owner", f"이 터미널은 더는 Run {run_id} 의 소유자가 아니다", DENIED,
+                                 "run-create 또는 run-use 를 먼저 한다")
             existing = store.one("SELECT id, body FROM messages WHERE reply_to=? AND type='reply'", (question_id,))
             if existing is None:
                 mid = mailbox.post(store, run_id=run_id, mailbox=f"dispatch:{q['dispatch_id']}", sender=f"run:{run_id}",
@@ -87,14 +91,17 @@ def _ask_key(question: str, key: str | None) -> str:
 
 def ask(store, dispatch_id: str, question: str | None, key: str | None, timeout_ms: int, resume: int | None) -> dict:
     row = auth.worker_dispatch(store, dispatch_id)
-    auth.require_active(row)
     run_id = row["run_id"]
     reused = True
     if resume is not None:
         q = store.one("SELECT * FROM messages WHERE id=? AND type='question' AND dispatch_id=?", (resume, dispatch_id))
         if not q:
             raise HorchError("unknown_question", f"이 Dispatch 의 질문 {resume} 가 없다", USAGE)
+        if row["state"] != "active":
+            raise HorchError("dispatch_not_active", f"Dispatch {dispatch_id} 는 {row['state']} 다", CONFLICT,
+                             data={"question": q["id"]})
     else:
+        auth.require_active(row)
         if not question:
             raise HorchError("usage", "--question 또는 --resume 이 필요하다", USAGE)
         ask_key = _ask_key(question, key)
@@ -122,13 +129,14 @@ def _wait_answer(store, dispatch_id: str, run_id: str, qid: int, timeout_ms: int
     deadline = time.monotonic() + timeout_ms / 1000
     next_wake = time.monotonic() + mailbox.rewake_interval()
     while True:
-        answer = store.one("SELECT body FROM messages WHERE reply_to=? AND type='reply'", (qid,))
-        if answer:
-            return {"question": qid, "answer": answer["body"], "reused": reused}
+        # 설계 9장: Dispatch 가 active 가 아니면 답이 있어도 exit 3 으로 끝낸다. 상태를 먼저 본다.
         state = store.one("SELECT state FROM dispatches WHERE id=?", (dispatch_id,))["state"]
         if state != "active":
             raise HorchError("dispatch_not_active", f"Dispatch {dispatch_id} 가 {state} 가 됐다", CONFLICT,
                              data={"question": qid})
+        answer = store.one("SELECT body FROM messages WHERE reply_to=? AND type='reply'", (qid,))
+        if answer:
+            return {"question": qid, "answer": answer["body"], "reused": reused}
         t = time.monotonic()
         if t >= deadline:
             raise HorchError("timeout", "답이 오지 않았다", TIMEOUT, f"--resume {qid} 로 다시 기다린다",
@@ -168,11 +176,13 @@ def done(store, dispatch_id: str, outcome: str, summary: str, report_path: str |
             if cur["state"] != "active":
                 raise HorchError("dispatch_not_active", f"Dispatch {dispatch_id} 는 {cur['state']} 다", CONFLICT)
             ts = now()
-            store.run("UPDATE dispatches SET state='settled', outcome=?, summary=?, report_path=?, files_modified=?, "
-                      "settled_at=? WHERE id=? AND state='active'",
-                      (outcome, summary, report_path, files_json, ts, dispatch_id))
-            store.run("UPDATE tasks SET status='settled', outcome=?, settled_at=? WHERE id=?",
-                      (outcome, ts, cur["task_id"]))
+            d_upd = store.run("UPDATE dispatches SET state='settled', outcome=?, summary=?, report_path=?, "
+                              "files_modified=?, settled_at=? WHERE id=? AND state='active'",
+                              (outcome, summary, report_path, files_json, ts, dispatch_id))
+            t_upd = store.run("UPDATE tasks SET status='settled', outcome=?, settled_at=? WHERE id=? AND status='open'",
+                              (outcome, ts, cur["task_id"]))
+            if d_upd.rowcount != 1 or t_upd.rowcount != 1:
+                raise HorchError("conflict", "Dispatch 또는 Task 상태가 바뀌어 done 을 반영하지 못했다", CONFLICT)
             body = json.dumps({"dispatch": dispatch_id, "task": cur["task_id"], "outcome": outcome, "summary": summary,
                                "report_path": report_path, "files_modified": files}, ensure_ascii=False)
             mailbox.post(store, run_id=run_id, mailbox=f"run:{run_id}", sender=f"dispatch:{dispatch_id}",

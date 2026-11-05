@@ -126,6 +126,87 @@ class CommsTest(HorchCase):
         code, out = self.w("reply", "--id", "1", "--body", "x")
         self.assertEqual(code, 5)
 
+    def test_reply_rechecks_ownership_inside_tx(self):
+        """소유권 확인과 트랜잭션 사이에 binding 이 옮겨지면 옛 소유자의 답은 exit 5 이고 기록되지 않는다."""
+        import os
+        from unittest import mock
+        from horch import comms
+        from horch.errors import HorchError
+        from horch.store import Store
+        db = self.db()
+        db.execute("INSERT INTO messages(run_id, mailbox, sender, type, body, dispatch_id, ask_key, created_at) "
+                   "VALUES (?, ?, 'x', 'question', 'Q', ?, 'k', 'x')", (self.run_id, f"run:{self.run_id}", self.did))
+        db.commit()
+        qid = db.execute("SELECT id FROM messages WHERE type='question'").fetchone()["id"]
+        store = Store(self.home)
+        self.addCleanup(store.close)
+        real_tx = store.tx
+
+        def moving_tx():
+            store.run("UPDATE bindings SET terminal='t200' WHERE run_id=?", (self.run_id,))
+            return real_tx()
+
+        with mock.patch.dict(os.environ, {"HC_TERMINAL_ID": "t100"}):
+            with mock.patch.object(store, "tx", moving_tx):
+                with self.assertRaises(HorchError) as cm:
+                    comms.reply(store, qid, "옛 답")
+        self.assertEqual((cm.exception.exit_code, cm.exception.code), (5, "not_owner"))
+        n = self.db().execute("SELECT COUNT(*) FROM messages WHERE type='reply'").fetchone()[0]
+        self.assertEqual(n, 0)
+        with mock.patch.dict(os.environ, {"HC_TERMINAL_ID": "t200"}):
+            out = comms.reply(store, qid, "새 답")
+        self.assertFalse(out["duplicate"])
+
+    def test_ask_state_wins_over_answer(self):
+        for state in ("abandoned", "settled"):
+            with self.subTest(state=state):
+                db = self.db()
+                db.execute("DELETE FROM messages")
+                db.execute("UPDATE dispatches SET state='active' WHERE id=?", (self.did,))
+                db.commit()
+                code, out = self.w("ask", "--dispatch", self.did, "--question", "Q", "--timeout-ms", "200")
+                self.assertEqual(code, 4)
+                qid = out["question"]
+                self.owner("reply", "--id", str(qid), "--body", "A")
+                db.execute("UPDATE dispatches SET state=? WHERE id=?", (state, self.did))
+                db.commit()
+                code, out = self.w("ask", "--dispatch", self.did, "--resume", str(qid), "--timeout-ms", "200")
+                self.assertEqual((code, out["error"]["code"], out["question"]), (3, "dispatch_not_active", qid))
+
+    def test_wait_answer_checks_state_before_answer(self):
+        """대기 루프: 답이 이미 있어도 Dispatch 가 active 가 아니면 exit 3(question 포함)."""
+        from horch import comms
+        from horch.errors import HorchError
+        from horch.store import Store
+        db = self.db()
+        db.execute("INSERT INTO messages(run_id, mailbox, sender, type, body, dispatch_id, ask_key, created_at) "
+                   "VALUES (?, ?, 'x', 'question', 'Q', ?, 'k', 'x')", (self.run_id, f"run:{self.run_id}", self.did))
+        qid = db.execute("SELECT id FROM messages WHERE type='question'").fetchone()["id"]
+        db.execute("INSERT INTO messages(run_id, mailbox, sender, type, body, dispatch_id, reply_to, created_at) "
+                   "VALUES (?, ?, 'x', 'reply', 'A', ?, ?, 'x')", (self.run_id, f"dispatch:{self.did}", self.did, qid))
+        db.commit()
+        store = Store(self.home)
+        self.addCleanup(store.close)
+        for state in ("abandoned", "settled"):
+            with self.subTest(state=state):
+                db.execute("UPDATE dispatches SET state=? WHERE id=?", (state, self.did))
+                db.commit()
+                with self.assertRaises(HorchError) as cm:
+                    comms._wait_answer(store, self.did, self.run_id, qid, 200, True)
+                self.assertEqual((cm.exception.exit_code, cm.exception.code, cm.exception.data),
+                                 (3, "dispatch_not_active", {"question": qid}))
+
+    def test_done_conflicts_when_task_not_open(self):
+        db = self.db()
+        db.execute("UPDATE tasks SET status='settled' WHERE id='task-00000001'")
+        db.commit()
+        code, out = self.w("done", "--dispatch", self.did, "--outcome", "succeeded", "--summary", "s")
+        self.assertEqual((code, out["error"]["code"]), (3, "conflict"))
+        row = self.db().execute("SELECT state FROM dispatches WHERE id=?", (self.did,)).fetchone()
+        self.assertEqual(row["state"], "active")
+        n = self.db().execute("SELECT COUNT(*) FROM messages WHERE type='worker_done'").fetchone()[0]
+        self.assertEqual(n, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
