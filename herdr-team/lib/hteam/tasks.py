@@ -83,22 +83,15 @@ LIVE = ("launching", "active")
 class Capacity:
     """start-ready 한 호출의 동시 수 상한(설계 5.4).
 
-    held: 이 호출에서 시작 바이트를 보낸 뒤 오류가 난(워커가 떴는지 모르는) 태스크. 호출이 끝날 때까지 자리를 차지한다.
-    rows(): horch worker-list. 필요할 때 호출마다 한 번만 묻는다."""
+    held: 이 호출에서 시작 바이트를 보낸 뒤 오류가 난(워커가 떴는지 모르는) 태스크. 호출이 끝날 때까지 자리를 차지한다."""
 
     def __init__(self, h, limit: int):
         self.h = h
         self.limit = limit
         self.held: set[str] = set()
-        self._rows: list[dict] | None = None
-
-    def rows(self) -> list[dict]:
-        if self._rows is None:
-            self._rows = self.h.workers()
-        return self._rows
 
 
-def _may_run(st: dict, cap: Capacity) -> bool:
+def _may_run(st: dict, cap: Capacity, rows) -> bool:
     """launch_failed 태스크의 현재 라운드 워커가 떠 있을 수 있나: 실행자·장벽 자식이 살아 있다, 이 호출에서 결과를
     모르게 됐다, 기록된 horch Task 나 실행 키의 Dispatch 가 launching·active 다."""
     rd = state.current_round(st)
@@ -111,14 +104,22 @@ def _may_run(st: dict, cap: Capacity) -> bool:
         return False  # 장벽 자식을 기록한 적이 없다: horch 를 실행하지 않았다
     return any(r.get("state") in LIVE and (r.get("title") == slot["title"] or
                                            (slot.get("horch_task") and r.get("task") == slot["horch_task"]))
-               for r in cap.rows())
+               for r in rows())
 
 
 def occupied(p, tid: str, cap: Capacity) -> list[str]:
     """동시 수 상한이 세는 다른 태스크: working, 그리고 워커가 떠 있을 수 있는 launch_failed(_may_run).
-    프로젝트 잠금 안에서 부른다."""
+    프로젝트 잠금 안에서 부른다. worker-list 는 이 검사마다 새로 묻는다(필요할 때 한 번). 호출 도중 끝나거나 새로 뜬
+    워커를 옛 목록으로 세지 않게."""
+    seen: list[list[dict]] = []
+
+    def rows() -> list[dict]:
+        if not seen:
+            seen.append(cap.h.workers())
+        return seen[0]
+
     return [s["id"] for s in state.all_states(p) if s["id"] != tid and
-            (s["status"] == "working" or (s["status"] == "launch_failed" and _may_run(s, cap)))]
+            (s["status"] == "working" or (s["status"] == "launch_failed" and _may_run(s, cap, rows)))]
 
 
 def _prepare_start(p, cfg, spec, choice, cli: dict, cap: Capacity | None = None) -> None:

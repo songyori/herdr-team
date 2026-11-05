@@ -579,6 +579,63 @@ class StartReadyTest(StartCase):
         self.assertEqual(len(self.horch_tasks()), 1)
 
 
+    def test_nonok_horch_with_active_dispatch_holds_slot(self):
+        """horch 가 non-ok(record_failed 등)로 끝났지만 Dispatch 는 active 다. 앞서 worker-list 를 이미 본 뒤여도
+        그 태스크는 자리를 차지한다(시작 바이트 뒤 오류는 held, 점유 검사마다 worker-list 를 새로 본다)."""
+        self.set_max_parallel(1)
+        for tid, owns in (("T-000", "src/z/**"), ("T-001", "src/a/**"), ("T-002", "src/b/**")):
+            self.make_task(tid, owns=owns)
+        with state.edit(self.p, "T-000") as st:  # 취소된 launch_failed(기록된 자식): T-001 의 점유 검사가 worker-list 를 본다
+            slot = {**dispatch.new_slot("T-000 r1 작업"), "launched": {"pid": 999999, "started": ""}, "canceled": True}
+            st["rounds"] = [{"round": 1, "round_base": None, "agent": "claude", "model": None, "effort": None,
+                             "note": None, "supplement": None, "work": slot, "reviews": [], "verdict": None}]
+            st.update(round=1, status="launch_failed")
+        real_go = launch.Barrier.go
+
+        def go(barrier, timeout=600):
+            code, out, err = real_go(barrier, timeout)
+            if "T-001 r1 작업" in barrier.proc.args:  # 워커는 떴는데 horch 가 non-ok 로 끝났다
+                d = json.loads(out.strip().splitlines()[-1])
+                return 1, json.dumps({"ok": False, "error": {"code": "record_failed", "message": "x", "hint": ""},
+                                      "task": d["task"], "dispatch": d["dispatch"]}), err
+            return code, out, err
+
+        with self.in_process(), mock.patch.object(launch.Barrier, "go", go):
+            with self.assertRaises(HteamError) as cm:
+                tasks.start_ready(self.p)
+        data = cm.exception.data
+        self.assertEqual(data["started"], [])
+        self.assertEqual([(f["task"], f["error"]["code"]) for f in data["failed"]],
+                         [("T-000", "launch_canceled"), ("T-001", "launch_failed")])
+        self.assertEqual({w["task"]: w["reason"] for w in data["waiting"]}, {"T-002": "limit"})
+        live = [r["title"] for r in self.horch_tasks() if r["state"] in ("launching", "active")]
+        self.assertEqual(live, ["T-001 r1 작업"])
+
+    def test_worker_settled_mid_call_frees_slot(self):
+        """호출 도중 끝난(settled) 워커는 더 세지 않는다. 다음 태스크는 limit 대기가 아니라 뜬다."""
+        self.set_max_parallel(2)
+        self.make_task("T-001", owns="src/a/**")
+        self.make_task("T-002", owns="src/b/**")
+        self.make_task("T-003", owns="src/c/**", depends="T-001")  # start-ready 는 deps 로 건너뛴다
+        self.assertEqual(self.hteam("start", "T-003", env={"HTEAM_TEST_DIE_AT": "after_launch"})[0], 137)
+        did = next(r["id"] for r in self.horch_tasks() if r["title"] == "T-003 r1 작업")
+        self.assertEqual(self.dispatch_row(did)["state"], "active")
+        real_go = launch.Barrier.go
+
+        def go(barrier, timeout=600):
+            res = real_go(barrier, timeout)
+            if "T-001 r1 작업" in barrier.proc.args:  # T-001 을 띄우는 사이 T-003 워커가 끝났다
+                code, out = self.act(did, {"done": {"outcome": "succeeded", "summary": "끝"}})
+                self.assertEqual(code, 0, out)
+            return res
+
+        with self.in_process(), mock.patch.object(launch.Barrier, "go", go):
+            out = tasks.start_ready(self.p)
+        self.assertEqual(self.dispatch_row(did)["state"], "settled")
+        self.assertEqual([s["task"] for s in out["started"]], ["T-001", "T-002"], out)
+        self.assertEqual({w["task"]: w["reason"] for w in out["waiting"]}, {"T-003": "deps"})
+
+
 class ComposeTest(StartCase):
     def test_fix_round_block_and_ask_rule(self):
         self.write_spec("T-001", "planner", depends="T-000", commit=False)
@@ -639,6 +696,30 @@ class BarrierTest(unittest.TestCase):
         kill.assert_called_once()
         self.assertIsNotNone(b.proc.returncode)
         self.assertTrue(b.proc.stdout.closed and b.proc.stderr.closed)
+
+
+    def test_kill_reaches_group_of_zombie_leader(self):
+        """자식(그룹 리더)이 거두기 전 좀비가 되고 자손만 남았다. macOS 의 getpgid 는 좀비에 ESRCH 를 내지만
+        killpg 는 그룹에 닿는다. kill 은 그룹을 늘 죽인다."""
+        prog = ("import subprocess, sys\n"
+                "c = subprocess.Popen(['sleep', '30'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+                "print(c.pid, flush=True)\n")
+        b = launch.Barrier([sys.executable, "-c", prog])
+        b.send()
+        gpid = int(b.proc.stdout.readline())
+        self.addCleanup(lambda: procs.alive(gpid, None) and os.kill(gpid, 9))
+        for _ in range(250):  # 자식이 끝나 좀비가 될 때까지(거두지 않는다)
+            state_ = procs._ps_state(b.pid)
+            if state_ and state_[0].startswith("Z"):
+                break
+            __import__("time").sleep(0.02)
+        b.kill()
+        self.assertIsNotNone(b.proc.returncode)
+        for _ in range(100):
+            if not procs.alive(gpid, None):
+                break
+            __import__("time").sleep(0.02)
+        self.assertFalse(procs.alive(gpid, None), "자손이 살아 남았다")
 
 
 class SameRoundTest(StartCase):

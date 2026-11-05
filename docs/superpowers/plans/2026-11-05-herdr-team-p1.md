@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Python 3.11 이상, 표준 라이브러리만 쓴다. 외부 패키지 금지. 3.11 에서도 동작해야 한다: 자식 stdin 은 `communicate(input=…)` 로 넘기고, 직접 닫은 stdin 으로 `communicate()` 를 부르지 않는다(3.11 은 닫힌 stdin 을 flush 하다 `ValueError`). 3.11 이 있는 기기면 Task 6·9 의 장벽·백그라운드 테스트를 3.11 로도 돌린다.
+- Python 3.11 이상, 표준 라이브러리만 쓴다. 외부 패키지 금지. 3.11 에서도 동작해야 한다: 닫힌 stdin 이 붙은 채로 `communicate()` 를 부르지 않는다(3.11 은 닫힌 stdin 을 flush 하다 `ValueError`). stdin 을 직접 닫았으면 `proc.stdin = None` 으로 뗀 뒤 부른다(시작 장벽이 이렇게 한다), 아니면 `communicate(input=…)` 로 넘긴다. 3.11 이 있는 기기면 Task 6·9 의 장벽·백그라운드 테스트를 3.11 로도 돌린다.
 - `hc`·`herdr-app` 은 `herdr-team/lib/hteam/herdr.py` 에서만, `horch` 는 `herdr-team/lib/hteam/horch.py` 에서만 부른다(시작 장벽 `launch.py` 는 `horch.py` 가 만든 argv 를 exec 할 뿐이다). git 은 `gitio.py` 에서 부른다.
 - hteam 은 horch 를 늘 `--home <프로젝트>/.herdr-team/state/horch` 로 부른다. horch 찾는 순서: `HERDR_ORCH_BIN` → 플러그인 루트의 형제 `../herdr-orch/bin/horch` → `installed_plugins.json`(테스트는 `HTEAM_PLUGINS_JSON` 으로 바꾼다). 못 찾으면 exit 12.
 - 모든 명령은 stdout 에 JSON 한 개를 쓴다. 성공 `{"ok": true, ...}`, 실패 `{"ok": false, "error": {"code", "message", "hint"}, ...}`.
@@ -3143,7 +3143,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam
 ---
 ### Task 6: 시작 장벽, `start`·`start-ready`, 실행 키 복구, 워커 사양 조립
 
-설계 5.4·5.5. `start T` 는 사양·상태(pending·launch_failed)·planner 하나·owns 잠금을 프로젝트 잠금 안에서 확인하고, 실행 키·실행자·라운드를 `launch_failed` 와 함께 먼저 쓴다(base 는 처음 띄울 때 한 번, round_base 는 그 라운드를 처음 띄울 때 한 번). 워커 사양을 `state/tasks/T-xxx/rN-work.md` 에 조립하고, horch 를 시작 장벽 자식으로 부른다: 자식 pid·시작 시각을 상태 파일에 쓴 뒤에만 시작 바이트를 보낸다. 복구: 기록된 horch Task 가 있으면 그것, 자식 pid 만 있으면 `horch worker-list` 에서 제목으로 찾는다. 최신 Dispatch 가 launching·active·settled·retained 면 이어 붙이고, launch_failed·abandoned 면 `worker-start --task <Task> --retry` 로 같은 Task 를 다시 띄우고, 못 찾으면 새로 띄운다. 같은 라운드 복구(launch_failed)는 저장된 사양 파일·owns·에이전트·모델을 그대로 쓴다: horch `--task --retry` 는 DB 에 저장된 사양으로 띄우므로 잠금도 그 owns 여야 한다. 복구에 `--model`·`--effort`·`--worker` 를 주면 exit 2 `recovery_overrides`(바꾸려면 fix 로 새 라운드). 이어 붙일 때는 라운드의 에이전트·모델을 실제 Dispatch 기록에 맞춘다(리뷰어는 그 반대쪽). front matter owns 가 직무 owns 를 넘으면 exit 2 `owns_too_wide`. 시작 장벽은 시작 바이트를 `communicate(input=b"x")` 로 보낸다(Python 3.11). `start-ready` 는 tasks.toml 순서로 사양 → 의존 → 잠금 → 동시 수 상한을 보고 통과한 것을 띄운다.
+설계 5.4·5.5. `start T` 는 사양·상태(pending·launch_failed)·planner 하나·owns 잠금을 프로젝트 잠금 안에서 확인하고, 실행 키·실행자·라운드를 `launch_failed` 와 함께 먼저 쓴다(base 는 처음 띄울 때 한 번, round_base 는 그 라운드를 처음 띄울 때 한 번). 워커 사양을 `state/tasks/T-xxx/rN-work.md` 에 조립하고, horch 를 시작 장벽 자식으로 부른다: 자식 pid·시작 시각을 상태 파일에 쓴 뒤에만 시작 바이트를 보낸다. 복구: 기록된 horch Task 가 있으면 그것, 자식 pid 만 있으면 `horch worker-list` 에서 제목으로 찾는다. 최신 Dispatch 가 launching·active·settled·retained 면 이어 붙이고, launch_failed·abandoned 면 `worker-start --task <Task> --retry` 로 같은 Task 를 다시 띄우고, 못 찾으면 새로 띄운다. 같은 라운드 복구(launch_failed)는 저장된 사양 파일·owns·에이전트·모델을 그대로 쓴다: horch `--task --retry` 는 DB 에 저장된 사양으로 띄우므로 잠금도 그 owns 여야 한다. 복구에 `--model`·`--effort`·`--worker` 를 주면 exit 2 `recovery_overrides`(바꾸려면 fix 로 새 라운드). 이어 붙일 때는 라운드의 에이전트·모델을 실제 Dispatch 기록에 맞춘다(리뷰어는 그 반대쪽). front matter owns 가 직무 owns 를 넘으면 exit 2 `owns_too_wide`. 시작 장벽은 launched 기록을 저장한 직후 같은 태스크 잠금 안에서 시작 바이트를 쓰고 flush 하고 stdin 을 닫은 뒤 `proc.stdin = None` 으로 뗀다(Python 3.11). 잠금을 놓은 뒤 `communicate()` 로 출력만 읽는다(잠금을 쥔 채 horch 를 기다리지 않는다). 자식은 자기 세션(프로세스 그룹)을 갖고, 시간이 넘으면 그 그룹을 죽이고 거둔 뒤 exit 1 `launch_timeout`. `start-ready` 는 tasks.toml 순서로 사양 → 의존 → 잠금 → 동시 수 상한을 보고 통과한 것을 띄운다.
 
 **Files:**
 - Create: `herdr-team/lib/hteam/launch.py`, `herdr-team/lib/hteam/dispatch.py`, `herdr-team/lib/hteam/compose.py`, `herdr-team/lib/hteam/tasks.py`
@@ -3424,19 +3424,24 @@ class ComposeTest(StartCase):
 
 
 class BarrierTest(unittest.TestCase):
-    def test_go_sends_byte_without_closing_stdin_first(self):
-        """Python 3.11 의 communicate() 는 닫힌 stdin 을 flush 하다 ValueError 를 낸다. 장벽은 input= 으로 보낸다."""
-        b = launch.Barrier([sys.executable, "-c", "print('ran')"])
-        seen = []
-        real = b.proc.communicate
+    def test_go_never_communicates_with_closed_stdin(self):
+        """Python 3.11 의 communicate() 는 닫힌 stdin 을 flush 하다 ValueError 를 낸다. 장벽은 바이트를 직접 쓰고
+        stdin 을 닫은 뒤 떼어(None) 둔다. communicate() 는 출력만 읽는다."""
+        for send_first in (False, True):
+            with self.subTest(send_first=send_first):
+                b = launch.Barrier([sys.executable, "-c", "print('ran')"])
+                seen = []
+                real = b.proc.communicate
 
-        def strict(input=None, timeout=None):
-            seen.append((b.proc.stdin.closed, input))
-            return real(input=input, timeout=timeout)
+                def strict(input=None, timeout=None, b=b, real=real, seen=seen):
+                    seen.append((b.proc.stdin, input))
+                    return real(input=input, timeout=timeout)
 
-        b.proc.communicate = strict
-        code, out, _ = b.go(timeout=30)
-        self.assertEqual((code, out.strip(), seen), (0, "ran", [(False, b"x")]))
+                b.proc.communicate = strict
+                if send_first:
+                    b.send()  # hteam 은 기록을 저장한 직후 태스크 잠금 안에서 보낸다
+                code, out, _ = b.go(timeout=30)
+                self.assertEqual((code, out.strip(), seen), (0, "ran", [(None, None)]))
 
     def test_abort_never_runs_child(self):
         with __import__("tempfile").TemporaryDirectory() as d:
@@ -3531,6 +3536,8 @@ Expected: ERROR — `cannot import name 'compose'`.
 """
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 import sys
 
@@ -3549,29 +3556,87 @@ CHILD = (
 
 class Barrier:
     def __init__(self, argv: list[str]):
+        # 자식은 자기 프로세스 그룹을 갖는다. 시간이 넘으면 horch 와 그 hc 호출을 함께 죽인다(kill)
         self.proc = subprocess.Popen([sys.executable, "-c", CHILD, *argv], stdin=subprocess.PIPE,
-                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         self.pid = self.proc.pid
         self.started = procs.start_time(self.pid) or ""
+        self.sent = False  # 시작 바이트를 보내려 했다(그 뒤로는 horch 가 떴는지 모른다)
 
     def record(self) -> dict:
         return {"pid": self.pid, "started": self.started}
 
-    def go(self, timeout: float = 600) -> tuple[int, str, str]:
-        """시작 바이트를 보내고 horch 가 끝날 때까지 기다린다.
+    def send(self) -> None:
+        """시작 바이트를 쓰고 stdin 을 닫는다. hteam 은 launched 기록을 저장한 직후 태스크 잠금을 쥔 채 부른다.
 
-        바이트는 communicate(input=…) 로 보낸다. stdin 을 직접 닫은 뒤 communicate() 를 부르면
-        Python 3.11 은 닫힌 stdin 을 flush 하다 ValueError 를 낸다(3.12 부터 무시)."""
-        out, err = self.proc.communicate(input=b"x", timeout=timeout)
+        닫은 stdin 은 떼어(None) 둔다. 닫힌 stdin 이 붙은 채 communicate() 를 부르면 Python 3.11 은 그것을
+        flush 하다 ValueError 를 낸다(3.12 부터 무시)."""
+        if self.sent:
+            return
+        self.sent = True
+        stdin, self.proc.stdin = self.proc.stdin, None
+        try:
+            stdin.write(b"x")
+            stdin.flush()
+        finally:
+            try:
+                stdin.close()
+            except OSError:
+                pass
+
+    def go(self, timeout: float = 600) -> tuple[int, str, str]:
+        """시작 바이트를 아직 안 보냈으면 보내고, horch 가 끝날 때까지 출력을 읽는다. 잠금 없이 부른다."""
+        self.send()
+        out, err = self.proc.communicate(timeout=timeout)
         return self.proc.returncode, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
 
+    def kill(self) -> None:
+        """시간이 넘었다. 자식(horch)과 그 프로세스 그룹(hc 호출)을 죽이고 거둔다. 예외를 내지 않는다.
+        horch 가 만든 launching Dispatch 는 실행자가 죽었으므로 horch 가 launch_failed 로 바꾼다(제목으로 복구)."""
+        try:
+            # 자식은 새 세션의 리더라 pgid == pid 다. 거두기 전이라 pid 가 재사용되지 않으므로 늘 그룹을 죽인다.
+            # 리더가 좀비면 macOS 의 getpgid 는 ESRCH 를 내지만 killpg 는 남은 자손에 닿는다
+            os.killpg(self.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            self.proc.communicate(timeout=5)  # 남은 출력을 비우고 거둔다
+        except Exception:
+            try:
+                self.proc.kill()
+                self.proc.wait(timeout=5)
+            except Exception:
+                pass
+        for pipe in (self.proc.stdout, self.proc.stderr):
+            try:
+                if pipe:
+                    pipe.close()
+            except Exception:
+                pass
+
     def abort(self) -> None:
-        """기록에 실패했다. 바이트 없이 stdin 을 닫아 자식이 horch 를 실행하지 않고 끝나게 한다."""
+        """기록에 실패했다. 바이트 없이 stdin 을 닫아 자식이 horch 를 실행하지 않고 끝나게 한다.
+
+        호출자는 원래 오류를 다시 던지는 중이다. 그 오류를 가리지 않게 최선을 다할 뿐 예외를 내지 않는다.
+        기다려도 끝나지 않으면 죽인다(바이트를 받지 않은 자식은 horch 를 실행하지 않았다)."""
         try:
             self.proc.stdin.close()
-        except OSError:
+        except Exception:
             pass
-        self.proc.wait(timeout=30)
+        try:
+            self.proc.wait(timeout=30)
+        except Exception:
+            try:
+                self.proc.kill()
+                self.proc.wait(timeout=5)
+            except Exception:
+                pass
+        for pipe in (self.proc.stdout, self.proc.stderr):
+            try:
+                if pipe:
+                    pipe.close()
+            except Exception:
+                pass
 ```
 
 `herdr-team/lib/hteam/dispatch.py`:
@@ -3585,6 +3650,7 @@ class Barrier:
 from __future__ import annotations
 
 import os
+import subprocess
 
 from . import procs, state
 from .errors import CONFLICT, FAIL, MISSING, HteamError
@@ -3652,16 +3718,32 @@ def existing(h, slot: dict) -> tuple[str, dict | None, list[str]]:
     return "fresh", None, []
 
 
+def _send(barrier):
+    def after_save(_st) -> None:
+        die_at("after_child")
+        barrier.send()
+    return after_save
+
+
 def _run_barrier(p, tid: str, pick, argv: list[str]) -> tuple[int, dict]:
+    """장벽 부분만 보인다. 실제 코드(Task 6 리뷰 수정)는 기록·바이트 때 실행 권한을 다시 확인하고(dispatch.owned:
+    이전 상태·취소·실행자) 시작 바이트 뒤 오류를 표시한다(mark_started). state.edit 의 after_save 도 그때 더했다."""
     barrier = Barrier(argv)
     try:
-        with state.edit(p, tid) as st:
+        # 기록을 저장한 직후 같은 태스크 잠금 안에서 시작 바이트를 보낸다(after_save: 저장 뒤 잠금을 쥔 채 부른다).
+        # 그래서 fix·drop 의 취소는 기록 전이나 바이트 뒤에만 저장된다
+        with state.edit(p, tid, after_save=_send(barrier)) as st:
             pick(st)["launched"] = barrier.record()
     except BaseException:
-        barrier.abort()
+        if not barrier.sent:
+            barrier.abort()
         raise
-    die_at("after_child")
-    code, out, err = barrier.go()
+    try:
+        code, out, err = barrier.go()  # 바이트는 이미 보냈다. 잠금 없이 출력만 읽는다
+    except subprocess.TimeoutExpired:
+        barrier.kill()  # 자식과 그 프로세스 그룹을 죽이고 거둔다. 만든 Dispatch 는 horch 가 launch_failed 로 바꾼다
+        raise HteamError("launch_timeout", f"{tid} 의 horch worker-start 가 제한 시간 안에 끝나지 않았다", FAIL,
+                         "horch 를 끝냈다. 같은 명령을 다시 하면 제목으로 찾아 이어 한다") from None
     die_at("after_launch")
     return code, parse(out, err)
 

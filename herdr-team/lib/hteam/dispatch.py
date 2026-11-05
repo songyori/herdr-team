@@ -204,10 +204,13 @@ def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str |
             left_running(exc, data)
         raise mark_started(exc)
     if not ok:
+        # 시작 바이트 뒤다. horch 가 non-ok 로 끝나도(record_failed·terminal_mismatch·bad_output) Dispatch 는 이미
+        # active 일 수 있다. 결과를 모르는 것으로 표시한다
         err = data.get("error") or {}
-        raise HteamError("launch_failed", f"horch worker-start 실패: {err.get('code')}: {err.get('message')}",
+        exc = HteamError("launch_failed", f"horch worker-start 실패: {err.get('code')}: {err.get('message')}",
                          MISSING if code == MISSING else FAIL, err.get("hint") or "",
                          data={"horch": data, "warnings": warnings})
+        raise mark_started(exc)
     if data.get("warning"):
         warnings.append(data["warning"])
     warnings += list(data.get("warnings") or [])
