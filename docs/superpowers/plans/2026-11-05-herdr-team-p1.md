@@ -99,7 +99,7 @@ docs/superpowers/specs/2026-11-05-herdr-team-design.md   15.4 실환경 확인 �
                           "result": "REQUEST_CHANGES", "reason": null, "tamper": null, "extra": false, "warnings": []}]}]}
 ```
 
-`state/run.json`: `{"run_id", "pending_launch": {"nonce", "at", "force"}, "bound_nonce", "bound_at", "coordinator_terminal", "coordinator_argv", "team_space", "team_tab", "launched_at", "main_terminals": [최근 5개]}`.
+`state/run.json`: `{"run_id", "pending_launch": {"nonce", "at", "force"}, "bound_nonce", "bound_at", "coordinator_terminal", "coordinator_argv", "team_space", "team_tab", "launched_at", "main_terminals": [Run 동안 줄이지 않는다]}`.
 
 `history` 의 `event`: `create`, `start`(실행 키를 쓰고 launch_failed), `launched`(→ working), `fix`, `precheck`, `review`(→ reviewing), `verdict`, `accept`, `drop`. 리뷰 변조 검사는 `start`·`fix` 시각으로 리뷰 중 시작된 태스크를 찾는다.
 
@@ -4021,7 +4021,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam
 ---
 ### Task 7: 교차 리뷰 — `review`, `review-finish`, `review --retry`
 
-설계 6.1–6.3. `review T`: 0) done·dropped 면 무엇보다 먼저 exit 3, 끝나지 않은 시도 기록이 있으면 사전 검사·새 기준점 없이 복구만. 1) working 이어야 한다. 2) 작업 Dispatch retain(실패해도 계속). 3) 대상 커밋(base 이후 `[T-xxx]`, `[T-xxx] review rN:` 제외). 4) 사전 검사(커밋 없음, owns·보고서 밖 경로의 현재 내용이 base 와 다름, planner 의 plan check, owns 안 커밋 안 된 변경) → 걸리면 리뷰어 없이 `rN.md`(REQUEST_CHANGES, 출처 hteam) 커밋 → changes. 5) 변조 기준점. 6) 시도 기록을 먼저 쓰고 남은 결과 파일을 지운 뒤 프롬프트 조립. 7) 시작 장벽으로 반대쪽 에이전트 리뷰어를 띄운다. 8) reviewing. `review-finish T`: 리뷰 Dispatch 정리(처음 본 종료 증거 `dispatch_end` 를 먼저 영속화하고 그것을 유지한 채 abandon·release 를 멱등으로, 모두 끝난 뒤 `cleaned`, 살아 있으면 exit 3), 변조 검사(리뷰 중 시작된 태스크의 owns·보고서·`[T-yyy]` 커밋 제외, 추적 안 된 새 파일은 경고), 이 시도 파일의 마지막 `VERDICT:` 줄만 읽기, 실패 시도는 한 번 자동 재시도(라운드당 자동 2번), 성공이면 판정과 리뷰 파일 SHA-1 을 기록한 뒤 `rN.md` 로 옮겨 `[T-xxx] review rN: <VERDICT>` 경로 지정 커밋. 판정을 기록한 뒤 죽은 호출을 이어 할 때도 변조 검사를 다시 하고, 시도 파일이나 옮긴 최종 파일이 기록한 해시와 같아야 한다(아니면 시도 실패). 결과 경로 초기화는 시도 기록의 `reset` 표시로 남겨, 시도 기록 뒤 죽었으면 복구가 리뷰어를 띄우기 전에 다시 지운다. 장애 재현 지점: `after_attempt`, `after_end`, `after_verdict`.
+설계 6.1–6.3. `review T`: 0) done·dropped 면 무엇보다 먼저 exit 3, 끝나지 않은 시도 기록이 있으면 사전 검사·새 기준점 없이 복구만. 1) working 이어야 한다. 2) 작업 Dispatch retain(실패해도 계속). 3) 대상 커밋(base 이후 `[T-xxx]`, `[T-xxx] review rN:` 제외). 4) 사전 검사(커밋 없음, owns·보고서 밖 경로의 현재 내용이 base 와 다름, planner 의 plan check, owns 안 커밋 안 된 변경) → 걸리면 리뷰어 없이 `rN.md`(REQUEST_CHANGES, 출처 hteam) 커밋 → changes. 5) 변조 기준점. 6) 시도 기록을 먼저 쓰고 남은 결과 파일을 지운 뒤 프롬프트 조립. 7) 시작 장벽으로 반대쪽 에이전트 리뷰어를 띄운다. 8) reviewing. `review-finish T`: 리뷰 Dispatch 정리(처음 본 종료 증거 `dispatch_end` 를 먼저 영속화하고 그것을 유지한 채 abandon·release 를 멱등으로, 모두 끝난 뒤 `cleaned`, 살아 있으면 exit 3), 변조 검사(리뷰 중 시작된 태스크의 owns·보고서·`[T-yyy]` 커밋 제외, 추적 안 된 새 파일은 경고), 이 시도 파일의 마지막 `VERDICT:` 줄만 읽기, 실패 시도는 한 번 자동 재시도(라운드당 자동 2번), 성공이면 판정과 리뷰 파일 SHA-1 을 기록한 뒤 `rN.md` 로 옮겨 `[T-xxx] review rN: <VERDICT>` 경로 지정 커밋. 판정을 기록한 뒤 죽은 호출을 이어 할 때도 변조 검사를 다시 하고, 시도 파일이 있으면 그것이, 없으면(이미 옮김) 최종 `rN.md` 가 기록한 해시와 같아야 한다(아니면 시도 실패). 최종화는 검증한 그 파일만 한다. 결과 경로 초기화는 시도 기록의 `reset` 표시로 남겨, 시도 기록 뒤 죽었으면 복구가 리뷰어를 띄우기 전에 다시 지운다. 장애 재현 지점: `after_attempt`, `after_end`, `after_verdict`, `after_move`.
 
 **Files:**
 - Create: `herdr-team/lib/hteam/review.py`, `herdr-team/templates/review-prompt.md`
@@ -4033,7 +4033,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam
 - Produces:
   - `dispatch.row_by_id(rows, did) -> dict | None`
   - `compose.review_prompt(p, cfg, spec, rd, att) -> str`
-  - `review.AUTO_ATTEMPTS = 2`, `review.attempt_slot(k)`(시도 k 의 pick 함수), `review.target_commits(p, st) -> list[{"sha", "subject"}]`, `review.changed_files(p, commits) -> list[str]`, `review.prechecks(p, cfg, st, spec, commits, files) -> list[str]`, `review.baseline(p, tid) -> {"at", "head", "dirty", "untracked", "in_progress"}`, `review.tamper_check(p, tid, base) -> (tamper | None, warnings)`, `review.read_verdict(p, att) -> (verdict | None, reason | None)`, `review._evidence(p, att, tid, n)`(기록한 판정의 파일 해시 확인), `review.review(p, tid, retry=False) -> dict`, `review.review_finish(p, tid) -> dict`
+  - `review.AUTO_ATTEMPTS = 2`, `review.attempt_slot(k)`(시도 k 의 pick 함수), `review.target_commits(p, st) -> list[{"sha", "subject"}]`, `review.changed_files(p, commits) -> list[str]`, `review.prechecks(p, cfg, st, spec, commits, files) -> list[str]`, `review.baseline(p, tid) -> {"at", "head", "dirty", "untracked", "in_progress"}`, `review.tamper_check(p, tid, base) -> (tamper | None, warnings)`, `review.read_verdict(p, att) -> (verdict | None, reason | None)`, `review._evidence(p, att, tid, n) -> (verdict | None, reason | None, 검증한 경로 | None)`, `review.review(p, tid, retry=False) -> dict`, `review.review_finish(p, tid) -> dict`
   - 시도 dict: 실행 기록(Task 6) + `attempt, agent, model, effort, file, baseline, inputs, result, reason, tamper, extra, dispatch_end, reset, verdict_read, verdict_sha, warnings`. `result`: `None`(진행 중) | `APPROVE` | `REQUEST_CHANGES` | `failed` | `tampered`
   - 결과: `review` → `{"status": "reviewing", "attempt", "dispatch", "reviewer", "mode", …}` 또는 사전 검사 `{"status": "changes", "source": "hteam", "problems", "commit"}`. `review-finish` → `{"verdict", "status": "approved"|"changes", "file", "commit", "warnings"}` 또는 자동 재시도 `{"retried": true, "failed_attempt", "reason", "attempt", …}`
   - 오류 코드: `review_in_progress`·`reviewer_running`·`no_open_review`·`review_not_launched`·`no_failed_review`(exit 3), `review_tampered`(exit 1, `tamper`), `review_failed`(exit 1)
@@ -4327,6 +4327,27 @@ class CrashResumeTest(ReviewCase):
         (self.proj / "docs/reviews/T-001/r1-a1.md").unlink()
         code, out = self.hteam("review-finish", "T-001")
         self.assertEqual((code, out["retried"], out["reason"]), (0, True, "기록한 판정의 리뷰 파일이 없거나 바뀌었다"), out)
+
+    def die_after_move(self):
+        self.reviewing()
+        self.act_review("T-001", "APPROVE")
+        code, _ = self.hteam("review-finish", "T-001", env={"HTEAM_TEST_DIE_AT": "after_move"})
+        self.assertEqual(code, 137)
+        self.assertFalse((self.proj / "docs/reviews/T-001/r1-a1.md").exists())
+
+    def test_resume_after_move_finalizes_moved_file(self):
+        self.die_after_move()
+        code, out = self.hteam("review-finish", "T-001")
+        self.assertEqual((code, out["status"]), (0, "approved"), out)
+        self.assertTrue(self.git("show", "HEAD:docs/reviews/T-001/r1.md").rstrip().endswith("VERDICT: APPROVE"))
+
+    def test_recreated_attempt_file_after_move_is_not_finalized(self):
+        self.die_after_move()
+        (self.proj / "docs/reviews/T-001/r1-a1.md").write_text("VERDICT: REQUEST_CHANGES\n")  # 검증하지 않은 내용
+        code, out = self.hteam("review-finish", "T-001")
+        self.assertEqual((code, out["retried"]), (0, True), out)  # 시도 실패로 다시 한다
+        self.assertNotIn("review r1", self.git("log", "--format=%s"))
+        self.assertEqual(self.task_state("T-001")["status"], "reviewing")
 
     def test_end_evidence_kept_when_dying_before_release(self):
         out = self.reviewing()
@@ -4697,13 +4718,15 @@ def _sha(path) -> str | None:
         return None
 
 
-def _evidence(p, att: dict, tid: str, n: int) -> tuple[str | None, str | None]:
-    """기록한 판정을 다시 쓸 때: 시도 파일이나 옮긴 최종 파일이 기록한 해시와 같아야 한다."""
-    want = att.get("verdict_sha")
-    for path in (p.root / att["file"], p.root / review_rel(tid, n)):
-        if want and _sha(path) == want:
-            return att["verdict_read"], None
-    return None, "기록한 판정의 리뷰 파일이 없거나 바뀌었다"
+def _evidence(p, att: dict, tid: str, n: int):
+    """기록한 판정을 다시 쓸 때: 시도 파일이 있으면 그것이, 없으면(이미 옮김) 최종 rN.md 가 기록한 해시와 같아야 한다.
+
+    (판정, 실패 사유, 검증한 경로). 최종화는 검증한 그 파일만 한다."""
+    src = p.root / att["file"]
+    path = src if src.exists() else p.root / review_rel(tid, n)
+    if att.get("verdict_sha") and _sha(path) == att["verdict_sha"]:
+        return att["verdict_read"], None, path
+    return None, "기록한 판정의 리뷰 파일이 없거나 바뀌었다", None
 
 
 def _cleanup_reviewer(p, h, tid: str, att: dict) -> dict:
@@ -4768,7 +4791,10 @@ def review_finish(p, tid: str) -> dict:
                          data={"tamper": tamper})
     resumed = att.get("verdict_read") is not None
     # 판정을 기록한 뒤 죽은 호출을 이어 할 때는 리뷰 파일(시도 파일 또는 옮긴 최종 파일)이 기록한 해시와 같아야 한다
-    verdict, reason = _evidence(p, att, tid, n) if resumed else read_verdict(p, att)
+    if resumed:
+        verdict, reason, verified = _evidence(p, att, tid, n)
+    else:
+        (verdict, reason), verified = read_verdict(p, att), p.root / att["file"]
     if verdict is None:
         with state.edit(p, tid, expect={"reviewing"}) as cur:
             attempt_slot(k)(cur).update(result="failed", reason=reason, warnings=warnings)
@@ -4787,9 +4813,10 @@ def review_finish(p, tid: str) -> dict:
         die_at("after_verdict")
         att = attempt_slot(k)(state.require(p, tid))
     final_rel = review_rel(tid, n)
-    src, final = p.root / att["file"], p.root / final_rel
-    if src.exists():
-        os.replace(src, final)
+    final = p.root / final_rel
+    if verified != final:  # 검증한 시도 파일만 최종 파일로 옮긴다
+        os.replace(verified, final)
+    die_at("after_move")
     for other in (p.root / "docs" / "reviews" / tid).glob(f"r{n}-a*.md"):
         other.unlink()
     sha = None
@@ -4853,7 +4880,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam
 
 ### Task 8: `accept`, `fix`, `drop`
 
-설계 6.4. `accept`: approved → done(승인 직무면 awaiting_user), awaiting_user → done. 작업 Dispatch 를 release 한다(실패하면 경고). `fix`: changes·launch_failed·working·awaiting_user 에서 새 라운드. 이전 작업 Dispatch 는 settled·retained·abandoned 면 release, active 면 `worker-abandon --kill` 뒤 release. `round >= max_rounds` 면 exit 3 `max_rounds`(`--force-round` 는 한 라운드만 넘긴다, awaiting_user 는 상한을 보지 않는다). `--supplement T-yyy` 는 라운드 기록과 수정 블록에 디렉터 보강 반영을 적는다(1단계는 기록과 안내만, 보강 흐름은 3단계). `fix` 는 기록되지 않은 이전 Dispatch(기록 전에 죽은 실행자가 띄운 것)도 저장된 Task 나 실행 키(제목)로 찾아 정리를 확인한 뒤에만 새 라운드를 쓴다(이전 워커와 새 워커가 함께 돌지 않게). `drop [--force]`: 끝나지 않은 작업 실행 키와 리뷰 시도를 먼저 canceled 로 표시하고, active 는 `--force` 일 때만 abandon --kill 뒤 release, settled·retained·abandoned 는 release, launch_failed 는 건드리지 않는다. 기록 전에 죽은 실행자가 띄운 Dispatch 는 제목으로 찾는다. launching 이면 exit 3.
+설계 6.4. `accept`: approved → done(승인 직무면 awaiting_user), awaiting_user → done. 작업 Dispatch 를 release 한다(실패하면 경고). `fix`: changes·launch_failed·working·awaiting_user 에서 새 라운드. 이전 작업 Dispatch 는 settled·retained·abandoned 면 release, active 면 `worker-abandon --kill` 뒤 release. `round >= max_rounds` 면 exit 3 `max_rounds`(`--force-round` 는 한 라운드만 넘긴다, awaiting_user 는 상한을 보지 않는다). `--supplement T-yyy` 는 라운드 기록과 수정 블록에 디렉터 보강 반영을 적는다(1단계는 기록과 안내만, 보강 흐름은 3단계). `fix` 는 입력 검사(owns 범위·잠금)를 이전 워커 정리보다 먼저 한다. 기록되지 않은 이전 Dispatch(기록 전에 죽은 실행자가 띄운 것)도 저장된 Task 나 실행 키(제목)로 찾아 정리를 확인한 뒤에만 새 라운드를 쓴다(이전 워커와 새 워커가 함께 돌지 않게). `drop [--force]`: 끝나지 않은 작업 실행 키와 리뷰 시도를 먼저 canceled 로 표시하고, active 는 `--force` 일 때만 abandon --kill 뒤 release, settled·retained·abandoned 는 release, launch_failed 는 건드리지 않는다. 기록 전에 죽은 실행자가 띄운 Dispatch 는 제목으로 찾는다. launching 이면 exit 3.
 
 **Files:**
 - Modify: `herdr-team/lib/hteam/dispatch.py`(끝에 `cleanup`), `herdr-team/lib/hteam/tasks.py`(fix·accept·drop 과 명령)
@@ -5058,6 +5085,19 @@ class DropTest(LifeCase):
         self.assertEqual((code, out["error"]["code"]), (3, "worker_active"))
         code, out = self.hteam("drop", "T-001", "--force")
         self.assertEqual((code, out["released"][0]["state"]), (0, "released"), out)
+
+
+class FixInputFirstTest(LifeCase):
+    def test_bad_owns_does_not_clean_up_previous_worker(self):
+        self.write_spec("T-001")
+        state.create(self.p, "T-001", "developer")
+        did = self.hteam("start", "T-001")[1]["dispatch"]
+        self.act_work("T-001", outcome="failed")  # fix 를 부를 수 있는 상태
+        self.write_spec("T-001", owns="**")
+        code, out = self.hteam("fix", "T-001")
+        self.assertEqual((code, out["error"]["code"]), (2, "owns_too_wide"))
+        self.assertEqual(self.dispatch_row(did)["state"], "settled")  # 정리하지 않았다
+        self.assertEqual(self.task_state("T-001")["round"], 1)
 
 
 class FixUnrecordedTest(LifeCase):
@@ -5342,9 +5382,10 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
         raise HteamError("launching", f"{slot['title']} 를 띄우는 실행자가 아직 살아 있다", CONFLICT)
     # 기록되지 않은 Dispatch(기록 전에 죽은 실행자가 띄운 것)도 저장된 Task·실행 키로 찾아 정리한다.
     # 정리를 확인한 뒤에만 새 라운드를 쓴다(이전 워커와 새 워커가 같은 폴더에서 함께 일하지 않게)
+    owns = checked_owns(cfg, spec)  # 입력 검사(owns·잠금)는 이전 워커를 정리하기 전에 한다
+    _check_locks(p, cfg, spec, owns)
     row = dispatch.slot_row(h.workers(), slot)
     cleaned = dispatch.cleanup(h, row["id"], kill=True) if row else None
-    owns = checked_owns(cfg, spec)
     with state.project_lock(p):
         with state.edit(p, tid, expect=FIX_FROM) as st:
             _check_locks(p, cfg, spec, owns)
@@ -5509,7 +5550,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam
 ---
 ### Task 9: 메인 연결 — tell, notify(outbox), watch, render 검사, answer, applied, reask, ask-user
 
-설계 7장. 이 명령들은 설정을 읽지 않는다(4.2: 설정이 깨져도 동작한다). `tell` 은 메인 터미널에서 `horch send --to run:R --subject "[main] <첫 줄>"`(외부 발신자). `tell`·`answer` 는 보내기 전에 메인 터미널(`$HC_TERMINAL_ID`, 없으면 exit 5)을 `run.json` 의 `main_terminals` 에 남긴다(wait 가 `[main]` 글의 발신자를 확인한다). hc 생존 판정은 horch `liveness.verdict` 와 같은 규칙이다(hc get 실패는 not_found 를 포함해 모두 unverifiable, argv 를 모르면 unverifiable). horch 에 임의 터미널을 판정하는 명령이 없어 같은 규칙을 hteam 에 두고, 테스트가 horch 함수와 직접 비교한다. `notify` 는 outbox 에 flock 으로 한 줄(`out-NNNN`). `watch` 는 2초마다 outbox 를 보고, 새 항목을 출력한 **뒤에** 커서를 옮긴다(적어도 한 번 전달). 코디네이터 터미널이 끝났으면 `orphaned`. `render` 검사(7.4)는 `notify --json` 과 `ask-user` 가 한다. `answer`: ask 는 답 파일을 `os.link` 로 원자적으로 만들고(두 번째는 exit 3), question·approval 은 답 파일을 먼저 남긴 뒤 `horch send "[main] reply <out-id>"`(다시 실행하면 같은 답을 다시 보낸다). `ask-user`(planner·director 의 working 태스크, 자기 작업 워커 터미널에서): 태스크마다 열린 질문 하나, 540초 대기 뒤 exit 4 `waiting`, `--wait`·`--ack`·`--pending`·`--history`.
+설계 7장. 이 명령들은 설정을 읽지 않는다(4.2: 설정이 깨져도 동작한다). `tell` 은 메인 터미널에서 `horch send --to run:R --subject "[main] <첫 줄>"`(외부 발신자). `tell`·`answer` 는 보내기 전에 메인 터미널(`$HC_TERMINAL_ID`, 없으면 exit 5)을 `run.json` 의 `main_terminals` 에 남긴다(wait 가 `[main]` 글의 발신자를 확인한다. 목록은 줄이지 않는다: 지운 터미널의 처리 전 메시지가 메인이 아닌 것으로 보이면 안 된다). hc 생존 판정은 horch `liveness.verdict` 와 같은 규칙이다(hc get 실패는 not_found 를 포함해 모두 unverifiable, argv 를 모르면 unverifiable). horch 에 임의 터미널을 판정하는 명령이 없어 같은 규칙을 hteam 에 두고, 테스트가 horch 함수와 직접 비교한다. `notify` 는 outbox 에 flock 으로 한 줄(`out-NNNN`). `watch` 는 2초마다 outbox 를 보고, 새 항목을 출력한 **뒤에** 커서를 옮긴다(적어도 한 번 전달). 코디네이터 터미널이 끝났으면 `orphaned`. `render` 검사(7.4)는 `notify --json` 과 `ask-user` 가 한다. `answer`: ask 는 답 파일을 `os.link` 로 원자적으로 만들고(두 번째는 exit 3), question·approval 은 답 파일을 먼저 남긴 뒤 `horch send "[main] reply <out-id>"`(다시 실행하면 같은 답을 다시 보낸다). `ask-user`(planner·director 의 working 태스크, 자기 작업 워커 터미널에서): 태스크마다 열린 질문 하나, 540초 대기 뒤 exit 4 `waiting`, `--wait`·`--ack`·`--pending`·`--history`.
 
 **Files:**
 - Create: `herdr-team/lib/hteam/herdr.py`(hc get·probe), `herdr-team/lib/hteam/outbox.py`, `herdr-team/lib/hteam/ask.py`
@@ -6009,15 +6050,18 @@ def _run_id(p) -> str:
 
 
 def note_main(p) -> str:
-    """메인 터미널을 run.json 의 main_terminals 에 남긴다(최근 5개). wait 가 `[main]` 글의 발신자를 이것으로 확인한다."""
+    """메인 터미널을 run.json 의 main_terminals 에 남긴다. wait 가 `[main]` 글의 발신자를 이것으로 확인한다.
+
+    목록은 줄이지 않는다: 지운 터미널의 아직 처리하지 않은 메시지가 메인이 아닌 것으로 보이면 안 된다(Run 동안 몇 개뿐이다)."""
     term = os.environ.get("HC_TERMINAL_ID", "").strip()
     if not term:
         raise HteamError("no_terminal", "Herdr 터미널 안에서 실행해야 한다($HC_TERMINAL_ID 없음)", DENIED)
     p.ensure_state()
     with flock(p.state / "run.lock"):
         run = read_json(p.run_file, {}) or {}
-        mains = [t for t in run.get("main_terminals") or [] if t != term] + [term]
-        run["main_terminals"] = mains[-5:]
+        mains = list(run.get("main_terminals") or [])
+        if term not in mains:
+            run["main_terminals"] = mains + [term]
         write_json(p.run_file, run)
     return term
 
@@ -6589,6 +6633,12 @@ class SenderAndStaleTest(CoordCase):
         info = self.wait()["messages"][0]["hteam"]
         self.assertEqual((info["kind"], info["not_main"]), ("other", True))
 
+    def test_many_main_terminals_stay_main(self):
+        for i in range(1, 8):
+            self.hteam("tell", f"요청 {i}", as_=None, terminal=f"t{i}")  # 메인 세션을 여러 번 다시 열었다
+        out = self.wait()
+        self.assertEqual([m["hteam"]["kind"] for m in out["messages"]], ["main"] * 7)
+
     def test_external_non_main_terminal_is_not_main(self):
         self.add_terminal("t300", argv=["sh"])
         run_id = json.loads((self.state_dir / "run.json").read_text())["run_id"]
@@ -7004,7 +7054,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam
 ---
 ### Task 11: 세팅과 코디네이터 — doctor, scaffold, up, bind, setup-done, 템플릿, 스킬
 
-설계 9.1–9.3, 3.4, 8.1. `doctor` 는 Python, git(저장소가 아니면 경고), horch 찾기와 `horch doctor`(hc·herdr-app 포함), Herdr 터미널, claude, codex 와 `codex login status`, `codex features list` 의 image_generation(경고), Chrome DevTools MCP(경고)를 본다. `scaffold` 는 템플릿을 덮어쓰지 않고 복사하고, `CLAUDE.md`·`AGENTS.md` 에 `<!-- herdr-team -->` 절을, `.gitignore` 에 `.herdr-team/state/` 를 한 번만 더하고, `state/setup-mode`·`state/plugin-root` 를 만든다. `up` 은 코디네이터가 살아 있으면(horch 와 같은 판정으로 live) 그대로(띄운 지 180초 안이면 starting), 확인할 수 없으면(unverifiable) 기록과 nonce 를 그대로 두고 exit 3 `coordinator_unverifiable`(사용자가 끝났다고 확인하면 `up --force`), 끝남·소실이 확인됐거나 처음이면 `pending_launch {nonce, at}` 를 먼저 쓰고 팀 탭(`tb` + SHA-1 앞 32자)에 `hc run --keep … -- env HTEAM_ROLE=coordinator HTEAM_LAUNCH=<nonce> claude …` 로 띄운 뒤 탭 이름을 "팀"으로 붙인다. `bind` 는 nonce 가 맞을 때만 `run-use`(이전 run_id. `up --force` 로 띄운 코디네이터면 `run-use --force`) 또는 `run-create`. 1단계 설정 템플릿은 planner·developer·tester 직무만 담는다(director·designer 직무 문서는 2·3단계).
+설계 9.1–9.3, 3.4, 8.1. `doctor` 는 Python, git(저장소가 아니면 경고), horch 찾기와 `horch doctor`(hc·herdr-app 포함), Herdr 터미널, claude, codex 와 `codex login status`, `codex features list` 의 image_generation(경고), Chrome DevTools MCP(경고)를 본다. `scaffold` 는 템플릿을 덮어쓰지 않고 복사하고, `CLAUDE.md`·`AGENTS.md` 에 `<!-- herdr-team -->` 절을, `.gitignore` 에 `.herdr-team/state/` 를 한 번만 더하고, `state/setup-mode`·`state/plugin-root` 를 만든다. `up` 은 코디네이터가 살아 있으면(horch 와 같은 판정으로 live) 그대로(띄운 지 180초 안이면 starting), 확인할 수 없으면(unverifiable) 기록과 nonce 를 그대로 두고 exit 3 `coordinator_unverifiable`(사용자가 끝났다고 확인하면 `up --force`), 끝남·소실이 확인됐거나 처음이면 `pending_launch {nonce, at}` 를 먼저 쓰고 팀 탭(`tb` + SHA-1 앞 32자)에 `hc run --keep … -- env HTEAM_ROLE=coordinator HTEAM_LAUNCH=<nonce> claude …` 로 띄운 뒤 탭 이름을 "팀"으로 붙인다. `bind` 는 nonce 가 맞을 때만 `run-use`(이전 run_id. `up --force` 로 띄운 코디네이터면 `run-use --force`) 또는 `run-create`. 인계 승인(`pending_launch.force`)은 bind 가 성공할 때까지 다음 `up` 이 이어 받는다(강제로 띄운 코디네이터가 bind 전에 끝나 다시 띄워도 이전 소유자는 여전히 확인할 수 없다). 1단계 설정 템플릿은 planner·developer·tester 직무만 담는다(director·designer 직무 문서는 2·3단계).
 
 **Files:**
 - Modify: `herdr-team/lib/hteam/herdr.py`(끝에 `run_bg`, `rename_tab`), `herdr-team/lib/hteam/cli.py`(`COMMAND_MODULES`)
@@ -7209,6 +7259,23 @@ class UnverifiableCoordinatorTest(TeamCase):
         env = {"HTEAM_ROLE": "coordinator", "HTEAM_LAUNCH": run["pending_launch"]["nonce"]}
         code, bound = self.hteam("bind", as_=None, terminal=out["terminal"], env=env)
         self.assertEqual((code, bound["mode"], bound["run_id"]), (0, "use", run_id), bound)
+
+    def test_force_is_carried_until_bind(self):
+        self.init_project()
+        run_id = self.setup_run()
+        with self._hc_locked() as hc:
+            del hc["terminals"][COORD]
+        _, first = self.hteam("up", "--force", as_="main")
+        self.update_terminal(first["terminal"], state="finished")  # bind 전에 끝났다
+        code, out = self.hteam("up", as_="main")  # 이번 판정은 exited 지만 이전 소유자는 여전히 확인할 수 없다
+        self.assertEqual((code, out["status"]), (0, "launched"), out)
+        run = json.loads((self.state_dir / "run.json").read_text())
+        self.assertTrue(run["pending_launch"]["force"])
+        env = {"HTEAM_ROLE": "coordinator", "HTEAM_LAUNCH": run["pending_launch"]["nonce"]}
+        code, bound = self.hteam("bind", as_=None, terminal=out["terminal"], env=env)
+        self.assertEqual((code, bound["mode"], bound["run_id"]), (0, "use", run_id), bound)
+        self.assertEqual(self.hteam("up", as_="main")[1]["status"], "alive")
+        self.assertFalse(self.hteam("up", as_="main")[1]["launched"])
 
 
 if __name__ == "__main__":
@@ -7912,7 +7979,10 @@ def up(p, wait_run: float | None, force: bool = False) -> dict:
                          "기록과 nonce 는 그대로 두었다. pane 을 보고 끝났다고 확신하면 hteam up --force",
                          data={"terminal": view["terminal"]})
     else:
-        forced = view["verdict"] == "unverifiable"
+        # 인계 승인(force)은 bind 가 성공할 때까지 이어 받는다: 강제로 띄운 코디네이터가 bind 전에 끝나 다시 띄워도
+        # 이전 소유자는 여전히 확인할 수 없으므로 bind 의 run-use 에 --force 가 필요하다
+        prev = read_json(p.run_file, {}) or {}
+        forced = force or bool((prev.get("pending_launch") or {}).get("force") and not _bound(prev))
         main = os.environ.get("HC_TERMINAL_ID", "").strip()
         if not main:
             raise HteamError("no_terminal", "Herdr 터미널 안에서 실행해야 한다($HC_TERMINAL_ID 없음)", DENIED)
@@ -8595,7 +8665,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: 통과 확인**
 
 Run: `bash herdr-team/tests/run.sh && bash herdr-orch/tests/run.sh`
-Expected: 둘 다 전체 OK(herdr-team 163 tests, herdr-orch 202 tests).
+Expected: 둘 다 전체 OK(herdr-team 168 tests, herdr-orch 202 tests).
 
 - [ ] **Step 5: 커밋(구현자는 여기서 멈춘다)**
 
@@ -8779,7 +8849,7 @@ main 에 병합하지 않는다(설계 15.3: 세 단계를 마친 뒤 병합). �
 - watch 는 하나만 돈다(두 번째는 exit 3 `watch_running`). `state/watch.pid` 로 Stop 훅과 status 가 생사를 본다. Stop 은 코디네이터 판정이 live 일 때만 막는다.
 - wait 의 attention 은 Dispatch 마다 한 번만 알린다(`state/attention.json`).
 - 같은 라운드 복구는 저장된 사양·owns·에이전트·모델을 쓰고 CLI 덮어쓰기는 거부한다(바꾸려면 fix). 이어 붙이면 기록을 실제 Dispatch 에 맞춘다.
-- 코디네이터 생존 판정은 horch 와 같은 규칙이다. 확인할 수 없으면 up 은 새로 띄우지 않고(exit 3), `up --force` 와 `bind` 의 `run-use --force` 로만 넘겨받는다.
+- 코디네이터 생존 판정은 horch 와 같은 규칙이다. 확인할 수 없으면 up 은 새로 띄우지 않고(exit 3), `up --force` 와 `bind` 의 `run-use --force` 로만 넘겨받는다. 인계 승인은 bind 가 성공할 때까지 이어 받는다.
 - 메인 지시 판별은 발신자로 한다(`external:<터미널>` 이고 tell·answer 가 기록한 메인 터미널). 제목 `[main]` 만으로는 메인으로 보지 않는다.
 - front matter·tasks.toml 의 owns 는 직무 owns 안이어야 한다(보수적 포함 판정. 판단할 수 없으면 거부).
 - 메인 편집 가드는 프로젝트 밖 경로를 막지 않는다(init 스킬이 스크래치 파일을 쓴다. 이 프로젝트의 제품 파일이 아니다). 코디네이터는 프로젝트 밖도 막는다.

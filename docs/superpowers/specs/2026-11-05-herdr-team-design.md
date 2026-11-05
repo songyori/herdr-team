@@ -344,14 +344,14 @@ Codex 리뷰어에게는 `AGENTS.md` 의 리뷰어 규칙도 적용된다(9.1). 
 4. 변조면 자동으로 다시 하지 않는다. 바뀐 경로와 HEAD 전후를 `tamper` 에 남기고 상태는 `reviewing` 그대로, exit 1 `review_tampered`. 코디네이터가 메인에 올린다. 사용자가 정리한 뒤 `hteam review T --retry` 가 새 기준점으로 다시 한다.
 5. 판정 읽기: 이 시도의 파일 `docs/reviews/T-xxx/rN-aK.md` 의 마지막 `VERDICT:` 줄만 본다(다른 시도의 파일은 보지 않는다). 리뷰어 `outcome` 이 `failed` 이거나, Dispatch 가 done 없이 끝났거나(abandon 됨, `exited`·`lost`), 파일·VERDICT 가 없으면 시도 실패다. 실패한 시도의 파일은 판정에 쓰지 않는다.
 6. 시도 실패면 새 리뷰어로 한 번 더 한다(라운드당 자동 시도 2번). 두 번째도 실패하면 상태는 `reviewing` 그대로 exit 1 `review_failed`. 코디네이터가 메인에 올리고(다시 시도 / 버림), 다시 시도면 `hteam review T --retry`.
-7. 성공하면 판정과 시도 파일의 해시를 시도 기록에 남긴 뒤 시도 파일을 `docs/reviews/T-xxx/rN.md` 로 옮기고(다른 시도 파일은 지운다) `[T-xxx] review rN: <VERDICT>` 로 경로 지정 커밋한다(추적하지 않는 새 파일 목록은 커밋 본문에). 상태를 `approved` 또는 `changes` 로, 판정을 라운드 기록에. 판정을 남긴 뒤 죽어 다시 부르면 3 의 변조 검사를 다시 하고, 시도 파일이나 옮긴 `rN.md` 가 남긴 해시와 같은지 확인한다. 다르거나 없으면 시도 실패(6)다.
+7. 성공하면 판정과 시도 파일의 해시를 시도 기록에 남긴 뒤 시도 파일을 `docs/reviews/T-xxx/rN.md` 로 옮기고(다른 시도 파일은 지운다) `[T-xxx] review rN: <VERDICT>` 로 경로 지정 커밋한다(추적하지 않는 새 파일 목록은 커밋 본문에). 상태를 `approved` 또는 `changes` 로, 판정을 라운드 기록에. 판정을 남긴 뒤 죽어 다시 부르면 3 의 변조 검사를 다시 하고, 시도 파일이 있으면 그것이, 없으면(이미 옮김) `rN.md` 가 남긴 해시와 같은지 확인하고, 검증한 그 파일만 최종화한다. 다르거나 없으면 시도 실패(6)다.
 
 리뷰어 생사는 horch 가 판정한다. 리뷰어가 `idle`(done 없이 턴을 마침)이면 코디네이터가 `horch send` 로 done 을 요구한다. 그래도 안 되면 `worker-abandon --kill` 하고 `review-finish` 가 시도 실패로 처리한다.
 
 ### 6.4 처리 (`accept`, `fix`, `drop`)
 
 - `hteam accept T`: `approved` → `done`, 승인 직무면 `awaiting_user`. `awaiting_user` → `done`(사용자 승인 뒤). 작업 Dispatch 를 release 한다.
-- `hteam fix T [--note "…"] [--supplement T-yyy] [--force-round] [--model …] [--effort …] [--worker …]`: `changes`·`launch_failed`·`working`(작업 워커가 실패로 끝남)·`awaiting_user`(사용자 수정 요청) 에서 새 라운드를 띄운다. 이전 작업 Dispatch 를 정리한다(기록되지 않은 Dispatch 도 저장된 horch Task 나 실행 키로 찾는다. 정리를 확인한 뒤에만 새 라운드를 쓴다): `settled`·`retained`·`abandoned` 는 바로 release(release 가 살아 있는 터미널도 끈다), `active` 면 `worker-abandon --kill` 뒤 release. `round >= max_rounds` 이면 exit 3 과 `max_rounds`(`--force-round` 는 사용자가 계속하라고 했을 때 한 라운드만 넘긴다). `awaiting_user` 에서의 수정은 상한을 보지 않는다. `--supplement` 는 디렉터 보강을 반영하는 수정이라는 표시다(11.4).
+- `hteam fix T [--note "…"] [--supplement T-yyy] [--force-round] [--model …] [--effort …] [--worker …]`: `changes`·`launch_failed`·`working`(작업 워커가 실패로 끝남)·`awaiting_user`(사용자 수정 요청) 에서 새 라운드를 띄운다. 입력 검사(owns 범위·잠금)를 먼저 하고, 이전 작업 Dispatch 를 정리한다(기록되지 않은 Dispatch 도 저장된 horch Task 나 실행 키로 찾는다. 정리를 확인한 뒤에만 새 라운드를 쓴다): `settled`·`retained`·`abandoned` 는 바로 release(release 가 살아 있는 터미널도 끈다), `active` 면 `worker-abandon --kill` 뒤 release. `round >= max_rounds` 이면 exit 3 과 `max_rounds`(`--force-round` 는 사용자가 계속하라고 했을 때 한 라운드만 넘긴다). `awaiting_user` 에서의 수정은 상한을 보지 않는다. `--supplement` 는 디렉터 보강을 반영하는 수정이라는 표시다(11.4).
 - `hteam drop T [--force]`: 태스크를 `dropped` 로. 끝나지 않은 작업 실행 키와 리뷰 시도 기록을 `canceled` 로 표시한다(이후 `start`·`review` 의 복구 대상이 아니다). `active` Dispatch 가 있으면 `--force` 가 있어야 하고 `worker-abandon --kill` 뒤 release 한다. `settled`·`retained`·`abandoned` 는 release 한다. `launch_failed` 는 건드리지 않는다(horch 가 가드가 거부한 터미널을 정리한다). `launching` 이면 먼저 `horch worker-list` 로 조정하고, 그래도 `launching`(실행자가 살아 있음)이면 exit 3 으로 나중에 다시 하게 한다.
 - `max_rounds` 에 닿으면 코디네이터가 메인에 묻는다(계속 / 버림). 계속이면 `--note` 와 함께 `fix --force-round`(상한을 한 번 넘긴다).
 
@@ -359,7 +359,7 @@ Codex 리뷰어에게는 `AGENTS.md` 의 리뷰어 규칙도 적용된다(9.1). 
 
 ### 7.1 메인 → 코디네이터 (`hteam tell`)
 
-`hteam tell "<글>"` 은 메인 터미널에서 `horch send --to run:<run_id> --subject "[main] <첫 줄>" --body "<글>"` 을 부른다. 메인은 Run 소유자가 아니므로 외부 발신자다. 코디네이터가 깨어난다. `tell`·`answer` 는 보내기 전에 메인 터미널(`$HC_TERMINAL_ID`, 없으면 exit 5)을 `run.json` 의 `main_terminals`(최근 5개)에 남긴다.
+`hteam tell "<글>"` 은 메인 터미널에서 `horch send --to run:<run_id> --subject "[main] <첫 줄>" --body "<글>"` 을 부른다. 메인은 Run 소유자가 아니므로 외부 발신자다. 코디네이터가 깨어난다. `tell`·`answer` 는 보내기 전에 메인 터미널(`$HC_TERMINAL_ID`, 없으면 exit 5)을 `run.json` 의 `main_terminals` 에 남긴다(Run 동안 줄이지 않는다. 지운 터미널의 처리 전 메시지가 메인이 아닌 것으로 보이면 안 된다).
 
 ### 7.2 코디네이터 → 메인 (`hteam notify`, outbox)
 
@@ -472,7 +472,7 @@ Python 3.11 이상, git(없으면 `git init` 과 빈 커밋을 권함), `horch` 
 
 ### 9.3 `hteam up` 과 코디네이터
 
-1. `run.json` 의 코디네이터 터미널이 살아 있으면(horch 생존 판정과 같은 규칙: hc 상태 `live` 이고 argv 가 기록과 같음. hc 조회 실패·argv 없음은 확인 불가) 그대로 둔다. 띄운 지 180초 안이면 `starting`. 확인할 수 없으면 기록과 nonce 를 그대로 두고 exit 3 이다. 사용자가 끝났다고 확인하면 `hteam up --force` 가 새로 띄우고(`pending_launch.force`), 그 코디네이터의 `bind` 가 `run-use --force` 로 넘겨받는다. 새로 띄우는 것은 처음이거나 끝남·소실이 확인됐거나 `--force` 일 때뿐이다.
+1. `run.json` 의 코디네이터 터미널이 살아 있으면(horch 생존 판정과 같은 규칙: hc 상태 `live` 이고 argv 가 기록과 같음. hc 조회 실패·argv 없음은 확인 불가) 그대로 둔다. 띄운 지 180초 안이면 `starting`. 확인할 수 없으면 기록과 nonce 를 그대로 두고 exit 3 이다. 사용자가 끝났다고 확인하면 `hteam up --force` 가 새로 띄우고(`pending_launch.force`), 그 코디네이터의 `bind` 가 `run-use --force` 로 넘겨받는다. 이 인계 승인은 bind 가 성공할 때까지 다음 `up` 이 이어 받는다. 새로 띄우는 것은 처음이거나 끝남·소실이 확인됐거나 `--force` 일 때뿐이다.
 2. 아니면 `run.json` 에 `pending_launch: {nonce, at}`(무작위 nonce)를 먼저 쓰고 팀 탭에 새 코디네이터를 띄운다. 팀 탭 id 는 `tb` + SHA-1(`herdr-team\n<프로젝트 루트>\n<space>`) 앞 32자로 고정하고(없으면 Herdr 가 새 탭으로 만든다), 이름은 "팀"(`herdr-app do tab.rename`, 실패해도 계속). space 는 메인 터미널의 `herdr.space` 라벨.
    `hc run --bg --json --no-parent --no-notify --keep --name hteam-coord-<6자> --cwd <루트> --label herdr.space=<space> --label herdr.tab=<팀 탭> --label hteam.role=coordinator -- env HTEAM_ROLE=coordinator HTEAM_LAUNCH=<nonce> claude --model <모델> --effort <effort> [agents.claude.args] -- "<코디네이터 프롬프트>"`. 돌아오면 터미널 주소와 argv 를 `run.json` 에 기록한다.
    코디네이터 터미널이 메인 터미널과 같으면 거부한다.
