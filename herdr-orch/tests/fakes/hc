@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""테스트용 가짜 hc. $FAKE_HC_DIR/state.json 을 읽고 바꾸며, 호출 argv 를 calls.jsonl 에 남긴다."""
+"""테스트용 가짜 hc. $FAKE_HC_DIR/state.json 을 읽고 바꾸며, 호출 argv 를 calls.jsonl 에 남긴다.
+state.json 의 "delay": {명령: 초} 가 있으면 그 명령은 처리 전에 그만큼 잔다."""
 import fcntl
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 DIR = Path(os.environ["FAKE_HC_DIR"])
@@ -119,6 +121,11 @@ def handle(st, argv):
 def main(argv):
     with open(DIR / "calls.jsonl", "a") as f:
         f.write(json.dumps(argv) + "\n")
+    with open(DIR / "lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        delay = float(json.loads((DIR / "state.json").read_text()).get("delay", {}).get(argv[0] if argv else "", 0))
+    if delay:
+        time.sleep(delay)  # 느린 hc 흉내. 잠금 밖에서 자서 다른 hc 호출을 막지 않는다
     with open(DIR / "lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         path = DIR / "state.json"

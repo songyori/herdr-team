@@ -57,7 +57,7 @@ def check(store, *, dispatch: str | None, wait: bool, timeout_ms: int, ack: int 
             raise HorchError("binding_moved", f"이 터미널은 더는 Run {run_id} 의 소유자가 아니다", DENIED,
                              "대기를 끝낸다. 새 Run 의 메일함은 다시 check 한다")
 
-    tick = (lambda: workers.sweep(store, run_id)) if wait else None
+    tick = workers.Sweep(store, run_id) if wait else None
     return mailbox.check(store, f"run:{run_id}", wait=wait, timeout_ms=timeout_ms, ack_id=ack,
                          terminal=auth.caller(), guard=still_owner, on_tick=tick)
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import sys
 import time
 
 from . import hcio, procs
@@ -103,7 +104,9 @@ def has_live_waiter(store, mailbox: str) -> bool:
 
 def check(store, mailbox: str, *, wait: bool = False, timeout_ms: int = 900000, ack_id: int | None = None,
           terminal: str | None = None, on_tick=None, guard=None) -> dict:
-    """guard: 대기 중 매 틱과 묶음을 돌려주기 전에 부른다. 호출자가 더는 이 메일함의 수신자가 아니면 예외를 낸다."""
+    """guard: 대기 중 매 틱과 묶음을 돌려주기 전에 부른다. 호출자가 더는 이 메일함의 수신자가 아니면 예외를 낸다.
+    on_tick(deadline): 대기 deadline(monotonic) 을 받아 그 안에서 일하고, 남은 일이 있으면 True 를 돌려준다.
+    True 면 다음 반복에 곧바로 다시 부르고, 아니면 sweep 간격 뒤에 부른다."""
     if ack_id is not None:
         ack(store, mailbox, ack_id)
     res = take(store, mailbox)
@@ -113,12 +116,23 @@ def check(store, mailbox: str, *, wait: bool = False, timeout_ms: int = 900000, 
     try:
         deadline = time.monotonic() + timeout_ms / 1000
         next_tick = time.monotonic()
+        last_error = None
         while True:
             if guard is not None:
                 guard()
             if on_tick is not None and time.monotonic() >= next_tick:
-                on_tick()
-                next_tick = time.monotonic() + sweep_interval()
+                try:
+                    more = bool(on_tick(deadline))
+                except HorchError:
+                    raise  # hc_missing 같은 환경 오류는 대기로 숨기지 않는다
+                except Exception as exc:
+                    # 틱 오류(DB 잠김, 버그 등)로 메시지 대기를 죽이지 않는다. stdout 은 결과 JSON 하나라 stderr 에 남긴다
+                    text = f"{type(exc).__name__}: {exc}"
+                    if text != last_error:
+                        sys.stderr.write(f"[horch] 감시 틱 오류(대기는 계속한다): {text}\n")
+                        last_error = text
+                    more = False
+                next_tick = time.monotonic() + (0 if more else sweep_interval())
             res = take(store, mailbox)
             if res["count"]:
                 if guard is not None:

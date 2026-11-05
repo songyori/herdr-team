@@ -19,7 +19,8 @@ sys.path.insert(0, str(ROOT / "lib"))
 
 
 class HorchCase(unittest.TestCase):
-    """가짜 hc 상태 파일: {"next": int, "terminals": {addr: {...}}, "fail": {cmd: {...}}, "screens": {addr: str}, "sent": [...]}"""
+    """가짜 hc 상태 파일: {"next": int, "terminals": {addr: {...}}, "fail": {cmd: {...}}, "screens": {addr: str}, "sent": [...]}
+    선택 키 "delay": {cmd: 초} 는 그 hc 명령을 처리 전에 그만큼 늦춘다(느린 hc 흉내, delay_hc)."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -89,6 +90,14 @@ class HorchCase(unittest.TestCase):
         with self._hc_locked() as st:
             st["fail"][command] = {"kind": kind, "code": code, "create": create}
 
+    def delay_hc(self, command: str, seconds: float) -> None:
+        with self._hc_locked() as st:
+            st.setdefault("delay", {})[command] = seconds
+
+    def clear_hc_fail(self, command: str) -> None:
+        with self._hc_locked() as st:
+            st["fail"].pop(command, None)
+
     def hc_calls(self) -> list[list[str]]:
         path = self.hcdir / "calls.jsonl"
         if not path.exists():
@@ -156,7 +165,7 @@ class HorchCase(unittest.TestCase):
 
     def add_dispatch(self, run_id: str, did: str = "dsp-00000001", terminal: str | None = "t9",
                      state: str = "active", status: str | None = "idle") -> str:
-        """worker-start 없이 Dispatch 행과 그 터미널을 바로 만든다."""
+        """worker-start 없이 Dispatch 행과 그 터미널을 바로 만든다. 터미널에는 worker-start 처럼 horch 라벨을 붙인다."""
         task = "task-" + did.split("-", 1)[1]
         db = self.db()
         db.execute("INSERT INTO tasks(id, run_id, title, spec, status, created_at) VALUES (?, ?, 't', 's', 'open', 'x')",
@@ -165,5 +174,6 @@ class HorchCase(unittest.TestCase):
                    "VALUES (?, ?, ?, 1, 'claude', '/', ?, ?, 'x')", (did, task, run_id, terminal, state))
         db.commit()
         if terminal:
-            self.add_terminal(terminal, name=did, argv=["x"], status=status)
+            self.add_terminal(terminal, name=did, argv=["x"], status=status,
+                              labels={"horch.run": run_id, "horch.dispatch": did})
         return did

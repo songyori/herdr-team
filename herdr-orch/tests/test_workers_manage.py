@@ -1,11 +1,14 @@
+import io
 import json
 import os
 import subprocess
+import time
 import unittest
 from unittest import mock
 
 from tests.helpers import HorchCase
-from horch import liveness
+from horch import liveness, mailbox, workers
+from horch.errors import MISSING, HorchError
 from horch.store import Store
 
 
@@ -41,6 +44,99 @@ class ObserveTest(HorchCase):
         liveness.observe(self.store, self.run_id)
         self.assertEqual(self.kinds(), [("lost", "lost"), ("exited", "exited")])
 
+    def test_blocked_without_turn_is_skipped(self):
+        self.update_terminal("t9", status="blocked", turn=None)
+        liveness.observe(self.store, self.run_id)
+        self.assertEqual(self.kinds(), [])
+        self.update_terminal("t9", turn=2)
+        liveness.observe(self.store, self.run_id)
+        self.assertEqual(self.kinds(), [("blocked", "2")])
+
+    def test_no_event_when_dispatch_changes_during_probe(self):
+        self.update_terminal("t9", state="finished")
+        real = liveness.probe
+
+        def probe_then(sql):
+            def wrapped(*a, **kw):
+                res = real(*a, **kw)
+                db = self.db()
+                db.execute(sql, (self.did,))
+                db.commit()
+                return res
+            return wrapped
+
+        # 판정하는 사이 done 으로 settled 가 됐다
+        with mock.patch.object(liveness, "probe", probe_then("UPDATE dispatches SET state='settled' WHERE id=?")):
+            liveness.observe(self.store, self.run_id)
+        self.assertEqual(self.kinds(), [])
+        self.assertEqual(self.store.all("SELECT * FROM observations"), [])
+        # 판정하는 사이 터미널 기록이 바뀌었다
+        self.store.run("UPDATE dispatches SET state='active' WHERE id=?", (self.did,))
+        with mock.patch.object(liveness, "probe", probe_then("UPDATE dispatches SET terminal='t77' WHERE id=?")):
+            liveness.observe(self.store, self.run_id)
+        self.assertEqual(self.kinds(), [])
+
+
+class SweepTest(HorchCase):
+    def setUp(self):
+        super().setUp()
+        self.run_id = self.make_owner("t100")
+        self.dids = [self.add_dispatch(self.run_id, did=f"dsp-0000000{i}", terminal=f"t{10 + i}") for i in (1, 2, 3)]
+        for i in (1, 2, 3):
+            self.update_terminal(f"t{10 + i}", state="finished")
+        self.env["HORCH_SWEEP_INTERVAL"] = "0.3"
+        patcher = mock.patch.dict(os.environ, self.env, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.store = Store(self.home)
+        self.addCleanup(self.store.close)
+
+    def observed(self) -> int:
+        return self.store.one("SELECT COUNT(*) AS n FROM messages WHERE type='observed'")["n"]
+
+    def test_budget_spreads_probes_over_ticks(self):
+        self.delay_hc("get", 0.4)  # 판정 하나가 틱 예산(0.3초)보다 길다
+        sweep = workers.Sweep(self.store, self.run_id)
+        counts, more = [], True
+        for _ in range(8):
+            more = sweep(time.monotonic() + 30)
+            counts.append(self.observed())
+            if not more:
+                break
+        self.assertFalse(more)
+        self.assertEqual(counts[-1], 3)
+        steps = [b - a for a, b in zip([0, *counts], counts)]
+        self.assertTrue(all(s <= 1 for s in steps), counts)  # 한 틱에 판정 하나: 남은 것은 다음 틱에
+
+    def test_probe_timeout_bounded_by_wait_deadline(self):
+        self.delay_hc("get", 3)
+        sweep = workers.Sweep(self.store, self.run_id)
+        t0 = time.monotonic()
+        sweep(t0 + 0.5)
+        self.assertLess(time.monotonic() - t0, 1.5)
+        self.assertEqual(self.observed(), 0)  # 시간 초과는 모름: 사건이 아니다
+
+    def test_tick_error_keeps_waiting(self):
+        calls = []
+
+        def boom(_deadline):
+            calls.append(1)
+            raise RuntimeError("boom")
+
+        with mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            res = mailbox.check(self.store, f"run:{self.run_id}", wait=True, timeout_ms=800, on_tick=boom)
+        self.assertEqual(res["reason"], "timeout")
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertEqual(err.getvalue().count("RuntimeError: boom"), 1)  # 같은 오류는 한 번만 남긴다
+
+    def test_tick_hc_missing_ends_wait(self):
+        def missing(_deadline):
+            raise HorchError("hc_missing", "hc 없음", MISSING)
+
+        with self.assertRaises(HorchError) as cm:
+            mailbox.check(self.store, f"run:{self.run_id}", wait=True, timeout_ms=800, on_tick=missing)
+        self.assertEqual(cm.exception.code, "hc_missing")
+
 
 class ManageTest(HorchCase):
     def setUp(self):
@@ -75,7 +171,13 @@ class ManageTest(HorchCase):
     def test_list_attention_and_filter(self):
         self.update_terminal("t9", state="finished")
         did2 = self.add_dispatch(self.run_id, did="dsp-00000002", terminal="t10", state="settled")
-        did3 = self.add_dispatch(self.run_id, did="dsp-00000003", terminal=None, state="launch_failed")
+        args = ["--dangerously-bypass-hook-trust", "plain value"]
+        self.fail_hc("run", "spawn_failed")
+        code, failed = self.o("worker-start", "--agent", "claude", "--title", "R", "--spec", "s",
+                              "--cwd", str(self.tmp), "--model", "opus", "--effort", "high", *[f"--agent-arg={a}" for a in args])
+        self.assertEqual((code, failed["error"]["code"]), (1, "launch_failed"), failed)
+        did3 = failed["dispatch"]
+        self.clear_hc_fail("run")
         code, out = self.o("worker-list")
         self.assertEqual(code, 0, out)
         by = {w["id"]: w for w in out["workers"]}
@@ -84,11 +186,67 @@ class ManageTest(HorchCase):
         self.assertEqual(by[did2]["attention"], "settled")
         self.assertIn("worker-release", by[did2]["next"])
         self.assertEqual(by[did3]["attention"], "launch_failed")
-        self.assertIn("--retry", by[did3]["next"])
-        retry = subprocess.run(by[did3]["next"], capture_output=True, text=True, env=self._env("t100", None), timeout=30)
+        nxt = by[did3]["next"]
+        self.assertIn("--retry", nxt)
+        self.assertEqual((nxt[nxt.index("--model") + 1], nxt[nxt.index("--effort") + 1]), ("opus", "high"))
+        self.assertEqual([a for a in nxt if a.startswith("--agent-arg=")], [f"--agent-arg={a}" for a in args])
+        retry = subprocess.run(nxt, capture_output=True, text=True, env=self._env("t100", None), timeout=30)
         self.assertEqual(retry.returncode, 0, retry.stdout)
+        new = json.loads(retry.stdout)["dispatch"]
+        row = self.db().execute("SELECT model, effort, agent_args FROM dispatches WHERE id=?", (new,)).fetchone()
+        self.assertEqual((row["model"], row["effort"], json.loads(row["agent_args"])), ("opus", "high", args))
+        run_call = [c for c in self.hc_calls() if c[0] == "run"][-1]
+        i = run_call.index("claude")
+        self.assertEqual(run_call[i:i + 7], ["claude", "--model", "opus", "--effort", "high", *args])
+        # 재시도가 성공한 뒤 옛 launch_failed 행은 더 재시도를 권하지 않는다
+        _, after = self.o("worker-list")
+        old = {w["id"]: w for w in after["workers"]}[did3]
+        self.assertEqual((old["state"], old["attention"], old["next"]), ("launch_failed", None, None))
         _, only = self.o("worker-list", "--state", "settled")
         self.assertEqual([w["id"] for w in only["workers"]], [did2])
+
+    def test_launch_failed_attention_only_for_open_task(self):
+        did2 = self.add_dispatch(self.run_id, did="dsp-00000002", terminal=None, state="launch_failed")
+        _, out = self.o("worker-list")
+        self.assertEqual({w["id"]: w for w in out["workers"]}[did2]["attention"], "launch_failed")
+        db = self.db()
+        db.execute("UPDATE tasks SET status='settled' WHERE id='task-00000002'")
+        db.commit()
+        _, out = self.o("worker-list")
+        row = {w["id"]: w for w in out["workers"]}[did2]
+        self.assertEqual((row["attention"], row["next"]), (None, None))
+        _, shown = self.o("worker-show", "--dispatch", did2, "--lines", "0")
+        self.assertEqual((shown["worker"]["attention"], shown["worker"]["next"]), (None, None))
+
+    def test_list_state_typo_is_usage(self):
+        code, out = self.o("worker-list", "--state", "setled")
+        self.assertEqual((code, out["error"]["code"]), (2, "usage"))
+
+    def add_slow_workers(self, delay: float) -> None:
+        for i in (2, 3, 4):
+            self.add_dispatch(self.run_id, did=f"dsp-0000000{i}", terminal=f"t{10 + i}", status="working")
+        self.delay_hc("get", delay)
+
+    def test_owner_wait_sweep_does_not_overshoot_timeout(self):
+        self.add_slow_workers(2.0)  # 판정 4개 x 2초: 예산 없이 돌면 8초 넘게 걸린다
+        t0 = time.monotonic()
+        code, out = self.o("check", "--wait", "--timeout-ms", "1500")
+        elapsed = time.monotonic() - t0
+        self.assertEqual((code, out.get("reason")), (0, "timeout"), out)
+        self.assertLess(elapsed, 2.5)
+
+    def test_owner_wait_returns_message_during_slow_sweep(self):
+        self.add_slow_workers(1.5)
+        proc = self.horch_bg("check", "--wait", "--timeout-ms", "20000", terminal="t100")
+        time.sleep(0.5)
+        code, sent = self.horch("send", "--to", f"run:{self.run_id}", "--body", "hi")
+        self.assertEqual(code, 0, sent)
+        t_sent = time.monotonic()
+        code, out = self.finish(proc)
+        elapsed = time.monotonic() - t_sent
+        self.assertEqual((code, out.get("reason")), (0, "message"), out)
+        self.assertEqual([m["body"] for m in out["messages"]], ["hi"])
+        self.assertLess(elapsed, 3.0)
 
     def test_list_no_status_for_live_worker_without_report(self):
         self.update_terminal("t9", status=None)
@@ -134,6 +292,28 @@ class ManageTest(HorchCase):
         self.fail_hc("get", "timeout")
         code, out = self.o("worker-release", "--dispatch", self.did)
         self.assertEqual((code, out["error"]["code"]), (1, "hc_failed"))
+        self.assertEqual(self.state(), "settled")
+
+    def test_release_refuses_terminal_of_other_dispatch(self):
+        self.set_state("settled")
+        self.update_terminal("t9", labels={"horch.run": self.run_id, "horch.dispatch": "dsp-99999999"})
+        code, out = self.o("worker-release", "--dispatch", self.did)
+        self.assertEqual((code, out["error"]["code"]), (1, "terminal_mismatch"))
+        self.assertEqual(self.hc_state()["terminals"]["t9"]["state"], "live")
+        self.assertEqual([c for c in self.hc_calls() if c[0] in ("kill", "rm")], [])
+        self.assertEqual(self.state(), "settled")
+
+    def test_release_rm_retries_only_while_live(self):
+        self.set_state("settled")
+        self.update_terminal("t9", state="finished")
+        self.fail_hc("rm", "timeout")
+        code, out = self.o("worker-release", "--dispatch", self.did)
+        self.assertEqual((code, out["error"]["code"]), (1, "hc_failed"))
+        self.assertEqual(len([c for c in self.hc_calls() if c[0] == "rm"]), 1)
+        self.fail_hc("rm", "live")
+        code, out = self.o("worker-release", "--dispatch", self.did)
+        self.assertEqual((code, out["error"]["code"]), (1, "hc_failed"))
+        self.assertGreater(len([c for c in self.hc_calls() if c[0] == "rm"]), 3)
         self.assertEqual(self.state(), "settled")
 
     def test_retain_then_release(self):

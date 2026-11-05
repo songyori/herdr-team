@@ -70,7 +70,7 @@ def build_parser() -> Parser:
     s.add_argument("--report-path")
     s.add_argument("--files-modified", action="append", default=[])
     s = sub.add_parser("worker-list")
-    s.add_argument("--state", action="append")
+    s.add_argument("--state", action="append", choices=workers.STATES)
     s = sub.add_parser("worker-show")
     s.add_argument("--dispatch", required=True)
     s.add_argument("--lines", type=int, default=40)

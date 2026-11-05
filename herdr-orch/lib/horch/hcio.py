@@ -18,9 +18,11 @@ class HcFailure(Exception):
         self.message = message
 
 
-def _call(args: list[str]) -> subprocess.CompletedProcess:
+def _call(args: list[str], timeout: float | None = None) -> subprocess.CompletedProcess:
+    """timeout 은 초. None 이면 TIMEOUT_S. 시간을 넘기면 hc 를 죽이고 HcFailure("timeout")."""
+    limit = TIMEOUT_S if timeout is None else timeout
     try:
-        return subprocess.run(["hc", *args], capture_output=True, text=True, timeout=TIMEOUT_S)
+        return subprocess.run(["hc", *args], capture_output=True, text=True, timeout=limit)
     except FileNotFoundError as exc:
         raise HorchError("hc_missing", "hc 실행 파일을 찾지 못했다", MISSING,
                          "herdr-core 를 설치하고 PATH 에 hc 를 둔다") from exc
@@ -28,7 +30,7 @@ def _call(args: list[str]) -> subprocess.CompletedProcess:
         # 실행 권한 없음 등. 터미널이 끝났다는 뜻이 아니므로 호출자는 모름으로 다룬다.
         raise HcFailure("exec_failed", str(exc)) from exc
     except subprocess.TimeoutExpired as exc:
-        raise HcFailure("timeout", f"hc {' '.join(args[:2])} 가 {TIMEOUT_S}초 안에 끝나지 않았다") from exc
+        raise HcFailure("timeout", f"hc {' '.join(args[:2])} 가 {limit:g}초 안에 끝나지 않았다") from exc
 
 
 def _failure(proc: subprocess.CompletedProcess) -> HcFailure:
@@ -57,19 +59,19 @@ def _parse(text: str) -> dict:
     raise HcFailure("bad_output", text[-500:])
 
 
-def _json(args: list[str], tail: list[str] | None = None) -> dict:
-    proc = _call([*args, "--json", *(tail or [])])
+def _json(args: list[str], tail: list[str] | None = None, timeout: float | None = None) -> dict:
+    proc = _call([*args, "--json", *(tail or [])], timeout)
     if proc.returncode != 0:
         raise _failure(proc)
     return _parse(proc.stdout)
 
 
-def get(terminal: str) -> dict:
-    return _json(["get", terminal])
+def get(terminal: str, timeout: float | None = None) -> dict:
+    return _json(["get", terminal], timeout=timeout)
 
 
-def ls_all() -> list[dict]:
-    return list(_json(["ls", "--all"]).get("terminals") or [])
+def ls_all(timeout: float | None = None) -> list[dict]:
+    return list(_json(["ls", "--all"], timeout=timeout).get("terminals") or [])
 
 
 def read(terminal: str, lines: int) -> str:
@@ -97,8 +99,8 @@ def kill(terminal: str) -> dict:
     return _json(["kill", terminal])
 
 
-def rm(terminal: str) -> dict:
-    return _json(["rm", terminal])
+def rm(terminal: str, timeout: float | None = None) -> dict:
+    return _json(["rm", terminal], timeout=timeout)
 
 
 def server_status() -> dict:

@@ -14,6 +14,20 @@ from .ids import new_id, now
 from .paths import horch_argv, horch_cmd
 from .store import write_atomic
 
+STATES = ("launching", "active", "launch_failed", "settled", "retained", "abandoned", "released")
+SWEEP_HC_TIMEOUT_S = 5.0  # sweep 안 hc 호출 하나의 최대 시간(hcio 기본 30초 대신)
+
+
+def _hc_timeout(deadline: float | None) -> float | None:
+    """deadline(monotonic) 까지 남은 시간에 맞춘 hc 시간 제한. deadline 이 없으면 None(hcio 기본)."""
+    if deadline is None:
+        return None
+    return max(0.05, min(SWEEP_HC_TIMEOUT_S, deadline - time.monotonic()))
+
+
+def _expired(deadline: float | None) -> bool:
+    return deadline is not None and time.monotonic() >= deadline
+
 
 def reconcile_launching(store, run_id: str) -> list[str]:
     """실행자가 죽은 launching Dispatch 를 launch_failed 로 바꾼다(조건부 쓰기)."""
@@ -29,32 +43,36 @@ def reconcile_launching(store, run_id: str) -> list[str]:
     return changed
 
 
-def cleanup_refused(store, run_id: str) -> list[str]:
-    """가드가 거부해 끝난 터미널을 hc rm 한다. 이름으로 후보를 찾고 라벨(horch.run·horch.dispatch)과 상태를 get 으로 확인한다."""
+def cleanup_refused(store, run_id: str, deadline: float | None = None) -> list[str]:
+    """가드가 거부해 끝난 터미널을 hc rm 한다. 이름으로 후보를 찾고 라벨(horch.run·horch.dispatch)과 상태를 get 으로 확인한다.
+    deadline(monotonic) 이 있으면 그때까지만 hc 를 부르고 남은 후보는 다음에 한다."""
     failed = {r["id"] for r in store.all("SELECT id FROM dispatches WHERE run_id=? AND state='launch_failed'", (run_id,))}
-    if not failed:
+    if not failed or _expired(deadline):
         return []
     try:
-        terminals = hcio.ls_all()
+        terminals = hcio.ls_all(timeout=_hc_timeout(deadline))
     except hcio.HcFailure:
         return []
     removed = []
     for t in terminals:
         if t.get("name") not in failed or t.get("state") != "finished":
             continue
+        if _expired(deadline):
+            break
         try:
-            info = hcio.get(t["address"])
+            info = hcio.get(t["address"], timeout=_hc_timeout(deadline))
             labels = info.get("labels") or {}
             if (info.get("state") == "finished" and labels.get("horch.run") == run_id
                     and labels.get("horch.dispatch") == t["name"]):
-                hcio.rm(t["address"])
+                hcio.rm(t["address"], timeout=_hc_timeout(deadline))
                 removed.append(t["address"])
         except hcio.HcFailure:
             pass
     return removed
 
 
-def _create(store, run_id: str, *, spec, title, agent, model, effort, cwd, task_id, retry) -> tuple[str, str, str, str]:
+def _create(store, run_id: str, *, spec, title, agent, model, effort, extra, cwd, task_id,
+            retry) -> tuple[str, str, str, str]:
     """Task·Dispatch 를 한 트랜잭션에서 만든다. 재시도 허용 검사도 이 안에서 다시 한다."""
     pid, started = procs.me()
     given_task = bool(task_id)
@@ -83,9 +101,12 @@ def _create(store, run_id: str, *, spec, title, agent, model, effort, cwd, task_
                 store.run("INSERT INTO tasks(id, run_id, title, spec, status, created_at) VALUES (?,?,?,?,'open',?)",
                           (task_id, run_id, title, spec, ts))
                 attempt = 1
-            store.run("INSERT INTO dispatches(id, task_id, run_id, attempt, agent, model, effort, cwd, state, "
-                      "launcher_pid, launcher_started, created_at) VALUES (?,?,?,?,?,?,?,?,'launching',?,?,?)",
-                      (dispatch_id, task_id, run_id, attempt, agent, model, effort, cwd, pid, started, ts))
+            # agent_args: 재시도 안내(worker-list next)가 같은 모델·인자로 다시 띄우도록 남긴다
+            store.run("INSERT INTO dispatches(id, task_id, run_id, attempt, agent, model, effort, agent_args, cwd, "
+                      "state, launcher_pid, launcher_started, created_at) "
+                      "VALUES (?,?,?,?,?,?,?,?,?,'launching',?,?,?)",
+                      (dispatch_id, task_id, run_id, attempt, agent, model, effort,
+                       json.dumps(list(extra), ensure_ascii=False), cwd, pid, started, ts))
     except sqlite3.IntegrityError as exc:
         # 한 Task 에 실행 중 Dispatch 는 하나뿐이라는 부분 유일 인덱스 위반(또는 --task 지정)만 task_busy 다. 나머지는 버그라 그대로 올린다
         if not (given_task or "dispatches.task_id" in str(exc)):
@@ -125,7 +146,8 @@ def start(store, run_id: str, *, spec, title, agent, model, effort, cwd, extra, 
     if task_id:
         reconcile_launching(store, run_id)
     task_id, dispatch_id, title, spec = _create(store, run_id, spec=spec, title=title, agent=agent, model=model,
-                                                effort=effort, cwd=str(cwd_path), task_id=task_id, retry=retry)
+                                                effort=effort, extra=extra, cwd=str(cwd_path), task_id=task_id,
+                                                retry=retry)
     _die_at("after_create")
     base = {"task": task_id, "dispatch": dispatch_id}
     progress: dict = {"ran": False, "terminal": None}  # hc run 이 성공했는지(성공 뒤에는 실패로 바꾸지 않는다)
@@ -217,16 +239,34 @@ def _launch(store, run_id, exe, base, progress, *, spec, agent, model, effort, e
             "warnings": warnings}
 
 
-def sweep(store, run_id: str) -> None:
-    """소유자의 check --wait 가 주기적으로 부른다."""
-    reconcile_launching(store, run_id)
-    cleanup_refused(store, run_id)
-    liveness.observe(store, run_id)
+class Sweep:
+    """소유자의 check --wait 가 틱마다 부른다(설계 9장 observed). sweep(deadline) -> 남은 일이 있으면 True.
+
+    회차 처음에 launching 조정과 가드 거부 정리를 하고 그 Run 의 active Dispatch 를 줄 세운다.
+    한 틱은 min(대기 deadline, 지금 + sweep 간격) 안에서만 새 판정을 시작하고, 남은 Dispatch 는 다음 틱에 이어 본다.
+    hc 호출 하나는 SWEEP_HC_TIMEOUT_S 와 대기 deadline 중 이른 쪽에 끊는다. 끊긴 판정은 모름이라 아무것도 쓰지 않는다.
+    """
+
+    def __init__(self, store, run_id: str):
+        self.store, self.run_id = store, run_id
+        self.queue: list[str] = []
+
+    def __call__(self, deadline: float) -> bool:
+        until = min(deadline, time.monotonic() + mailbox.sweep_interval())
+        if not self.queue:
+            reconcile_launching(self.store, self.run_id)
+            cleanup_refused(self.store, self.run_id, deadline=deadline)
+            self.queue = [r["id"] for r in self.store.all(
+                "SELECT id FROM dispatches WHERE run_id=? AND state='active' ORDER BY created_at, id", (self.run_id,))]
+        while self.queue and not _expired(until):
+            liveness.observe_one(self.store, self.run_id, self.queue.pop(0), timeout=_hc_timeout(deadline))
+        return bool(self.queue)
 
 
 def _row_json(r) -> dict:
     return {"id": r["id"], "task": r["task_id"], "attempt": r["attempt"], "agent": r["agent"], "model": r["model"],
-            "effort": r["effort"], "cwd": r["cwd"], "terminal": r["terminal"], "state": r["state"],
+            "effort": r["effort"], "agent_args": json.loads(r["agent_args"] or "[]"), "cwd": r["cwd"],
+            "terminal": r["terminal"], "state": r["state"],
             "outcome": r["outcome"], "summary": r["summary"], "report_path": r["report_path"],
             "files_modified": json.loads(r["files_modified"] or "[]"), "created_at": r["created_at"],
             "settled_at": r["settled_at"], "closed_at": r["closed_at"]}
@@ -235,8 +275,15 @@ def _row_json(r) -> dict:
 def _attention(home, r, verdict: str | None, word: str | None) -> tuple[str | None, list[str] | None]:
     base, d, st = horch_argv(home), r["id"], r["state"]
     if st == "launch_failed":
-        return "launch_failed", [*base, "worker-start", "--agent", r["agent"], "--task", r["task_id"], "--retry",
-                                 "--cwd", r["cwd"]]
+        if r["attempt"] != r["last_attempt"] or r["task_status"] != "open":
+            return None, None  # 다음 시도가 이미 있거나 Task 가 끝났다. 이 행으로 재시도하면 반드시 거부된다
+        argv = [*base, "worker-start", "--agent", r["agent"], "--task", r["task_id"], "--retry", "--cwd", r["cwd"]]
+        if r["model"]:
+            argv += ["--model", r["model"]]
+        if r["effort"]:
+            argv += ["--effort", r["effort"]]
+        # "-" 로 시작하는 인자도 값으로 넘어가게 = 로 붙인다
+        return "launch_failed", argv + [f"--agent-arg={a}" for a in json.loads(r["agent_args"] or "[]")]
     if st == "launching":
         return "launching", None
     if st == "active":
@@ -266,10 +313,16 @@ def _describe(store, r) -> tuple[dict, dict | None]:
     return item, info
 
 
+# _attention 이 쓰는 Task 상태와 그 Task 의 마지막 시도 번호를 함께 읽는다
+_ROWS = ("SELECT d.*, t.title, t.status AS task_status, "
+         "(SELECT MAX(x.attempt) FROM dispatches x WHERE x.task_id = d.task_id) AS last_attempt "
+         "FROM dispatches d JOIN tasks t ON t.id = d.task_id")
+
+
 def list_rows(store, run_id: str, states: list[str] | None) -> list[dict]:
     reconcile_launching(store, run_id)
     cleanup_refused(store, run_id)
-    sql = "SELECT d.*, t.title FROM dispatches d JOIN tasks t ON t.id = d.task_id WHERE d.run_id=?"
+    sql = _ROWS + " WHERE d.run_id=?"
     params: list = [run_id]
     if states:
         sql += f" AND d.state IN ({','.join('?' * len(states))})"
@@ -285,7 +338,7 @@ def list_rows(store, run_id: str, states: list[str] | None) -> list[dict]:
 def show(store, run_id: str, dispatch_id: str, lines: int) -> dict:
     reconcile_launching(store, run_id)
     auth.owned_dispatch(store, run_id, dispatch_id)
-    r = store.one("SELECT d.*, t.title FROM dispatches d JOIN tasks t ON t.id = d.task_id WHERE d.id=?", (dispatch_id,))
+    r = store.one(_ROWS + " WHERE d.id=?", (dispatch_id,))
     item, info = _describe(store, r)
     item["title"] = r["title"]
     item["hc"] = {k: info.get(k) for k in ("state", "status", "reason", "turn", "exit_code")} if info else None
@@ -307,17 +360,18 @@ def _kill_ok(terminal: str) -> None:
 
 
 def _rm_ok(terminal: str) -> None:
-    last = None
-    for _ in range(10):
+    """kill 직후 hc 가 아직 live 로 볼 수 있어 그때만 잠깐 다시 한다. 다른 실패(시간 초과 등)는 바로 알린다."""
+    tries = 10
+    for i in range(tries):
         try:
             hcio.rm(terminal)
             return
         except hcio.HcFailure as exc:
             if exc.kind == "not_found":
                 return
-            last = exc
+            if exc.kind != "live" or i == tries - 1:
+                raise HorchError("hc_failed", f"hc rm {terminal} 실패: {exc.kind}", FAIL) from exc
             time.sleep(mailbox.poll_interval())
-    raise HorchError("hc_failed", f"hc rm {terminal} 실패: {last.kind}", FAIL)
 
 
 def _fetch(store, dispatch_id: str) -> dict:
@@ -338,6 +392,12 @@ def release(store, run_id: str, dispatch_id: str) -> dict:
                 raise HorchError("hc_failed", f"hc get {r['terminal']} 실패: {exc.kind}", FAIL) from exc
             info = None
         if info is not None:
+            # 주소가 다른 터미널에 다시 쓰였을 수 있다. 이 Dispatch 의 터미널이라는 증거(라벨) 없이는 죽이거나 지우지 않는다
+            owner = (info.get("labels") or {}).get("horch.dispatch")
+            if owner != dispatch_id:
+                raise HorchError("terminal_mismatch",
+                                 f"터미널 {r['terminal']} 의 horch.dispatch 라벨이 {owner} 다. 이 Dispatch 의 터미널이 아니다",
+                                 FAIL, "hc get 으로 그 터미널을 확인한다. 상태는 바꾸지 않았다")
             if info.get("state") == "live":
                 _kill_ok(r["terminal"])
             _rm_ok(r["terminal"])

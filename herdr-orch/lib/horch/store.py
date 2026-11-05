@@ -23,7 +23,7 @@ DDL = [
         settled_at TEXT)""",
     """CREATE TABLE dispatches(id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id),
         run_id TEXT NOT NULL REFERENCES runs(id), attempt INTEGER NOT NULL, agent TEXT NOT NULL, model TEXT,
-        effort TEXT, cwd TEXT NOT NULL, terminal TEXT, state TEXT NOT NULL, outcome TEXT, summary TEXT,
+        effort TEXT, agent_args TEXT, cwd TEXT NOT NULL, terminal TEXT, state TEXT NOT NULL, outcome TEXT, summary TEXT,
         report_path TEXT, files_modified TEXT, launch_argv TEXT, launcher_pid INTEGER, launcher_started TEXT,
         created_at TEXT NOT NULL, settled_at TEXT, closed_at TEXT)""",
     "CREATE UNIQUE INDEX dispatch_one_running ON dispatches(task_id) WHERE state IN ('launching','active')",
