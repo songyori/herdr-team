@@ -1,0 +1,7 @@
+#!/usr/bin/env python3
+"""테스트용 가짜 claude. 받은 argv 와 HC_TERMINAL_ID 를 JSON 으로 출력한다."""
+import json
+import os
+import sys
+
+print(json.dumps({"fake": "claude", "argv": sys.argv[1:], "terminal": os.environ.get("HC_TERMINAL_ID")}))

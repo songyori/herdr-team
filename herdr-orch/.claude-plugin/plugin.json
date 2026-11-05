@@ -1,0 +1,8 @@
+{
+  "name": "herdr-orch",
+  "version": "0.1.0",
+  "description": "Herdr(hc + herdr-app) 위에서 Claude·Codex 워커를 pane 으로 띄우고 SQLite 메일함으로 조정하는 horch CLI.",
+  "author": { "name": "SeongYul Lim" },
+  "license": "MIT",
+  "keywords": ["herdr", "orchestration", "codex", "claude"]
+}

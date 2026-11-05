@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "herdr-team",
+  "description": "Herdr(hc + herdr-app) 위에서 멀티 에이전트를 조정하는 플러그인 모음.",
+  "owner": { "name": "SeongYul Lim" },
+  "plugins": [
+    {
+      "name": "herdr-orch",
+      "source": "./herdr-orch",
+      "version": "0.1.0",
+      "description": "Herdr 위의 감독형 오케스트레이션: 워커 pane 실행, 메일함, ask/reply, worker_done."
+    }
+  ]
+}

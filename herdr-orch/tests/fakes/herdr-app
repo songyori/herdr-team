@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+"""테스트용 가짜 herdr-app. status 만 성공한다."""
+import json
+import os
+import sys
+from pathlib import Path
+
+with open(Path(os.environ.get("FAKE_HC_DIR", ".")) / "herdr-calls.jsonl", "a") as f:
+    f.write(json.dumps(sys.argv[1:]) + "\n")
+if sys.argv[1:2] == ["status"]:
+    print("layout: main")
+    sys.exit(0)
+sys.exit(2)

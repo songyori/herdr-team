@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+"""테스트용 가짜 codex. --help 에 --no-daemon 을 보이고, 그 밖에는 argv 를 JSON 으로 출력한다."""
+import json
+import os
+import sys
+
+if sys.argv[1:2] == ["--help"]:
+    print("Usage: codex [OPTIONS]\n      --no-daemon")
+    sys.exit(0)
+print(json.dumps({"fake": "codex", "argv": sys.argv[1:], "terminal": os.environ.get("HC_TERMINAL_ID")}))

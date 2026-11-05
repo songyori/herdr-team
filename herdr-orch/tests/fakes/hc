@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+"""테스트용 가짜 hc. $FAKE_HC_DIR/state.json 을 읽고 바꾸며, 호출 argv 를 calls.jsonl 에 남긴다."""
+import fcntl
+import json
+import os
+import sys
+from pathlib import Path
+
+DIR = Path(os.environ["FAKE_HC_DIR"])
+
+
+def out(obj):
+    print(json.dumps(obj))
+
+
+def fail(kind, code, message=""):
+    sys.stderr.write(json.dumps({"error": {"kind": kind, "message": message or kind, "hint": ""}}) + "\n")
+    return code
+
+
+def opt(args, name, default=None):
+    if name in args:
+        return args[args.index(name) + 1]
+    return default
+
+
+def find(st, ref):
+    if ref in st["terminals"]:
+        return st["terminals"][ref]
+    named = [t for t in st["terminals"].values() if t.get("name") == ref]
+    live = [t for t in named if t["state"] == "live"]
+    return (live or named or [None])[0]
+
+
+def ls_item(t):
+    return {"address": t["address"], "name": t.get("name"), "state": t["state"],
+            "status": (t.get("status") or {}).get("state"), "turn": t.get("turn", 0),
+            "reason": t.get("reason"), "cwd": t.get("cwd", "/")}
+
+
+def handle(st, argv):
+    if not argv:
+        return fail("usage", 2)
+    cmd, args = argv[0], argv[1:]
+    f = st.get("fail", {}).get(cmd)
+    if cmd == "run":
+        if f and not f.get("create"):
+            return fail(f["kind"], f.get("code", 1))
+        sep = args.index("--")
+        opts, prog = args[:sep], args[sep + 1:]
+        labels = {}
+        for i, o in enumerate(opts):
+            if o == "--label":
+                k, v = opts[i + 1].split("=", 1)
+                labels[k] = v
+        addr = f"t{st['next']}"
+        st["next"] += 1
+        st["terminals"][addr] = {
+            "address": addr, "name": opt(opts, "--name"), "state": "live", "status": None,
+            "argv": prog, "labels": labels, "reason": None, "turn": 0, "cwd": opt(opts, "--cwd", "/"),
+            "exit_code": None, "flags": [o for o in opts if o in ("--bg", "--no-parent", "--no-notify", "--keep")],
+        }
+        if f:
+            return fail(f["kind"], f.get("code", 1))
+        out({"address": addr, "name": opt(opts, "--name"), "state": "live", "turn": 0})
+        return 0
+    if f:
+        return fail(f["kind"], f.get("code", 1))
+    if cmd == "get":
+        t = find(st, args[0])
+        if not t:
+            return fail("not_found", 3)
+        out({k: v for k, v in t.items() if k != "flags"})
+        return 0
+    if cmd == "ls":
+        items = [ls_item(t) for t in st["terminals"].values() if "--all" in args or t["state"] == "live"]
+        out({"hidden_finished": 0, "terminals": items})
+        return 0
+    if cmd == "read":
+        t = find(st, args[0])
+        if not t:
+            return fail("not_found", 3)
+        print(st.get("screens", {}).get(t["address"], ""))
+        return 0
+    if cmd == "send":
+        t = find(st, args[0])
+        if not t:
+            return fail("not_found", 3)
+        want = opt(args, "--if")
+        if want and (t.get("status") or {}).get("state") != want:
+            return fail("status_mismatch", 10)
+        st.setdefault("sent", []).append({"terminal": t["address"], "text": args[1], "if": want})
+        out({"sent": True})
+        return 0
+    if cmd == "kill":
+        t = find(st, args[0])
+        if not t:
+            return fail("not_found", 3)
+        if t["state"] == "finished":
+            return fail("finished", 11)
+        t["state"], t["exit_code"] = "finished", 143
+        out({"killed": True})
+        return 0
+    if cmd == "rm":
+        t = find(st, args[0])
+        if not t:
+            return fail("not_found", 3)
+        if t["state"] != "finished":
+            return fail("live", 10)
+        del st["terminals"][t["address"]]
+        out({"removed": True})
+        return 0
+    if cmd == "server":
+        out({"pid": 1, "live": len(st["terminals"]), "version": "0.1.18"})
+        return 0
+    return fail("usage", 2)
+
+
+def main(argv):
+    with open(DIR / "calls.jsonl", "a") as f:
+        f.write(json.dumps(argv) + "\n")
+    with open(DIR / "lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        path = DIR / "state.json"
+        st = json.loads(path.read_text())
+        code = handle(st, argv)
+        path.write_text(json.dumps(st))
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
