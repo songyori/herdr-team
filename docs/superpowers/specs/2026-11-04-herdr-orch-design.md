@@ -456,6 +456,22 @@ S2 중 이미 확인한 것(2026-11-04, `codex exec -s workspace-write --add-dir
 
 버리는 space 에서 코디네이터(Claude) 하나와 워커 둘(Claude 개발자, Codex 리뷰어)로 작은 태스크를 끝까지 돌린다. pane 이 생기고, ask/reply 가 오가고, done 이 Run 메일함에 오고, release 로 pane 이 닫히는지 본다.
 
+#### 실환경 확인 결과 (2026-11-05)
+
+hc 0.1.18, Claude Code 2.1.318(코디네이터 Opus, 워커 haiku), codex-cli 0.166.0. 버리는 git 저장소와 `horch-e2e` space, 별도 `--home` 저장 루트에서 돌렸다. 코디네이터 시작부터 마지막 release 까지 약 7분 걸렸다.
+
+- pane 배치: 통과. `worker-start` 결과는 `placement: "pane"` 이다. `herdr-app ls` 에서 워커 터미널 셋(Claude 1, Codex 2)이 모두 코디네이터와 같은 탭의 pane 으로 붙었다. 라벨은 `herdr.space`·`herdr.tab`·`horch.run`·`horch.dispatch` 다. `herdr-app shot` 은 창이 새 프레임을 그리지 않아 다른 space 의 옛 프레임이 찍혔다. 그래서 스크린샷으로는 확인하지 못했다(사전 검증 S1 과 같다).
+- ask/reply: 통과(Claude 워커). `question` 을 쓰고 5초 뒤 코디네이터가 `reply` 했다. 워커의 `ask` 는 약 7초 만에 답("hello 로 해")을 받았다. Codex 워커는 재시도 때 `hello.py` 가 이미 있어 ask 를 거치지 않았다. 그래서 Codex 쪽 ask 는 확인하지 못했다.
+- worker_done(Claude·Codex): Claude 는 통과했다. 시작 36초 뒤 `succeeded` 가 왔고, 코디네이터가 커밋과 출력을 직접 확인했다. Codex 는 1차 시도가 환경 문제(아래 2)로 done 을 보내지 못했다. 같은 Task 를 다시 띄운 2차 시도(`attempt` 2)에서 `succeeded` 가 Run 메일함에 왔다(`docs/review.md` 한 줄).
+- release 로 pane 닫힘: 통과. `worker-release` 뒤 워커 터미널이 `hc ls --all` 에서 사라지고, 탭에는 코디네이터와 space 기본 셸만 남았다. 마지막 `worker-list` 에서 Dispatch 셋이 모두 `released` 다(abandon 한 1차 시도 포함, 아래 4). `status` 는 `unread` 0, 답 없는 질문 없음이다.
+- 발견한 문제와 처리:
+  1. 시작 확인 창(운영자가 키로 넘김, 세 번). 코디네이터의 Claude 폴더 신뢰 창, Codex 폴더 신뢰 창(`--dangerously-bypass-hook-trust` 로는 건너뛰지 못한다. 신뢰 결정은 Codex 사용자 설정에 저장된다), Codex "Hooks need review" 창("Continue without trusting")이다. 확인 창 동안 `worker-show` 는 `attention: "no_status"` 를 보였고, 코디네이터는 스킬대로 키를 누르지 않고 사람에게 알렸다. 같은 폴더의 Claude 워커는 코디네이터가 이미 신뢰한 폴더라 창이 뜨지 않았다.
+  2. 환경 문제(horch 결함 아님). 사용자 Codex 의 context-mode 플러그인 2.1.0 hook 은 Node 24.15 이상이 필요한데 설치된 Node 는 22 다. 이 hook 은 `NODE_TOO_OLD` 로 실패하면서 셸 명령을 모두 막았다. `--dangerously-bypass-hook-trust` 가 바뀐(미신뢰) hook 을 돌게 한 것이다. Codex 는 셸 대신 node_repl MCP 도구로 horch 를 불렀다. 그 프로세스에는 `HC_TERMINAL_ID` 가 없어 `check`·`ask`·`escalate`·`done` 이 모두 `not_this_worker` 로 거부됐다. 처리: 운영자가 코디네이터에게 알렸고, 코디네이터가 `worker-abandon --kill` 뒤 같은 Task 를 bypass 인자 없이 다시 띄웠다. hook 검토 창에서 "Continue without trusting" 을 고르자 셸이 동작했고 통과했다.
+  3. 남은 공백(미처리). 워커가 done 없이 턴을 마치고 `idle` 이 되면 horch 는 아무 신호도 내지 않는다. `observed` 는 blocked·error·exited·lost 만 보내고, `worker-show` 의 `attention` 은 null 이었다. 코디네이터는 운영자가 알릴 때까지 3분 넘게 기다렸다.
+  4. 코디네이터가 abandon 한 Dispatch 를 release 하지 않고 끝냈다. `worker-list` 의 `next` 는 `worker-release` 였다. 스킬 6항은 abandon 을 "정리"라 부르고, 8항은 "`settled`·`abandoned` Dispatch 를 모두 정리했을 때 끝낸다" 고 쓴다. 그래서 abandon 만으로 정리가 끝났다고 읽을 수 있다. 운영자가 요청하자 release 가 끝난 터미널을 `hc rm` 했다.
+  5. 하네스의 GateGuard hook 이 코디네이터와 Claude 워커의 첫 Bash·Write 를 막았다. 둘 다 요구한 사실을 적고 다시 실행해 이어갔다.
+  6. 사소한 것. `doctor` 의 `herdr_app` detail 이 `{` 다(`herdr-app status` 의 JSON 첫 줄만 담는다). `HC_TERMINAL_ID` 가 없을 때 `not_this_worker` 메시지는 "이 터미널(없음)" 이고 hint 가 비어 있다.
+
 ### Codex 교차 검증
 
 `CLAUDE.md` 규칙대로 설계·계획·태스크 커밋·브랜치 전체를 Codex 가 검토한다.
