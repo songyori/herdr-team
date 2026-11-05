@@ -376,7 +376,7 @@ def notify(p, kind: str, body: str | None, json_text: str | None) -> dict:
 
 
 def _orphaned(p) -> bool:
-    run = read_json(p.run_file, {})
+    run = _run(p)  # 읽지 못하면 bad_run_file(watch 가 그 오류로 끝난다)
     term = run.get("coordinator_terminal")
     return bool(term) and herdr.probe(term, run.get("coordinator_argv")) in ("exited", "lost")
 

@@ -452,7 +452,7 @@ Codex 리뷰어에게는 `AGENTS.md` 의 리뷰어 규칙도 적용된다(9.1). 
 | `ask-user --task T --json -` / `--wait ID` / `--ack ID` / `--pending` / `--history` | 기획자·디렉터 | 7.5 |
 | `image …` | 디자인 워커 | 12장 |
 | `lint --task T` | 리뷰(내부) | 11.6 |
-| `setup-done` | init | `setup-mode` 해제 |
+| `setup-done` | init | `setup-mode` 해제, `state/setup-done` 표시를 남긴다 |
 
 권한 확인(누가 부를 수 있나)은 실수 방지용이다(보안 경계가 아님). 역할 판별은 9.4 와 같다.
 
@@ -462,7 +462,7 @@ Codex 리뷰어에게는 `AGENTS.md` 의 리뷰어 규칙도 적용된다(9.1). 
 
 1. 설명이 비면 한 줄로 묻는다.
 2. `hteam doctor`(9.2). 오류면 멈추고 알린다.
-3. `hteam scaffold --description-file <임시 파일>`: `.herdr-team/` 일체(설정, 직무 문서, 코디네이터 사용법, 디자인 규칙, shim, `project.md`, `tasks/`), `CLAUDE.md` 에 `<!-- herdr-team -->` 절(메인 규칙, 역할 판별 안내), `AGENTS.md` 에 같은 표시의 절(Codex 워커·리뷰어 규칙), `.gitignore` 에 `.herdr-team/state/`. 있는 파일은 덮어쓰지 않는다. `state/setup-mode` 와 `state/plugin-root` 를 만든다.
+3. `hteam scaffold --description-file <임시 파일>`: `.herdr-team/` 일체(설정, 직무 문서, 코디네이터 사용법, 디자인 규칙, shim, `project.md`, `tasks/`), `CLAUDE.md` 에 `<!-- herdr-team -->` 절(메인 규칙, 역할 판별 안내), `AGENTS.md` 에 같은 표시의 절(Codex 워커·리뷰어 규칙), `.gitignore` 에 `.herdr-team/state/`. 있는 파일은 덮어쓰지 않는다(`CLAUDE.md`·`AGENTS.md`·`.gitignore` 는 덧붙이기만 한다). `state/plugin-root` 를 만들고, `state/setup-done` 이 없을 때만 `state/setup-mode` 를 만든다(출력 `setup_mode`). 세팅을 마친 프로젝트를 다시 세팅하려면 `state/setup-done` 을 지우고 scaffold 를 다시 한다.
 4. 판단이 필요한 한 단계: 표 하나로 제안하고 AskUserQuestion 한 번으로 승인받는다. 직무별 owns, 추가 직무, 필요한 도구(Chrome DevTools MCP 등), Claude 권한 모드(`[agents.claude].args`. bypass 는 사람 없이 돌 때 필요하지만 워커가 사용자 자격 증명을 그대로 쓴다는 위험을 적는다).
 5. `hteam up --wait-run 180` 과 백그라운드 `hteam watch`.
 6. `hteam setup-done`, 경로 지정 커밋 `chore: herdr-team 세팅`, 보고.
@@ -473,14 +473,16 @@ Python 3.11 이상, git(없으면 `git init` 과 빈 커밋을 권함), `horch` 
 
 ### 9.3 `hteam up` 과 코디네이터
 
-1. `run.json` 의 코디네이터 터미널이 살아 있으면(horch 생존 판정과 같은 규칙: hc 상태 `live` 이고 argv 가 기록과 같음. hc 조회 실패·argv 없음은 확인 불가) 그대로 둔다. 띄운 지 180초 안이면 `starting`. 확인할 수 없으면 기록과 nonce 를 그대로 두고 exit 3 이다. 사용자가 끝났다고 확인하면 `hteam up --force` 가 새로 띄우고(`pending_launch.force`), 그 코디네이터의 `bind` 가 `run-use --force` 로 넘겨받는다. 이 인계 승인은 bind 가 성공할 때까지 다음 `up` 이 이어 받는다. 새로 띄우는 것은 처음이거나 끝남·소실이 확인됐거나 `--force` 일 때뿐이다.
+1. `run.json` 의 코디네이터 터미널이 살아 있으면(horch 생존 판정과 같은 규칙: hc 상태 `live` 이고 argv 가 기록과 같음. hc 조회 실패·argv 없음은 확인 불가) 그대로 둔다. 띄운 지 180초 안이면 `starting`. 확인할 수 없으면 기록과 nonce 를 그대로 두고 exit 3 이다. 사용자가 끝났다고 확인하면 `hteam up --force` 가 새로 띄우고(`pending_launch.force`), 그 코디네이터의 `bind` 가 `run-use --force` 로 넘겨받는다. 이 인계 승인은 bind 가 성공할 때까지 다음 `up` 이 이어 받는다. 새로 띄우는 것은 처음이거나 끝남·소실이 확인됐거나 `--force` 일 때뿐이다. `up` 은 메인만 부른다: 무엇이든 바꾸기 전에 `require_main` 으로 확인하고, 코디네이터·워커·리뷰어 터미널이면 exit 5 다. `run.json` 을 읽지 못하면 아무것도 바꾸지 않고 exit 1 `bad_run_file`.
 2. 아니면 `run.json` 에 `pending_launch: {nonce, at}`(무작위 nonce)를 먼저 쓰고 팀 탭에 새 코디네이터를 띄운다. 팀 탭 id 는 `tb` + SHA-1(`herdr-team\n<프로젝트 루트>\n<space>`) 앞 32자로 고정하고(없으면 Herdr 가 새 탭으로 만든다), 이름은 "팀"(`herdr-app do tab.rename`, 실패해도 계속). space 는 메인 터미널의 `herdr.space` 라벨.
    `hc run --bg --json --no-parent --no-notify --keep --name hteam-coord-<6자> --cwd <루트> --label herdr.space=<space> --label herdr.tab=<팀 탭> --label hteam.role=coordinator -- env HTEAM_ROLE=coordinator HTEAM_LAUNCH=<nonce> claude --model <모델> --effort <effort> [agents.claude.args] -- "<코디네이터 프롬프트>"`. 돌아오면 터미널 주소와 argv 를 `run.json` 에 기록한다.
    코디네이터 터미널이 메인 터미널과 같으면 거부한다.
+   판정한 뒤 `pending_launch` 를 쓰기 직전에 `run.json` 의 `pending_launch`·`run_id`·`bound_nonce`·`bound_at`·코디네이터 기록이 바뀌었으면(다른 `up` 이 띄웠거나 코디네이터가 bind 했다) 띄우지 않고 exit 3 `launch_raced`.
+   `hc run` 이 실패하면: hc 를 실행하지 못했거나, hc 가 거부했고 이름으로 찾아도 터미널이 없으면 이번에 바꾼 키만 되돌린다. 결과를 알 수 없으면(시간 초과·응답 유실) 이름으로 찾아 있으면 기록하고, 없으면 `--wait-run` 동안 그 nonce 의 bind 를 기다린다. 그래도 없으면 `pending_launch` 와 nonce 를 남기고 exit 1 `launch_uncertain`이다. 다음 `up` 은 띄운 지 180초 안이면 `starting`, 지나면 새로 띄운다.
 3. 코디네이터 프롬프트: "`hteam bind` 를 실행하고 `.herdr-team/coordinator.md` 를 따른다".
 4. `--wait-run S`: `run.json` 에 `run_id` 가 생길 때까지 기다린다.
 
-`hteam bind`(코디네이터): 환경 변수 `HTEAM_ROLE=coordinator` 이고 `HTEAM_LAUNCH` 가 `run.json` 의 `pending_launch.nonce` 와 같을 때만 된다(아니면 exit 5). 그래서 `hteam up` 이 터미널 주소를 기록하기 전에 죽어도 코디네이터가 스스로 묶일 수 있다. `run.json` 에 이전 `run_id` 가 있으면 `horch run-use --id <run_id>`(이전 소유자가 끝났거나 lost 면 넘겨받는다), 없으면 `horch run-create --objective "<project.md 첫 줄>"`. 소유 탭이 팀 탭이 되어 워커가 그 탭에 붙는다. `run.json` 에 코디네이터 터미널·argv 를 기록한다.
+`hteam bind`(코디네이터): 환경 변수 `HTEAM_ROLE=coordinator` 이고 `HTEAM_LAUNCH` 가 `run.json` 의 `pending_launch.nonce` 와 같을 때만 된다(아니면 exit 5). 그래서 `hteam up` 이 터미널 주소를 기록하기 전에 죽어도 코디네이터가 스스로 묶일 수 있다. `run.json` 에 이전 `run_id` 가 있으면 `horch run-use --id <run_id>`(이전 소유자가 끝났거나 lost 면 넘겨받는다), 없으면 `horch run-create --objective "<project.md 첫 줄>"`. 소유 탭이 팀 탭이 되어 워커가 그 탭에 붙는다. `run.json` 에 코디네이터 터미널·argv 와 `bound_nonce`·`bound_at`(bind 한 시각)을 기록한다. nonce 확인부터 `run-use`·`run-create` 와 이 기록까지 `state/run.lock` 을 쥔다. 그래서 그사이 `up` 은 기다렸다가 `launch_raced` 로 끝나고, 지난 코디네이터가 Run 을 차지한 채 `run.json` 만 새 코디네이터를 가리키는 일이 없다.
 
 `/herdr-team:up`(메인을 다시 열 때): `hteam status` → 코디네이터가 죽었으면 `hteam up` → watch 가 없으면 띄움 → `hteam reask` 로 열린 질문을 하나씩 묻기 → 요약 표.
 

@@ -654,5 +654,85 @@ class ReviewFixDoctorTest(unittest.TestCase):
         self.assertEqual(out.get("error"), "unhealthy")
 
 
+# --- 두 번째 리뷰(commit-f18dffe) 재현 ---
+
+
+class ReviewFix2Test(SetupCase):
+    def setUp(self):
+        super().setUp()
+        self.init_project()
+        self.run_id = self.setup_run()
+
+    def scaffold(self):
+        desc = self.tmp / "desc.txt"
+        desc.write_text("할 일 앱\n")
+        return self.hteam("scaffold", "--description-file", str(desc), as_="main")
+
+    def test_gitignore_leading_space_is_another_pattern(self):
+        """git 은 앞 공백을 패턴의 일부로 본다: ` .herdr-team/state/` 는 state 를 빼지 않으므로 덧붙여야 한다."""
+        (self.proj / ".gitignore").write_text(" .herdr-team/state/\n")
+        code, out = self.scaffold()
+        self.assertEqual(code, 0, out)
+        self.assertIn(".gitignore", out["created"])
+        self.assertEqual((self.proj / ".gitignore").read_text(), " .herdr-team/state/\n.herdr-team/state/\n")
+        self.git("check-ignore", "-q", ".herdr-team/state/setup-mode")
+
+    def test_gitignore_trailing_spaces_follow_git(self):
+        """끝 공백은 git 이 무시한다(같은 패턴). 백슬래시로 막은 끝 공백은 다른 패턴이다."""
+        for text, appended in ((".herdr-team/state/   \n", False), (".herdr-team/state/\\ \n", True)):
+            with self.subTest(text):
+                (self.proj / ".gitignore").write_text(text)
+                code, out = self.scaffold()
+                self.assertEqual((code, ".gitignore" in out["created"]), (0, appended), out)
+                self.git("check-ignore", "-q", ".herdr-team/state/plugin-root")
+
+    def test_uncertain_launch_waits_for_bind(self):
+        """응답을 잃었어도 --wait-run 동안 그 nonce 로 bind 하면 성공이다(탭 이름도 붙인다). bind 가 기록한 argv 는 덮지 않는다."""
+        self.update_terminal(COORD, state="finished")
+        old = self.run_json()["pending_launch"]["nonce"]
+        proc = self.hteam_bg("up", "--wait-run", "20", as_="main", env=self.wrap_env(WRAP_MODE="lost"))
+        deadline = time.monotonic() + 30
+        while self.run_json()["pending_launch"]["nonce"] == old:
+            self.assertIsNone(proc.poll(), "up 이 pending_launch 를 쓰기 전에 끝났다")
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.02)
+        run = self.run_json()
+        self.add_terminal("t300", argv=["claude"], labels={"herdr.space": "spA", "herdr.tab": run["team_tab"]})
+        env = {"HTEAM_ROLE": "coordinator", "HTEAM_LAUNCH": run["pending_launch"]["nonce"]}
+        code, bound = self.hteam("bind", as_=None, terminal="t300", env=env)
+        self.assertEqual(code, 0, bound)
+        code, out = self.finish(proc)
+        self.assertEqual((code, out.get("status"), out.get("terminal"), out.get("run_id"), out.get("recovered")),
+                         (0, "launched", "t300", self.run_id, True), out)
+        self.assertIn(["do", "tab.rename", "--id", run["team_tab"], "--name", "팀"], self.herdr_calls())
+        self.assertEqual((self.run_json()["coordinator_terminal"], self.run_json()["coordinator_argv"]), ("t300", ["claude"]))
+
+    def test_non_object_run_json_in_role_check(self):
+        (self.state_dir / "run.json").write_text("[]")
+        code, out = self.hteam("notify", "--type", "progress", "--body", "x")  # require_coordinator → coordinator_env
+        self.assertEqual((code, out["error"]["code"]), (1, "bad_run_file"), out)
+        self.setup_run()
+        code, out = self.hteam("notify", "--type", "progress", "--body", "x", env={"HTEAM_LAUNCH": "other"})
+        self.assertEqual((code, out["error"]["code"]), (5, "not_coordinator"), out)
+
+    def test_watch_reports_bad_run_file(self):
+        proc = self.hteam_bg("watch", as_="main", env={"HTEAM_ORPHAN_CHECK": "0.1"})
+        deadline = time.monotonic() + 30
+        while not (self.state_dir / "watch.pid").exists():
+            self.assertIsNone(proc.poll(), "watch 가 일찍 끝났다")
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.02)
+        (self.state_dir / "run.json").write_text("[]")
+        code, out = self.finish(proc, timeout=30)
+        self.assertEqual((code, out["error"]["code"]), (1, "bad_run_file"), out)
+
+    def test_init_skill_setup_mode_guidance(self):
+        init = (ROOT / "skills/init/SKILL.md").read_text(encoding="utf-8")
+        for sentence in ("출력의 `setup_mode` 가 false 면 이 프로젝트는 이미 세팅을 마쳤다(`setup-done`).",
+                         "`.herdr-team/state/setup-done` 을 지우고 scaffold 를 다시 실행한다.",
+                         "그대로 두면 4단계에서 제품 파일(`.mcp.json` 등)을 고치는 것을 훅이 막는다."):
+            self.assertIn(sentence, init)
+
+
 if __name__ == "__main__":
     unittest.main()

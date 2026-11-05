@@ -26,6 +26,8 @@ argument-hint: "<프로젝트 설명>"
 ## 3. 스캐폴드
 설명 원문을 스크래치 파일에 쓰고 `HTEAM scaffold --description-file <그 파일>` 을 실행한다. 출력의 `created`·`skipped` 를 기억한다.
 
+출력의 `setup_mode` 가 false 면 이 프로젝트는 이미 세팅을 마쳤다(`setup-done`). 사용자에게 그렇게 알리고, 다시 세팅하려면 묻는다. 다시 세팅하면 `.herdr-team/state/setup-done` 을 지우고 scaffold 를 다시 실행한다. 그대로 두면 4단계에서 제품 파일(`.mcp.json` 등)을 고치는 것을 훅이 막는다. 그때는 그런 항목을 적용하지 않고 표에 "setup-mode 아님"으로 남긴다.
+
 ## 4. 판단이 필요한 한 단계
 프로젝트 설명과 저장소 구조를 보고 표 하나로 제안한다.
 

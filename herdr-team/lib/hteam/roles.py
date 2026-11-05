@@ -5,7 +5,6 @@ import os
 import re
 
 from .errors import DENIED, HteamError
-from .util import read_json
 
 TITLE_RE = re.compile(r"^(T-\d{3,}) r(\d+) (작업|리뷰 a(\d+))$")
 
@@ -33,8 +32,9 @@ def coordinator_env(p) -> bool:
     if os.environ.get("HTEAM_ROLE") != "coordinator":
         return False
     nonce = os.environ.get("HTEAM_LAUNCH")
-    launch = read_json(p.run_file, {}).get("pending_launch") or {}
-    return bool(nonce) and nonce == launch.get("nonce")
+    from .outbox import _run  # outbox 가 이 모듈을 import 하므로 여기서 가져온다
+    launch = _run(p).get("pending_launch")  # run.json 을 읽지 못하면 bad_run_file(exit 1)
+    return bool(nonce) and isinstance(launch, dict) and nonce == launch.get("nonce")
 
 
 def require_coordinator(p) -> None:

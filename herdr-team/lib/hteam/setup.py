@@ -193,7 +193,7 @@ def scaffold(root: Path, description: str) -> dict:
             continue
         _append(root / name, existing[name], (TEMPLATES / tpl).read_text(encoding="utf-8"), blank=True)
         created.append(name)
-    if ".herdr-team/state/" in [ln.strip() for ln in (existing[".gitignore"] or "").splitlines()]:
+    if ".herdr-team/state/" in [_ignore_pattern(ln) for ln in (existing[".gitignore"] or "").splitlines()]:
         skipped.append(".gitignore")
     else:
         _append(root / ".gitignore", existing[".gitignore"], ".herdr-team/state/", blank=False)
@@ -205,6 +205,13 @@ def scaffold(root: Path, description: str) -> dict:
         p.setup_mode.write_text(now() + "\n", encoding="utf-8")
     p.plugin_root_file.write_text(str(PLUGIN_ROOT) + "\n", encoding="utf-8")
     return {"root": str(root), "created": created, "skipped": skipped, "setup_mode": setup_mode}
+
+
+def _ignore_pattern(line: str) -> str:
+    """git 이 읽는 .gitignore 패턴. 끝 공백은 백슬래시로 막지 않았으면 버린다. 앞 공백은 패턴의 일부다(지우지 않는다)."""
+    while line.endswith(" ") and not line.endswith("\\ "):
+        line = line[:-1]
+    return line
 
 
 def _setup_done_file(p) -> Path:
@@ -260,6 +267,18 @@ def _find_launched(name: str, argv: list[str]) -> tuple[str | None, bool]:
     if info.get("address") and info.get("argv") == argv:
         return info["address"], True
     return None, True
+
+
+def _wait_bound(p, nonce: str, wait: float | None) -> str | None:
+    """wait 초 동안 이 nonce 의 코디네이터가 bind 하기를 기다린다. 했으면 bind 가 기록한 터미널, 아니면 None."""
+    deadline = time.monotonic() + (wait or 0)
+    while True:
+        run = _read_run(p)
+        if (run.get("pending_launch") or {}).get("nonce") == nonce and _bound(run):
+            return run.get("coordinator_terminal")
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(env_float("HTEAM_POLL", 0.5))
 
 
 def up(p, wait_run: float | None, force: bool = False) -> dict:
@@ -320,7 +339,7 @@ def up(p, wait_run: float | None, force: bool = False) -> dict:
                 argv += [flag, value]
         argv += [*cfg.args("claude"), "--", COORD_PROMPT]
         die_at("up_before_hc_run")
-        recovered = False
+        recovered = bound_seen = False
         try:
             address = herdr.run_bg(name, str(p.root),
                                    {"herdr.space": space, "herdr.tab": tab, "hteam.role": "coordinator"}, argv).get("address")
@@ -332,10 +351,14 @@ def up(p, wait_run: float | None, force: bool = False) -> dict:
                 if _never_started(exc) or (known and not _uncertain(exc)):
                     _run_update(p, restore)  # hc 가 거부했고 터미널도 없다: 확실한 실패
                     raise
-                raise HteamError("launch_uncertain", f"코디네이터를 띄웠는지 확인하지 못했다(hc run: {exc.message})", FAIL,
-                                 f"pending_launch 와 nonce 는 남겼다. 떴다면 팀 탭의 {name} pane 이 스스로 bind 한다. "
-                                 f"hteam status 의 coordinator 를 보고, 띄운 지 180초가 지나도 bind 하지 않으면 hteam up "
-                                 f"(새로 띄운다)", data={"name": name, "terminal": None}) from None
+                # 떴다면 곧 이 nonce 로 bind 한다: --wait-run 동안 기다린다. bind 가 터미널·argv 를 기록한다
+                address = _wait_bound(p, nonce, wait_run)
+                if address is None:
+                    raise HteamError("launch_uncertain", f"코디네이터를 띄웠는지 확인하지 못했다(hc run: {exc.message})",
+                                     FAIL, f"pending_launch 와 nonce 는 남겼다. 떴다면 팀 탭의 {name} pane 이 스스로 bind "
+                                     f"한다. hteam status 의 coordinator 를 보고, 띄운 지 180초가 지나도 bind 하지 않으면 "
+                                     f"hteam up(새로 띄운다)", data={"name": name, "terminal": None}) from None
+                bound_seen = True
             recovered = True
         if address == main:
             _run_update(p, restore)
@@ -345,11 +368,12 @@ def up(p, wait_run: float | None, force: bool = False) -> dict:
             if (run.get("pending_launch") or {}).get("nonce") == nonce:
                 run.update(coordinator_terminal=address, coordinator_argv=argv)
 
-        _run_update(p, record)
+        if not bound_seen:
+            _run_update(p, record)
         result = {"status": "launched", "terminal": address, "team_tab": tab, "launched": True,
                   "tab_renamed": herdr.rename_tab(tab, "팀", pause=env_float("HTEAM_POLL", 0.3))}
         if recovered:
-            result["recovered"] = True  # hc 가 실패를 알렸지만 이름으로 찾았다
+            result["recovered"] = True  # hc 가 실패를 알렸지만 이름으로 찾았거나 그 nonce 로 bind 했다
     if wait_run:
         deadline = time.monotonic() + wait_run
         while not _bound(_read_run(p)):
