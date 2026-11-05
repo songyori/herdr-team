@@ -1,4 +1,5 @@
 import json
+import shutil
 import subprocess
 import sys
 import unittest
@@ -12,14 +13,19 @@ from horch.errors import HorchError
 class AgentsTest(unittest.TestCase):
     def test_claude(self):
         argv = agents.build("claude", model="opus", effort="high", extra=["--x"], preamble="P", home=Path("/h"))
-        self.assertEqual(argv, ["claude", "--model", "opus", "--effort", "high", "--x", "P"])
+        self.assertEqual(argv, ["claude", "--model", "opus", "--effort", "high", "--x", "--", "P"])
         self.assertEqual(agents.build("claude", model=None, effort=None, extra=[], preamble="P", home=Path("/h")),
-                         ["claude", "P"])
+                         ["claude", "--", "P"])
+
+    def test_variadic_extra_cannot_swallow_preamble(self):
+        argv = agents.build("claude", model=None, effort=None, extra=["--add-dir", "/x"], preamble="P",
+                            home=Path("/h"))
+        self.assertEqual(argv[-4:], ["--add-dir", "/x", "--", "P"])
 
     def test_codex(self):
         argv = agents.build("codex", model="gpt-5.5", effort="high", extra=[], preamble="P", home=Path("/h"))
         self.assertEqual(argv, ["codex", "--no-daemon", "-s", "workspace-write", "-a", "never", "--add-dir", "/h",
-                                "-m", "gpt-5.5", "-c", "model_reasoning_effort=high", "P"])
+                                "-m", "gpt-5.5", "-c", "model_reasoning_effort=high", "--", "P"])
 
     def test_unknown(self):
         with self.assertRaises(HorchError) as cm:
@@ -43,6 +49,9 @@ class InjectTest(unittest.TestCase):
         self.assertEqual(guard.inject_codex_env(["/usr/bin/codex", "--no-daemon"], "t7"),
                          ["/usr/bin/codex", "-c", 'shell_environment_policy.set.HC_TERMINAL_ID="t7"', "--no-daemon"])
 
+    def test_terminal_is_json_quoted(self):
+        self.assertEqual(guard.inject_codex_env(["codex"], 'a"b')[2], 'shell_environment_policy.set.HC_TERMINAL_ID="a\\"b"')
+
     def test_claude_unchanged(self):
         self.assertEqual(guard.inject_codex_env(["claude", "x"], "t7"), ["claude", "x"])
 
@@ -60,8 +69,8 @@ class GuardCliTest(HorchCase):
                               capture_output=True, text=True, env=env, timeout=30)
         return proc.returncode, proc.stdout
 
-    def state(self):
-        row = self.db().execute("SELECT state, terminal FROM dispatches WHERE id=?", (self.did,)).fetchone()
+    def state(self, did=None):
+        row = self.db().execute("SELECT state, terminal FROM dispatches WHERE id=?", (did or self.did,)).fetchone()
         return row["state"], row["terminal"]
 
     def test_claims_and_execs(self):
@@ -85,6 +94,13 @@ class GuardCliTest(HorchCase):
                 self.assertEqual(code, 3)
                 self.assertIn("[horch] launch-guard", out)
                 self.assertNotIn('"fake"', out)
+                self.assertEqual(self.state(), (state, term))
+
+    def test_unknown_dispatch_refused(self):
+        code, out = self.guard("claude", dispatch="dsp-nope")
+        self.assertEqual(code, 3)
+        self.assertNotIn('"fake"', out)
+        self.assertEqual(self.state(), ("launching", None))
 
     def test_needs_terminal(self):
         code, out = self.guard("claude", terminal=None)
@@ -97,9 +113,24 @@ class GuardCliTest(HorchCase):
         self.assertEqual(json.loads(out)["argv"],
                          ["-c", 'shell_environment_policy.set.HC_TERMINAL_ID="t42"', "--no-daemon", "P"])
 
+    def test_double_dash_before_preamble_reaches_agent(self):
+        code, out = self.guard("claude", "--add-dir", "/x", "--", "P")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads(out)["argv"], ["--add-dir", "/x", "--", "P"])
+        self.setUp()
+        code, out = self.guard("codex", "--add-dir", "/x", "--", "P")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads(out)["argv"][-4:], ["--add-dir", "/x", "--", "P"])
+
+    @unittest.skipUnless(shutil.which("perl"), "perl 필요")
+    def test_sigpipe_restored_before_exec(self):
+        code, out = self.guard("perl", "-e", 'print defined $SIG{PIPE} ? $SIG{PIPE} : "default"')
+        self.assertEqual((code, out), (0, "default"))
+
     def test_missing_executable(self):
         code, out = self.guard("no-such-agent-xyz")
         self.assertEqual(code, 12)
+        self.assertEqual(self.state(), ("active", "t42"))
 
     def test_usage_without_separator(self):
         proc = subprocess.run([sys.executable, str(BIN), "--home", str(self.home), "launch-guard", "--dispatch", self.did],

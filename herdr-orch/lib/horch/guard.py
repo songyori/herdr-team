@@ -1,7 +1,9 @@
 """launch-guard: 워커 터미널에서 에이전트보다 먼저 돌며 Dispatch 를 등록한 뒤 exec 한다(설계 5·8장)."""
 from __future__ import annotations
 
+import json
 import os
+import signal
 from pathlib import Path
 
 from . import auth
@@ -11,7 +13,7 @@ from .errors import CONFLICT, MISSING, USAGE, HorchError
 def inject_codex_env(argv: list[str], terminal: str) -> list[str]:
     """Codex 설정이 inherit=core 여도 Codex 셸에 HC_TERMINAL_ID 가 보이게 한다."""
     if argv and Path(argv[0]).name == "codex":
-        return [argv[0], "-c", f'shell_environment_policy.set.HC_TERMINAL_ID="{terminal}"', *argv[1:]]
+        return [argv[0], "-c", f"shell_environment_policy.set.HC_TERMINAL_ID={json.dumps(terminal)}", *argv[1:]]
     return list(argv)
 
 
@@ -41,6 +43,10 @@ def run(store, dispatch_id: str, argv: list[str]) -> None:
     claim(store, dispatch_id, terminal)
     final = inject_codex_env(argv, terminal)
     store.close()
+    # CPython 이 무시로 바꾼 SIGPIPE·SIGXFSZ 는 exec 뒤에도 남아 에이전트와 자식이 물려받으므로 되돌린다.
+    for name in ("SIGPIPE", "SIGXFSZ"):
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), signal.SIG_DFL)
     try:
         os.execvp(final[0], final)
     except OSError as exc:

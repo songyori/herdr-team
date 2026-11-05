@@ -30,4 +30,5 @@ def build(agent: str, *, model: str | None, effort: str | None, extra: list[str]
             argv += ["-m", model]
         if effort:
             argv += ["-c", f"model_reasoning_effort={effort}"]
-    return [*argv, *extra, preamble]
+    # extra 끝의 가변 인자 옵션(--add-dir 등)이 프리앰블을 삼키지 않도록 "--" 로 끊는다.
+    return [*argv, *extra, "--", preamble]
