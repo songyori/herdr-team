@@ -6,7 +6,7 @@ import json
 import signal
 import sys
 
-from . import runs
+from . import comms, runs
 from .errors import FAIL, USAGE, HorchError
 from .paths import VERSION, resolve_home
 from .store import Store
@@ -27,6 +27,16 @@ def build_parser() -> Parser:
     s = sub.add_parser("run-use")
     s.add_argument("--id", required=True)
     s.add_argument("--force", action="store_true")
+    sub.add_parser("status")
+    s = sub.add_parser("send")
+    s.add_argument("--to", required=True)
+    s.add_argument("--subject")
+    s.add_argument("--body", required=True)
+    s = sub.add_parser("check")
+    s.add_argument("--dispatch")
+    s.add_argument("--wait", action="store_true")
+    s.add_argument("--timeout-ms", type=int, default=900000)
+    s.add_argument("--ack", type=int)
     # --- 명령 파서 끝 ---
     return p
 
@@ -48,6 +58,12 @@ def _with_store(args, store: Store) -> dict:
         return runs.create(store, args.objective)
     if args.cmd == "run-use":
         return runs.use(store, args.id, args.force)
+    if args.cmd == "status":
+        return runs.status(store)
+    if args.cmd == "send":
+        return comms.send(store, args.to, args.subject, args.body)
+    if args.cmd == "check":
+        return comms.check(store, dispatch=args.dispatch, wait=args.wait, timeout_ms=args.timeout_ms, ack=args.ack)
     # --- 저장소 명령 끝 ---
     raise HorchError("usage", f"알 수 없는 명령: {args.cmd}", USAGE)
 

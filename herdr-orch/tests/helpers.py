@@ -153,3 +153,17 @@ class HorchCase(unittest.TestCase):
                                "--cwd", str(self.tmp), *extra, terminal=owner)
         self.assertEqual(code, 0, out)
         return out
+
+    def add_dispatch(self, run_id: str, did: str = "dsp-00000001", terminal: str | None = "t9",
+                     state: str = "active", status: str | None = "idle") -> str:
+        """worker-start 없이 Dispatch 행과 그 터미널을 바로 만든다."""
+        task = "task-" + did.split("-", 1)[1]
+        db = self.db()
+        db.execute("INSERT INTO tasks(id, run_id, title, spec, status, created_at) VALUES (?, ?, 't', 's', 'open', 'x')",
+                   (task, run_id))
+        db.execute("INSERT INTO dispatches(id, task_id, run_id, attempt, agent, cwd, terminal, state, created_at) "
+                   "VALUES (?, ?, ?, 1, 'claude', '/', ?, ?, 'x')", (did, task, run_id, terminal, state))
+        db.commit()
+        if terminal:
+            self.add_terminal(terminal, name=did, argv=["x"], status=status)
+        return did

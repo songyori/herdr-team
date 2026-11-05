@@ -72,3 +72,30 @@ def use(store, run_id: str, force: bool) -> dict:
         _bind(store, term, run_id, argv)
         store.run("UPDATE runs SET owner_space=?, owner_tab=?, updated_at=? WHERE id=?", (space, tab, now(), run_id))
     return {"run": run_json(store, run_id), "previous_owner": prev, "previous_verdict": verdict}
+
+
+def status(store) -> dict:
+    term = auth.caller()
+    out = {"terminal": term, "dispatch": None, "run": None}
+    if not term:
+        return out
+    worker = store.one("SELECT id, state FROM dispatches WHERE terminal=? AND state IN ('launching','active')", (term,))
+    if worker:
+        out["dispatch"] = {"id": worker["id"], "state": worker["state"]}
+    binding = store.one("SELECT run_id FROM bindings WHERE terminal=?", (term,))
+    if not binding:
+        return out
+    run_id = binding["run_id"]
+    box = f"run:{run_id}"
+    counts = {r["state"]: r["n"] for r in store.all(
+        "SELECT state, COUNT(*) AS n FROM dispatches WHERE run_id=? GROUP BY state", (run_id,))}
+    open_delivery = store.one("SELECT id FROM deliveries WHERE mailbox=? AND acked_at IS NULL ORDER BY id LIMIT 1", (box,))
+    unread = store.one("SELECT COUNT(*) AS n FROM messages WHERE mailbox=? AND delivery_id IS NULL AND type != 'reply'",
+                       (box,))["n"]
+    unanswered = [{"id": r["id"], "dispatch": r["dispatch_id"], "body": r["body"][:200]} for r in store.all(
+        "SELECT q.id, q.dispatch_id, q.body FROM messages q WHERE q.run_id=? AND q.type='question' AND NOT EXISTS "
+        "(SELECT 1 FROM messages r WHERE r.reply_to=q.id AND r.type='reply') ORDER BY q.id", (run_id,))]
+    out["run"] = {**run_json(store, run_id), "dispatches": counts,
+                  "open_delivery": open_delivery["id"] if open_delivery else None,
+                  "unread": unread, "unanswered": unanswered}
+    return out
