@@ -45,8 +45,8 @@ def find_horch() -> Path:
 
 
 def parse(stdout: str, stderr: str = "") -> dict:
-    """stdout 의 마지막 JSON 객체 줄. 없으면 bad_output 오류 모양."""
-    for line in reversed((stdout or "").strip().splitlines()):
+    """stdout 의 마지막 JSON 객체 줄. 없으면 bad_output 오류 모양. 줄은 LF 로만 나눈다(본문의 U+2028 등은 경계가 아니다)."""
+    for line in reversed((stdout or "").strip().split("\n")):
         try:
             value = json.loads(line)
         except ValueError:

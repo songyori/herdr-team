@@ -352,7 +352,7 @@ class TeamCase(unittest.TestCase):
 
 
 def _parse(stdout: str, stderr: str) -> dict:
-    for line in reversed(stdout.strip().splitlines()):
+    for line in reversed(stdout.strip().split("\n")):  # LF 로만 나눈다(본문의 U+2028 등은 경계가 아니다)
         try:
             value = json.loads(line)
         except ValueError:

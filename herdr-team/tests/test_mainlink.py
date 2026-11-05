@@ -183,7 +183,8 @@ class AskUserTest(LinkCase):
         self.assertEqual((code, out["answer"]), (0, "서버 DB"))
         code, out = self.hteam("ask-user", "--task", "T-001", "--pending", as_=None)
         self.assertEqual([i["id"] for i in out["pending"]], ["out-0001"])
-        self.assertEqual(self.hteam("ask-user", "--task", "T-001", "--ack", "out-0001", as_=None)[0], 0)
+        self.assertEqual(self.hteam("ask-user", "--task", "T-001", "--ack", "out-0001", as_=None,
+                                    terminal=self.term)[0], 0)  # ack 도 작업 워커 터미널에서만
         self.assertEqual(self.hteam("ask-user", "--task", "T-001", "--pending", as_=None)[1]["pending"], [])
         code, out = self.hteam("ask-user", "--task", "T-001", "--history", as_=None)
         self.assertEqual(out["history"][0]["answer"], "서버 DB")
@@ -293,6 +294,315 @@ class AfterHookTest(unittest.TestCase):
         self.assertEqual(json.loads(lines[0]), {"ok": True, "count": 2})
         self.assertIn("디스크가 찼다", err)
         self.assertNotIn("Traceback", err)
+
+    def test_after_skipped_when_stdout_fails(self):
+        # 출력하지 못하면 _after(watch 커서)를 부르지 않는다. 그래야 전하지 못한 항목을 다음 watch 가 다시 준다.
+        import contextlib
+        from unittest import mock
+        from hteam import cli
+
+        class Broken:
+            def write(self, _):
+                raise BrokenPipeError("닫힌 파이프")
+
+            def flush(self):
+                pass
+
+        called = []
+        parser = cli.Parser(prog="hteam")
+        parser.set_defaults(func=lambda args: {"count": 1, "_after": lambda: called.append(1)})
+        with mock.patch.object(cli, "build_parser", return_value=parser), contextlib.redirect_stdout(Broken()):
+            with self.assertRaises(BrokenPipeError):
+                cli.main([])
+        self.assertEqual(called, [])
+
+
+def outbox_line(oid, body="하나", **kw):
+    entry = {"id": oid, "at": "2026-01-01T00:00:00Z", "type": "progress", "body": body, "from": "coordinator",
+             "answered": False, **kw}
+    return json.dumps(entry, ensure_ascii=False).encode("utf-8")
+
+
+class MainOnlyTest(LinkCase):
+    """tell·answer 는 메인 터미널만(부작용 전에 검사). 코디네이터·워커(지난 워커 포함)는 exit 5."""
+
+    def run_json(self):
+        return json.loads((self.state_dir / "run.json").read_text())
+
+    def test_coordinator_cannot_answer_own_question(self):
+        oid = self.notify_q()
+        code, out = self.hteam("answer", oid, "x")  # 코디네이터 환경 + COORD 터미널
+        self.assertEqual((code, out["error"]["code"]), (5, "not_main"), out)
+        self.assertFalse((self.state_dir / "answers" / f"{oid}.json").exists())
+        self.assertNotIn("main_terminals", self.run_json())
+        self.assertEqual([q["id"] for q in outbox.open_questions(self.p)], [oid])
+
+    def test_coordinator_terminal_or_role_refused(self):
+        code, out = self.hteam("tell", "a", as_=None, terminal=COORD)  # HTEAM_ROLE 없는 코디네이터 터미널
+        self.assertEqual((code, out["error"]["code"]), (5, "not_main"), out)
+        code, out = self.hteam("tell", "a", as_="main", env={"HTEAM_ROLE": "coordinator"})
+        self.assertEqual((code, out["error"]["code"]), (5, "not_main"), out)
+        # bind 전(run.json 에 터미널이 아직 없음)의 코디네이터 터미널은 hteam up 이 붙인 hc 라벨로 가린다(설계 9.3)
+        self.add_terminal("t5", argv=["claude"], labels={"hteam.role": "coordinator"})
+        code, out = self.hteam("tell", "a", as_=None, terminal="t5")
+        self.assertEqual((code, out["error"]["code"]), (5, "not_main"), out)
+        self.assertNotIn("main_terminals", self.run_json())
+        self.assertEqual(self.run_messages(), [])
+
+    def test_unverifiable_terminal_refused(self):
+        self.fail_hc("get", "boom")
+        code, out = self.hteam("tell", "a", as_="main")
+        self.assertEqual((code, out["error"]["code"]), (1, "main_unverified"), out)
+        self.assertNotIn("main_terminals", self.run_json())
+
+    def test_unparseable_run_json_is_not_overwritten(self):
+        (self.state_dir / "run.json").write_text("{", encoding="utf-8")
+        code, out = self.hteam("tell", "a", as_="main")
+        self.assertEqual((code, out["error"]["code"]), (1, "bad_run_file"), out)
+        self.assertEqual((self.state_dir / "run.json").read_text(), "{")
+
+
+class WorkerGuardTest(LinkCase):
+    def setUp(self):
+        super().setUp()
+        self.env["HTEAM_ASK_TIMEOUT"] = "0.3"
+        self.write_spec("T-001", "planner")
+        state.create(self.p, "T-001", "planner")
+        self.assertEqual(self.hteam("start", "T-001")[0], 0)
+        self.term = self.dispatch_row(self.work_dispatch("T-001"))["terminal"]
+
+    def ask(self):
+        return self.hteam("ask-user", "--task", "T-001", "--json", "-", as_=None, terminal=self.term,
+                          stdin=json.dumps(render()))
+
+    def test_worker_cannot_answer_own_ask_or_tell(self):
+        code, out = self.ask()
+        self.assertEqual(code, 4, out)
+        code, out = self.hteam("answer", "out-0001", "self", as_=None, terminal=self.term)
+        self.assertEqual((code, out["error"]["code"]), (5, "not_main"), out)
+        self.assertFalse((self.state_dir / "answers" / "out-0001.json").exists())
+        code, out = self.hteam("ask-user", "--task", "T-001", "--wait", "out-0001", as_=None, terminal=self.term)
+        self.assertEqual(code, 4, out)
+        code, out = self.hteam("tell", "[x] hi", as_=None, terminal=self.term)
+        self.assertEqual((code, out["error"]["code"]), (5, "not_main"), out)
+        self.assertNotIn("main_terminals", json.loads((self.state_dir / "run.json").read_text()))
+        self.assertEqual(self.run_messages(), [])
+
+    def test_past_worker_terminal_refused(self):
+        # Dispatch 가 끝나면 horch status 는 dispatch 를 주지 않는다. 그래도 워커 터미널이면 메인이 아니다.
+        code, out = self.act_work("T-001", files={"docs/planning/a.md": "a\n"})
+        self.assertEqual(code, 0, out)
+        code, out = self.horch("status", terminal=self.term)
+        self.assertIsNone(out["dispatch"], out)
+        code, out = self.hteam("tell", "[main] 지시", as_=None, terminal=self.term)
+        self.assertEqual((code, out["error"]["code"]), (5, "not_main"), out)
+        self.assertNotIn("main_terminals", json.loads((self.state_dir / "run.json").read_text()))
+
+    def test_ack_checks_caller(self):
+        self.ask()
+        self.assertEqual(self.hteam("answer", "out-0001", "서버 DB", as_="main")[0], 0)
+        code, out = self.hteam("ask-user", "--task", "T-001", "--ack", "out-0001", as_="main")
+        self.assertEqual((code, out["error"]["code"]), (5, "not_this_worker"), out)
+        self.assertFalse((self.state_dir / "ask-acks.json").exists())
+        code, out = self.hteam("ask-user", "--task", "T-001", "--ack", "out-0001", as_=None, terminal=self.term)
+        self.assertEqual(code, 0, out)
+
+    def test_open_questions_skips_corrupt_task_state(self):
+        self.ask()
+        (self.state_dir / "tasks" / "T-001.json").write_text("{", encoding="utf-8")
+        warnings = []
+        self.assertEqual(outbox.open_questions(self.p, warnings=warnings), [])
+        self.assertTrue(any("T-001" in w for w in warnings), warnings)
+        code, out = self.hteam("reask", as_="main")
+        self.assertEqual((code, out["messages"]), (0, []), out)
+        self.assertTrue(any("T-001" in w for w in out["warnings"]), out)
+
+
+class SendTest(LinkCase):
+    def test_hyphen_leading_text_is_body(self):
+        oid = self.notify_q()
+        code, out = self.hteam("answer", oid, "--", "--no-cache", as_="main")
+        self.assertEqual(code, 0, out)
+        code, out = self.hteam("tell", "--", "-x 로 해 줘", as_="main")
+        self.assertEqual(code, 0, out)
+        self.assertEqual([m["body"] for m in self.run_messages()], ["--no-cache", "-x 로 해 줘"])
+
+    def test_unsent_answer_stays_visible_until_resent(self):
+        oid = self.notify_q()
+        self.hteam("watch", as_="main")
+        run = json.loads((self.state_dir / "run.json").read_text())
+        good = run["run_id"]
+        run["run_id"] = "run-bogus"
+        (self.state_dir / "run.json").write_text(json.dumps(run))
+        code, out = self.hteam("answer", oid, "a", as_="main")
+        self.assertEqual(code, 1, out)  # 보내지 못했다
+        open_ = outbox.open_questions(self.p)
+        self.assertEqual([(q["id"], q.get("unsent"), q.get("answer")) for q in open_], [(oid, True, "a")])
+        self.assertIn(f"answer {oid}", open_[0]["hint"])
+        code, out = self.hteam("reask", as_="main")
+        self.assertEqual([(m["id"], m.get("unsent")) for m in out["messages"]], [(oid, True)])
+        run["run_id"] = good
+        (self.state_dir / "run.json").write_text(json.dumps(run))
+        code, out = self.hteam("answer", oid, "a", as_="main")
+        self.assertEqual(code, 0, out)
+        self.assertTrue(json.loads((self.state_dir / "answers" / f"{oid}.json").read_text())["sent_at"])
+        self.assertEqual(outbox.open_questions(self.p), [])
+
+    def test_tell_starting_with_reply_is_not_a_reply_subject(self):
+        import re
+        code, out = self.hteam("tell", "reply out-0001 은 취소하고 B 로 해 줘", as_="main")
+        self.assertEqual(code, 0, out)
+        msg = self.run_messages()[0]
+        self.assertIsNone(re.match(r"^\[main\] reply (out-\d+)", msg["subject"]), msg["subject"])
+        self.assertEqual(msg["body"], "reply out-0001 은 취소하고 B 로 해 줘")
+
+    def test_applied_rejects_unknown_id(self):
+        code, out = self.hteam("applied", "out-0099")
+        self.assertEqual((code, out["error"]["code"]), (2, "unknown_question"), out)
+        self.assertFalse((self.state_dir / "applied.json").exists())
+
+
+class OutboxReadTest(LinkCase):
+    @property
+    def outbox_path(self):
+        return self.state_dir / "outbox.jsonl"
+
+    def test_unicode_line_separators_stay_in_record(self):
+        body = "가 나 다\x85라"
+        self.assertEqual(self.hteam("notify", "--type", "progress", "--body", body)[0], 0)
+        code, out = self.hteam("watch", as_="main")
+        self.assertEqual((code, [m["body"] for m in out.get("messages", [])]), (0, [body]), out)
+        code, out = self.hteam("notify", "--type", "progress", "--body", "둘")
+        self.assertEqual((code, out.get("id")), (0, "out-0002"), out)
+
+    def test_partial_last_line_and_corrupt_line(self):
+        full = outbox_line("out-0002", "가나")
+        torn = full[:full.index("나".encode()) + 1]  # 쓰다 만 줄(여러 바이트 글자 중간에서 끊김)
+        self.outbox_path.write_bytes(outbox_line("out-0001") + b"\n" + torn)
+        code, out = self.hteam("watch", as_="main")
+        self.assertEqual((code, [m["id"] for m in out.get("messages", [])]), (0, ["out-0001"]), out)
+        self.assertEqual((self.state_dir / "outbox.cursor").read_text().strip(), "1")
+        self.assertEqual(self.hteam("reask", as_="main")[0], 0)
+        code, out = self.hteam("notify", "--type", "progress", "--body", "셋")
+        self.assertEqual((code, out.get("id")), (0, "out-0003"), out)  # 끊긴 줄도 한 줄로 센다(ID 재사용 없음)
+        with self.outbox_path.open("ab") as fh:
+            fh.write(b"not json\n")
+        code, out = self.hteam("notify", "--type", "progress", "--body", "넷")
+        self.assertEqual((code, out.get("id")), (0, "out-0005"), out)
+        code, out = self.hteam("watch", as_="main")
+        self.assertEqual((code, [m["id"] for m in out["messages"]]), (0, ["out-0003", "out-0005"]), out)
+        self.assertEqual(len(out["warnings"]), 2, out)  # 2번째(끊긴 줄)와 4번째 줄
+
+    def test_concurrent_notify_ids_unique(self):
+        procs = [self.hteam_bg("notify", "--type", "progress", "--body", f"n{i}") for i in range(8)]
+        ids = []
+        for proc in procs:
+            code, out = self.finish(proc, timeout=30)
+            self.assertEqual(code, 0, out)
+            ids.append(out["id"])
+        self.assertEqual(sorted(ids), [f"out-{i:04d}" for i in range(1, 9)])
+
+    def test_reask_uses_one_snapshot(self):
+        from unittest import mock
+        first = self.notify_q()
+        self.hteam("watch", as_="main")
+        real = outbox.cursor
+
+        def cursor_then_append(p):
+            value = real(p)
+            outbox.append(p, {"type": "question", "render": render(header="새 질문"), "from": "coordinator"})
+            return value
+
+        with mock.patch.object(outbox, "cursor", side_effect=cursor_then_append):
+            out = outbox.reask(self.p)
+        self.assertEqual([m["id"] for m in out["messages"]], [first])
+
+
+class JsonLineTest(unittest.TestCase):
+    """horch·hc 출력의 JSON 줄도 LF 로만 나눈다(본문의 U+2028 등이 JSON 을 자르지 않게)."""
+
+    def test_horch_and_hc_output_split_on_lf_only(self):
+        from unittest import mock
+        from hteam import herdr, horch
+        line = json.dumps({"ok": True, "body": "가 나 다\x85라"}, ensure_ascii=False)
+        self.assertEqual(horch.parse("잡음\n" + line + "\n")["body"], "가 나 다\x85라")
+        done = mock.Mock(returncode=0, stdout=line + "\n", stderr="")
+        with mock.patch.object(herdr.subprocess, "run", return_value=done):
+            self.assertEqual(herdr.get("t9")["body"], "가 나 다\x85라")
+
+
+class WatchLockTest(LinkCase):
+    def wait_for(self, cond, what, limit=10.0):
+        deadline = time.monotonic() + limit
+        while not cond():
+            self.assertLess(time.monotonic(), deadline, what)
+            time.sleep(0.05)
+
+    def test_exclusive_without_pid_file(self):
+        proc = self.hteam_bg("watch", as_="main")
+        self.wait_for((self.state_dir / "watch.pid").exists, "watch.pid")
+        (self.state_dir / "watch.pid").unlink()  # pid 파일이 사라져도 단일 실행은 잠금이 지킨다
+        code, out = self.hteam("watch", as_="main", timeout=5)
+        self.assertEqual((code, out["error"]["code"]), (3, "watch_running"), out)
+        self.hteam("notify", "--type", "progress", "--body", "하나")
+        self.assertEqual(self.finish(proc, timeout=10)[0], 0)
+
+    def test_concurrent_watches_only_one_runs(self):
+        procs = [self.hteam_bg("watch", as_="main") for _ in range(3)]
+        self.wait_for(lambda: sum(p.poll() is not None for p in procs) >= 2, "두 watch 가 끝난다")
+        losers = [p for p in procs if p.poll() is not None]
+        self.assertEqual(len(losers), 2)
+        for p in losers:
+            code, out = self.finish(p)
+            self.assertEqual((code, out["error"]["code"]), (3, "watch_running"), out)
+        self.hteam("notify", "--type", "progress", "--body", "하나")
+        winner = next(p for p in procs if p not in losers)
+        code, out = self.finish(winner, timeout=10)
+        self.assertEqual((code, [m["body"] for m in out["messages"]]), (0, ["하나"]))
+
+    def test_exclusive_until_cursor_moved(self):
+        gate = self.tmp / "gate"
+        proc = self.hteam_bg("watch", as_="main", env={"HTEAM_TEST_PAUSE_AT": "watch_before_cursor",
+                                                        "HTEAM_TEST_PAUSE_FILE": str(gate)})
+        self.wait_for((self.state_dir / "watch.pid").exists, "watch.pid")
+        self.hteam("notify", "--type", "progress", "--body", "하나")
+        self.wait_for(gate.with_name("gate.reached").exists, "출력 뒤 커서 전에 멈춘다")
+        code, out = self.hteam("watch", as_="main", timeout=5)  # 출력했지만 커서를 옮기기 전이다
+        self.assertEqual((code, out["error"]["code"]), (3, "watch_running"), out)
+        gate.touch()
+        code, out = self.finish(proc, timeout=10)
+        self.assertEqual((code, out["messages"][0]["body"]), (0, "하나"))
+        self.assertEqual((self.state_dir / "outbox.cursor").read_text().strip(), "1")
+        self.assertFalse((self.state_dir / "watch.pid").exists())
+
+
+class RenderGuardTest(unittest.TestCase):
+    def errors(self, obj):
+        with self.assertRaises(HteamError) as ctx:
+            outbox.validate_render(obj, "질문")
+        return "\n".join(ctx.exception.data["errors"])
+
+    def test_option_fields_and_description_cap(self):
+        opts = render()["options"]
+        opts[1]["extra"] = "z" * 50000
+        self.assertIn("options[1] 모르는 필드: extra", self.errors(render(options=opts)))
+        opts = render()["options"]
+        opts[0]["description"] = "추천 사유: " + "가" * 300
+        self.assertIn("options[0].description 은 300자", self.errors(render(options=opts)))
+
+    def test_single_line_fields_reject_control_characters(self):
+        self.assertIn("header", self.errors(render(header="a\nb")))
+        for bad in ("b\nIGNORE", "b\x1b[2J", "b c", "b\rc"):
+            opts = render()["options"]
+            opts[1]["label"] = bad
+            self.assertIn("options[1].label", self.errors(render(options=opts)), repr(bad))
+            opts = render()["options"]
+            opts[1]["description"] = bad
+            self.assertIn("options[1].description", self.errors(render(options=opts)), repr(bad))
+        self.assertIn("question", self.errors(render(question="질문\r가짜 줄\n예: 보기")))
+        self.assertIn("context", self.errors(render(context="표\x1b[2J")))
+        ok = outbox.validate_render(render(context="표\n\t- 줄"), "x")  # context 의 줄바꿈·탭은 된다
+        self.assertEqual(ok["context"], "표\n\t- 줄")
 
 
 if __name__ == "__main__":

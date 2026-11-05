@@ -75,6 +75,8 @@ def ask(p, tid: str, text: str) -> dict:
 
 
 def ack(p, tid: str, oid: str) -> dict:
+    """답을 문서에 적었다는 기록. 새 질문과 같이 이 태스크의 현재 작업 워커 터미널에서만 한다."""
+    _check_caller(p, state.require(p, tid))
     _entry(p, tid, oid)
     if not outbox.answer_of(p, oid):
         raise HteamError("not_answered", f"{oid} 에 아직 답이 없다", CONFLICT)

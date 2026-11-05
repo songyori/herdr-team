@@ -20,7 +20,7 @@ def _hc(args: list[str], tail: list[str] | None = None, timeout: float = 30) -> 
         raise HteamError("hc_timeout", f"hc {args[0]} 가 {timeout:g}초 안에 끝나지 않았다", FAIL) from None
     if proc.returncode != 0:
         kind = f"exit_{proc.returncode}"
-        for line in reversed((proc.stderr or proc.stdout or "").strip().splitlines()):
+        for line in reversed((proc.stderr or proc.stdout or "").strip().split("\n")):
             try:
                 err = json.loads(line).get("error")
             except (ValueError, AttributeError):
@@ -29,7 +29,7 @@ def _hc(args: list[str], tail: list[str] | None = None, timeout: float = 30) -> 
                 kind = str(err.get("kind") or kind)
                 break
         raise HteamError("hc_failed", f"hc {args[0]} 실패: {kind}", FAIL, data={"kind": kind})
-    for line in reversed(proc.stdout.strip().splitlines()):
+    for line in reversed(proc.stdout.strip().split("\n")):  # LF 로만 나눈다(값의 U+2028 등은 경계가 아니다)
         try:
             value = json.loads(line)
         except ValueError:
