@@ -73,12 +73,17 @@ def parse(text: str) -> Spec:
     sections: dict[str, str] = {}
     current, buf, fence = None, [], None
     for line in body.splitlines():
-        # 코드 블록 안의 `## ...` 는 절 머리가 아니다.
-        fm = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
-        if fm:
-            if fence is None:
-                fence = fm.group(1)[0]
-            elif fm.group(1)[0] == fence:
+        # 코드 블록 안의 `## ...` 는 절 머리가 아니다. CommonMark 펜스 규칙: 여는 줄은 같은 문자 3개 이상
+        # (백틱 펜스의 info 에 백틱이 있으면 인라인 코드라 펜스가 아니다), 닫는 줄은 같은 문자 ≥ 여는 길이 + 공백뿐.
+        if fence is None:
+            fm = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+            if fm and not (fm.group(1)[0] == "`" and "`" in fm.group(2)):
+                fence = (fm.group(1)[0], len(fm.group(1)))
+                if current is not None:
+                    buf.append(line)
+                continue
+        else:
+            if re.fullmatch(r" {0,3}" + re.escape(fence[0]) + "{%d,}[ \t]*" % fence[1], line):
                 fence = None
             if current is not None:
                 buf.append(line)

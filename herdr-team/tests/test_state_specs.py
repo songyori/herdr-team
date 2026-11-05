@@ -175,6 +175,35 @@ class SpecTest(TeamCase):
         self.assertEqual(spec.sections["Target"], "src/app.py")
         self.assertIn("## Change", spec.sections["Acceptance"])
 
+    def test_fence_longer_opening_not_closed_by_shorter(self):
+        body = VALID_BODY.replace("hello 를 출력한다.", "예:\n````markdown\n```python\n## X\nprint(1)\n```\n````\n끝")
+        self.write_spec("T-001", body=body, commit=False)
+        spec = specs.check(self.p, self.cfg, "T-001")
+        self.assertEqual(list(spec.sections), ["Target", "Change", "Constraints", "Acceptance"])
+        self.assertEqual(spec.sections["Constraints"], "표준 라이브러리만.")
+        self.assertIn("## X", spec.sections["Change"])
+
+    def test_fence_fake_closing_with_trailing_text(self):
+        body = VALID_BODY.replace("hello 를 출력한다.", "```\n``` foo\n## X\n```\n끝")
+        self.write_spec("T-001", body=body, commit=False)
+        spec = specs.check(self.p, self.cfg, "T-001")
+        self.assertNotIn("X", spec.sections)
+        self.assertIn("## X", spec.sections["Change"])
+        self.assertEqual(spec.sections["Constraints"], "표준 라이브러리만.")
+
+    def test_inline_triple_backticks_do_not_open_fence(self):
+        body = VALID_BODY.replace("hello 를 출력한다.", "```x``` 를 출력한다.")
+        self.write_spec("T-001", body=body, commit=False)
+        spec = specs.check(self.p, self.cfg, "T-001")
+        self.assertEqual(spec.sections["Constraints"], "표준 라이브러리만.")
+
+    def test_tilde_fence_with_backtick_lines(self):
+        body = VALID_BODY.replace("hello 를 출력한다.", "~~~\n```\n## X\n```\n~~~\n끝")
+        self.write_spec("T-001", body=body, commit=False)
+        spec = specs.check(self.p, self.cfg, "T-001")
+        self.assertNotIn("X", spec.sections)
+        self.assertEqual(spec.sections["Constraints"], "표준 라이브러리만.")
+
     def test_markup_only_placeholder_is_empty(self):
         for ph in ("- <완료를 증명할 테스트>", "* **<x>**", "1. <x>", "> <x>", "- _<x>_ -"):
             body = VALID_BODY.replace("- python3 src/app.py 가 hello 를 출력한다.", ph)
