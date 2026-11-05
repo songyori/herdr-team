@@ -291,7 +291,7 @@ Dispatch:
   - `--no-daemon`: 없으면 Codex 의 명령이 hc 밖에서 돌아 `$HC_TERMINAL_ID` 가 없다.
   - `--add-dir`: Codex 샌드박스에서 저장소 DB 에 쓰게 한다.
   - `-a never`: 사람 없이 돈다. 샌드박스 밖 명령은 묻지 않고 실패한다.
-  - 플러그인 hook 이 새로 생기거나 바뀌면 Codex 는 시작할 때 "Hooks need review" 확인 창에서 멈춘다(사전 검증 S2). 설정 키 `bypass_hook_trust` 는 대화형 Codex 에 듣지 않고, 실행 옵션 `--dangerously-bypass-hook-trust` 만 듣는다. 이 옵션은 hook 신뢰 확인만 건너뛰고 샌드박스·승인 정책은 그대로다. horch 는 이 옵션도 스스로 넣지 않는다. 호출자가 `--agent-arg=--dangerously-bypass-hook-trust` 로 넘긴다(herdr-team 은 사용자 설정에 따라 넘긴다).
+  - 플러그인 hook 이 새로 생기거나 바뀌면 Codex 는 시작할 때 "Hooks need review" 확인 창에서 멈춘다(사전 검증 S2). 설정 키 `bypass_hook_trust` 는 대화형 Codex 에 듣지 않고, 실행 옵션 `--dangerously-bypass-hook-trust` 만 듣는다. 그러나 이 옵션은 검토하지 않은 hook 을 실행해, 깨진 hook 이 워커의 셸 명령을 모두 막을 수 있다(실환경 확인: Node 버전이 맞지 않는 context-mode hook). 그래서 워커에는 `--disable=hooks`(hook 을 끄고 확인 창도 없앤다, codex-cli 0.166 에서 확인)를 권한다. horch 는 이 옵션도 스스로 넣지 않는다. 호출자가 `--agent-arg=--disable=hooks` 로 넘긴다(herdr-team 은 사용자 설정에 따라 넘긴다). 처음 보는 폴더의 Codex 폴더 신뢰 창은 이 옵션으로도 사라지지 않으므로 워커 `--cwd` 는 이미 신뢰한 폴더를 쓴다.
 - 프리앰블 앞의 `--` 는 추가 인자가 값을 여러 개 받는 옵션(Claude `--add-dir <dirs...>` 등)으로 끝나도 프리앰블을 그 값으로 먹지 않게 한다(두 CLI 모두 `--` 뒤 프롬프트를 받는다, 2026-11-05 확인).
 - 추가 인자(`--agent-arg`)는 호출자가 정한다. horch 는 권한 우회 플래그를 스스로 넣지 않는다.
 - 모델·effort 를 생략하면 에이전트 기본값이다. 값은 검사하지 않고 그대로 넘긴다.
@@ -306,7 +306,7 @@ Dispatch:
 4. 새 파일을 시작하기 전, 테스트를 돌린 뒤, done 직전에 `horch check --dispatch D` 로 코디네이터 메시지를 읽는다. 처리한 뒤 `--ack <delivery>` 하고 `count` 가 0 이 될 때까지 반복한다.
 5. 범위 밖 문제나 진행할 수 없으면 `horch escalate --dispatch D --body "..."`.
 6. 끝나면 `horch done --dispatch D --outcome succeeded|failed --summary "<세 문장>"`, 해당하면 `--report-path`, `--files-modified`. 실패를 문장으로만 쓰지 않는다. 출력을 못 받았으면 같은 인자로 다시 실행한다. done 뒤에는 새 일을 시작하지 않고 대기한다.
-7. horch 로 다른 워커를 띄우지 않는다.
+7. horch 는 셸 명령으로 실행한다(다른 도구, 예: Codex 의 node_repl 에는 `$HC_TERMINAL_ID` 가 없어 거부된다, 실환경 확인). horch 로 다른 워커를 띄우지 않는다.
 
 ## 9. 메시지 흐름
 
@@ -358,6 +358,7 @@ Dispatch:
 |---|---|---|
 | `blocked` | hc 상태 `blocked` | 그 turn 번호 |
 | `error` | hc 상태 `error` | 그 turn 번호 |
+| `idle` | 판정 `live`, hc 상태 `idle` 또는 `done`(아무도 보지 않는 Claude 는 `done` 에 머문다), turn 1 이상. done 없이 턴을 마친 워커 | 그 turn 번호 |
 | `exited` | 판정 `exited` | `exited` |
 | `lost` | 판정 `lost` | `lost` |
 
@@ -381,6 +382,7 @@ Dispatch:
 ### 상황별 처리
 
 - **워커가 done 없이 끝남**: `observed exited` 를 받은 코디네이터가 `worker-abandon` 한 뒤 `worker-start --task <id>` 로 다시 띄운다.
+- **워커가 done 없이 멈춤**: 턴을 마치고 `idle`·`done` 인데 `done` 명령을 부르지 않은 워커는 턴마다 한 번 `observed idle` 을 보낸다(실환경 확인에서 3분 넘게 신호 없이 멈춘 일이 있었다). `worker-list` 는 `attention: "idle"`, `next: worker-show --lines 40`. 코디네이터가 화면을 보고 `send --to dispatch:D` 로 이어가게 하거나(9장 깨우기가 입력을 보낸다) 사용자에게 알린다.
 - **워커가 blocked**: `observed blocked` 만 보낸다. horch 는 키를 누르지 않는다. 코디네이터가 사람에게 넘길지 정한다.
 - **워커가 시작 확인 창에서 멈춤**: Claude 폴더 신뢰, Codex hook 검토 창 동안에는 에이전트가 상태를 보고하지 않는다(`status` 가 null, 사전 검증 S1·S2). 그래서 `blocked` 로 보이지 않는다. `worker-list` 는 판정이 `live` 인데 상태 보고가 없는 `active` 워커를 `attention: "no_status"`, `next: worker-show --lines 40` 으로 보인다. 띄운 직후 첫 보고 전에도 잠깐 그렇다. horch 는 키를 누르지 않는다. 1분 넘게 이어지면 코디네이터가 화면을 보고 사용자에게 알린다.
 - **워커가 error**: `observed error`. 코디네이터가 `worker-show --lines 80` 으로 화면을 읽고, 이어갈 수 있으면 `send --to dispatch:D` 로 지시한다(9장 깨우기가 error 인 워커에 입력을 보낸다). 이어갈 수 없으면 `worker-abandon --kill` 뒤 `worker-start --task` 로 다시 띄운다.
@@ -424,8 +426,8 @@ Python 3.11 이상, `hc` 실행과 `hc server status`, `herdr-app status`, 저�
 - 재호출: done 같은 내용·다른 내용(settled·retained·released 각각), reply 같은 내용·다른 내용, ask 같은 key(질문 직후·답 받은 뒤)·다른 key·같은 key 다른 본문, release 반복
 - ask: 답, 시간 초과(exit 4), `--resume`, 다시 깨우기, abandon 중 종료
 - 깨우기: waiter 있음/없음/죽음, `idle`/`done`/`error`/`working`/`blocked`
-- worker-list attention: 상태 보고 없는 `live` `active` 워커는 `no_status`
-- observed: 네 kind 와 중복 제거, `hc ls --all` 사용
+- worker-list attention: 상태 보고 없는 `live` `active` 워커는 `no_status`, 턴을 마친 `idle`·`done` 워커는 `idle`
+- observed: 다섯 kind(blocked·error·idle·exited·lost)와 중복 제거, `hc ls --all` 사용
 - worker-show: `--lines` 로 `hc read` 화면 포함
 - 생존 판정 네 가지
 - worker-start: 에이전트 명령 조립(Claude·Codex, `--home` 포함 프리앰블), 라벨, 배치 없음, 실행 실패
@@ -471,6 +473,7 @@ hc 0.1.18, Claude Code 2.1.318(코디네이터 Opus, 워커 haiku), codex-cli 0.
   4. 코디네이터가 abandon 한 Dispatch 를 release 하지 않고 끝냈다. `worker-list` 의 `next` 는 `worker-release` 였다. 스킬 6항은 abandon 을 "정리"라 부르고, 8항은 "`settled`·`abandoned` Dispatch 를 모두 정리했을 때 끝낸다" 고 쓴다. 그래서 abandon 만으로 정리가 끝났다고 읽을 수 있다. 운영자가 요청하자 release 가 끝난 터미널을 `hc rm` 했다.
   5. 하네스의 GateGuard hook 이 코디네이터와 Claude 워커의 첫 Bash·Write 를 막았다. 둘 다 요구한 사실을 적고 다시 실행해 이어갔다.
   6. 사소한 것. `doctor` 의 `herdr_app` detail 이 `{` 다(`herdr-app status` 의 JSON 첫 줄만 담는다). `HC_TERMINAL_ID` 가 없을 때 `not_this_worker` 메시지는 "이 터미널(없음)" 이고 hint 가 비어 있다.
+- 후속 조치(2026-11-05): 2 는 Codex 워커에 `--dangerously-bypass-hook-trust` 대신 `--disable=hooks` 를 권하도록 8장과 스킬을 바꿨다. 3 은 사용자 결정으로 `observed idle` 을 더했다(9장·10장). 4 는 스킬에서 abandon 을 "정리"라 부르지 않고 `abandoned` 도 `worker-release` 해야 끝난다고 적었다. 6 은 doctor detail 과 not_this_worker 힌트를 고쳤다.
 
 ### Codex 교차 검증
 
