@@ -23,7 +23,7 @@
 - 저장소는 공개될 수 있다. 커밋 전에 `git grep -n -I -P '/[U]sers/|/private/[t]mp|~[/]Workspace' -- . ':!.codex-reviews'` 가 아무것도 찾지 않아야 한다.
 - 문서·메시지·주석은 한국어. 명령·코드 식별자는 원문.
 - 작업 브랜치 `design/herdr-orch` 에서 한다. main 에 직접 커밋하지 않는다.
-- **Codex 교차 검증(CLAUDE.md):** 각 태스크의 마지막 단계에서 그 커밋을 `codex review --commit <sha>` 로 검토하고, 지적마다 사실인지 확인한 뒤 고치거나 고치지 않는 이유를 적는다. P0·P1 이 남지 않을 때까지 최대 3 라운드. 3 라운드 뒤에도 남으면 사용자에게 묻는다.
+- **Codex 교차 검증(CLAUDE.md):** 각 태스크의 마지막 단계에서 그 커밋을 `scripts/codex-review.sh commit HEAD` 로 검토한다. 스크립트는 같은 탭에 pane 을 띄우고 터미널 주소를 출력한다. `hc wait <주소> --timeout 3600` 을 백그라운드로 걸고 끝나기를 붙잡고 기다리지 않는다. 결과는 `.codex-reviews/commit-<sha 7자>.md` 다. 결과를 읽고 지적마다 사실인지 확인한 뒤 고치거나 고치지 않는 이유를 적는다. P0·P1 이 남지 않을 때까지 최대 3 라운드. 3 라운드 뒤에도 남으면 사용자에게 묻는다.
 - 테스트 실행: `bash herdr-orch/tests/run.sh` (저장소 루트에서). 실제 hc·Herdr 상태를 건드리지 않는다(가짜 `hc`·`herdr-app`·`claude`·`codex` 사용).
 
 ## File Structure
@@ -125,7 +125,7 @@ hc wait spike-s1b --timeout 120
 hc read spike-s1b --lines 20
 ```
 
-Expected: 보낸 글이 사용자 입력으로 들어가고 `OK-S3` 대답이 보인다. Codex 쪽은 Step 5 끝에서 확인한다. Claude·Codex 모두 들어가지 않으면 S3 실패: 멈추고 사용자에게 보고한다. 사용자가 동의하면 설계 9장 대안대로 깨우기를 빼도록 설계와 Task 6 을 고친 뒤 진행한다.
+Expected: 보낸 글이 사용자 입력으로 들어가고 `OK-S3` 대답이 보인다. Codex 쪽은 Step 5 끝에서 확인한다. Claude 와 Codex 모두 입력 전달과 대답을 확인해야 S3 통과다. 하나라도 확인하지 못하면 S3 실패: 멈추고 사용자에게 보고한다. 사용자가 동의하면 설계 9장 대안대로 깨우기를 빼도록 설계와 Task 6 을 고친 뒤 진행한다.
 
 - [ ] **Step 5: S2 Codex 워커 확인**
 
@@ -151,7 +151,7 @@ hc read spike-s2 --lines 20
 ```
 
 Expected: 화면의 `printenv HC_TERMINAL_ID` 결과가 `hc get` 의 `address` 와 같고 `db ok` 가 보인다. `CODEX_SANDBOX` 값과 `hc get` 의 `status.app`(Codex 상태 보고 여부)을 기록한다.
-판정: `HC_TERMINAL_ID` 가 비어 있거나 `db ok` 가 없으면 S2 실패: 멈추고 보고. `CODEX_SANDBOX` 가 비어 있으면 보고한다(설계 9장 샌드박스 감지를 "hc 호출 실패로 처리"로 바꿔야 한다). `status.app` 이 없으면 기록만 한다(설계 12장 대안대로 Codex 의 `observed blocked·error` 포기).
+판정: `HC_TERMINAL_ID` 가 비어 있거나 `db ok` 가 없으면 S2 실패: 멈추고 보고. `CODEX_SANDBOX` 가 비어 있으면 보고한다(설계 9장 샌드박스 감지를 "hc 호출 실패로 처리"로 바꿔야 한다). `status.app` 이 없으면 기록만 한다(설계 12장 대안대로 Codex 의 `observed blocked·error` 포기). 마지막 `hc read` 에 `OK-S3-CODEX` 대답이 없으면 Step 4 의 S3 실패 처리를 따른다.
 
 - [ ] **Step 6: 정리**
 
@@ -182,7 +182,7 @@ git add docs/superpowers/specs/2026-11-04-herdr-orch-design.md
 git commit -m "docs: herdr-orch 사전 검증 S1–S3 결과
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
-codex review --commit "$(git rev-parse HEAD)" > .codex-reviews/task-1-r1.md 2>&1
+scripts/codex-review.sh commit HEAD
 ```
 
 Expected: 커밋 성공. 리뷰 파일을 읽고 Global Constraints 의 Codex 규칙대로 처리한다.
@@ -815,7 +815,7 @@ git add .claude-plugin herdr-orch
 git commit -m "feat(herdr-orch): 플러그인 골격, CLI JSON 봉투, 테스트 하네스
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
-codex review --commit "$(git rev-parse HEAD)" > .codex-reviews/task-2-r1.md 2>&1
+scripts/codex-review.sh commit HEAD
 ```
 
 Expected: `git grep` 출력 없음, 커밋 성공. 리뷰 파일을 Global Constraints 의 Codex 규칙대로 처리한다.
@@ -1172,7 +1172,7 @@ git add herdr-orch
 git commit -m "feat(herdr-orch): SQLite 저장소, 스키마, 프로세스 생존 확인
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
-codex review --commit "$(git rev-parse HEAD)" > .codex-reviews/task-3-r1.md 2>&1
+scripts/codex-review.sh commit HEAD
 ```
 
 ---
@@ -1494,7 +1494,7 @@ git add herdr-orch
 git commit -m "feat(herdr-orch): hc 어댑터와 생존 판정
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
-codex review --commit "$(git rev-parse HEAD)" > .codex-reviews/task-4-r1.md 2>&1
+scripts/codex-review.sh commit HEAD
 ```
 
 ---
@@ -1623,25 +1623,36 @@ class RunUseTest(HorchCase):
         self.assertEqual(code, 0, out)
         self.assertEqual(self.owner(), "t200")
 
-    def test_owner_changed_during_judgement(self):
+    def test_rebind_during_judgement_is_blocked(self):
+        """판정은 쓰기 트랜잭션 안에서 한다. 판정 중 t100 이 같은 terminal·argv 로 다시 묶으려는 쓰기는 잠금에 막힌다."""
         import os
+        import sqlite3
         from unittest import mock
         from horch import runs
-        from horch.errors import HorchError
         from horch.store import Store
+        seen = []
         with mock.patch.dict(os.environ, dict(self.env, HC_TERMINAL_ID="t200"), clear=True):
             store = Store(self.home)
             self.addCleanup(store.close)
 
-            def rebound(*_a, **_k):
-                store.run("UPDATE bindings SET argv=? WHERE run_id=?", ('["/bin/zsh", "-l"]', self.run_id))
+            def rebind_attempt(*_a, **_k):
+                other = sqlite3.connect(self.home / "orch.db", isolation_level=None, timeout=0.1)
+                try:
+                    other.execute("BEGIN IMMEDIATE")
+                    other.execute("UPDATE bindings SET argv=argv WHERE run_id=?", (self.run_id,))
+                    other.execute("COMMIT")
+                    seen.append("written")
+                except sqlite3.OperationalError as exc:
+                    seen.append(str(exc))
+                finally:
+                    other.close()
                 return "lost", None
 
-            with mock.patch.object(runs.liveness, "probe", side_effect=rebound):
-                with self.assertRaises(HorchError) as cm:
-                    runs.use(store, self.run_id, False)
-        self.assertEqual(cm.exception.code, "owner_changed")
-        self.assertEqual(self.owner(), "t100")
+            with mock.patch.object(runs.liveness, "probe", side_effect=rebind_attempt):
+                out = runs.use(store, self.run_id, False)
+        self.assertEqual(seen, ["database is locked"])
+        self.assertEqual(out["previous_verdict"], "lost")
+        self.assertEqual(self.owner(), "t200")
 
     def test_unknown_run(self):
         code, out = self.horch("run-use", "--id", "run-ffffffff", terminal="t200")
@@ -1775,25 +1786,23 @@ def use(store, run_id: str, force: bool) -> dict:
     auth.refuse_worker(store, term)
     if not store.one("SELECT 1 FROM runs WHERE id=?", (run_id,)):
         raise HorchError("unknown_run", f"Run {run_id} 가 없다", USAGE)
-    owner = store.one("SELECT terminal, argv FROM bindings WHERE run_id=?", (run_id,))
-    prev = owner["terminal"] if owner else None
-    if prev == term:
-        return {"run": run_json(store, run_id), "previous_owner": prev, "previous_verdict": None}
-    verdict = None
-    if prev:
-        verdict, _ = liveness.probe(prev, liveness.loads_argv(owner["argv"]))
-        if verdict == "live":
-            raise HorchError("owner_alive", f"Run {run_id} 의 소유자 {prev} 가 살아 있다", CONFLICT)
-        if verdict == "unverifiable" and not force:
-            raise HorchError("owner_unverifiable", f"소유자 {prev} 의 상태를 확인할 수 없다", CONFLICT,
-                             "소유자가 끝났다고 확신하면 --force")
     space, tab, argv = _caller_facts(term)
+    # 설계 6장: binding 조회, 생존 판정, 허용 검사, 갱신을 한 BEGIN IMMEDIATE 안에서 한다.
+    # 판정하는 동안 다른 쓰기(같은 terminal·argv 로 다시 묶기 포함)는 binding 을 바꾸지 못한다.
+    # 판정은 hc get 한 번이다.
     with store.tx():
-        current = store.one("SELECT terminal, argv FROM bindings WHERE run_id=?", (run_id,))
-        now_owner = (current["terminal"], current["argv"]) if current else (None, None)
-        judged = (owner["terminal"], owner["argv"]) if owner else (None, None)
-        if now_owner != judged:
-            raise HorchError("owner_changed", "판정하는 동안 소유자가 바뀌었다. 다시 실행한다", CONFLICT)
+        owner = store.one("SELECT terminal, argv FROM bindings WHERE run_id=?", (run_id,))
+        prev = owner["terminal"] if owner else None
+        if prev == term:
+            return {"run": run_json(store, run_id), "previous_owner": prev, "previous_verdict": None}
+        verdict = None
+        if prev:
+            verdict, _ = liveness.probe(prev, liveness.loads_argv(owner["argv"]))
+            if verdict == "live":
+                raise HorchError("owner_alive", f"Run {run_id} 의 소유자 {prev} 가 살아 있다", CONFLICT)
+            if verdict == "unverifiable" and not force:
+                raise HorchError("owner_unverifiable", f"소유자 {prev} 의 상태를 확인할 수 없다", CONFLICT,
+                                 "소유자가 끝났다고 확신하면 --force")
         _bind(store, term, run_id, argv)
         store.run("UPDATE runs SET owner_space=?, owner_tab=?, updated_at=? WHERE id=?", (space, tab, now(), run_id))
     return {"run": run_json(store, run_id), "previous_owner": prev, "previous_verdict": verdict}
@@ -1832,7 +1841,7 @@ git add herdr-orch
 git commit -m "feat(herdr-orch): 호출자 확인, run-create, run-use 넘겨받기
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
-codex review --commit "$(git rev-parse HEAD)" > .codex-reviews/task-5-r1.md 2>&1
+scripts/codex-review.sh commit HEAD
 ```
 
 ---
@@ -2357,7 +2366,7 @@ git add herdr-orch
 git commit -m "feat(herdr-orch): 메일함 send·check·Delivery·대기·깨우기, status
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
-codex review --commit "$(git rev-parse HEAD)" > .codex-reviews/task-6-r1.md 2>&1
+scripts/codex-review.sh commit HEAD
 ```
 
 ---
@@ -2676,7 +2685,7 @@ git add herdr-orch
 git commit -m "feat(herdr-orch): 에이전트 명령, 워커 프리앰블, launch-guard 펜스
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
-codex review --commit "$(git rev-parse HEAD)" > .codex-reviews/task-7-r1.md 2>&1
+scripts/codex-review.sh commit HEAD
 ```
 
 ---
@@ -3233,7 +3242,7 @@ git add herdr-orch
 git commit -m "feat(herdr-orch): worker-start, launching 조정, 가드 펜스
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
-codex review --commit "$(git rev-parse HEAD)" > .codex-reviews/task-8-r1.md 2>&1
+scripts/codex-review.sh commit HEAD
 ```
 
 ---
@@ -3589,7 +3598,7 @@ git add herdr-orch
 git commit -m "feat(herdr-orch): reply, ask, escalate, done (재호출 안전)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
-codex review --commit "$(git rev-parse HEAD)" > .codex-reviews/task-9-r1.md 2>&1
+scripts/codex-review.sh commit HEAD
 ```
 
 ---
@@ -4058,7 +4067,7 @@ git add herdr-orch
 git commit -m "feat(herdr-orch): observed 감시, worker-list·show·release·retain·abandon
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
-codex review --commit "$(git rev-parse HEAD)" > .codex-reviews/task-10-r1.md 2>&1
+scripts/codex-review.sh commit HEAD
 ```
 
 ---
@@ -4381,7 +4390,7 @@ git add README.md herdr-orch
 git commit -m "feat(herdr-orch): doctor, skill 사용법, 스킬 스텁, README
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
-codex review --commit "$(git rev-parse HEAD)" > .codex-reviews/task-11-r1.md 2>&1
+scripts/codex-review.sh commit HEAD
 ```
 
 Expected: `git grep` 출력 없음.
@@ -4478,10 +4487,10 @@ git add -A docs herdr-orch
 git commit -m "docs: herdr-orch 실환경 확인 결과
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
-codex review --base main > .codex-reviews/branch-r1.md 2>&1
+scripts/codex-review.sh base main
 ```
 
-Expected: 테스트 전체 OK. 리뷰 파일을 Global Constraints 의 Codex 규칙대로 처리한다(고칠 때마다 테스트를 먼저 더하고, 커밋하고, `codex review --base main` 을 다시 돈다. 최대 3 라운드).
+Expected: 테스트 전체 OK. `.codex-reviews/base-main.md` 를 Global Constraints 의 Codex 규칙대로 처리한다(고칠 때마다 테스트를 먼저 더하고, 커밋하고, `scripts/codex-review.sh base main` 을 다시 돈다. 최대 3 라운드).
 
 - [ ] **Step 7: 브랜치 마무리**
 
