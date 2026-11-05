@@ -60,27 +60,10 @@ space=$(hc get "$HC_TERMINAL_ID" --json | python3 -c '
 import json, sys
 print(json.load(sys.stdin)["labels"]["herdr.space"])')
 
-# "리뷰" 탭이 있으면 거기에 더한다. 없으면 새 탭 id 를 만든다(Herdr 가 모르는 id 는 새 탭이 된다).
+# 리뷰 탭 id 는 space 마다 하나로 정한다. 조회하지 않으므로 창이 닫혀 있어도 되고,
+# 동시에 띄워도 같은 탭에 모인다. Herdr 가 모르는 id 는 새 탭이 되고, 닫힌 뒤에도 같은 id 로 다시 생긴다.
 tab_name="리뷰"
-tab=$(herdr-app ls 2>/dev/null | python3 -c '
-import json, sys
-space, name = sys.argv[1], sys.argv[2]
-try:
-    spaces = json.load(sys.stdin)["spaces"]
-except ValueError:
-    spaces = []
-for sp in spaces:
-    if sp["id"] == space:
-        for t in sp["tabs"]:
-            if t["name"] == name:
-                print(t["id"])
-                raise SystemExit
-' "$space" "$tab_name")
-new_tab=0
-if [[ -z "$tab" ]]; then
-  tab=tb$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
-  new_tab=1
-fi
+tab=tb$(printf 'horch-review\n%s' "$space" | shasum | cut -c1-32)
 
 # hc 터미널 이름은 코어 전체에서 유일해야 한다. 접미사는 저장소 경로와 자르기 전 리뷰 이름에서 만든다.
 # 다른 worktree 나 다른 리뷰는 함께 돌고, 같은 저장소의 같은 리뷰는 결과 파일이 겹치므로 두 번째가 거부된다.
@@ -94,11 +77,10 @@ if ! res=$(hc run --bg --json --no-notify --outlive-parent --rm --cwd "$root" --
   echo "리뷰를 시작하지 못했다. name_taken 이면 같은 리뷰($name)가 이미 돌고 있다: $res" >&2
   exit 1
 fi
-# 새 탭이면 이름을 붙인다. 탭이 화면에 생길 때까지 잠깐 다시 시도하고, 끝내 안 되면 번호 이름으로 둔다.
-if [[ $new_tab == 1 ]]; then
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    herdr-app do tab.rename --id "$tab" --name "$tab_name" >/dev/null 2>&1 && break
-    sleep 0.3
-  done
-fi
+# 탭 이름을 붙인다(이미 붙어 있어도 그대로다). 탭이 화면에 생길 때까지 잠깐 다시 시도하고,
+# 창이 닫혀 있거나 끝내 안 되면 번호 이름으로 둔다. 리뷰는 이와 상관없이 돈다.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  herdr-app do tab.rename --id "$tab" --name "$tab_name" >/dev/null 2>&1 && break
+  sleep 0.3
+done
 printf '%s' "$res" | python3 -c 'import json, sys; print(json.load(sys.stdin)["address"])'
