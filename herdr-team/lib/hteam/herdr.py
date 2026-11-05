@@ -1,0 +1,76 @@
+"""hc·herdr-app 직접 호출(설계 3.3). 코디네이터 실행·생존 확인과 팀 탭 이름 붙이기뿐이다. 워커 실행은 늘 horch 를 거친다."""
+from __future__ import annotations
+
+import json
+import subprocess
+import time
+
+from .errors import FAIL, MISSING, HteamError
+
+
+def _hc(args: list[str], tail: list[str] | None = None, timeout: float = 30) -> dict:
+    try:
+        proc = subprocess.run(["hc", *args, "--json", *(tail or [])], capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError:
+        raise HteamError("hc_missing", "hc 실행 파일을 찾지 못했다", MISSING, "herdr-core 를 설치한다") from None
+    except OSError as exc:  # 실행 권한 없음 등. horch hcio 와 같이 실패(모름)로 다룬다
+        raise HteamError("hc_failed", f"hc {args[0]} 를 실행하지 못했다: {exc}", FAIL,
+                         data={"kind": "exec_failed"}) from None
+    except subprocess.TimeoutExpired:
+        raise HteamError("hc_timeout", f"hc {args[0]} 가 {timeout:g}초 안에 끝나지 않았다", FAIL) from None
+    if proc.returncode != 0:
+        kind = f"exit_{proc.returncode}"
+        for line in reversed((proc.stderr or proc.stdout or "").strip().splitlines()):
+            try:
+                err = json.loads(line).get("error")
+            except (ValueError, AttributeError):
+                continue
+            if isinstance(err, dict):
+                kind = str(err.get("kind") or kind)
+                break
+        raise HteamError("hc_failed", f"hc {args[0]} 실패: {kind}", FAIL, data={"kind": kind})
+    for line in reversed(proc.stdout.strip().splitlines()):
+        try:
+            value = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(value, dict):
+            return value
+    raise HteamError("hc_failed", f"hc {args[0]} 출력이 JSON 이 아니다", FAIL, data={"kind": "bad_output"})
+
+
+def get(terminal: str, timeout: float = 10) -> dict:
+    return _hc(["get", terminal], timeout=timeout)
+
+
+def verdict(info: dict | None, expected_argv: list[str] | None) -> str:
+    """horch liveness.verdict 와 같은 규칙(herdr-orch 설계 10장). 끝났다는 확실한 증거가 있을 때만 exited·lost.
+
+    horch 에는 임의 터미널을 판정하는 명령이 없어 hteam 이 같은 규칙을 따로 둔다. 같은지는 테스트가 horch 코드와 비교한다."""
+    if info is None:
+        return "unverifiable"
+    state = info.get("state")
+    if state == "finished":
+        return "exited"
+    if state != "live":
+        return "unverifiable"
+    if info.get("reason") == "stopped_by_restart":
+        return "lost"
+    if expected_argv is not None:
+        argv = info.get("argv")
+        if argv is None:
+            return "unverifiable"
+        if argv != expected_argv:
+            return "lost"
+    return "live"
+
+
+def probe(terminal: str | None, argv: list[str] | None) -> str:
+    """live·exited·lost·unverifiable. hc get 실패(not_found·시간 초과·hc 없음 포함)는 horch 와 같이 모름이다."""
+    if not terminal:
+        return "unverifiable"
+    try:
+        info = get(terminal)
+    except HteamError:
+        return "unverifiable"
+    return verdict(info, argv)

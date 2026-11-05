@@ -19,6 +19,8 @@ COMMAND_MODULES: tuple[str, ...] = (
     "plan",
     "tasks",
     "review",
+    "outbox",
+    "ask",
 )
 
 
@@ -47,6 +49,8 @@ def main(argv: list[str]) -> int:
     try:
         args = build_parser().parse_args(argv)
         result = args.func(args)
+        # 결과의 _after(인자 없는 함수)는 출력에 넣지 않고 JSON 을 출력한 뒤에 부른다.
+        after = result.pop("_after", None)
         # 성공 봉투도 try 안에서 직렬화한다. dict 가 아니거나 JSON 으로 못 바꾸면 internal 오류로 알린다.
         line = json.dumps({"ok": True, **result}, ensure_ascii=False)
     except HteamError as exc:
@@ -57,4 +61,17 @@ def main(argv: list[str]) -> int:
         return FAIL
     sys.stdout.write(line + "\n")
     sys.stdout.flush()
+    if after:
+        _run_after(after)  # 출력한 뒤에야 한다(watch 커서: 적어도 한 번 전달)
     return 0
+
+
+def _run_after(after) -> None:
+    """이미 성공 결과를 출력했으므로 stdout·exit 코드를 바꾸지 않는다. 실패는 stderr 에 한 줄로만 남긴다.
+
+    watch 커서라면 옮기지 못한 항목을 다음 watch 가 다시 준다(적어도 한 번 전달이 유지된다)."""
+    try:
+        after()
+    except Exception as exc:
+        sys.stderr.write(f"hteam: 출력 뒤 처리 실패(결과는 이미 출력했다): {type(exc).__name__}: {exc}\n")
+        sys.stderr.flush()
