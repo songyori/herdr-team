@@ -1,6 +1,6 @@
 # herdr-orchestration
 
-이 사용법은 위 `HORCH:` 줄의 horch 와 버전이 맞다. 아래 `horch` 는 그 줄의 명령 전체를 뜻한다. 모든 명령은 JSON 한 개를 출력한다.
+이 사용법은 위 `HORCH:` 줄의 horch 와 버전이 맞다. 아래 `horch` 는 그 줄의 명령 전체를 뜻한다. `skill` 을 뺀 모든 명령은 JSON 한 개를 출력한다.
 명령 출력은 stdout 의 JSON 한 개만 읽는다. `check --wait` 는 판정 중 오류를 stderr 에 한 줄 남길 수 있다(백그라운드 Bash 는 stdout·stderr 를 합쳐 보여 주므로 마지막 JSON 줄을 읽는다).
 
 ## 역할 고르기
@@ -26,7 +26,7 @@
    - `worker_done`: body 의 `outcome`·`summary`·`report_path` 를 읽고 결과를 직접 확인한다. 그다음 `horch worker-release --dispatch <d>`(사용자가 남기라고 했을 때만 `worker-retain`).
    - `escalation`: `horch send --to dispatch:<d> --body "<지시>"` 로 지시하거나 사용자에게 넘긴다.
    - `observed`: body 의 `kind` 를 본다.
-     - `exited`·`lost`: `horch worker-abandon --dispatch <d>` 뒤 `horch worker-start --agent <같은 에이전트> --task <task>` 로 다시 띄운다.
+     - `exited`·`lost`: `horch worker-abandon --dispatch <d>` 로 정리한 뒤, 옛 Dispatch 를 `horch worker-show --dispatch <d> --lines 0` 으로 읽어 `agent`·`model`·`effort`·`cwd`·`agent_args` 를 그대로 넘겨 다시 띄운다: `horch worker-start --agent <agent> --task <task> --cwd <cwd> [--model <model>] [--effort <effort>] [--agent-arg=<각 인자>]...`. 값을 빼면 작업 폴더가 코디네이터의 것으로 바뀌고 모델·인자가 초기화된다. `--retry` 는 이전 Dispatch 가 `launch_failed` 일 때만 필요하다(abandon 뒤에는 필요 없다).
      - `blocked`: 사람의 결정(권한 등)이 필요하다. `horch worker-show --dispatch <d> --lines 80` 으로 화면을 보고 사용자에게 알린다. horch 는 키를 누르지 않는다.
      - `error`: 화면을 읽고 이어갈 수 있으면 `send --to dispatch:<d>` 로 지시하고, 아니면 `worker-abandon --kill` 뒤 다시 띄운다.
    - `status`: 참고한다.
@@ -41,6 +41,7 @@
 - 끝났다는 확실한 증거 없이 abandon·release 하지 않는다. `unverifiable` 은 "모름" 이다.
 - 같은 Task 를 동시에 두 번 띄울 수 없다(horch 가 막는다). 실패한 실행은 `--task <id> --retry`.
 - `--agent-arg` 로 권한·샌드박스 우회를 넘기면 그 위험은 코디네이터가 진다. 사용자가 허락했을 때만 쓴다.
+- `--agent-arg` 로 권한·샌드박스 우회를 넘기면 워커가 사용자의 자격 증명(git, 클라우드 인증, 셸 환경)을 그대로 쓴다.
 - 권한 확인은 실수 방지용이지 보안 경계가 아니다.
 
 ## 워커 의무

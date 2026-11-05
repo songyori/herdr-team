@@ -11,5 +11,7 @@ def app_status() -> tuple[bool, str]:
         return False, "herdr-app 이 PATH 에 없다"
     except subprocess.TimeoutExpired:
         return False, "herdr-app status 가 10초 안에 끝나지 않았다"
+    except OSError as exc:  # 실행 권한 없음, 형식 오류 등
+        return False, str(exc)
     lines = (proc.stdout or proc.stderr).strip().splitlines()
     return proc.returncode == 0, lines[0] if lines else f"exit {proc.returncode}"

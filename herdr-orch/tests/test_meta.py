@@ -38,6 +38,10 @@ class MetaTest(HorchCase):
             "exit 5(`binding_moved`·`not_owner`)",
             "`terminal_mismatch`",
             "--agent-arg=--dangerously-bypass-hook-trust",
+            "worker-show --dispatch <d> --lines 0",
+            "--cwd <cwd> [--model <model>] [--effort <effort>] [--agent-arg=<각 인자>]...",
+            "`skill` 을 뺀 모든 명령은 JSON 한 개를 출력한다",
+            "사용자의 자격 증명(git, 클라우드 인증, 셸 환경)",
             'attention: "no_status"',
         ):
             self.assertIn(needle, proc.stdout)
@@ -65,6 +69,21 @@ class MetaTest(HorchCase):
         names = {c["name"]: c["ok"] for c in out["checks"]}
         self.assertFalse(names["herdr_app"])
         self.assertFalse(names["claude"])
+
+    def test_doctor_survives_non_executable_herdr_app(self):
+        bin_dir = self.tmp / "bin2"
+        bin_dir.mkdir()
+        shutil.copy(FAKES / "herdr-app", bin_dir / "herdr-app")
+        os.chmod(bin_dir / "herdr-app", 0o644)
+        os.symlink(FAKES / "hc", bin_dir / "hc")
+        os.symlink(sys.executable, bin_dir / "python3")
+        os.symlink(shutil.which("ps"), bin_dir / "ps")
+        code, out = self.horch("doctor", env={"PATH": str(bin_dir)})
+        self.assertEqual((code, out["error"]["code"]), (1, "unhealthy"))
+        names = {c["name"]: c["ok"] for c in out["checks"]}
+        self.assertFalse(names["herdr_app"])
+        for name in ("python", "hc", "home_writable", "ps"):
+            self.assertIn(name, names)
 
 
 if __name__ == "__main__":
