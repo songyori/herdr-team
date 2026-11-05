@@ -24,6 +24,9 @@ def _call(args: list[str]) -> subprocess.CompletedProcess:
     except FileNotFoundError as exc:
         raise HorchError("hc_missing", "hc 실행 파일을 찾지 못했다", MISSING,
                          "herdr-core 를 설치하고 PATH 에 hc 를 둔다") from exc
+    except OSError as exc:
+        # 실행 권한 없음 등. 터미널이 끝났다는 뜻이 아니므로 호출자는 모름으로 다룬다.
+        raise HcFailure("exec_failed", str(exc)) from exc
     except subprocess.TimeoutExpired as exc:
         raise HcFailure("timeout", f"hc {' '.join(args[:2])} 가 {TIMEOUT_S}초 안에 끝나지 않았다") from exc
 
@@ -42,15 +45,15 @@ def _failure(proc: subprocess.CompletedProcess) -> HcFailure:
 
 def _parse(text: str) -> dict:
     text = text.strip()
-    try:
-        return json.loads(text)
-    except ValueError:
-        pass
-    for line in reversed(text.splitlines()):
+    candidates = [text, *reversed(text.splitlines())]
+    for cand in candidates:
         try:
-            return json.loads(line)
+            value = json.loads(cand)
         except ValueError:
             continue
+        if isinstance(value, dict):
+            return value
+        break  # 유효한 JSON 이지만 객체가 아니다
     raise HcFailure("bad_output", text[-500:])
 
 

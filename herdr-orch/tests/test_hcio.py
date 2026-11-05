@@ -82,6 +82,19 @@ class HcioTest(HorchCase):
         self.assertEqual(cm.exception.code, "hc_missing")
         self.assertEqual(cm.exception.exit_code, 12)
 
+    def test_non_object_json_is_bad_output(self):
+        proc = mock.Mock(returncode=0, stdout="[1]", stderr="")
+        with mock.patch.object(hcio.subprocess, "run", return_value=proc):
+            with self.assertRaises(hcio.HcFailure) as cm:
+                hcio.get("t1")
+        self.assertEqual(cm.exception.kind, "bad_output")
+
+    def test_exec_oserror_is_exec_failed(self):
+        with mock.patch.object(hcio.subprocess, "run", side_effect=PermissionError("denied")):
+            with self.assertRaises(hcio.HcFailure) as cm:
+                hcio.get("t1")
+        self.assertEqual(cm.exception.kind, "exec_failed")
+
     def test_probe(self):
         self.add_terminal("t7", argv=["a"])
         self.assertEqual(liveness.probe("t7", ["a"])[0], "live")
@@ -100,6 +113,9 @@ class VerdictTest(unittest.TestCase):
         self.assertEqual(v({"state": "live", "argv": ["a"]}, ["a"]), "live")
         self.assertEqual(v({"state": "live", "argv": ["x"]}, None), "live")
         self.assertEqual(v({"state": "weird"}, None), "unverifiable")
+        self.assertEqual(v({"state": "live"}, ["a"]), "unverifiable")
+        self.assertEqual(v({"state": "live", "argv": None}, ["a"]), "unverifiable")
+        self.assertEqual(v({"state": "live"}, None), "live")
 
     def test_status_word(self):
         sw = liveness.status_word

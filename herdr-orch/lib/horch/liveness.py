@@ -28,8 +28,13 @@ def verdict(info: dict | None, expected_argv: list[str] | None) -> str:
         return "unverifiable"
     if info.get("reason") == "stopped_by_restart":
         return "lost"
-    if expected_argv is not None and info.get("argv") != expected_argv:
-        return "lost"
+    if expected_argv is not None:
+        argv = info.get("argv")
+        if argv is None:
+            # argv 를 알 수 없으면 터미널이 끝났다고 단정하지 못한다(10장): 모름.
+            return "unverifiable"
+        if argv != expected_argv:
+            return "lost"
     return "live"
 
 
