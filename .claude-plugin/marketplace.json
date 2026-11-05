@@ -9,6 +9,12 @@
       "source": "./herdr-orch",
       "version": "0.1.1",
       "description": "Herdr 위의 감독형 오케스트레이션: 워커 pane 실행, 메일함, ask/reply, worker_done."
+    },
+    {
+      "name": "herdr-team",
+      "source": "./herdr-team",
+      "version": "0.1.0",
+      "description": "herdr-orch 위의 직무 팀: 코디네이터, 직무 워커, 교차 리뷰, 메인 질문 중계."
     }
   ]
 }

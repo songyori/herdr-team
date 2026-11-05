@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""테스트용 가짜 에이전트 동작. 워커 터미널에서($HC_TERMINAL_ID) 실행하고, done 은 프리앰블에 적힌 명령을 그대로 쓴다.
+
+가짜 hc 의 run 은 프로그램을 실행하지 않는다. 테스트가 이 스크립트로 워커·리뷰어가 할 일을 정해진 순서대로 대신한다.
+
+사용: agent-act --root <프로젝트> --preamble <preamble.md>   (표준 입력: 동작 JSON)
+동작 JSON(모두 선택):
+  write: {경로: 내용}              파일을 쓴다(프로젝트 루트 기준)
+  delete: [경로]                   파일을 지운다
+  report: "<내용>"                 report_path 파일 끝에 덧붙인다
+  report_path: "<경로>"            기본 없음. report 를 쓰면 필요하다
+  commit: "<메시지>"               write·delete·report 경로를 경로 지정으로 커밋한다
+  review: {"file": 경로, "text": 본문, "verdict": "APPROVE"|"REQUEST_CHANGES"|null}
+                                   리뷰 파일을 쓴다(커밋하지 않는다). verdict 가 null 이면 VERDICT 줄을 쓰지 않는다
+  done: {"outcome": "succeeded"|"failed", "summary": "...", "report_path": "..."} | null
+출력: done 명령의 stdout(JSON 한 줄). done 이 없으면 {"ok": true, "done": null}. exit 코드도 done 의 것.
+"""
+import argparse
+import json
+import re
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+DONE_RE = re.compile(r"^\s*(.+?) done --dispatch (\S+) --outcome ", re.M)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--root", required=True)
+    ap.add_argument("--preamble", required=True)
+    args = ap.parse_args()
+    root = Path(args.root)
+    act = json.loads(sys.stdin.read() or "{}")
+    m = DONE_RE.search(Path(args.preamble).read_text(encoding="utf-8"))
+    if not m:
+        print(json.dumps({"ok": False, "error": "프리앰블에 done 명령이 없다"}))
+        return 1
+    horch, dispatch = shlex.split(m.group(1)), m.group(2)
+    paths = []
+    for rel, text in (act.get("write") or {}).items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        paths.append(rel)
+    for rel in act.get("delete") or []:
+        (root / rel).unlink()
+        paths.append(rel)
+    if act.get("report") is not None:
+        rel = act["report_path"]
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(act["report"])
+        paths.append(rel)
+    if act.get("commit"):
+        subprocess.run(["git", "-C", str(root), "add", "--", *paths], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(root), "commit", "-q", "-m", act["commit"], "--", *paths],
+                       check=True, capture_output=True)
+    review = act.get("review")
+    if review:
+        path = root / review["file"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        text = review.get("text", "## 지적 사항\n- 없음\n")
+        if review.get("verdict"):
+            text += f"\nVERDICT: {review['verdict']}\n"
+        path.write_text(text, encoding="utf-8")
+    done = act.get("done")
+    if not done:
+        print(json.dumps({"ok": True, "done": None}))
+        return 0
+    argv = [*horch, "done", "--dispatch", dispatch, "--outcome", done["outcome"],
+            "--summary", done.get("summary", "요약")]
+    if done.get("report_path"):
+        argv += ["--report-path", done["report_path"]]
+    proc = subprocess.run(argv, capture_output=True, text=True)
+    sys.stdout.write(proc.stdout)
+    return proc.returncode
+
+
+if __name__ == "__main__":
+    sys.exit(main())
