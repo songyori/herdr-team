@@ -89,7 +89,9 @@ bindings(terminal PK, run_id UNIQUE, argv)     소유 관계. 없으면 그 Run 
 tasks(id PK, run_id, title, spec, status, outcome, created_at, settled_at)
 dispatches(id PK, task_id, run_id, attempt, agent, model, effort, cwd,
            terminal, state, outcome, summary, report_path, files_modified,
-           launch_argv, launcher_pid, launcher_started, created_at, settled_at, closed_at)
+           launch_argv, agent_args, launcher_pid, launcher_started, created_at, settled_at, closed_at)
+                                               agent_args: 호출자가 준 --agent-arg 목록(JSON). 재시도 안내가 그대로 넘긴다
+                                               INDEX ON dispatches(task_id, attempt): 최신 시도 조회
                                                UNIQUE INDEX ON dispatches(task_id)
                                                  WHERE state IN ('launching','active'): Task 당 실행 중 Dispatch 하나
 messages(id PK, run_id, mailbox, sender, type, subject, body, reply_to,
@@ -202,7 +204,7 @@ Dispatch:
 | `run-create` | `--objective` | `{run}`. 호출자를 소유자로 묶고 `hc get` 의 `herdr.space`·`herdr.tab` 라벨을 소유 탭으로 기록 |
 | `run-use` | `--id`, `--force` | `{run, previous_owner}` |
 | `worker-start` | `--spec <텍스트>` 또는 `--spec-file <경로>`, `--title`, `--agent claude\|codex`, `--model`, `--effort`, `--cwd`(기본 호출자 cwd), `--agent-arg`(반복), `--task <id>`, `--retry` | `{task, dispatch, terminal, placement}`. `--task` 가 없으면 spec 과 `--title` 이 필수다. `--task` 가 있으면 그 Task 의 spec·제목을 쓰고, spec·`--title` 을 같이 주면 exit 2 |
-| `worker-list` | `--state <상태>`(반복) | Dispatch 행 목록. 각 행에 `verdict`, `attention`, `next`(다음에 실행할 명령) |
+| `worker-list` | `--state <상태>`(반복, 7개 상태 중 하나. 아니면 exit 2) | Dispatch 행 목록. 각 행에 `verdict`, `attention`, `next`(다음에 실행할 명령). `launch_failed` 의 재시도 안내(`--model`·`--effort`·`--agent-arg` 를 그대로 넘김)는 그 Task 의 최신 시도이고 Task 가 `open` 일 때만 준다 |
 | `worker-show` | `--dispatch`, `--lines N`(기본 40, 0 이면 화면 생략) | 행 하나, `hc get` 요약, `hc read --lines N` 화면 |
 | `send` | `--to run:<id>\|dispatch:<id>`, `--subject`, `--body` | `{message}`. 종류는 항상 `status` |
 | `check` | `--dispatch D`(워커), `--wait`, `--timeout-ms`(기본 900000), `--ack <delivery>` | `{delivery, messages, count, reason}` |
@@ -350,7 +352,7 @@ Dispatch:
 
 ### observed
 
-소유자의 `check --wait` 는 기다리는 동안 5초마다 그 Run 의 `launching`(조정)·`active` Dispatch 를 판정한다(10장: `hc ls` 에는 `argv` 가 없으므로 대상마다 `hc get`). `launch_failed` Dispatch 가 있으면 `hc ls --all --json` 으로 가드가 거부한 터미널을 찾아 정리한다(5장). 다음 경우 `observations` 에 넣고, 새로 넣었을 때만 `observed` 메시지를 Run 메일함에 쓴다.
+소유자의 `check --wait` 는 기다리는 동안 5초마다 그 Run 의 `launching`(조정)·`active` Dispatch 를 판정한다(10장: `hc ls` 에는 `argv` 가 없으므로 대상마다 `hc get`). 판정은 메일함 확인을 막지 않는다: 한 번의 틱은 폴링 간격 안에서만 새 판정을 시작하고, 판정 하나의 `hc get` 은 최대 5초(남은 대기 시간보다 짧게)로 자른다. 다 돌지 못한 Dispatch 는 다음 틱과 다음 `check --wait` 호출에서 이어서 본다(진행 위치는 `meta` 에 Run 마다 둔다). 판정 중 예상 밖 오류가 나도 대기는 계속한다(stderr 에 한 줄, stdout 은 JSON 하나 그대로). 판정이 메시지를 쓰기 직전에는 그 Dispatch 가 아직 같은 터미널의 `active` 인지 트랜잭션 안에서 다시 본다. `turn` 이 없으면 blocked·error 를 기록하지 않는다. `launch_failed` Dispatch 가 있으면 `hc ls --all --json` 으로 가드가 거부한 터미널을 찾아 정리한다(5장). 다음 경우 `observations` 에 넣고, 새로 넣었을 때만 `observed` 메시지를 Run 메일함에 쓴다.
 
 | kind | 조건 | key |
 |---|---|---|
@@ -384,13 +386,14 @@ Dispatch:
 - **워커가 error**: `observed error`. 코디네이터가 `worker-show --lines 80` 으로 화면을 읽고, 이어갈 수 있으면 `send --to dispatch:D` 로 지시한다(9장 깨우기가 error 인 워커에 입력을 보낸다). 이어갈 수 없으면 `worker-abandon --kill` 뒤 `worker-start --task` 로 다시 띄운다.
 - **`worker-abandon`**: 판정이 `exited`·`lost` 면 `abandoned`. `live` 면 `--kill` 이 있어야 하고 `hc kill` 뒤 `abandoned`. `unverifiable` 은 거부(exit 1). 복구 셸(`lost`)은 남아 있으므로 `worker-release` 로 정리한다.
 - **`worker-release`**: `settled`·`retained`·`abandoned` 를 받는다. 다음 순서로 하고, 각 단계는 이미 된 상태를 성공으로 본다.
+  0. `hc get` 의 라벨 `horch.dispatch` 가 이 Dispatch 가 아니면(주소가 다른 터미널을 가리킴) 아무것도 지우지 않고 exit 1(`terminal_mismatch`).
   1. 판정이 `live`·`lost` 면 `hc kill`. 이미 `finished` 거나 hc 가 not_found 를 주면 넘어간다.
-  2. `hc rm`. not_found 면 넘어간다.
+  2. `hc rm`. not_found 면 넘어간다. kind `live`(kill 직후 아직 살아 있음)일 때만 잠깐 다시 시도한다.
   3. `released`, `closed_at` 기록.
   hc 호출이 다른 이유로 실패하면 상태를 바꾸지 않고 exit 1. 다시 실행하면 이어서 한다. 프로그램이 끝나면 Herdr 가 pane 을 닫는다.
 - **코디네이터가 죽음**: 새 터미널에서 `run-use --id R`(6장 넘겨받기). ack 안 된 Delivery 는 새 소유자에게 다시 간다.
 - **동시 쓰기**: WAL, `busy_timeout` 5초, 쓰기는 `BEGIN IMMEDIATE`.
-- **스키마**: `meta.schema_version` 으로 마이그레이션한다. 모르는 더 높은 버전이면 exit 1.
+- **스키마**: `meta.schema_version` 으로 마이그레이션한다. 현재 2(1→2: `dispatches.agent_args` 열과 `(task_id, attempt)` 인덱스 추가). 모르는 더 높은 버전이면 exit 1.
 
 ### doctor 점검
 
