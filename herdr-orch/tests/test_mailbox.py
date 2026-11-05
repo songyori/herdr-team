@@ -1,5 +1,7 @@
+import os
 import time
 import unittest
+from unittest import mock
 
 from tests.helpers import HorchCase
 
@@ -176,10 +178,13 @@ class MailboxTest(HorchCase):
         locker = sqlite3.connect(self.home / "orch.db", isolation_level=None)
         self.addCleanup(locker.close)
         locker.execute("BEGIN IMMEDIATE")
-        try:
-            self.assertEqual(mailbox.wake(store, box), "failed_db")
-        finally:
-            locker.execute("ROLLBACK")
+        # wake 은 os.environ 의 CODEX_SANDBOX 를 읽는다. 샌드박스 안에서도 실제 DB 경로를 타도록 비운다.
+        with mock.patch.dict(os.environ):
+            os.environ.pop("CODEX_SANDBOX", None)
+            try:
+                self.assertEqual(mailbox.wake(store, box), "failed_db")
+            finally:
+                locker.execute("ROLLBACK")
         self.assertIsNotNone(self.db().execute("SELECT 1 FROM messages WHERE body='m'").fetchone())
 
     def test_dead_waiter_cleanup_keeps_reused_pid_row(self):

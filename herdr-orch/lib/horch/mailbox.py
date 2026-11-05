@@ -114,13 +114,15 @@ def check(store, mailbox: str, *, wait: bool = False, timeout_ms: int = 900000, 
         deadline = time.monotonic() + timeout_ms / 1000
         next_tick = time.monotonic()
         while True:
+            if guard is not None:
+                guard()
             if on_tick is not None and time.monotonic() >= next_tick:
                 on_tick()
                 next_tick = time.monotonic() + sweep_interval()
-            if guard is not None:
-                guard()
             res = take(store, mailbox)
             if res["count"]:
+                if guard is not None:
+                    guard()  # 묶음을 돌려주기 전에 수신자 자격을 한 번 더 확인한다.
                 return {**res, "reason": "message"}
             left = deadline - time.monotonic()
             if left <= 0:
