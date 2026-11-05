@@ -142,6 +142,16 @@ def all_states(p) -> list[dict]:
     return found
 
 
+def unreadable_ids(p) -> list[str]:
+    """all_states 가 건너뛰는(읽을 수 없거나 JSON 객체가 아니거나 id 가 파일 이름과 다른) 상태 파일의 ID."""
+    bad = []
+    for tid in state_ids(p):
+        st = read_json(p.state_path(tid), None)
+        if not (isinstance(st, dict) and st.get("id") == tid):
+            bad.append(tid)
+    return bad
+
+
 def current_round(st: dict) -> dict | None:
     return st["rounds"][-1] if st.get("rounds") else None
 

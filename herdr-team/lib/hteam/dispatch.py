@@ -5,7 +5,10 @@
 """
 from __future__ import annotations
 
+import contextlib
 import os
+import subprocess
+from typing import Iterator
 
 from . import procs, state
 from .errors import CONFLICT, FAIL, MISSING, HteamError
@@ -66,35 +69,82 @@ def existing(h, slot: dict) -> tuple[str, dict | None, list[str]]:
     """("fresh"|"adopt"|"retry", 행, 경고). 기록된 Task 가 있으면 그것, 자식 pid 만 있으면 제목으로 찾는다."""
     if slot.get("horch_task"):
         row = latest_for_task(h.workers(), slot["horch_task"])
-        return ("fresh", None, []) if row is None else (classify(row), row, [])
+        if row is None:  # 새로 띄우면 같은 제목의 horch Task 가 둘이 된다
+            raise HteamError("horch_task_missing", f"기록된 horch Task {slot['horch_task']} 가 worker-list 에 없다", FAIL,
+                             "horch 홈(state/horch)과 Run 이 그대로인지 확인한다. 이 실행 키를 넘기려면 hteam fix, "
+                             "버리려면 hteam drop")
+        return classify(row), row, []
     if slot.get("launched"):
         row, warnings = find_by_title(h.workers(), slot["title"])
         return ("fresh", None, warnings) if row is None else (classify(row), row, warnings)
     return "fresh", None, []
 
 
-def _run_barrier(p, tid: str, pick, argv: list[str]) -> tuple[int, dict]:
+def check_owner(st: dict, slot: dict) -> None:
+    """이 실행자가 아직 이 실행 기록을 띄울 수 있나(설계 5.4·6.4). 태스크 잠금 안에서 부른다.
+
+    fix·drop 은 끝나지 않은 실행 키에 canceled 를 먼저 저장하고 horch 상태로 정리한 뒤 새 라운드나 dropped 를 쓴다.
+    그 뒤에 이 실행자가 기록을 쓰면 정리를 되돌린다. 취소됐거나 실행자 기록이 이 프로세스·이 실행 키가 아니면 exit 3."""
+    if slot.get("canceled"):
+        raise HteamError("launch_canceled", f"{slot['title']} 실행 키가 취소됐다", CONFLICT,
+                         "앞선 fix·drop 이 끝나지 않았다. 같은 명령을 다시 한다")
+    launcher = st.get("launcher") or {}
+    if launcher.get("key") != slot["title"] or launcher.get("pid") != os.getpid():
+        raise HteamError("launch_canceled", f"{slot['title']} 실행자 기록이 이 프로세스가 아니다(다른 명령이 바꿨다)",
+                         CONFLICT, "hteam status 로 태스크 상태를 확인한다")
+
+
+@contextlib.contextmanager
+def owned(p, tid: str, pick, expect=None) -> Iterator[dict]:
+    """태스크 잠금 아래에서 이전 상태(expect, 끝난 태스크가 아님)와 실행 권한(check_owner)을 확인한 뒤 상태를 내준다."""
+    with state.edit(p, tid, expect=expect) as st:
+        if st["status"] in state.CLOSED:
+            raise state.closed_error(st)
+        check_owner(st, pick(st))
+        yield st
+
+
+def left_running(exc: HteamError, info: dict) -> HteamError:
+    """horch 워커가 이미 떴는데 실행 권한을 잃었다. 기록하지 않고(working 도 아님) 정리는 fix·drop 에 맡긴다.
+    fix·drop 은 기록된 horch Task, 없으면 실행 키(제목)의 모든 Dispatch 를 horch 상태로 골라 정리한다."""
+    exc.hint = "horch 워커가 이미 떴지만 working 으로 두지 않았다. 진행 중인 fix·drop 이 horch 상태로 그 Dispatch 를 정리한다"
+    exc.data = {**exc.data, "horch": info}
+    return exc
+
+
+def _run_barrier(p, tid: str, pick, argv: list[str], expect) -> tuple[int, dict]:
     barrier = Barrier(argv)
     try:
-        with state.edit(p, tid) as st:
+        with owned(p, tid, pick, expect) as st:
             pick(st)["launched"] = barrier.record()
     except BaseException:
         barrier.abort()
         raise
     die_at("after_child")
-    code, out, err = barrier.go()
+    try:
+        code, out, err = barrier.go()
+    except subprocess.TimeoutExpired:
+        # 자식(horch)은 기록돼 있다. 살아 있는 동안 복구는 launching, 끝나면 제목으로 찾아 이어 한다
+        raise HteamError("launch_timeout", f"{tid} 의 horch worker-start 가 제한 시간 안에 끝나지 않았다", FAIL,
+                         "상태는 launch_failed 그대로다. horch 가 끝난 뒤 같은 명령을 다시 한다") from None
     die_at("after_launch")
     return code, parse(out, err)
 
 
 def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str | None, args: list[str],
-           spec_file) -> dict:
-    """pick(st) 가 가리키는 실행 기록으로 horch 워커를 띄우거나 이어 붙인다. 실패하면 HteamError(launch_failed)."""
+           spec_file, expect=None) -> dict:
+    """pick(st) 가 가리키는 실행 기록으로 horch 워커를 띄우거나 이어 붙인다. 실패하면 HteamError(launch_failed).
+
+    기록을 쓸 때마다 owned 로 이전 상태(expect)·취소·실행자를 다시 확인한다. 어긋나면 exit 3(launch_canceled 등)."""
     slot = pick(state.require(p, tid))
     mode, row, warnings = existing(h, slot)
     if mode == "adopt":
-        with state.edit(p, tid) as st:
-            pick(st).update(horch_task=row["task"], dispatch=row["id"], error=None)
+        try:
+            with owned(p, tid, pick, expect) as st:
+                pick(st).update(horch_task=row["task"], dispatch=row["id"], error=None)
+        except HteamError as exc:
+            left_running(exc, {"task": row["task"], "dispatch": row["id"], "state": row["state"]})
+            raise
         # 이어 붙인 Dispatch 의 실제 에이전트·모델을 돌려준다. 호출자가 라운드·시도 기록을 그것에 맞춘다
         return {"mode": "adopt", "horch_task": row["task"], "dispatch": row["id"], "terminal": row.get("terminal"),
                 "state": row["state"], "agent": row.get("agent"), "model": row.get("model"),
@@ -110,15 +160,20 @@ def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str |
     else:
         argv = h.argv("worker-start", "--agent", agent, "--title", slot["title"], "--spec-file", str(spec_file),
                       "--cwd", str(p.root), *opts, *agent_args(args))
-    code, data = _run_barrier(p, tid, pick, argv)
+    code, data = _run_barrier(p, tid, pick, argv, expect)
     ok = code == 0 and data.get("ok")
-    with state.edit(p, tid) as st:
-        s = pick(st)
+    try:
+        with owned(p, tid, pick, expect) as st:
+            s = pick(st)
+            if ok:
+                s.update(horch_task=data["task"], dispatch=data["dispatch"], error=None)
+            else:
+                s["horch_task"] = data.get("task") or s.get("horch_task")
+                s["error"] = {"exit": code, **(data.get("error") or {})}
+    except HteamError as exc:
         if ok:
-            s.update(horch_task=data["task"], dispatch=data["dispatch"], error=None)
-        else:
-            s["horch_task"] = data.get("task") or s.get("horch_task")
-            s["error"] = {"exit": code, **(data.get("error") or {})}
+            left_running(exc, data)
+        raise
     if not ok:
         err = data.get("error") or {}
         raise HteamError("launch_failed", f"horch worker-start 실패: {err.get('code')}: {err.get('message')}",

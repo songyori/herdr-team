@@ -41,12 +41,25 @@ class Barrier:
         return self.proc.returncode, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
 
     def abort(self) -> None:
-        """기록에 실패했다. 바이트 없이 stdin 을 닫아 자식이 horch 를 실행하지 않고 끝나게 한다."""
+        """기록에 실패했다. 바이트 없이 stdin 을 닫아 자식이 horch 를 실행하지 않고 끝나게 한다.
+
+        호출자는 원래 오류를 다시 던지는 중이다. 그 오류를 가리지 않게 최선을 다할 뿐 예외를 내지 않는다.
+        기다려도 끝나지 않으면 죽인다(바이트를 받지 않은 자식은 horch 를 실행하지 않았다)."""
         try:
             self.proc.stdin.close()
-        except OSError:
+        except Exception:
             pass
-        self.proc.wait(timeout=30)
+        try:
+            self.proc.wait(timeout=30)
+        except Exception:
+            try:
+                self.proc.kill()
+                self.proc.wait(timeout=5)
+            except Exception:
+                pass
         for pipe in (self.proc.stdout, self.proc.stderr):
-            if pipe:
-                pipe.close()
+            try:
+                if pipe:
+                    pipe.close()
+            except Exception:
+                pass

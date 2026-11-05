@@ -1,11 +1,15 @@
 """start·start-ready(설계 5.4), 워커 사양 조립(5.5), 시작 장벽과 복구."""
+import contextlib
 import json
+import os
 import subprocess
 import sys
 import unittest
+from unittest import mock
 
-from tests.helpers import BASE_CONFIG, COORD, TeamCase
+from tests.helpers import BASE_CONFIG, TeamCase
 from hteam import compose, config, dispatch, launch, procs, specs, state, tasks
+from hteam.errors import HteamError
 from hteam.paths import Project
 
 
@@ -24,6 +28,15 @@ class StartCase(TeamCase):
         code, out = self.horch("worker-list")
         self.assertEqual(code, 0, out)
         return out["workers"]
+
+    @contextlib.contextmanager
+    def in_process(self):
+        """hteam 을 이 프로세스에서 부른다(경합 지점에 끼어들려고). horch·장벽 자식은 테스트 환경을 물려받는다."""
+        with mock.patch.dict(os.environ, self._env("coordinator", None, None), clear=True):
+            yield
+
+    def set_max_parallel(self, n):
+        (self.team / "config.toml").write_text(BASE_CONFIG.replace("max_parallel = 4", f"max_parallel = {n}"))
 
 
 class StartTest(StartCase):
@@ -156,6 +169,155 @@ class StartTest(StartCase):
         code, out = self.hteam("start", "T-001")
         self.assertEqual((code, out["error"]["code"]), (3, "launch_canceled"))
 
+    def test_first_launch_aligns_role_with_spec(self):
+        """task new --role developer 뒤 사양을 planner 로 바꿨다. 워커는 planner 로 뜨므로 저장된 직무도 planner 다."""
+        self.make_task("T-001")
+        self.write_spec("T-001", "planner", owns="docs/planning/a/**")
+        self.assertEqual(self.task_state("T-001")["role"], "developer")
+        self.assertEqual(self.hteam("start", "T-001")[0], 0)
+        self.assertEqual(self.task_state("T-001")["role"], "planner")
+        self.make_task("T-002", "planner", owns="docs/planning/b/**")
+        code, out = self.hteam("start", "T-002")
+        self.assertEqual((code, out["error"]["code"]), (3, "planner_busy"), out)
+
+    def test_corrupt_state_file_blocks_new_starts(self):
+        """잠금을 가진 태스크의 상태 파일이 손상되면 그 잠금을 알 수 없다. 새 작업을 띄우지 않는다(exit 1)."""
+        self.make_task("T-001")
+        self.assertEqual(self.hteam("start", "T-001")[0], 0)
+        (self.state_dir / "tasks/T-001.json").write_text("{", encoding="utf-8")
+        self.make_task("T-002", owns="src/auth/**")
+        code, out = self.hteam("start", "T-002")
+        self.assertEqual((code, out["error"]["code"]), (1, "bad_state_file"), out)
+        self.assertIn("T-001.json", out["error"]["message"])
+        self.assertEqual(self.task_state("T-002")["status"], "pending")
+        self.assertEqual(len(self.horch_tasks()), 1)
+
+
+class LaunchRaceTest(StartCase):
+    """시작 검사와 장벽 기록·working 전이 사이에 fix·drop(Task 8)의 취소나 상태 변경이 끼어든다."""
+
+    def hooked_barrier(self, tid, hook, made):
+        """장벽 자식을 만든 직후, 기록하기 전에 hook(st) 를 상태에 적용하는 Barrier."""
+        test = self
+
+        class Hooked(launch.Barrier):
+            def __init__(self, argv):
+                super().__init__(argv)
+                made.append(self)
+                with state.edit(test.p, tid) as st:
+                    hook(st)
+        return Hooked
+
+    def test_cancel_or_status_change_before_barrier_record_never_launches(self):
+        def cancel(st):
+            st["rounds"][-1]["work"]["canceled"] = True
+
+        def drop(st):
+            state.move(st, "dropped", "drop")
+
+        def replace(st):
+            st["launcher"]["pid"] = 1
+
+        cases = [("T-001", "src/a/**", cancel, "launch_canceled", "launch_failed"),
+                 ("T-002", "src/b/**", drop, "task_closed", "dropped"),
+                 ("T-003", "src/c/**", replace, "launch_canceled", "launch_failed")]
+        for tid, owns, hook, code, status in cases:
+            with self.subTest(tid=tid):
+                self.make_task(tid, owns=owns)
+                made = []
+                with self.in_process(), mock.patch.object(dispatch, "Barrier", self.hooked_barrier(tid, hook, made)):
+                    with self.assertRaises(HteamError) as cm:
+                        tasks.start(self.p, tid, {})
+                self.assertEqual((cm.exception.code, cm.exception.exit_code), (code, 3))
+                self.assertEqual(made[0].proc.returncode, launch.NOT_RUN)  # 바이트 없이 끝났다
+                st = self.task_state(tid)
+                self.assertEqual(st["status"], status)
+                self.assertIsNone(st["rounds"][-1]["work"]["launched"])
+        self.assertEqual(self.horch_tasks(), [])
+
+    def test_cancel_after_horch_started_is_not_working(self):
+        """horch 가 이미 떴다면 working 으로 두지 않고 exit 3. 정리는 fix·drop 이 horch 상태로 한다."""
+        real_go = launch.Barrier.go
+
+        def go(barrier, timeout=600):
+            res = real_go(barrier, timeout)
+            with state.edit(self.p, "T-001") as st:
+                st["rounds"][-1]["work"]["canceled"] = True
+            return res
+
+        self.make_task("T-001", owns="src/a/**")
+        with self.in_process(), mock.patch.object(launch.Barrier, "go", go):
+            with self.assertRaises(HteamError) as cm:
+                tasks.start(self.p, "T-001", {})
+        self.assertEqual((cm.exception.code, cm.exception.exit_code), ("launch_canceled", 3))
+        self.assertIn("fix", cm.exception.hint)
+        st = self.task_state("T-001")
+        self.assertEqual(st["status"], "launch_failed")
+        self.assertIsNotNone(st["rounds"][0]["work"]["launched"])  # fix·drop 이 실행 키(제목)로 찾는다
+        self.assertEqual(len(self.horch_tasks()), 1)
+
+        real_launch = dispatch.launch
+
+        def launched_then_canceled(*a, **kw):
+            res = real_launch(*a, **kw)
+            with state.edit(self.p, "T-002") as st:
+                st["rounds"][-1]["work"]["canceled"] = True
+            return res
+
+        self.make_task("T-002", owns="src/b/**")
+        with self.in_process(), mock.patch.object(dispatch, "launch", launched_then_canceled):
+            with self.assertRaises(HteamError) as cm:
+                tasks.start(self.p, "T-002", {})
+        self.assertEqual((cm.exception.code, cm.exception.exit_code), ("launch_canceled", 3))
+        st = self.task_state("T-002")
+        self.assertEqual(st["status"], "launch_failed")
+        self.assertIsNotNone(st["rounds"][0]["work"]["dispatch"])
+        self.assertEqual(cm.exception.data["horch"]["dispatch"], st["rounds"][0]["work"]["dispatch"])
+
+    def test_cancel_before_adopt_record(self):
+        self.make_task("T-001")
+        self.hteam("start", "T-001", env={"HTEAM_TEST_DIE_AT": "after_launch"})
+        real = dispatch.existing
+
+        def existing(h, slot):
+            res = real(h, slot)
+            with state.edit(self.p, "T-001") as st:
+                st["rounds"][-1]["work"]["canceled"] = True
+            return res
+
+        with self.in_process(), mock.patch.object(dispatch, "existing", existing):
+            with self.assertRaises(HteamError) as cm:
+                tasks.start(self.p, "T-001", {})
+        self.assertEqual((cm.exception.code, cm.exception.exit_code), ("launch_canceled", 3))
+        st = self.task_state("T-001")
+        self.assertEqual(st["status"], "launch_failed")
+        self.assertIsNone(st["rounds"][0]["work"]["horch_task"])
+
+    def test_barrier_timeout_is_json_error_and_recoverable(self):
+        held = []
+
+        def go(barrier, timeout=600):  # horch 가 끝나지 않는다(자식은 바이트를 기다리며 살아 있다)
+            held.append(barrier)
+            self.addCleanup(barrier.abort)
+            raise subprocess.TimeoutExpired(barrier.proc.args, timeout)
+
+        self.make_task("T-001")
+        with self.in_process(), mock.patch.object(launch.Barrier, "go", go):
+            with self.assertRaises(HteamError) as cm:
+                tasks.start(self.p, "T-001", {})
+        self.assertEqual((cm.exception.code, cm.exception.exit_code), ("launch_timeout", 1))
+        st = self.task_state("T-001")
+        self.assertEqual(st["status"], "launch_failed")
+        self.assertEqual(st["rounds"][0]["work"]["launched"]["pid"], held[0].pid)
+        # 실행자(이 프로세스)는 제외하고 자식만 본다: 살아 있는 동안은 launching, 끝나면 이어 띄운다
+        with self.in_process():
+            with self.assertRaises(HteamError) as cm:
+                tasks.start(self.p, "T-001", {})
+            self.assertEqual((cm.exception.code, cm.exception.exit_code), ("launching", 3))
+            held[0].abort()
+            out = tasks.start(self.p, "T-001", {})
+        self.assertEqual((out["mode"], out["status"]), ("fresh", "working"), out)
+
 
 class FindTest(unittest.TestCase):
     def test_find_by_title_latest_and_warn(self):
@@ -172,6 +334,16 @@ class FindTest(unittest.TestCase):
         self.assertEqual(dispatch.classify({"state": "released", "outcome": "succeeded"}), "adopt")
         self.assertEqual(dispatch.classify({"state": "released", "outcome": None}), "retry")
         self.assertEqual(dispatch.find_by_title(rows, "none"), (None, []))
+
+    def test_recorded_horch_task_without_rows_is_error(self):
+        """기록된 horch Task 가 worker-list 에 없으면 같은 제목의 Task 를 새로 만들지 않는다."""
+        h = mock.Mock()
+        h.workers.return_value = [{"id": "d1", "task": "other", "attempt": 1, "title": "T", "state": "active"}]
+        slot = {**dispatch.new_slot("T"), "horch_task": "gone", "launched": {"pid": 1, "started": ""}}
+        with self.assertRaises(HteamError) as cm:
+            dispatch.existing(h, slot)
+        self.assertEqual((cm.exception.code, cm.exception.exit_code), ("horch_task_missing", 1))
+        self.assertTrue(cm.exception.hint)
 
 
 class StartReadyTest(StartCase):
@@ -214,6 +386,90 @@ class StartReadyTest(StartCase):
         self.assertTrue(tasks.deps_met(self.p, cfg, specs.load(self.p, "T-002")))
         self.assertFalse(tasks.deps_met(self.p, cfg, specs.load(self.p, "T-003")))
 
+    def test_launching_task_counts_toward_limit(self):
+        """다른 start·start-ready 가 띄우는 중인 태스크(launch_failed, 실행자 살아 있음)도 동시 수에 든다."""
+        self.set_max_parallel(1)
+        self.make_task("T-001", owns="src/a/**")
+        self.make_task("T-002", owns="src/b/**")
+        self.hteam("start", "T-001", env={"HTEAM_TEST_DIE_AT": "after_child"})
+        sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        self.addCleanup(lambda: (sleeper.kill(), sleeper.wait()))
+        with state.edit(self.p, "T-001") as st:
+            st["launcher"].update(pid=sleeper.pid, started=procs.start_time(sleeper.pid))
+        code, out = self.hteam("start-ready")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["started"], [])
+        self.assertEqual({w["task"]: w["reason"] for w in out["waiting"]}, {"T-001": "launching", "T-002": "limit"})
+        self.assertEqual(self.task_state("T-002")["status"], "pending")
+
+    def test_overlapping_start_ready_respects_limit(self):
+        self.set_max_parallel(1)
+        self.make_task("T-001", owns="src/a/**")
+        self.make_task("T-002", owns="src/b/**")
+        procs_ = [self.hteam_bg("start-ready") for _ in range(2)]
+        results = [self.finish(proc) for proc in procs_]
+        for code, out in results:
+            self.assertEqual(code, 0, out)
+        started = [s["task"] for _, out in results for s in out["started"]]
+        self.assertEqual(len(started), 1, results)
+        working = [t for t in ("T-001", "T-002") if self.task_state(t)["status"] == "working"]
+        self.assertEqual(working, started)
+
+    def test_recovery_candidate_uses_stored_owns(self):
+        """launch_failed 복구는 저장된 owns 로 잠근다. 사양을 고쳐 다른 태스크와 겹쳐도 lock 대기가 아니다."""
+        self.make_task("T-001", owns="src/a/**")
+        self.make_task("T-002", owns="src/b/**")
+        self.fail_hc("run", "boom")
+        self.assertEqual(self.hteam("start", "T-001")[1]["error"]["code"], "launch_failed")
+        with self._hc_locked() as hc:
+            hc["fail"].clear()
+        self.assertEqual(self.hteam("start", "T-002")[0], 0)
+        self.write_spec("T-001", owns="src/b/**")
+        code, out = self.hteam("start-ready")
+        self.assertEqual(code, 0, out)
+        self.assertEqual([s["task"] for s in out["started"]], ["T-001"], out)
+        self.assertEqual(self.task_state("T-001")["owns"], ["src/a/**"])
+
+    def test_too_wide_fresh_spec_is_failure_not_lock(self):
+        self.make_task("T-001")
+        self.assertEqual(self.hteam("start", "T-001")[0], 0)
+        self.make_task("T-002", owns="**")  # 직무 owns 를 넘고 T-001 과도 겹친다
+        code, out = self.hteam("start-ready")
+        self.assertEqual((code, out["error"]["code"]), (1, "start_failed"), out)
+        self.assertEqual([(f["task"], f["error"]["code"]) for f in out["failed"]], [("T-002", "owns_too_wide")])
+
+    def test_bad_state_file_is_one_failure(self):
+        """상태 파일 손상은 그 태스크(와 잠금 검사)만 실패로 두고 끝까지 돈다."""
+        self.make_task("T-001", owns="src/a/**")
+        (self.state_dir / "tasks/T-001.json").write_text("{", encoding="utf-8")
+        self.make_task("T-002", owns="src/b/**", depends="T-001")
+        self.make_task("T-003", owns="src/c/**")
+        code, out = self.hteam("start-ready")
+        self.assertEqual((code, out["error"]["code"]), (1, "start_failed"), out)
+        self.assertEqual([(f["task"], f["error"]["code"]) for f in out["failed"]],
+                         [("T-002", "bad_state_file"), ("T-003", "bad_state_file")])
+        self.assertEqual(out["started"], [])
+
+    def test_unexpected_error_is_one_failure(self):
+        """장벽 대기 시간 초과 같은 예상 밖 오류도 그 태스크만 실패로 두고 started 를 잃지 않는다."""
+        for tid, owns in (("T-001", "src/a/**"), ("T-002", "src/b/**"), ("T-003", "src/c/**")):
+            self.make_task(tid, owns=owns)
+        real_go = launch.Barrier.go
+
+        def go(barrier, timeout=600):
+            if "T-002 r1 작업" in barrier.proc.args:
+                self.addCleanup(barrier.abort)
+                raise subprocess.TimeoutExpired(barrier.proc.args, timeout)
+            return real_go(barrier, timeout)
+
+        with self.in_process(), mock.patch.object(launch.Barrier, "go", go):
+            with self.assertRaises(HteamError) as cm:
+                tasks.start_ready(self.p)
+        self.assertEqual(cm.exception.code, "start_failed")
+        data = cm.exception.data
+        self.assertEqual([s["task"] for s in data["started"]], ["T-001", "T-003"])
+        self.assertEqual([(f["task"], f["error"]["code"]) for f in data["failed"]], [("T-002", "launch_timeout")])
+
 
 class ComposeTest(StartCase):
     def test_fix_round_block_and_ask_rule(self):
@@ -251,6 +507,25 @@ class BarrierTest(unittest.TestCase):
             b.abort()
             self.assertEqual(b.proc.returncode, launch.NOT_RUN)
             self.assertFalse(__import__("os").path.exists(marker))
+
+    def test_abort_kills_on_wait_timeout_and_never_raises(self):
+        """abort 는 원래 오류를 가리지 않는다: 기다리다 시간이 넘으면 죽이고, 예외를 내지 않는다."""
+        b = launch.Barrier([sys.executable, "-c", "pass"])
+        real_wait = b.proc.wait
+        calls = []
+
+        def wait(timeout=None):
+            calls.append(timeout)
+            if len(calls) == 1:
+                raise subprocess.TimeoutExpired(b.proc.args, timeout)
+            return real_wait(timeout=timeout)
+
+        b.proc.wait = wait
+        with mock.patch.object(b.proc, "kill", wraps=b.proc.kill) as kill:
+            b.abort()
+        kill.assert_called_once()
+        self.assertIsNotNone(b.proc.returncode)
+        self.assertTrue(b.proc.stdout.closed and b.proc.stderr.closed)
 
 
 class SameRoundTest(StartCase):
