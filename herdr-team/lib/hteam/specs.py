@@ -1,0 +1,193 @@
+"""태스크 사양(설계 5.1): 읽기, 검사, `task new`."""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+
+from . import config, roles, state
+from .errors import CONFLICT, USAGE, HteamError
+from .paths import find_project
+
+ID_RE = re.compile(r"T-\d{3,}")
+SECTIONS = ("Target", "Change", "Constraints", "Acceptance")
+LIST_KEYS = ("owns", "depends_on")
+PLACEHOLDER_RE = re.compile(r"<[^<>\n]*>")
+NEW_BODY = """## Target
+<대상 파일·컴포넌트·환경>
+
+## Change
+<만들 결과>
+
+## Constraints
+<지킬 불변식, 호환성, 건드리지 말 것>
+
+## Acceptance
+<완료를 증명할 테스트·명령 출력·증거>
+"""
+
+
+@dataclass
+class Spec:
+    id: str
+    role: str
+    title: str
+    front: dict
+    sections: dict[str, str]
+    body: str
+    owns: list[str] | None = None
+    depends_on: list[str] = field(default_factory=list)
+
+
+def _bad(message: str) -> HteamError:
+    return HteamError("bad_spec", message, USAGE)
+
+
+def parse(text: str) -> Spec:
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise _bad("사양 첫 줄이 front matter 시작(---)이 아니다")
+    try:
+        end = next(i for i in range(1, len(lines)) if lines[i].strip() == "---")
+    except StopIteration:
+        raise _bad("front matter 끝(---)이 없다") from None
+    front: dict = {}
+    for line in lines[1:end]:
+        if not line.strip():
+            continue
+        key, sep, value = line.partition(":")
+        if not sep:
+            raise _bad(f"front matter 줄을 읽지 못했다: {line!r}")
+        key, value = key.strip(), value.strip()
+        front[key] = [v.strip() for v in value.split(",") if v.strip()] if key in LIST_KEYS else value
+    missing = [k for k in ("id", "role", "title") if not front.get(k)]
+    if missing:
+        raise _bad(f"front matter 에 {', '.join(missing)} 가 없다")
+    body = "\n".join(lines[end + 1:]).strip("\n") + "\n"
+    sections: dict[str, str] = {}
+    current, buf = None, []
+    for line in body.splitlines():
+        m = re.match(r"^## (.+?)\s*$", line)
+        if m:
+            if current is not None:
+                sections[current] = "\n".join(buf).strip()
+            current, buf = m.group(1), []
+        elif current is not None:
+            buf.append(line)
+    if current is not None:
+        sections[current] = "\n".join(buf).strip()
+    return Spec(id=front["id"], role=front["role"], title=front["title"], front=front, sections=sections, body=body,
+                owns=front.get("owns") or None, depends_on=list(front.get("depends_on") or []))
+
+
+def problems(spec: Spec) -> list[str]:
+    """시작 전 검사(설계 5.1): 네 절이 있고 비지 않고 `<…>` 자리표시만 있지 않다."""
+    found = []
+    for name in SECTIONS:
+        text = spec.sections.get(name)
+        if text is None:
+            found.append(f"## {name} 절이 없다")
+        elif not PLACEHOLDER_RE.sub("", text).strip():
+            found.append(f"## {name} 절이 비었거나 <…> 자리표시뿐이다")
+    if spec.front.get("worker") not in (None, "claude", "codex"):
+        found.append(f"worker 는 claude·codex 중 하나다: {spec.front['worker']!r}")
+    found += [f"depends_on 의 {d!r} 는 태스크 ID 가 아니다" for d in spec.depends_on if not ID_RE.fullmatch(d)]
+    return found
+
+
+def load(p, tid: str) -> Spec:
+    path = p.spec_path(tid)
+    if not ID_RE.fullmatch(tid):
+        raise HteamError("bad_task_id", f"태스크 ID 는 T- 와 숫자 3자리 이상이다: {tid!r}", USAGE)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise HteamError("unknown_task", f"{tid} 사양이 없다({path.relative_to(p.root)})", USAGE) from None
+    spec = parse(text)
+    if spec.id != tid:
+        raise _bad(f"{path.name} 의 id 가 {spec.id} 다")
+    return spec
+
+
+def check(p, cfg, tid: str) -> Spec:
+    """start 전 검사. 어기면 exit 2 bad_spec(problems 목록)."""
+    spec = load(p, tid)
+    cfg.role(spec.role)
+    found = problems(spec)
+    if found:
+        raise HteamError("bad_spec", f"{tid} 사양 검사 실패: " + "; ".join(found), USAGE,
+                         "사양을 채우고 `spec: T-xxx` 로 커밋한다", data={"problems": found})
+    return spec
+
+
+def owns_of(cfg, spec: Spec) -> list[str]:
+    """front matter owns 가 있으면 그것(직무 owns 를 좁힌다), 없으면 직무 owns."""
+    return list(spec.owns) if spec.owns else cfg.owns(spec.role)
+
+
+def list_ids(p) -> list[str]:
+    if not p.tasks.is_dir():
+        return []
+    ids = [path.stem for path in p.tasks.glob("T-*.md") if ID_RE.fullmatch(path.stem)]
+    return sorted(ids, key=state.id_number)
+
+
+def next_id(p) -> str:
+    known = list_ids(p) + [s["id"] for s in state.all_states(p)]
+    n = max((state.id_number(t) for t in known), default=0) + 1
+    return f"T-{n:03d}"
+
+
+def render(tid: str, role: str, title: str, body: str, *, owns: list[str] | None = None,
+           depends: list[str] | None = None, plan_key: str | None = None) -> str:
+    lines = ["---", f"id: {tid}", f"role: {role}", f"title: {title}"]
+    if owns:
+        lines.append(f"owns: {', '.join(owns)}")
+    if depends:
+        lines.append(f"depends_on: {', '.join(depends)}")
+    if plan_key:
+        lines.append(f"plan_key: {plan_key}")
+    lines.append("---")
+    return "\n".join(lines) + "\n" + body
+
+
+def new(p, cfg, role: str, title: str, owns: list[str] | None = None, depends: list[str] | None = None) -> dict:
+    cfg.role(role)
+    if not title.strip() or "\n" in title:
+        raise HteamError("bad_title", "제목은 비지 않은 한 줄이다", USAGE)
+    for dep in depends or []:
+        if not ID_RE.fullmatch(dep):
+            raise HteamError("bad_task_id", f"depends_on 의 {dep!r} 는 태스크 ID 가 아니다", USAGE)
+    p.tasks.mkdir(parents=True, exist_ok=True)
+    with state.project_lock(p):
+        tid = next_id(p)
+        path = p.spec_path(tid)
+        try:
+            with path.open("x", encoding="utf-8") as fh:
+                fh.write(render(tid, role, title, NEW_BODY, owns=owns, depends=depends))
+        except FileExistsError:
+            raise HteamError("task_exists", f"{tid} 사양이 이미 있다", CONFLICT) from None
+        state.create(p, tid, role)
+    return {"id": tid, "path": str(path.relative_to(p.root)),
+            "hint": f"네 절을 채우고 `git add -- {path.relative_to(p.root)} && git commit -m \"spec: {tid}\" -- "
+                    f"{path.relative_to(p.root)}` 로 커밋한다"}
+
+
+def _split(value: str | None) -> list[str] | None:
+    return [v.strip() for v in value.split(",") if v.strip()] if value else None
+
+
+def _cmd_task_new(args) -> dict:
+    p = find_project(args.root)
+    roles.require_coordinator(p)
+    return new(p, config.load(p), args.role, args.title, _split(args.owns), _split(args.depends_on))
+
+
+def register(sub) -> None:
+    task = sub.add_parser("task")
+    tsub = task.add_subparsers(dest="task_cmd", required=True, parser_class=task.__class__)
+    s = tsub.add_parser("new")
+    s.add_argument("--role", required=True)
+    s.add_argument("--title", required=True)
+    s.add_argument("--owns", help="쉼표로 나눈 glob(직무 owns 를 좁힌다)")
+    s.add_argument("--depends-on", help="쉼표로 나눈 태스크 ID")
+    s.set_defaults(func=_cmd_task_new)

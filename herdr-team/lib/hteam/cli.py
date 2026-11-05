@@ -15,6 +15,7 @@ from .paths import VERSION
 
 # 명령을 등록하는 모듈. 태스크마다 한 줄씩 더한다.
 COMMAND_MODULES: tuple[str, ...] = (
+    "specs",
 )
 
 
