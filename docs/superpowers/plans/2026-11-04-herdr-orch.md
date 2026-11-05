@@ -1587,6 +1587,13 @@ class RunUseTest(HorchCase):
         self.assertEqual(out["previous_owner"], "t100")
         self.assertIsNone(out["previous_verdict"])
 
+    def test_self_is_noop_without_hc(self):
+        self.fail_hc("get", "timeout")
+        code, out = self.use(terminal="t100")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["previous_owner"], "t100")
+        self.assertEqual(self.owner(), "t100")
+
     def test_live_owner_refused(self):
         code, out = self.use()
         self.assertEqual(code, 3)
@@ -1786,6 +1793,10 @@ def use(store, run_id: str, force: bool) -> dict:
     auth.refuse_worker(store, term)
     if not store.one("SELECT 1 FROM runs WHERE id=?", (run_id,)):
         raise HorchError("unknown_run", f"Run {run_id} 가 없다", USAGE)
+    # 이미 자기 것이면 아무것도 바꾸지 않는다. hc 를 부르지 않으므로 hc 장애에도 성공한다.
+    mine = store.one("SELECT 1 FROM bindings WHERE run_id=? AND terminal=?", (run_id, term))
+    if mine:
+        return {"run": run_json(store, run_id), "previous_owner": term, "previous_verdict": None}
     space, tab, argv = _caller_facts(term)
     # 설계 6장: binding 조회, 생존 판정, 허용 검사, 갱신을 한 BEGIN IMMEDIATE 안에서 한다.
     # 판정하는 동안 다른 쓰기(같은 terminal·argv 로 다시 묶기 포함)는 binding 을 바꾸지 못한다.
