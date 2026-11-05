@@ -1,0 +1,641 @@
+# herdr-team 설계
+
+작성 2026-11-05. 상태: 설계 확정 전(Codex 교차 검증과 사용자 검토 대기).
+
+## 1. 목적과 범위
+
+herdr-team 은 Herdr(herdr-app 창 + herdr-core `hc`) 위에서 직무 팀으로 소프트웨어를 만드는 Claude Code 플러그인이다. 사용자는 메인 세션과 대화하고, 코디네이터가 일을 나눠 직무 워커(기획·디자인 디렉터·디자인·개발·테스트)를 팀 탭의 pane 으로 띄운다. 워커의 결과는 반대쪽 모델(Claude ↔ Codex)이 리뷰한다.
+
+- 실행·메일함·생존 판정은 herdr-orch(`horch`, 이 저장소의 다른 플러그인)를 쓴다. herdr-team 은 그 위의 팀 계층이다.
+- orca-team(`setup-with-orca` 저장소, 0.4.1)의 개념을 옮긴다. 코드는 가져다 쓰지 않는다(의존 없음). 개념 대응은 부록 A.
+- 범위: orca-team 0.4.1 의 기능 전부(3계층, 직무·모델 설정, 태스크 그래프와 병렬 시작, owns 잠금, 교차 리뷰와 수정 라운드, 기획 인터뷰, 사용자 승인 직무와 디자인 일괄 승인, 디자인 디렉터, 이미지 생성, AI 티 금지 목록과 자동 검사). 구현은 세 단계로 나눈다(15장).
+
+### 사용자 결정 (2026-11-05)
+
+| 주제 | 결정 |
+|---|---|
+| 첫 버전 범위 | orca-team 0.4 전부 |
+| 대화 상대 | 3계층. 사용자는 메인과만 대화한다. 메인은 horch Run 에 묶이지 않는다 |
+| 리뷰어 | horch 워커 pane 으로 띄운다(화면 없는 exec 가 아님) |
+| 워커 에이전트 | 직무마다 `claude` 또는 `codex`. 리뷰는 항상 반대쪽 에이전트 |
+| 이미지 | 직무가 아니다. Codex 가 만들고 요청한 Claude 워커가 검토한다 |
+| 레퍼런스 캡처 | Chrome DevTools MCP |
+| 구조 | 팀 CLI `hteam` 이 horch 를 부른다(horch 확장이나 스킬만으로 하지 않는다) |
+
+## 2. 용어
+
+- **메인**: 사용자가 연 Claude 세션. 사용자와 대화하는 유일한 주체.
+- **코디네이터**: 팀 탭에서 도는 Claude 세션. horch Run 의 소유자.
+- **워커**: 태스크 한 라운드를 하는 에이전트 pane. 작업 워커와 리뷰어가 있다.
+- **태스크(T-xxx)**: hteam 의 작업 단위. 라운드(r1, r2, …)마다 새 워커가 한다.
+- **라운드**: 작업 워커 한 번 + 리뷰 한 번. 작업과 리뷰는 각각 horch Task 하나다.
+- **owns**: 태스크가 고치고 커밋할 수 있는 경로 glob.
+- **팀 탭**: 같은 space 에 프로젝트마다 하나 있는 Herdr 탭. 코디네이터와 워커 pane 이 여기 붙는다.
+- **outbox**: 코디네이터 → 메인 방향의 파일 메시지 줄.
+
+## 3. 구성
+
+### 3.1 플러그인과 파일
+
+이 저장소의 마켓플레이스(`herdr-team`)에 두 플러그인이 있다.
+
+```
+herdr-orch/          (있음) bin/horch, lib/horch/
+herdr-team/          (새로)
+  .claude-plugin/plugin.json
+  bin/hteam                    진입점(Python 3.11+, 표준 라이브러리만)
+  lib/hteam/                   CLI 모듈
+  hooks/hooks.json, hooks/hteam_hook.py
+  skills/{init,up,image}/SKILL.md
+  templates/                   대상 프로젝트에 복사할 파일(3.4)
+  scripts/codex-run.sh         Codex exec 래퍼(12장)
+  tests/
+```
+
+`hteam` 이 `horch` 를 찾는 순서: 환경 변수 `HERDR_ORCH_BIN` → herdr-team 플러그인 루트의 형제 `../herdr-orch/bin/horch` → Claude Code `installed_plugins.json` 의 herdr-orch 설치 경로. 못 찾으면 exit 12. hteam 은 horch 를 늘 `--home <프로젝트>/.herdr-team/state/horch` 로 부른다.
+
+### 3.2 실행 주체
+
+| 주체 | 위치 | 띄우는 쪽 | 수명 | 하는 일 |
+|---|---|---|---|---|
+| 메인 | 사용자 탭의 Claude | 사용자 | 사용자 세션 | 대화, `hteam tell`, `hteam watch` 를 늘 백그라운드로, 질문 중계 |
+| 코디네이터 | 팀 탭의 Claude(`[coordinator]` 모델) | `hteam up` | 오래 산다. 죽으면 다시 띄우고 Run 을 넘겨받는다 | 분해, 디스패치, 리뷰 처리, 수정·완료, 워커 질문 답, 메인에 질문 |
+| 작업 워커 | 팀 탭 pane | `hteam start`·`start-ready`·`fix` | 한 라운드 | 사양대로 일하고 owns 안에 커밋, 보고서, `horch done` |
+| 리뷰어 | 팀 탭 pane | `hteam review` | 한 리뷰 | 리뷰 파일을 쓰고 `horch done` |
+
+메인이 Run 에 묶이지 않는 이유: horch 는 Run 소유자를 깨울 때 그 입력창에 글을 넣는다(`hc send`). 사용자가 치던 글이나 AskUserQuestion 선택과 섞이면 안 된다. 메인은 외부 발신자로만 Run 에 쓴다(`horch send --to run:R`, herdr-orch 설계 6장).
+
+### 3.3 hteam 과 horch 의 분담
+
+| hteam | horch |
+|---|---|
+| 설정, 직무, 태스크 사양·상태, 태스크 그래프, owns 잠금, 병렬 시작, 워커 사양 조립, 리뷰 판정·변조 검사, 수정 라운드, outbox·질문 중계, init·up·doctor | Run, 워커 pane 실행(가드·펜스), 메일함(send·check·ack), ask/reply/escalate/done, observed(blocked·error·idle·exited·lost), 생존 판정, retain·release·abandon |
+
+hteam 이 hc·herdr-app 을 직접 부르는 곳은 코디네이터 실행·생존 확인과 팀 탭 이름 붙이기뿐이다(`lib/hteam/herdr.py` 한 모듈). 워커 실행은 언제나 horch 를 거친다.
+
+### 3.4 대상 프로젝트 파일
+
+```
+.herdr-team/
+  config.toml          설정(4장). 이 파일이 있으면 herdr-team 프로젝트다
+  project.md           init 설명
+  coordinator.md       코디네이터 사용법(8장)
+  roles/<직무>.md      직무 문서
+  design-rules.md      AI 티 금지 목록(11.5)
+  bin/hteam            shim: 플러그인을 찾아 실행
+  tasks/T-xxx.md       태스크 사양(커밋한다)
+  state/               git 제외
+    horch/             horch 저장 루트
+    run.json           {run_id, coordinator_terminal, coordinator_argv, team_space, team_tab, launched_at}
+    tasks/T-xxx.json   태스크 상태(5.3)
+    tasks/T-xxx/       라운드별 조립한 사양과 리뷰 프롬프트
+    plan.json          plan apply 기록(key → T-id, digest)
+    outbox.jsonl, outbox.cursor, answers/, answered.json
+    sessions/<session id>   훅의 역할 판별 캐시
+    setup-mode, plugin-root, hook-errors.log
+docs/planning/  spec.md contracts.md tasks.toml interview.md
+docs/tasks/T-xxx/report.md
+docs/reviews/T-xxx/rN.md
+docs/design/  direction.md references.md board/ pilots/ system/ screens/<화면>/
+docs/qa/
+```
+
+shim 은 플러그인 루트를 `HERDR_TEAM_PLUGIN_ROOT` → `state/plugin-root`(등록된 설치 경로이거나 디렉터리 마켓플레이스일 때만 믿는다) → `installed_plugins.json` 순서로 찾는다. 못 찾으면 exit 12.
+
+## 4. 설정 (`.herdr-team/config.toml`)
+
+```toml
+max_parallel = 4
+user_approval_roles = ["designer"]
+
+[coordinator]
+model = "opus"
+effort = "xhigh"
+
+[review]
+max_rounds = 3
+
+[defaults]
+worker = "claude"
+claude_model = "sonnet"
+claude_effort = "xhigh"
+codex_model = "gpt-6.1-sol"
+codex_effort = "high"
+
+[agents.claude]
+args = []
+[agents.codex]
+args = ["--disable=hooks"]
+
+[image]
+codex_model = "gpt-6.1-sol"
+codex_effort = "medium"
+
+[roles.planner]
+title = "기획"
+claude_model = "opus"
+claude_effort = "xhigh"
+codex_model = "gpt-6.1-sol"
+codex_effort = "high"
+owns = ["docs/planning/**"]
+
+[roles.director]
+title = "디자인 디렉터"
+claude_model = "opus"
+claude_effort = "xhigh"
+codex_model = "gpt-6.1-sol"
+codex_effort = "high"
+owns = ["docs/design/**", "assets/**"]
+
+[roles.designer]
+title = "디자인"
+claude_model = "sonnet"
+claude_effort = "xhigh"
+codex_model = "gpt-6.1-sol"
+codex_effort = "medium"
+owns = ["docs/design/**", "assets/**"]
+
+[roles.developer]
+title = "개발"
+claude_model = "opus"
+claude_effort = "xhigh"
+codex_model = "gpt-6-astra"
+codex_effort = "xhigh"
+owns = ["src/**"]
+
+[roles.tester]
+title = "테스트"
+claude_model = "sonnet"
+claude_effort = "xhigh"
+codex_model = "gpt-6.1-sol"
+codex_effort = "high"
+owns = ["tests/**", "docs/qa/**"]
+```
+
+### 4.1 값의 뜻과 결정 규칙
+
+- `worker`: 작업 워커 에이전트. `claude` 또는 `codex`. 직무에 없으면 `[defaults]`.
+- 작업 모델: `worker` 쪽 모델·effort(`claude_*` 또는 `codex_*`).
+- 리뷰어: `worker` 의 반대쪽 에이전트와 그쪽 모델·effort.
+- 우선순위(값마다 따로): `hteam start`·`fix` 의 `--model`·`--effort`·`--worker` > 태스크 front matter(`worker`, `claude_model` 등) > `[roles.<직무>]` > `[defaults]`.
+- `[agents.<에이전트>].args`: 그 에이전트를 띄울 때마다(작업·리뷰·코디네이터) horch `--agent-arg` 로 넘기는 인자(코디네이터는 `hc run` 인자). horch 는 우회 플래그를 스스로 넣지 않으므로 권한 모드는 여기서 정한다. Claude 의 `--permission-mode=bypassPermissions` 는 init 이 위험을 설명하고 사용자가 승인했을 때만 넣는다(9.1).
+- `[agents.codex].args` 기본 `--disable=hooks`: Codex 의 hook 검토 창과, 검토하지 않은 hook 이 셸 명령을 막는 문제를 피한다(herdr-orch 실환경 확인 결과).
+- `owns`: 비면 안 된다. 태스크 front matter 로 좁힐 수 있다.
+- `max_parallel`: `start-ready` 가 동시에 둘 `working` 태스크 수 상한(1 이상).
+- `user_approval_roles`: 리뷰 승인 뒤 `done` 대신 `awaiting_user` 로 가는 직무. `[roles]` 에 있는 직무만.
+- `[image]`: `hteam image` 가 쓰는 Codex 모델·effort. 없으면 `[defaults]` 의 `codex_*`.
+
+### 4.2 검사
+
+설정을 읽는 명령은 다음을 검사하고 어기면 exit 2 다.
+
+- `worker` 는 `claude`·`codex` 중 하나.
+- `director`·`designer` 직무는 `worker = "claude"` 만(Claude Design 을 쓴다, 11장). front matter 나 `--worker` 로 바꿔도 같다.
+- `owns` 비지 않음, `max_parallel` ≥ 1, `max_rounds` ≥ 1, `user_approval_roles` 의 직무가 존재.
+- 모델·effort 값은 검사하지 않고 그대로 넘긴다(에이전트가 판단).
+
+설정을 읽지 않는 명령(`tell`, `notify`, `watch`, `answer`, `ask-user`, `reask`, `status`)은 설정이 깨져도 동작한다. `status` 는 `config_error` 를 보여 준다.
+
+## 5. 태스크
+
+### 5.1 사양 (`.herdr-team/tasks/T-xxx.md`)
+
+```markdown
+---
+id: T-003
+role: developer
+title: 로그인 화면 구현
+owns: src/auth/**, src/ui/login/**     (선택, 직무 owns 를 좁힌다)
+depends_on: T-001, T-002               (선택)
+plan_key: login-screen                 (plan apply 가 넣는다)
+worker: claude                         (선택)
+claude_model: opus                     (선택, 모델·effort 덮어쓰기)
+---
+## Target
+## Change
+## Constraints
+## Acceptance
+```
+
+- ID 는 `T-` + 숫자 3자리 이상. `hteam task new --role R --title …` 가 다음 번호로 만든다.
+- 네 절은 비면 안 되고 `<…>` 자리표시만 있어도 안 된다. 어기면 `start` 가 exit 2.
+- 사양은 코디네이터가 쓰고 커밋한다(`spec: T-xxx` 커밋). 이 커밋은 리뷰 대상에서 뺀다.
+
+### 5.2 태스크 그래프 (`docs/planning/tasks.toml`)
+
+기획자가 쓴다. 형식은 orca-team 과 같다.
+
+```toml
+[[task]]
+key = "login-screen"
+role = "developer"
+title = "로그인 화면 구현"
+owns = ["src/auth/**", "src/ui/login/**"]
+depends_on = ["design-login", "ui-foundation"]
+target = "…"
+change = "…"
+constraints = "…"
+acceptance = ["…", "…"]
+```
+
+- `hteam plan check [--file <경로>]`(읽기 전용): 필수 필드, 직무 존재, `key` 형식(`[a-z0-9-]`)과 중복, 모르는 의존, 순환, 조상 관계가 아닌 두 태스크의 owns 겹침, 디렉터 규칙(`[roles.director]` 가 있고 designer 태스크가 있으면 director 태스크가 정확히 하나이고, 에셋 전용이 아닌 designer 는 모두 director 에 직간접으로 의존), 텍스트 필드 안 `## ` 로 시작하는 줄 금지. 결과에 병렬 깊이 묶음(`groups`).
+- `hteam plan apply`: 검사를 통과하면 `T-xxx.md` 를 만들고 한 번에 경로 지정 커밋(`[plan] apply: N tasks`). `state/plan.json` 에 key → T-id 와 태스크별 SHA-1 digest. 상태 파일을 `pending` 으로 만든다.
+- `hteam plan apply --append`: 새 key 만 더한다. 기존 key 의 내용이 바뀌거나 빠지면 거부(digest 비교). `plan.json` 이 없는데 계획된 태스크가 있으면 거부(exit 2).
+- owns 겹침 판정은 보수적이다: 두 glob 의 고정 접두사 중 하나가 다른 하나의 접두사면 겹친다. `**` 는 디렉터리를 넘고, `*`·`?` 는 한 마디 안이다.
+
+### 5.3 상태 (`state/tasks/T-xxx.json`)
+
+| 상태 | 뜻 | 잠금 | 다음 |
+|---|---|---|---|
+| `pending` | 아직 시작 안 함 | 없음 | `start` |
+| `working` | 작업 워커가 돈다 | 있음 | 작업 `worker_done` → `review` |
+| `launch_failed` | 띄우기 실패(또는 실행자 사망) | 있음 | `start` 다시 |
+| `reviewing` | 리뷰어가 돈다 | 있음 | 리뷰어 `worker_done` → `review-finish` |
+| `approved` | 리뷰 승인 | 있음 | `accept` |
+| `changes` | 리뷰가 수정 요구 | 있음 | `fix` |
+| `awaiting_user` | 승인 직무가 사용자 일괄 승인을 기다림 | 있음 | `design-review` 답 → `accept` 또는 `fix` |
+| `done` | 끝 | 없음 | — |
+| `dropped` | 버림 | 없음 | — |
+
+상태 파일 필드: `id`, `status`, `round`, `base`(첫 라운드 시작 때 HEAD), `rounds`(라운드별 `{work: {horch_task, dispatch}, reviews: [{horch_task, dispatch, attempt, result}], verdict}`), `launcher`(`{pid, started}`), `history`(전이 기록), `note`.
+
+전이는 상태 파일마다 flock 으로 잠그고 이전 상태를 확인한 뒤 원자적으로 쓴다(임시 파일 + `os.replace`). 상태를 바꾸는 명령은 모두 코디네이터만 부른다(8.3).
+
+의존이 끝났다는 것은 선행 태스크가 `done` 이거나, 선행과 후행이 모두 승인 직무이고 선행이 `awaiting_user` 인 것이다(디자인을 한 번에 승인 받으려고).
+
+### 5.4 시작 (`hteam start T`, `hteam start-ready`)
+
+`hteam start T [--model M] [--effort E] [--worker W]`:
+
+1. 설정과 사양을 검사한다(4.2, 5.1). 상태가 `pending`·`launch_failed` 여야 한다(아니면 exit 3).
+2. 잠금: 이 태스크의 owns 가 잠금을 가진 다른 태스크의 owns 와 겹치면 exit 3.
+3. 상태 파일에 `launch_failed` 와 실행자 pid·시작 시각, 라운드 번호, base(첫 라운드면 지금 HEAD)를 먼저 쓴다. 실행자가 죽어도 상태가 남는다. 같은 라운드를 다시 띄우면 horch 펜스가 이전 Dispatch 를 거부한다.
+4. 워커 사양을 조립해(5.5) `state/tasks/T-xxx/rN-work.md` 에 쓴다.
+5. `horch worker-start --agent <worker> --title "T-xxx rN 작업" --spec-file <그 파일> [--model M] [--effort E] --cwd <프로젝트 루트> [--agent-arg=…]...`(`[agents.<worker>].args`).
+6. 성공하면 상태를 `working` 으로, horch Task·Dispatch ID 를 라운드 기록에 쓴다. 실패하면 `launch_failed` 와 horch 오류 JSON 을 남기고 exit 1(horch 의 exit 12 는 그대로 12).
+
+`hteam start-ready`: `tasks.toml` 순서(없으면 ID 순)로 `pending`·`launch_failed` 태스크마다 사양 → 의존 → 잠금 → 동시 수 상한(`working` 수 < `max_parallel`)을 차례로 보고 통과한 것을 `start` 한다. 결과에 시작한 태스크와 남은 태스크의 대기 사유(`spec`·`deps`·`lock`·`limit`). 하나가 실패해도 나머지는 계속하고, 하나라도 실패하면 exit 1. `max_parallel` 은 `start-ready` 만 본다(`start`·`fix` 는 보지 않는다). 코디네이터는 accept·fix·drop·승인 답 뒤마다 부른다.
+
+### 5.5 워커 사양 조립
+
+차례로 이어 붙인다.
+
+1. 직무 문서 `roles/<직무>.md`.
+2. 태스크 본문(네 절).
+3. 선행 태스크: "`docs/planning/contracts.md` 와 선행 태스크의 `docs/tasks/<T>/report.md` 를 먼저 읽는다" 와 선행 목록.
+4. owns 와 작업 규칙(아래).
+5. 수정 라운드면 수정 블록: "이전 대화는 없다. `report.md` 와 `git log --grep '^\[T-xxx\]'` 를 읽는다", `docs/reviews/T-xxx/r{N-1}.md` 의 모든 지적을 다룬다(파일이 있을 때), 코디네이터 메모(`--note`).
+
+작업 규칙:
+
+- owns 와 `docs/tasks/T-xxx/report.md` 만 고치고 커밋한다. 커밋은 경로를 지정한다: `git add -- <경로> && git commit -m "[T-xxx] …" -- <경로>`. `git stash`·`reset`·`checkout --`·`add -A` 금지.
+- `report.md` 에 라운드마다 `## rN` 절: 바꾼 파일, 이유, 검증 명령과 출력 원문, 남은 위험, 가정.
+- 막히면 `horch ask`(직무가 planner·director 면 사용자 질문은 `hteam ask-user`, 7.5). 대화형 질문 도구는 쓰지 않는다.
+- 끝나면 보고서를 커밋하고 `horch done --outcome succeeded|failed --summary "…" --report-path docs/tasks/T-xxx/report.md` 를 한 번 부른다.
+
+horch 프리앰블(herdr-orch 설계 8장)이 이 사양 앞에 붙어 `horch` 명령의 절대 경로와 `--home` 을 알려 준다.
+
+### 5.6 동시 작업의 전제
+
+작업 폴더는 하나다(worktree 없음). 진행 중 태스크끼리 owns 가 겹치지 않게 잠그고, 커밋은 경로를 지정하므로 다른 워커의 바뀐 파일을 담지 않는다. owns 밖 파일을 고쳐야 하면 워커는 `horch ask` 로 코디네이터에게 묻는다(코디네이터는 새 태스크로 나눈다).
+
+## 6. 교차 리뷰
+
+### 6.1 시작 (`hteam review T`)
+
+작업 워커가 `worker_done`(succeeded)을 보내면 코디네이터가 부른다. 리뷰어를 띄우고 바로 돌아온다.
+
+1. 상태가 `working` 이고, 이 태스크에 진행 중 리뷰가 없어야 한다(아니면 exit 3).
+2. 작업 Dispatch 를 `horch worker-retain` 한다(리뷰 동안 pane 을 남긴다). 실패해도 계속한다.
+3. 리뷰 대상 커밋: base 이후 `[T-xxx]` 로 시작하는 커밋. `spec: T-xxx` 와 `[T-xxx] review rN:` 커밋은 뺀다.
+4. 사전 검사. 어기면 리뷰어를 띄우지 않고 `docs/reviews/T-xxx/rN.md` 에 `REQUEST_CHANGES`(출처 `hteam`)를 써서 커밋하고 `changes` 로 간다.
+   - 대상 커밋이 없다.
+   - owns 와 `docs/tasks/T-xxx/` 밖 파일을 커밋했다.
+   - planner 태스크인데 `tasks.toml` 이 `plan check` 를 통과하지 못한다(accept 뒤에는 고칠 수 없으므로 여기서 막는다).
+   - owns 안에 커밋하지 않은 변경이 있으면 리뷰하지 않고 exit 2(상태는 `working` 그대로). 워커에게 커밋을 요구한다.
+5. 변조 기준점: HEAD 와, 추적 파일 내용 해시. `.herdr-team/`, `docs/reviews/`, 다른 진행 중 태스크의 owns·보고서는 뺀다.
+6. 리뷰 프롬프트를 조립해(6.2) `state/tasks/T-xxx/rN-review-aK.md` 에 쓴다.
+7. `horch worker-start --agent <반대쪽> --title "T-xxx rN 리뷰" --spec-file <그 파일> --model … --effort … --cwd <루트> [--agent-arg=…]...`.
+8. 상태를 `reviewing` 으로, 리뷰 Dispatch 를 라운드 기록에 쓴다.
+
+### 6.2 리뷰 프롬프트
+
+orca-team 의 리뷰 프롬프트를 옮긴다.
+
+- 실행 정책: 리뷰만 한다. 쓰는 파일은 `docs/reviews/T-xxx/rN.md` 하나. git 쓰기(커밋·체크아웃·스태시 등) 금지. 테스트·빌드 실행은 된다. 질문으로 끝내지 않는다. 다 쓰면 `horch done --outcome succeeded --summary "<판정>" --report-path docs/reviews/T-xxx/rN.md`.
+- 넣는 것: 태스크·사양·직무 문서·보고서 경로, 이전 리뷰 파일, 대상 커밋 목록, 바뀐 파일.
+- 기준: 인수 조건을 실제로 충족했는가(직접 실행해 본다), 직무 규칙, 버그·보안·회귀, 이전 지적을 모두 다뤘는가.
+- 디자인 절: director·designer·developer 태스크이고 `[roles.director]` 가 있으면 디자인 기준(11장)과 자동 검사 경고(11.6)를 더한다.
+- 형식: 지적마다 `[P1|P2|P3] file:line — 문제. 고칠 방향.` 칭찬과 범위 밖 제안은 쓰지 않는다. P1 이 하나라도 있으면 REQUEST_CHANGES. 마지막 줄은 정확히 `VERDICT: APPROVE` 또는 `VERDICT: REQUEST_CHANGES`.
+
+Codex 리뷰어에게는 `AGENTS.md` 의 리뷰어 규칙도 적용된다(9.1). Claude 리뷰어는 이 프롬프트만 따른다.
+
+### 6.3 마무리 (`hteam review-finish T`)
+
+리뷰어가 `worker_done` 을 보내거나 리뷰어가 done 없이 끝났을 때(`observed exited`·`lost`) 코디네이터가 부른다.
+
+1. 상태가 `reviewing` 이어야 한다.
+2. 변조 검사: 판정이 무효가 되는 경우는 HEAD 가 fast-forward 가 아니게 움직였거나, 기준점 이후 새 커밋이 제외 경로 밖을 바꿨거나, 추적 파일 내용이 바뀐 것이다. 추적하지 않는 새 파일은 경고만 남긴다.
+3. 판정 읽기: 리뷰 파일의 마지막 `VERDICT:` 줄. 리뷰어의 `outcome` 이 `failed` 이거나, 파일·VERDICT 가 없거나, 무효면 시도 실패다.
+4. 시도가 실패하면 리뷰 Dispatch 를 release 하고 새 리뷰어로 한 번 더 한다(시도는 라운드당 2번). 두 번째도 실패하면 상태를 `working` 으로 되돌리지 않고 `reviewing` 에 둔 채 exit 1 과 `review_failed` 를 내고, 코디네이터가 메인에 질문으로 올린다(다시 시도 / 버림).
+5. 성공하면 리뷰 파일을 `[T-xxx] review rN: <VERDICT>` 로 경로 지정 커밋한다(추적하지 않는 새 파일 목록은 커밋 본문에). 상태를 `approved` 또는 `changes` 로, 판정을 라운드 기록에. 리뷰 Dispatch 를 release 한다.
+
+리뷰어 생사는 horch 가 판정한다. 리뷰어가 `idle`(done 없이 턴을 마침)이면 코디네이터가 `horch send` 로 done 을 요구하고, 그래도 안 되면 abandon 한 뒤 `review-finish` 가 시도 실패로 처리한다.
+
+### 6.4 처리 (`accept`, `fix`, `drop`)
+
+- `hteam accept T`: `approved` → `done`, 승인 직무면 `awaiting_user`. `awaiting_user` → `done`(사용자 승인 뒤). 작업 Dispatch 를 release 한다.
+- `hteam fix T [--note "…"] [--supplement T-yyy] [--force-round] [--model …] [--effort …] [--worker …]`: `changes`·`launch_failed`·`working`(작업 워커가 실패로 끝남)·`awaiting_user`(사용자 수정 요청) 에서 새 라운드를 띄운다. 이전 작업 Dispatch 를 release 한다(살아 있으면 abandon `--kill` 뒤). `round >= max_rounds` 이면 exit 3 과 `max_rounds`(`--force-round` 는 사용자가 계속하라고 했을 때 한 라운드만 넘긴다). `awaiting_user` 에서의 수정은 상한을 보지 않는다. `--supplement` 는 디렉터 보강을 반영하는 수정이라는 표시다(11.4).
+- `hteam drop T [--force]`: 태스크를 `dropped` 로. 살아 있는 Dispatch 가 있으면 `--force` 가 있어야 하고 abandon `--kill`·release 한다.
+- `max_rounds` 에 닿으면 코디네이터가 메인에 묻는다(계속 / 버림). 계속이면 `--note` 와 함께 `fix --force-round`(상한을 한 번 넘긴다).
+
+## 7. 메인과 코디네이터의 연결
+
+### 7.1 메인 → 코디네이터 (`hteam tell`)
+
+`hteam tell "<글>"` 은 메인 터미널에서 `horch send --to run:<run_id> --subject "[main] <첫 줄>" --body "<글>"` 을 부른다. 메인은 Run 소유자가 아니므로 외부 발신자다. 코디네이터가 깨어난다.
+
+### 7.2 코디네이터 → 메인 (`hteam notify`, outbox)
+
+`hteam notify --type progress|question|approval|done --body "…"` 또는 `--json -`(질문). `state/outbox.jsonl` 에 flock 으로 한 줄을 더한다: `{id: "out-NNNN", type, at, body | render, from: "coordinator" | "T-xxx", answered: false}`. 코디네이터만 부른다(planner·director 의 질문은 7.5).
+
+### 7.3 메인의 감시 (`hteam watch`)
+
+메인은 `hteam watch` 를 늘 하나 백그라운드로 띄운다(Claude Code Bash `run_in_background`).
+
+- 2초마다 outbox 를 본다. 커서 뒤 새 항목이 있으면 출력하고 커서를 옮긴 뒤 끝난다(출력한 뒤에야 옮기므로 적어도 한 번 전달된다). Claude Code 의 완료 알림이 메인을 깨운다.
+- 코디네이터가 없으면(`run.json` 의 터미널이 끝남) `{status: "orphaned"}` 로 끝난다.
+- 메인은 처리한 뒤 다시 띄운다. Stop 훅이 이를 강제한다(9.3).
+
+### 7.4 질문 형식 (`render`)과 답
+
+```json
+{"header": "≤12자", "question": "한 줄 질문 ≤300자\n예: 보기 ≤300자",
+ "context": "선택 사항, ≤4000자",
+ "options": [{"label": "추천안 (추천) ≤30자", "description": "추천 사유: …"}, …],
+ "multiSelect": false}
+```
+
+선택지는 2–4개이고 추천안이 맨 앞이다. `notify --json` 과 `ask-user` 가 검사한다(어기면 exit 2).
+
+메인은 `context` 를 그대로 보여 준 뒤 AskUserQuestion 을 `render` 로 부르고, 답을 `hteam answer <out-id> "<답>"` 로 보낸다.
+
+- `ask` 항목(7.5): 답 파일 `state/answers/<out-id>.json` 을 원자적으로 만든다(`os.link`). 두 번째 답은 exit 3.
+- `question`·`approval` 항목: `horch send --to run:R --subject "[main] reply <out-id>" --body "<답>"`. `answered.json` 에 기록해 한 번만 보낸다.
+
+### 7.5 기획자·디렉터의 직접 질문 (`hteam ask-user`)
+
+`hteam ask-user --task T --json -`(planner·director 의 `working` 태스크만):
+
+- 태스크마다 열린 질문은 하나(아니면 exit 3).
+- outbox 에 `ask` 항목을 쓰고 답 파일을 2초마다 본다. 답이 오면 `{answer}` 를 출력하고 끝난다.
+- 540초가 지나면 `{status: "waiting", id}` 와 exit 4. 워커는 `hteam ask-user --wait <id>` 로 다시 기다린다. 540초는 Bash 도구 최대 시간 제한(600초) 안에 끝나도록 정했다. 직무 문서는 이 명령을 `timeout` 600000 으로 부르라고 적는다.
+- `--pending`: 답이 왔지만 워커가 아직 읽지 않은 항목. 수정 라운드의 워커가 먼저 확인한다.
+- 워커는 받은 답을 곧바로 `interview.md` 에 적는다(답은 한 번만 전달된다).
+
+### 7.6 재시작 뒤 질문 (`hteam reask`)
+
+`open_questions` 는 답이 없는 `ask` 항목(묻는 태스크가 아직 `working`)과, 답이 없는 `question`·`approval` 항목이다. 메인을 다시 열면 `/herdr-team:up` 이 `hteam reask` 로 이미 출력된 항목을 다시 내보내고 하나씩 묻는다.
+
+## 8. 코디네이터
+
+### 8.1 역할
+
+- 일을 나눈다. 새 요청이면 기획 태스크가 언제나 먼저다.
+- 사양을 쓰고 커밋한다. `plan apply` 와 `start-ready` 로 띄운다.
+- 리뷰를 돌리고 판정에 따라 accept·fix·drop 한다.
+- 워커 질문에 기획 문서로 답한다(`horch reply`). 판단할 수 없으면 `hteam notify --type question --json -` 으로 메인에 묻는다.
+- 쓸 수 있는 파일은 `.herdr-team/`(state 제외)뿐이다. 제품 파일을 고치지 않는다. 대화형 질문 도구와 서브에이전트를 쓰지 않는다.
+
+### 8.2 루프와 `hteam wait`
+
+코디네이터는 `hteam wait` 를 늘 하나 백그라운드로 띄운다. `hteam wait [--ack <delivery>]` 는 `horch check --wait --timeout-ms 3600000 [--ack …]` 를 부르고, 받은 메시지마다 `hteam` 필드를 붙여 출력한다.
+
+```json
+{"delivery": 12, "count": 1, "reason": "message",
+ "messages": [{"id": 40, "type": "worker_done", "sender": "dispatch:dsp-…", "body": "…",
+               "hteam": {"task": "T-003", "round": 2, "kind": "work", "next": ["hteam", "review", "T-003"]}}]}
+```
+
+- `kind`: `work`·`review`·`main`(메인이 보낸 `[main]` 글)·`other`.
+- `next`: 권장 다음 명령(argv). 작업 `worker_done` → `review`, 리뷰 `worker_done` → `review-finish`, 작업 `failed` → `fix --note`, `observed idle` → `horch send` 로 이어가라는 안내, `observed exited`·`lost` → 작업이면 `fix`, 리뷰면 `review-finish`, `question` → `horch reply`, `[main]` → 지시를 읽는다.
+- 메시지를 모두 처리한 뒤 `hteam wait --ack <delivery>` 로 다시 띄운다. 시간이 지나면(`reason: timeout`) `hteam status` 를 보고 `next` 를 따른다.
+
+### 8.3 명령 표
+
+모든 명령은 `--root <프로젝트>`(기본: 현재 폴더에서 위로 `.herdr-team/config.toml` 을 찾음)를 받고, `skill`·`watch` 출력 외에는 stdout 에 JSON 한 개를 쓴다(`{"ok": true, …}` / `{"ok": false, "error": {"code", "message", "hint"}}`). exit 코드는 horch 와 같다: 0 성공, 1 실패·확인 불가, 2 입력 오류, 3 상태 충돌, 4 대기 시간 초과, 5 권한 없음, 12 의존 프로그램 없음.
+
+| 명령 | 부르는 쪽 | 하는 일 |
+|---|---|---|
+| `doctor` | 누구나 | 점검(9.2) |
+| `scaffold --description-file F` | init | 파일 복사(덮어쓰지 않음, 9.1) |
+| `up [--wait-run S]` | 메인 | 코디네이터 확인·실행(9.3) |
+| `bind` | 코디네이터 | horch Run 생성 또는 넘겨받기, `run.json` 기록 |
+| `status` | 누구나 | 태스크별 상태·잠금·`next`, 코디네이터·watch 생사, 열린 질문 |
+| `task new --role R --title T` | 코디네이터 | 다음 ID 로 사양 파일 생성 |
+| `plan check [--file F]` / `plan apply [--append]` | 기획자(check) / 코디네이터 | 5.2 |
+| `start T` / `start-ready` / `fix T` / `drop T` | 코디네이터 | 5.4, 6.4 |
+| `review T` / `review-finish T` / `accept T` | 코디네이터 | 6장 |
+| `design-review` | 코디네이터 | 11.4 |
+| `wait [--ack D]` | 코디네이터 | 8.2 |
+| `which <dispatch>` | 코디네이터 | Dispatch → 태스크·라운드·종류 |
+| `tell "…"` / `watch` / `answer ID "…"` / `reask` | 메인 | 7장 |
+| `notify --type … ` | 코디네이터 | 7.2 |
+| `ask-user --task T --json -` / `--wait ID` / `--pending` | 기획자·디렉터 | 7.5 |
+| `image …` | 디자인 워커 | 12장 |
+| `lint --task T` | 리뷰(내부) | 11.6 |
+| `setup-done` | init | `setup-mode` 해제 |
+
+권한 확인(누가 부를 수 있나)은 실수 방지용이다(보안 경계가 아님). 역할 판별은 9.4 와 같다.
+
+## 9. 시작, 점검, 훅
+
+### 9.1 `/herdr-team:init <설명>`
+
+1. 설명이 비면 한 줄로 묻는다.
+2. `hteam doctor`(9.2). 오류면 멈추고 알린다.
+3. `hteam scaffold --description-file <임시 파일>`: `.herdr-team/` 일체(설정, 직무 문서, 코디네이터 사용법, 디자인 규칙, shim, `project.md`, `tasks/`), `CLAUDE.md` 에 `<!-- herdr-team -->` 절(메인 규칙, 역할 판별 안내), `AGENTS.md` 에 같은 표시의 절(Codex 워커·리뷰어 규칙), `.gitignore` 에 `.herdr-team/state/`. 있는 파일은 덮어쓰지 않는다. `state/setup-mode` 와 `state/plugin-root` 를 만든다.
+4. 판단이 필요한 한 단계: 표 하나로 제안하고 AskUserQuestion 한 번으로 승인받는다. 직무별 owns, 추가 직무, 필요한 도구(Chrome DevTools MCP 등), Claude 권한 모드(`[agents.claude].args`. bypass 는 사람 없이 돌 때 필요하지만 워커가 사용자 자격 증명을 그대로 쓴다는 위험을 적는다).
+5. `hteam up --wait-run 180` 과 백그라운드 `hteam watch`.
+6. `hteam setup-done`, 경로 지정 커밋 `chore: herdr-team 세팅`, 보고.
+
+### 9.2 `hteam doctor`
+
+Python 3.11 이상, git(없으면 `git init` 과 빈 커밋을 권함), `horch` 찾기와 `horch doctor`(hc·herdr-app 포함), 이 터미널이 Herdr 터미널인가(`$HC_TERMINAL_ID`), `claude` 존재, `codex` 존재와 `codex login status`, Codex 래퍼 실행 가능, `codex features` 의 `image_generation`(경고만), Chrome DevTools MCP 설정 여부(경고만).
+
+### 9.3 `hteam up` 과 코디네이터
+
+1. `run.json` 의 코디네이터 터미널이 살아 있으면(horch 생존 판정과 같은 규칙: hc 상태 `live` 이고 argv 가 기록과 같음) 그대로 둔다. 띄운 지 180초 안이면 `starting`.
+2. 아니면 팀 탭에 새 코디네이터를 띄운다. 팀 탭 id 는 `tb` + SHA-1(`herdr-team\n<프로젝트 루트>\n<space>`) 앞 32자로 고정하고(없으면 Herdr 가 새 탭으로 만든다), 이름은 "팀"(`herdr-app do tab.rename`, 실패해도 계속). space 는 메인 터미널의 `herdr.space` 라벨.
+   `hc run --bg --json --no-parent --no-notify --keep --name hteam-coord-<6자> --cwd <루트> --label herdr.space=<space> --label herdr.tab=<팀 탭> --label hteam.role=coordinator -- claude --model <모델> --effort <effort> [agents.claude.args] -- "<코디네이터 프롬프트>"`.
+   코디네이터 터미널이 메인 터미널과 같으면 거부한다.
+3. 코디네이터 프롬프트: "`hteam bind` 를 실행하고 `.herdr-team/coordinator.md` 를 따른다".
+4. `--wait-run S`: `run.json` 에 `run_id` 가 생길 때까지 기다린다.
+
+`hteam bind`(코디네이터): `run.json` 에 이전 `run_id` 가 있으면 `horch run-use --id <run_id>`(이전 소유자가 끝났거나 lost 면 넘겨받는다), 없으면 `horch run-create --objective "<project.md 첫 줄>"`. 소유 탭이 팀 탭이 되어 워커가 그 탭에 붙는다. `run.json` 에 코디네이터 터미널·argv 를 기록한다.
+
+`/herdr-team:up`(메인을 다시 열 때): `hteam status` → 코디네이터가 죽었으면 `hteam up` → watch 가 없으면 띄움 → `hteam reask` 로 열린 질문을 하나씩 묻기 → 요약 표.
+
+### 9.4 훅 (`hooks/hooks.json`)
+
+모든 훅은 `.herdr-team/config.toml` 이 없으면 아무것도 하지 않는다. 훅 자체 오류는 막지 않고 `state/hook-errors.log` 에 남긴다.
+
+역할 판별(세션 첫 프롬프트에서 한 번, `state/sessions/<session id>` 에 캐시):
+
+- 코디네이터: `$HC_TERMINAL_ID` 가 `run.json` 의 코디네이터 터미널.
+- 워커: `$HC_TERMINAL_ID` 가 horch 의 active Dispatch 터미널(`horch --home … status` 의 `dispatch`). 직무는 라운드 기록에서.
+- 메인: 그 밖.
+
+| 훅 | 내용 |
+|---|---|
+| SessionStart | `state/plugin-root` 기록. 메인이면 "너는 메인이다, `/herdr-team:up` 을 실행한다" 와 열린 질문 수를 넣는다 |
+| PreToolUse (Edit·Write·MultiEdit·NotebookEdit) | 누구나 `state/` 를 고칠 수 없다. 코디네이터는 `.herdr-team/` 밖을 고칠 수 없다. 메인은 `setup-mode` 가 아니면 제품 파일(`.herdr-team/`·`.claude/`·`docs/superpowers/`·`CLAUDE.md`·`AGENTS.md`·`.gitignore` 밖)을 고칠 수 없다 |
+| PreToolUse (AskUserQuestion) | 코디네이터 → 거부하고 `hteam notify --json` 안내. planner·director 워커 → `hteam ask-user` 안내. 다른 워커 → `horch ask` 안내. 메인 → outbox 질문의 `context` 를 먼저 보여 주지 않았으면 그 질문에 한해 한 번 거부 |
+| PreToolUse (Bash) | 메인이 `horch` 를 직접 부르면 거부(`hteam tell` 안내) |
+| Stop | 메인이고 코디네이터가 있는데 watch 가 없으면 턴을 끝내지 못하게 하고 watch 를 다시 띄우라고 한다 |
+
+Codex 워커·리뷰어에는 Claude 훅이 걸리지 않는다. 그쪽은 `AGENTS.md` 의 규칙(owns 밖 커밋 금지, 리뷰어는 리뷰 파일만)과 리뷰 사전 검사·변조 검사로 막는다. Bash 로 하는 파일 수정(`sed -i` 등)은 훅이 막지 못한다(리뷰가 잡는다).
+
+## 10. 기획 인터뷰 (planner)
+
+orca-team 0.3 의 인터뷰를 옮긴다. 직무 문서 `roles/planner.md` 가 규칙을 담는다.
+
+- 짧은 질문을 하나씩 `hteam ask-user` 로 한다. 선택 질문에는 예시·추천안·추천 사유를 붙인다. 앞 답과 모순되면 그것을 따로 묻는다.
+- 체크리스트 12항목: 목적과 성공 기준, 사용자와 상황, 범위, 사용자 흐름, 화면 목록, 데이터와 상태, 오류, 비기능 요구, 기술 스택과 실행 환경, 인터페이스 계약, 브랜드 자산과 아는 레퍼런스, 범위 밖. 모두 "결정" 또는 "범위 밖"이 될 때까지 묻는다(질문 수 제한 없음). 기술적으로 뻔한 항목은 묻지 않고 요약의 "자동 결정"에 적는다.
+- 마지막 질문은 확정이다. `context` 에 계획 핵심, 자동 결정, 태스크 그래프 표. 선택지 "확정 (추천)" / "수정할 부분 있음".
+- 결과물: `docs/planning/spec.md`, `contracts.md`, `tasks.toml`, `interview.md`. 끝내기 전에 `hteam plan check --file docs/planning/tasks.toml` 이 통과해야 한다.
+- 수정 라운드의 기획자는 먼저 `ask-user --pending` 과 열린 질문의 `--wait` 를 확인한다.
+- 인터뷰는 프로젝트마다 한 번에 하나만(진행 중 planner 태스크가 둘이면 `start` 가 exit 3).
+
+## 11. 디자인
+
+### 11.1 디자인 디렉터 (director)
+
+세 단계를 한 태스크 안에서 차례로 하고, 단계마다 `hteam ask-user` 로 사용자에게 고르게 한다(header 기본 "디자인").
+
+1. **레퍼런스**: 실제 상용·인접 서비스 6–9개를 WebSearch·WebFetch 로 고른다. 화면은 Chrome DevTools MCP 로 연다(새 페이지 → 스크린샷 → 닫기, 자기가 연 페이지만 닫는다). 캡처는 저장소 밖 `~/.cache/herdr-team/refs/<프로젝트>/` 에 둔다. MCP 가 없거나 막히면 링크만 남긴다. 스타일 묶음 3–4개로 Claude Design 레퍼런스 보드를 만들고, `references.md` 와 `board/` 에 원본을 둔다. 사용자가 묶음을 고른다.
+2. **톤 시안**: 서로 다른 톤 3안(색·글꼴·밀도·모서리·그림자 중 2가지 이상 다름) × 대표 화면 3개(대표·조밀·입력) = 9프레임을 한 캔버스에. 원본은 `pilots/`. 세부 수정 피드백이면 수정안 1개("확정 / 다시 수정"), 방향 전환이면 새 3안. 확정까지 반복하고 피드백과 결정은 `direction.md` 에.
+3. **디자인 시스템**: Claude Design 의 Design System 타입(Artifact `quickstart`·`list scope: types` 로 찾는다). 토큰(밝은 테마 필수), 상태별 미리보기가 있는 컴포넌트(기본·hover·focus·disabled·error), 아이콘 세트(Lucide·Phosphor·Tabler 중 하나)를 담은 README, 대비 4.5:1·3:1. Codex 가 claude.ai 를 볼 수 없으므로 `docs/design/system/`(`tokens.json`, `README.md`, `components/`)에 사본을 둔다. 확정되면 `direction.md` 에 `design_system_url: <URL>` 줄.
+
+디렉터는 래스터 에셋을 만들지 않는다. 승인 직무가 아니다(APPROVE 뒤 바로 `done`). `tasks.toml` 의 디렉터 태스크 owns 는 `docs/design/{direction.md,references.md,board/**,pilots/**,system/**}` 로 좁힌다.
+
+### 11.2 디자인 (designer)
+
+- 화면마다 태스크 하나. owns `docs/design/screens/<화면>/**`, `assets/<화면>/**`.
+- 계정 기본이 아니라 프로젝트 디자인 시스템으로 Claude Design 화면을 만든다. 화면 원본을 `docs/design/screens/<화면>/` 에 둔다(Codex 리뷰가 읽는다).
+- 토큰을 새로 만들지 않는다. 모자란 값은 가장 가까운 토큰을 쓰고 보고서의 `### 시스템 추가 제안` 에 적는다.
+- 래스터 에셋은 `hteam image`(12장)로 만들고 직접 보고 확인한 뒤 커밋한다.
+- 보고서: 아티팩트 URL, 화면 목록, 시스템 URL, 추가 제안, 금지 목록 점검, 이미지 프롬프트와 수.
+- 승인 직무(`user_approval_roles`): Codex 승인 뒤 `awaiting_user`.
+
+### 11.3 개발 화면 규칙 (developer)
+
+UI 기반 태스크가 `tokens.json` 을 CSS 변수·테마로 옮기고 공통 컴포넌트를 만든다. 화면 태스크는 토큰과 공통 컴포넌트만 쓴다(색·크기·간격·모서리·그림자 하드코딩 금지). 모자란 토큰은 만들지 않고 `horch ask` 로 묻는다.
+
+### 11.4 보강과 일괄 승인
+
+- 디자이너 태스크가 모두 `awaiting_user` 가 되면 코디네이터가 최신 라운드 보고서의 추가 제안을 모아 디렉터 보강 태스크 하나를 만든다(owns `docs/design/system/**`, `docs/design/direction.md`). 끝나면 제안한 화면마다 `fix --supplement <보강 태스크>`, UI 기반이 이미 `done` 이면 "토큰 갱신" 개발 태스크를 더한다.
+- `hteam design-review`: 승인 직무 태스크가 모두 `awaiting_user` 이고 진행 중·시작 직전 승인 태스크가 없을 때 outbox 에 `approval` 항목 하나를 쓴다. `context` 에 태스크마다 한 줄과 링크(보고서의 마지막 claude.ai 아티팩트 URL, `design_system_url` 은 빼고). 선택지 "모두 승인" / "수정 요청". 같은 태스크·라운드 묶음을 이미 물었으면 exit 3. 기록은 `state/design-review.json`.
+- 코디네이터가 답을 해석한다: 승인이면 `accept`(`awaiting_user` → `done`), 아니면 해당 태스크 `fix --note`, 그 태스크에 의존하는 승인 태스크도 이어서 `fix`.
+
+### 11.5 AI 티 금지 목록 (`design-rules.md`)
+
+orca-team 의 금지 규칙 10개를 옮긴다(이모지 장식, 왼쪽 강조 테두리, 파랑·보라 그라디언트 등. 목록 원문은 구현 계획에 적는다). 워커는 보고서에서 스스로 점검하고, 리뷰어가 디자인 절로 다시 본다.
+
+### 11.6 자동 검사 (`hteam lint`)
+
+리뷰 대상에서 바뀐 파일만 본다(`.html .css .scss .js .jsx .ts .tsx .vue .svelte .md .json`, `references.md`·`docs/planning`·`docs/tasks`·`docs/reviews` 제외, 1 MB 넘는 파일 제외). 찾는 것: 이모지(U+1F000–1FAFF, BMP Emoji_Presentation, `X+FE0F`), 2px 이상 왼쪽 강조 테두리(CSS·JSX·Tailwind `border-l/s-N` + 색), 한 그라디언트 안 파랑(190–245°)과 보라(245–300°)(oklch, Tailwind `from/via/to` 포함). 출력 `file:line: 패턴(발췌)`, 50개까지. 리뷰 프롬프트에 경고로만 넣는다(판정은 리뷰어).
+
+## 12. 이미지 (`/herdr-team:image`, `hteam image`)
+
+- 디자인 워커(Claude)가 자기 pane 에서 부른다. 직무가 아니고 pane 도 따로 띄우지 않는다. Codex 가 만들고 부른 Claude 가 결과를 보고 검토한다.
+- 인자: `--n 1–8`, `--out <폴더>`(기본 `./generated/`), `--ar`, `--transparent`, `--ref <이미지>`, `--background`, 프롬프트.
+- 사전 점검: `codex features` 의 `image_generation`. 없으면 exit 12.
+- 이미지마다 실행 폴더 하나, 호출 하나에 이미지 하나. `scripts/codex-run.sh --profile image` 로 `codex exec` 를 부른다. 프롬프트는 Codex 내장 `image_gen` 도구를 쓰고 마지막 줄에 PNG 절대 경로를 쓰게 한다.
+- 결과: `result.txt` 마지막 줄의 파일을 `--out` 에 복사한다(덮어쓰지 않고 `-v2` 등). `sips` 로 크기·형식을 확인하고, 투명 배경이 빠졌으면 크로마키로 지운다. 거절은 자동으로 다시 시도하지 않는다.
+- `n ≥ 3` 이면 워커가 Bash 백그라운드로 돌린다.
+
+`scripts/codex-run.sh`(orca-team 래퍼의 규칙을 옮긴다):
+
+- 한 번 실행하고 이유를 보고한다(정책 없음, 재시도는 부르는 쪽).
+- stdin `/dev/null`, 프롬프트는 파일로, `-C <cwd>`, `--json` 과 `--output-last-message` 함께, effort 는 `-c model_reasoning_effort=`, `[agents.codex].args`(기본 `--disable=hooks`)를 붙인다.
+- 프로필: `image` 시간 제한 900초, 진행 신호 없음 한도 300초. 시간 초과면 프로세스 그룹을 죽인다.
+- 판정은 exit 코드보다 `status.json` 의 `terminal_event` 를 먼저 본다. exit: 0, 10(시간 초과), 11(멈춤), 12(codex 없음), 1, 2(인자 오류), 130(중단).
+
+## 13. 오류와 복구
+
+`hteam status` 는 태스크마다 `next`(다음 명령)를 준다. 원칙은 herdr-orch 와 같다: 끝났다는 확실한 증거가 있을 때만 바꾸고, 모르면 그대로 둔다.
+
+| 상황 | 처리 |
+|---|---|
+| 작업 워커 `observed idle`(done 없이 턴을 마침) | 코디네이터가 `horch send --to dispatch:D` 로 이어가거나 done 을 요구한다 |
+| 작업 워커 `observed exited`·`lost` | `horch worker-abandon` 뒤 `hteam fix T --note "이전 워커가 done 없이 끝남"` |
+| 작업 워커 `observed blocked`(권한 확인 등) | 코디네이터가 `worker-show` 로 화면을 보고 메인에 질문으로 올린다. 키는 누르지 않는다 |
+| 작업 워커 `worker_done` failed | `hteam fix T --note "<요약>"`. 상한에 닿으면 사용자에게 |
+| 리뷰어 실패·무효 판정 | `review-finish` 가 한 번 다시 띄운다. 두 번 실패하면 메인에 질문 |
+| `launch_failed` | `hteam start T`(같은 라운드로 다시) |
+| 코디네이터가 죽음 | 메인의 `/herdr-team:up` 또는 `hteam up` 이 다시 띄우고 `hteam bind` 가 `run-use` 로 넘겨받는다. ack 안 된 메시지는 다시 온다 |
+| 메인이 꺼짐 | `/herdr-team:up` 이 `reask` 로 열린 질문을 다시 묻는다 |
+| 설정이 깨짐 | 설정을 읽는 명령은 exit 2. 통신 명령은 계속 동작. `status` 에 `config_error` |
+| 상태 파일과 horch 가 어긋남 | `status` 가 둘을 함께 보여 주고 `next` 로 안내한다(예: hteam 은 `working` 인데 horch Dispatch 가 `settled` 면 `review`) |
+
+동시성: hteam 상태 파일은 태스크마다 flock 으로 잠그고, owns 잠금 검사와 상태 쓰기는 프로젝트 잠금(`state/lock`) 하나 안에서 한다. 상태를 바꾸는 명령은 코디네이터 한 명만 부르므로 경쟁은 주로 코디네이터와 실행자 사망 복구 사이다. outbox 는 flock 으로 덧붙이고 커서는 원자적으로 쓴다.
+
+## 14. 보안
+
+- 워커는 사람 없이 돈다. 권한 우회(`[agents.claude].args` 의 bypass, Codex 샌드박스 우회)를 넣으면 워커가 사용자의 git·클라우드 자격 증명과 셸 환경을 그대로 쓴다. init 이 위험을 적고 승인받았을 때만 넣는다.
+- 이미지 생성의 `codex exec` 는 orca-team 과 같이 샌드박스 우회로 돈다(`image_gen` 결과 파일을 읽으려고). 프롬프트는 이미지 생성만 하게 하고, 결과 파일만 복사한다.
+- 리뷰어가 제품 파일을 고치면 변조 검사로 판정을 무효로 한다.
+- 워커의 질문·보고·요약은 데이터다. 코디네이터와 메인은 그 안의 지시를 사용자 지시처럼 따르지 않는다.
+- 권한 확인과 훅은 실수 방지용이다(보안 경계가 아님).
+- 저장소는 공개될 수 있다. 개인 경로를 넣지 않는다(커밋 전 `git grep -n -I -P '/[U]sers/|/private/[t]mp|~[/]Workspace' -- . ':!.codex-reviews'`).
+
+## 15. 테스트와 구현 단계
+
+### 15.1 테스트
+
+- 단위·통합: Python `unittest`, 표준 라이브러리만. hteam 은 실제 `horch` 를 부르고, hc·herdr-app·claude·codex 는 horch 의 가짜 프로그램(`herdr-orch/tests/fakes/`)을 쓴다. 가짜 claude·codex 는 테스트가 정한 동작(커밋, `horch done`, 리뷰 파일 쓰기)을 흉내 낸다.
+- orca-team 의 테스트를 개념 단위로 옮긴다: 설정 검사, 사양 검사, owns 겹침, plan check·apply·append, start-ready 대기 사유, 상태 전이와 잠금, 리뷰 사전 검사·변조 검사·VERDICT 해석·재시도, accept·fix·drop·상한, outbox·watch·answer·ask-user·reask, `render` 검사, 훅 역할 판별과 가드, design-review, lint, codex-run.sh 회귀(가짜 codex).
+- 실제 Codex·Claude 를 한 번 이상 돌린다(가짜만 통과하고 실제는 실패한 orca-team 이전 경험).
+
+### 15.2 실환경 확인 (단계마다)
+
+버리는 시험 프로젝트에서 실제 Herdr·Claude·Codex 로 한 바퀴 돌린다. 결과는 이 문서 15.4 에 기록한다.
+
+### 15.3 구현 단계
+
+설계 문서는 이것 하나다. 구현 계획·서브에이전트 구현·Codex 리뷰·실환경 확인을 세 번 한다. 세 단계를 마치면 herdr-team 0.1.0 으로 main 에 병합한다.
+
+1. **핵심**: 플러그인 골격·shim, 설정, 사양·`task new`, tasks.toml·plan, owns 잠금, start·start-ready, 워커 사양 조립, 리뷰(review·review-finish, 사전 검사, 변조 검사, 프롬프트), accept·fix·drop, status·`next`, wait, 메인 연결(tell·notify·watch·answer·ask-user·reask·`render`), 훅, doctor·scaffold·up·bind, init·up 스킬, 코디네이터 사용법, 직무 문서(planner 기본·developer·tester). 실환경: 기획 → 개발·테스트 병렬 → Codex 리뷰 pane → 수정 라운드 → accept, 메인 질문 중계.
+2. **기획 인터뷰와 승인**: 인터뷰 체크리스트·확정 질문(10장), 승인 직무와 `awaiting_user`, `design-review`, designer 기본. 실환경: 사용자가 인터뷰에 답하고 일괄 승인.
+3. **디자인**: 디렉터 3단계(DevTools MCP, Claude Design), designer 전체, 보강 루프, `hteam image`·`codex-run.sh`, 금지 목록·`lint`, 리뷰 디자인 절. 실환경: 디렉터 → 화면 디자인 → 일괄 승인 → 구현.
+
+### 15.4 실환경 확인 결과
+
+(단계마다 채운다.)
+
+## 16. 범위 밖
+
+- git worktree 로 워커 격리(작업 폴더 하나와 owns 잠금으로 한다).
+- 다른 머신의 Herdr(원격 core).
+- Claude·Codex 밖 에이전트.
+- 한 프로젝트에서 기획 인터뷰를 동시에 둘.
+- herdr-app mod(패널 UI). 상태는 `hteam status` 와 pane 으로 본다.
+
+## 부록 A. orca-team 대응
+
+| orca-team | herdr-team |
+|---|---|
+| `orch` CLI | `hteam` CLI |
+| Orca Run 메일함(`orca orchestration send/check/reply`) | horch 메일함(`horch send/check/reply`) |
+| `orca orchestration worker-start --worktree current` | `horch worker-start`(팀 탭 pane) |
+| `worker-retain/release/show`, Orca 생존 판정 | horch `worker-retain/release/show`, `observed` |
+| `orca agent launch --surface terminal`(코디네이터) | `hc run` 으로 팀 탭에 코디네이터, `hteam bind` 가 `run-create`·`run-use` |
+| `ORCA_TERMINAL_HANDLE` 로 코디네이터 판별 | `$HC_TERMINAL_ID` 와 `run.json`·horch DB 로 판별 |
+| Orca 프리앰블 문구로 워커 판별 | horch active Dispatch 터미널로 판별 |
+| 리뷰: 화면 없는 `codex exec` | 리뷰: 반대쪽 에이전트의 horch 워커 pane |
+| 작업: 항상 Claude | 작업: 직무별 `worker`(claude·codex), 리뷰는 반대쪽 |
+| Orca 내장 브라우저 캡처 | Chrome DevTools MCP |
+| `.orchestration/` | `.herdr-team/` |
+| `/orca-team:init`·`up`·`image` | `/herdr-team:init`·`up`·`image` |
+| Codex `--bypass-hook-trust` | `--disable=hooks`(`[agents.codex].args`) |
