@@ -194,3 +194,7 @@ def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str |
     warnings += list(data.get("warnings") or [])
     return {"mode": mode, "horch_task": data["task"], "dispatch": data["dispatch"], "terminal": data.get("terminal"),
             "state": data.get("state"), "warnings": warnings}
+
+
+def row_by_id(rows: list[dict], did: str | None) -> dict | None:
+    return next((r for r in rows if r["id"] == did), None) if did else None

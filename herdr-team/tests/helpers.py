@@ -337,6 +337,19 @@ class TeamCase(unittest.TestCase):
             action["commit"] = f"[{tid}] r{rnd} 작업"
         return self.act(self.work_dispatch(tid), action)
 
+    def attempt(self, tid: str) -> dict:
+        return self.task_state(tid)["rounds"][-1]["reviews"][-1]
+
+    def act_review(self, tid: str, verdict: str | None = "APPROVE", *, outcome: str = "succeeded",
+                   text: str = "## 지적 사항\n- 없음\n", write: bool = True, extra: dict | None = None) -> tuple[int, dict]:
+        """현재 리뷰 시도의 리뷰어가 rN-aK.md 를 쓰고 done 한다."""
+        att = self.attempt(tid)
+        action = {"done": {"outcome": outcome, "summary": verdict or "판정 없음", "report_path": att["file"]}}
+        if write:
+            action["review"] = {"file": att["file"], "text": text, "verdict": verdict}
+        action.update(extra or {})
+        return self.act(att["dispatch"], action)
+
 
 def _parse(stdout: str, stderr: str) -> dict:
     for line in reversed(stdout.strip().splitlines()):

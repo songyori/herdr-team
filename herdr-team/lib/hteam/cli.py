@@ -18,6 +18,7 @@ COMMAND_MODULES: tuple[str, ...] = (
     "specs",
     "plan",
     "tasks",
+    "review",
 )
 
 

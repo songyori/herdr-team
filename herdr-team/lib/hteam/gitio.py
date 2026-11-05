@@ -186,3 +186,46 @@ def unstage(root, paths: list[str]) -> None:
 def last_commit(root, path: str) -> str | None:
     """path 를 마지막으로 바꾼 커밋. 없으면 None."""
     return run(root, "log", "-1", "--format=%H", "--", literal(path)).stdout.strip() or None
+
+
+# --- root 가 git 최상위의 하위 폴더일 때(설계 3.4: 프로젝트 루트 ≠ git 최상위일 수 있다) ---
+# git 의 diff·diff-tree·status --porcelain 출력과 ls-tree --full-tree 경로는 최상위 기준이고, owns·보고서·리뷰 경로와
+# root 에 붙이는 경로는 root 기준이다. 리뷰(사전 검사·기준점·변조 검사)는 아래로 둘 사이를 바꾼다.
+
+
+def from_top(prefix: str, path: str) -> str:
+    """git 최상위 기준 경로 → root 기준(prefix 는 top_prefix(root)). root 밖 경로는 `../` 로 시작한다. owns 는 `..`
+    마디를 쓸 수 없으므로(globs.owns_problem) root 밖 경로는 어느 owns 에도 맞지 않는다."""
+    if path.startswith(prefix):
+        return path[len(prefix):]
+    up, parts = prefix.rstrip("/").split("/"), path.split("/")
+    same = 0
+    while same < len(up) and same < len(parts) - 1 and up[same] == parts[same]:
+        same += 1
+    return "/".join([".."] * (len(up) - same) + parts[same:])
+
+
+def to_top(prefix: str, path: str) -> str:
+    """from_top 의 반대: root 기준 경로(`../` 포함) → git 최상위 기준. blob 에 넘길 때 쓴다."""
+    import posixpath
+    return posixpath.normpath(prefix + path) if prefix else path
+
+
+def hash_files(root, paths: list[str]) -> dict[str, str | None]:
+    """root 기준 경로(`../` 포함)의 작업 트리 내용 해시(필터 적용, blob 과 견줄 수 있다). 없는 파일은 None.
+
+    `hash-object --stdin-paths` 는 상대 경로를 git 최상위 기준으로 읽는다(root 가 하위 폴더면 hash_paths 는 다른
+    파일을 읽거나 실패한다). 그래서 절대 경로로 넘긴다."""
+    import os
+    full = {x: os.path.normpath(os.path.join(str(root), x)) for x in paths}
+    result: dict[str, str | None] = dict.fromkeys(paths)
+    present = [x for x in paths if os.path.isfile(full[x])]
+    if present:
+        hashes = run(root, "hash-object", "--stdin-paths", input="\n".join(full[x] for x in present) + "\n").stdout.split()
+        result.update(zip(present, hashes))
+    return result
+
+
+def untracked_all(root) -> list[str]:
+    """저장소 전체의 추적하지 않는 파일(무시 규칙 적용), git 최상위 기준. untracked 는 root 아래만 본다."""
+    return sorted(_z(run(root, "ls-files", "--others", "--exclude-standard", "--full-name", "-z", "--", ":/").stdout))

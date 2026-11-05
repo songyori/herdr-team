@@ -56,3 +56,17 @@ def work_spec(p, cfg, spec, rd: dict, owns: list[str]) -> str:
         if rd.get("note"):
             parts.append(f"코디네이터 메모: {rd['note']}")
     return "\n".join(parts).rstrip() + "\n"
+
+
+def review_prompt(p, cfg, spec, rd: dict, att: dict) -> str:
+    """리뷰 프롬프트(설계 6.2). 입력(대상 커밋, 바뀐 파일)은 시도 기록에 저장된 것을 쓴다."""
+    tid, n = spec.id, rd["round"]
+    prior = [review_rel(tid, r) for r in range(1, n) if (p.root / review_rel(tid, r)).is_file()]
+    commits = att["inputs"]["commits"]
+    files = att["inputs"]["files"]
+    return fill(_template("review-prompt.md"), role=spec.role, role_title=cfg.role_title(spec.role), task_id=tid,
+                round=str(n), attempt=str(att["attempt"]), title=spec.title, review_file=att["file"],
+                spec_path=f".herdr-team/tasks/{tid}.md", role_doc=f".herdr-team/roles/{spec.role}.md",
+                report=report_rel(tid), prior=", ".join(f"`{x}`" for x in prior) or "없음",
+                commits="\n".join(f"- {c['sha'][:10]} {c['subject']}" for c in commits) or "- 없음",
+                files="\n".join(f"- `{f}`" for f in files) or "- 없음").rstrip() + "\n"
