@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import signal
 import sys
+from pathlib import Path
 
-from . import comms, guard, runs
+from . import agents, auth, comms, guard, runs, workers
 from .errors import FAIL, USAGE, HorchError
 from .paths import VERSION, resolve_home
 from .store import Store
@@ -37,6 +39,18 @@ def build_parser() -> Parser:
     s.add_argument("--wait", action="store_true")
     s.add_argument("--timeout-ms", type=int, default=900000)
     s.add_argument("--ack", type=int)
+    s = sub.add_parser("worker-start")
+    spec = s.add_mutually_exclusive_group()
+    spec.add_argument("--spec")
+    spec.add_argument("--spec-file")
+    s.add_argument("--title")
+    s.add_argument("--agent", required=True, choices=sorted(agents.AGENTS))
+    s.add_argument("--model")
+    s.add_argument("--effort")
+    s.add_argument("--cwd")
+    s.add_argument("--agent-arg", action="append", default=[])
+    s.add_argument("--task")
+    s.add_argument("--retry", action="store_true")
     # --- 명령 파서 끝 ---
     return p
 
@@ -64,6 +78,17 @@ def _with_store(args, store: Store) -> dict:
         return comms.send(store, args.to, args.subject, args.body)
     if args.cmd == "check":
         return comms.check(store, dispatch=args.dispatch, wait=args.wait, timeout_ms=args.timeout_ms, ack=args.ack)
+    if args.cmd == "worker-start":
+        run_id = auth.owner_run_id(store)
+        spec = args.spec
+        if args.spec_file:
+            try:
+                spec = Path(args.spec_file).read_text(encoding="utf-8")
+            except OSError as exc:
+                raise HorchError("bad_spec_file", f"spec 파일을 읽지 못했다: {exc}", USAGE) from exc
+        return workers.start(store, run_id, spec=spec, title=args.title, agent=args.agent, model=args.model,
+                             effort=args.effort, cwd=args.cwd or os.getcwd(), extra=args.agent_arg,
+                             task_id=args.task, retry=args.retry)
     # --- 저장소 명령 끝 ---
     raise HorchError("usage", f"알 수 없는 명령: {args.cmd}", USAGE)
 
