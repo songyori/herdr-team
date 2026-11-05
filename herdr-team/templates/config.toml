@@ -1,0 +1,51 @@
+# herdr-team 설정(설계 4장). 이 파일이 있으면 herdr-team 프로젝트다.
+max_parallel = 4          # start-ready 가 동시에 둘 working 태스크 수
+user_approval_roles = []  # 리뷰 승인 뒤 사용자 일괄 승인을 기다릴 직무(2단계에서 designer)
+
+[coordinator]
+model = "opus"
+effort = "xhigh"
+
+[review]
+max_rounds = 3
+
+[defaults]
+worker = "claude"         # 작업 워커. 리뷰는 늘 반대쪽 에이전트다
+claude_model = "sonnet"
+claude_effort = "xhigh"
+codex_model = "gpt-6.1-sol"
+codex_effort = "high"
+
+# 띄울 때마다 horch --agent-arg 로 넘기는 인자. 권한 모드는 여기서 정한다(init 이 위험을 설명하고 승인받는다).
+[agents.claude]
+args = []
+[agents.codex]
+args = ["--disable=hooks"]
+
+[image]
+codex_model = "gpt-6.1-sol"
+codex_effort = "medium"
+
+[roles.planner]
+title = "기획"
+claude_model = "opus"
+claude_effort = "xhigh"
+codex_model = "gpt-6.1-sol"
+codex_effort = "high"
+owns = ["docs/planning/**"]
+
+[roles.developer]
+title = "개발"
+claude_model = "opus"
+claude_effort = "xhigh"
+codex_model = "gpt-6-astra"
+codex_effort = "xhigh"
+owns = ["src/**"]
+
+[roles.tester]
+title = "테스트"
+claude_model = "sonnet"
+claude_effort = "xhigh"
+codex_model = "gpt-6.1-sol"
+codex_effort = "high"
+owns = ["tests/**", "docs/qa/**"]

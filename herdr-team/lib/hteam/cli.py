@@ -22,6 +22,7 @@ COMMAND_MODULES: tuple[str, ...] = (
     "outbox",
     "ask",
     "coord",
+    "setup",
 )
 
 

@@ -74,3 +74,27 @@ def probe(terminal: str | None, argv: list[str] | None) -> str:
     except HteamError:
         return "unverifiable"
     return verdict(info, argv)
+
+
+def run_bg(name: str, cwd: str, labels: dict[str, str], argv: list[str]) -> dict:
+    """코디네이터를 띄운다. --keep: Herdr 재시작 등으로 잃은 프로그램을 원래 명령으로 다시 실행하지 않고 셸로 바꾼다
+    (같은 nonce 의 코디네이터가 저절로 되살아나지 않게. 터미널은 남아 원인을 볼 수 있다)."""
+    args = ["run", "--bg", "--no-parent", "--no-notify", "--keep", "--name", name, "--cwd", cwd]
+    for key, value in labels.items():
+        args += ["--label", f"{key}={value}"]
+    return _hc(args, ["--", *argv])
+
+
+def rename_tab(tab: str, name: str, tries: int = 10, pause: float = 0.3) -> bool:
+    """탭이 화면에 생길 때까지 잠깐 다시 시도한다. 끝내 안 되면 False(번호 이름으로 둔다)."""
+    for i in range(tries):
+        try:
+            proc = subprocess.run(["herdr-app", "do", "tab.rename", "--id", tab, "--name", name],
+                                  capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        if proc.returncode == 0:
+            return True
+        if i < tries - 1:
+            time.sleep(pause)
+    return False
