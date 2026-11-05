@@ -51,6 +51,24 @@ def build_parser() -> Parser:
     s.add_argument("--agent-arg", action="append", default=[])
     s.add_argument("--task")
     s.add_argument("--retry", action="store_true")
+    s = sub.add_parser("reply")
+    s.add_argument("--id", type=int, required=True)
+    s.add_argument("--body", required=True)
+    s = sub.add_parser("ask")
+    s.add_argument("--dispatch", required=True)
+    s.add_argument("--question")
+    s.add_argument("--key")
+    s.add_argument("--timeout-ms", type=int, default=540000)
+    s.add_argument("--resume", type=int)
+    s = sub.add_parser("escalate")
+    s.add_argument("--dispatch", required=True)
+    s.add_argument("--body", required=True)
+    s = sub.add_parser("done")
+    s.add_argument("--dispatch", required=True)
+    s.add_argument("--outcome", required=True, choices=["succeeded", "failed"])
+    s.add_argument("--summary", required=True)
+    s.add_argument("--report-path")
+    s.add_argument("--files-modified", action="append", default=[])
     # --- 명령 파서 끝 ---
     return p
 
@@ -89,6 +107,14 @@ def _with_store(args, store: Store) -> dict:
         return workers.start(store, run_id, spec=spec, title=args.title, agent=args.agent, model=args.model,
                              effort=args.effort, cwd=args.cwd or os.getcwd(), extra=args.agent_arg,
                              task_id=args.task, retry=args.retry)
+    if args.cmd == "reply":
+        return comms.reply(store, args.id, args.body)
+    if args.cmd == "ask":
+        return comms.ask(store, args.dispatch, args.question, args.key, args.timeout_ms, args.resume)
+    if args.cmd == "escalate":
+        return comms.escalate(store, args.dispatch, args.body)
+    if args.cmd == "done":
+        return comms.done(store, args.dispatch, args.outcome, args.summary, args.report_path, args.files_modified)
     # --- 저장소 명령 끝 ---
     raise HorchError("usage", f"알 수 없는 명령: {args.cmd}", USAGE)
 

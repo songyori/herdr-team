@@ -1,8 +1,14 @@
 """메시지 명령. send·check(Task 6), reply·ask·escalate·done(Task 9)."""
 from __future__ import annotations
 
+import hashlib
+import json
+import sqlite3
+import time
+
 from . import auth, mailbox
-from .errors import CONFLICT, DENIED, USAGE, HorchError
+from .errors import CONFLICT, DENIED, TIMEOUT, USAGE, HorchError
+from .ids import now
 
 
 def send(store, to: str, subject: str | None, body: str) -> dict:
@@ -53,3 +59,128 @@ def check(store, *, dispatch: str | None, wait: bool, timeout_ms: int, ack: int 
 
     return mailbox.check(store, f"run:{run_id}", wait=wait, timeout_ms=timeout_ms, ack_id=ack,
                          terminal=auth.caller(), guard=still_owner)
+
+
+def reply(store, question_id: int, body: str) -> dict:
+    run_id = auth.owner_run_id(store)
+    q = store.one("SELECT * FROM messages WHERE id=? AND type='question'", (question_id,))
+    if not q or q["run_id"] != run_id:
+        raise HorchError("unknown_question", f"이 Run 에 질문 {question_id} 가 없다", USAGE)
+    existing = None
+    try:
+        with store.tx():
+            existing = store.one("SELECT id, body FROM messages WHERE reply_to=? AND type='reply'", (question_id,))
+            if existing is None:
+                mid = mailbox.post(store, run_id=run_id, mailbox=f"dispatch:{q['dispatch_id']}", sender=f"run:{run_id}",
+                                   type="reply", body=body, reply_to=question_id, dispatch_id=q["dispatch_id"])
+                return {"message": mid, "duplicate": False}
+    except sqlite3.IntegrityError:
+        existing = store.one("SELECT id, body FROM messages WHERE reply_to=? AND type='reply'", (question_id,))
+    if existing["body"] == body:
+        return {"message": existing["id"], "duplicate": True}
+    raise HorchError("reply_conflict", f"질문 {question_id} 에는 이미 다른 답이 있다", CONFLICT)
+
+
+def _ask_key(question: str, key: str | None) -> str:
+    return key or hashlib.sha256(question.encode("utf-8")).hexdigest()[:16]
+
+
+def ask(store, dispatch_id: str, question: str | None, key: str | None, timeout_ms: int, resume: int | None) -> dict:
+    row = auth.worker_dispatch(store, dispatch_id)
+    auth.require_active(row)
+    run_id = row["run_id"]
+    reused = True
+    if resume is not None:
+        q = store.one("SELECT * FROM messages WHERE id=? AND type='question' AND dispatch_id=?", (resume, dispatch_id))
+        if not q:
+            raise HorchError("unknown_question", f"이 Dispatch 의 질문 {resume} 가 없다", USAGE)
+    else:
+        if not question:
+            raise HorchError("usage", "--question 또는 --resume 이 필요하다", USAGE)
+        ask_key = _ask_key(question, key)
+        try:
+            with store.tx():
+                auth.require_active(store.one("SELECT id, state FROM dispatches WHERE id=?", (dispatch_id,)))
+                q = store.one("SELECT * FROM messages WHERE dispatch_id=? AND ask_key=?", (dispatch_id, ask_key))
+                if q is None:
+                    mid = mailbox.post(store, run_id=run_id, mailbox=f"run:{run_id}", sender=f"dispatch:{dispatch_id}",
+                                       type="question", subject=question.splitlines()[0][:80], body=question,
+                                       dispatch_id=dispatch_id, ask_key=ask_key)
+                    q = store.one("SELECT * FROM messages WHERE id=?", (mid,))
+                    reused = False
+        except sqlite3.IntegrityError:
+            q = store.one("SELECT * FROM messages WHERE dispatch_id=? AND ask_key=?", (dispatch_id, ask_key))
+        if q["body"] != question:
+            raise HorchError("ask_key_conflict", f"key {ask_key} 의 질문 본문이 다르다", CONFLICT,
+                             data={"question": q["id"]})
+        if not reused:
+            mailbox.wake(store, f"run:{run_id}")
+    return _wait_answer(store, dispatch_id, run_id, q["id"], timeout_ms, reused)
+
+
+def _wait_answer(store, dispatch_id: str, run_id: str, qid: int, timeout_ms: int, reused: bool) -> dict:
+    deadline = time.monotonic() + timeout_ms / 1000
+    next_wake = time.monotonic() + mailbox.rewake_interval()
+    while True:
+        answer = store.one("SELECT body FROM messages WHERE reply_to=? AND type='reply'", (qid,))
+        if answer:
+            return {"question": qid, "answer": answer["body"], "reused": reused}
+        state = store.one("SELECT state FROM dispatches WHERE id=?", (dispatch_id,))["state"]
+        if state != "active":
+            raise HorchError("dispatch_not_active", f"Dispatch {dispatch_id} 가 {state} 가 됐다", CONFLICT,
+                             data={"question": qid})
+        t = time.monotonic()
+        if t >= deadline:
+            raise HorchError("timeout", "답이 오지 않았다", TIMEOUT, f"--resume {qid} 로 다시 기다린다",
+                             data={"question": qid})
+        if t >= next_wake:
+            mailbox.wake(store, f"run:{run_id}")
+            next_wake = t + mailbox.rewake_interval()
+        time.sleep(min(mailbox.poll_interval(), deadline - t))
+
+
+def escalate(store, dispatch_id: str, body: str) -> dict:
+    row = auth.worker_dispatch(store, dispatch_id)
+    auth.require_active(row)
+    run_id = row["run_id"]
+    with store.tx():
+        auth.require_active(store.one("SELECT id, state FROM dispatches WHERE id=?", (dispatch_id,)))
+        mid = mailbox.post(store, run_id=run_id, mailbox=f"run:{run_id}", sender=f"dispatch:{dispatch_id}",
+                           type="escalation", subject=body.splitlines()[0][:80] if body else None, body=body,
+                           dispatch_id=dispatch_id)
+    return {"message": mid, "wake": mailbox.wake(store, f"run:{run_id}")}
+
+
+def done(store, dispatch_id: str, outcome: str, summary: str, report_path: str | None, files: list[str]) -> dict:
+    row = auth.worker_dispatch(store, dispatch_id)
+    run_id = row["run_id"]
+    files = list(files or [])
+    files_json = json.dumps(files, ensure_ascii=False)
+    with store.tx():
+        cur = store.one("SELECT * FROM dispatches WHERE id=?", (dispatch_id,))
+        if cur["outcome"] is not None:
+            same = (cur["outcome"], cur["summary"], cur["report_path"], cur["files_modified"]) == \
+                   (outcome, summary, report_path, files_json)
+            if not same:
+                raise HorchError("done_conflict", "이미 다른 내용으로 done 했다", CONFLICT)
+            duplicate = True
+        else:
+            if cur["state"] != "active":
+                raise HorchError("dispatch_not_active", f"Dispatch {dispatch_id} 는 {cur['state']} 다", CONFLICT)
+            ts = now()
+            store.run("UPDATE dispatches SET state='settled', outcome=?, summary=?, report_path=?, files_modified=?, "
+                      "settled_at=? WHERE id=? AND state='active'",
+                      (outcome, summary, report_path, files_json, ts, dispatch_id))
+            store.run("UPDATE tasks SET status='settled', outcome=?, settled_at=? WHERE id=?",
+                      (outcome, ts, cur["task_id"]))
+            body = json.dumps({"dispatch": dispatch_id, "task": cur["task_id"], "outcome": outcome, "summary": summary,
+                               "report_path": report_path, "files_modified": files}, ensure_ascii=False)
+            mailbox.post(store, run_id=run_id, mailbox=f"run:{run_id}", sender=f"dispatch:{dispatch_id}",
+                         type="worker_done", subject=f"{outcome} {dispatch_id}", body=body, dispatch_id=dispatch_id)
+            duplicate = False
+    wake = None if duplicate else mailbox.wake(store, f"run:{run_id}")
+    final = store.one("SELECT * FROM dispatches WHERE id=?", (dispatch_id,))
+    return {"dispatch": {"id": final["id"], "task": final["task_id"], "state": final["state"],
+                         "outcome": final["outcome"], "summary": final["summary"], "report_path": final["report_path"],
+                         "files_modified": json.loads(final["files_modified"] or "[]")},
+            "duplicate": duplicate, "wake": wake}
