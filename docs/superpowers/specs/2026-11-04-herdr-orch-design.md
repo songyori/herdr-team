@@ -149,7 +149,7 @@ Dispatch:
 - 이전 Dispatch 가 `abandoned` 또는 `released`.
 - 이전 Dispatch 가 `launch_failed` 이고 `--retry` 가 있다.
 
-`launching`, `active`, `settled`, `retained` 면 exit 3. 조정에서 hc 호출이 실패하면 exit 1(확인할 수 없음).
+`launching`, `active`, `settled`, `retained` 면 exit 3. 조정은 실행자 프로세스만 본다(`ps`). `ps` 로 확인할 수 없으면 실행자가 살아 있다고 보고 `launching` 으로 두므로 결과는 exit 3(`task_busy`)이다.
 
 ## 6. 호출자와 권한
 
@@ -168,7 +168,7 @@ Dispatch:
 
 ### 넘겨받기(run-use)
 
-`BEGIN IMMEDIATE` 트랜잭션 안에서 R 의 binding 을 다시 읽고 판단한다.
+`BEGIN IMMEDIATE` 트랜잭션 안에서 R 의 binding 을 다시 읽고 판단한다. 잠금을 쥔 채 하는 소유자 판정(`hc get`)은 3초로 자른다. 시간이 지나면 `unverifiable` 로 보고 `--force` 없이는 거부한다(다른 프로세스의 `busy_timeout` 5초보다 짧게).
 
 | R 의 소유자 | 결과 |
 |---|---|
@@ -197,7 +197,7 @@ Dispatch:
 
 ## 7. 명령
 
-모든 명령은 전역 옵션 `--home <경로>` 를 받는다. 모든 명령(`skill` 제외)은 JSON 한 개를 stdout 에 쓴다. 성공은 `{"ok": true, ...}`, 실패는 `{"ok": false, "error": {"code", "message", "hint"}}` 다.
+모든 명령은 전역 옵션 `--home <경로>` 를 받는다. 모든 명령(`skill`, `launch-guard` 제외)은 JSON 한 개를 stdout 에 쓴다. `launch-guard` 는 pane 안에서 돌며 거부 사유를 한 줄 글로 남긴다. 성공은 `{"ok": true, ...}`, 실패는 `{"ok": false, "error": {"code", "message", "hint"}}` 다.
 
 | 명령 | 인자 | 결과 |
 |---|---|---|
@@ -216,7 +216,7 @@ Dispatch:
 | `worker-release` | `--dispatch` | `{dispatch}` |
 | `worker-retain` | `--dispatch` | `{dispatch}` |
 | `worker-abandon` | `--dispatch`, `--kill` | `{dispatch}` |
-| `status` | 없음 | 호출자 binding, Run 요약, 열린 Delivery, 읽지 않은 메시지 수, 답 없는 질문 |
+| `status` | 없음 | 호출자 binding, Run 요약, 열린 Delivery, 읽지 않은 메시지 수, 답 없는 질문(`launching`·`active` Dispatch 의 것만) |
 | `doctor` | 없음 | 점검 목록(10장) |
 | `skill` | 없음 | 사용법 텍스트 |
 
@@ -302,7 +302,7 @@ Dispatch:
 
 1. 너는 herdr-orch 워커다. Task ID, Dispatch ID.
 2. 먼저 spec 파일(`spec.md` 절대 경로)을 읽고 그 일만 한다.
-3. 막히면 `horch ask --dispatch D --question "..."`. 답이 올 때까지 기다린다. exit 4 면 `--resume <질문 id>` 로 다시 기다린다. 출력을 못 받았으면 같은 명령을 다시 실행한다. 대화형 질문 도구(AskUserQuestion 등)는 쓰지 않는다. 사람이 보지 않는다.
+3. 막히면 `horch ask --dispatch D --question "..."`. 답이 올 때까지 기다린다. exit 4 면 `--resume <질문 id>` 로 다시 기다린다. 출력을 못 받았으면 같은 명령을 다시 실행한다. 같은 질문을 새로 하려면 다른 `--key` 를 준다. ask·check·done 은 재호출 안전이고, escalate 는 다시 보내면 같은 보고가 한 번 더 간다. 대화형 질문 도구(AskUserQuestion 등)는 쓰지 않는다. 사람이 보지 않는다.
 4. 새 파일을 시작하기 전, 테스트를 돌린 뒤, done 직전에 `horch check --dispatch D` 로 코디네이터 메시지를 읽는다. 처리한 뒤 `--ack <delivery>` 하고 `count` 가 0 이 될 때까지 반복한다.
 5. 범위 밖 문제나 진행할 수 없으면 `horch escalate --dispatch D --body "..."`.
 6. 끝나면 `horch done --dispatch D --outcome succeeded|failed --summary "<세 문장>"`, 해당하면 `--report-path`, `--files-modified`. 실패를 문장으로만 쓰지 않는다. 출력을 못 받았으면 같은 인자로 다시 실행한다. done 뒤에는 새 일을 시작하지 않고 대기한다.
@@ -320,8 +320,8 @@ Dispatch:
 
 1. 메일함에 ack 안 된 Delivery 가 있으면 그 묶음을 그대로 돌려준다(재전달).
 2. 없으면 아직 묶이지 않은 메시지(reply 제외)를 오래된 순으로 최대 50건 묶어 새 Delivery 를 만든다. `count` 는 묶음의 메시지 수다.
-3. `--ack <id>` 는 그 Delivery 를 ack 한 뒤 1–2단계로 다음 묶음을 돌려준다. 같은 Delivery 를 두 번 ack 해도 오류가 아니다.
-4. `--wait` 는 묶을 메시지가 생길 때까지 1초 간격으로 DB 를 본다. 종류로 거르지 않는다. 깨어나면 1–2단계를 한다. 시간이 지나면 `{delivery: null, messages: [], count: 0, reason: "timeout"}`.
+3. `--ack <id>` 는 그 Delivery 를 ack 한 뒤 1–2단계로 다음 묶음을 돌려준다. Run 메일함이면 ack·묶기 트랜잭션 안에서 호출자가 아직 소유자인지 다시 본다(아니면 exit 5). 같은 Delivery 를 두 번 ack 해도 오류가 아니다.
+4. `--wait` 는 묶을 메시지가 생길 때까지 1초 간격으로 DB 를 본다. 종류로 거르지 않는다. 깨어나면 1–2단계를 한다. 시간이 지나면 `{delivery: null, messages: [], count: 0, reason: "timeout"}`. 폴링 중 DB 잠금(locked·busy)은 그 회차만 건너뛰고 다음 회차에 다시 본다.
 5. `--wait` 동안 `waiters` 에 자기 pid 와 시작 시각을 등록하고 끝날 때 지운다.
 6. 한 메일함을 여러 프로세스가 동시에 check 해도 된다. 같은 묶음을 함께 받고, ack 는 한 번만 효과가 있다.
 
@@ -352,7 +352,7 @@ Dispatch:
 
 ### observed
 
-소유자의 `check --wait` 는 기다리는 동안 5초마다 그 Run 의 `launching`(조정)·`active` Dispatch 를 판정한다(10장: `hc ls` 에는 `argv` 가 없으므로 대상마다 `hc get`). 판정은 메일함 확인을 막지 않는다: 한 번의 틱은 폴링 간격 안에서만 새 판정을 시작하고, 판정 하나의 `hc get` 은 최대 5초(남은 대기 시간보다 짧게)로 자른다. 다 돌지 못한 Dispatch 는 다음 틱과 다음 `check --wait` 호출에서 이어서 본다(진행 위치는 `meta` 에 Run 마다 둔다). 판정 중 예상 밖 오류가 나도 대기는 계속한다(stderr 에 한 줄, stdout 은 JSON 하나 그대로). 판정이 메시지를 쓰기 직전에는 그 Dispatch 가 아직 같은 터미널의 `active` 인지 트랜잭션 안에서 다시 본다. `turn` 이 없으면 blocked·error 를 기록하지 않는다. `launch_failed` Dispatch 가 있으면 `hc ls --all --json` 으로 가드가 거부한 터미널을 찾아 정리한다(5장). 다음 경우 `observations` 에 넣고, 새로 넣었을 때만 `observed` 메시지를 Run 메일함에 쓴다.
+소유자의 `check --wait` 는 기다리는 동안 5초마다 그 Run 의 `launching`(조정)·`active` Dispatch 를 판정한다(10장: `hc ls` 에는 `argv` 가 없으므로 대상마다 `hc get`). 판정은 메일함 확인을 막지 않는다: 한 번의 틱은 폴링 간격 안에서만 새 판정을 시작하고, 판정 하나의 `hc get` 은 최대 5초(남은 대기 시간보다 짧게)로 자른다. 다 돌지 못한 Dispatch 는 다음 틱과 다음 `check --wait` 호출에서 이어서 본다(진행 위치는 `meta` 에 Run 마다 둔다). 거부 터미널 정리도 확인 전 후보와 지울 목록을 틱 사이에 이어 가고, 두 목록이 모두 비었을 때만 `hc ls --all` 을 다시 한다. 판정 중 예상 밖 오류가 나도 대기는 계속한다(stderr 에 한 줄, stdout 은 JSON 하나 그대로). 판정이 메시지를 쓰기 직전에는 그 Dispatch 가 아직 같은 터미널의 `active` 인지 트랜잭션 안에서 다시 본다. `turn` 이 없으면 blocked·error 를 기록하지 않는다. `launch_failed` Dispatch 가 있으면 `hc ls --all --json` 으로 가드가 거부한 터미널을 찾아 정리한다(5장). 다음 경우 `observations` 에 넣고, 새로 넣었을 때만 `observed` 메시지를 Run 메일함에 쓴다.
 
 | kind | 조건 | key |
 |---|---|---|
@@ -394,7 +394,7 @@ Dispatch:
   3. `released`, `closed_at` 기록.
   hc 호출이 다른 이유로 실패하면 상태를 바꾸지 않고 exit 1. 다시 실행하면 이어서 한다. 프로그램이 끝나면 Herdr 가 pane 을 닫는다.
 - **코디네이터가 죽음**: 새 터미널에서 `run-use --id R`(6장 넘겨받기). ack 안 된 Delivery 는 새 소유자에게 다시 간다.
-- **동시 쓰기**: WAL, `busy_timeout` 5초, 쓰기는 `BEGIN IMMEDIATE`.
+- **동시 쓰기**: WAL, `busy_timeout` 5초, 쓰기는 `BEGIN IMMEDIATE`. 저장소를 열 때는 스키마를 만들거나 올려야 할 때만 쓰기 잠금을 잡는다. 잠금을 쥔 채 외부 프로그램을 부르는 곳(run-use 판정)은 호출 시간을 3초로 자른다.
 - **스키마**: `meta.schema_version` 으로 마이그레이션한다. 현재 2(1→2: `dispatches.agent_args` 열과 `(task_id, attempt)` 인덱스 추가). 모르는 더 높은 버전이면 exit 1.
 
 ### doctor 점검

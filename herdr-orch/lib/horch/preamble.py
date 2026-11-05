@@ -20,5 +20,5 @@ def render(*, task_id: str, dispatch_id: str, spec_path: str, horch: str) -> str
    {horch} done --dispatch {d} --outcome succeeded|failed --summary "<세 문장 요약>" [--report-path <경로>] [--files-modified <경로>](파일마다 반복)
    출력을 못 받았으면 같은 인자로 다시 실행한다. done 뒤에는 새 일을 시작하지 않고 기다린다.
 6. horch 는 셸 명령으로 실행한다(다른 도구에는 $HC_TERMINAL_ID 가 없어 거부된다). horch 로 다른 워커를 띄우지 않는다.
-   도구 시간 초과 등으로 horch 출력을 못 받았으면 같은 명령을 그대로 다시 실행한다(재호출 안전).
+   도구 시간 초과 등으로 horch 출력을 못 받았으면 같은 명령을 그대로 다시 실행한다(ask·check·done 은 재호출 안전. escalate 는 다시 보내면 같은 보고가 한 번 더 간다).
 """
