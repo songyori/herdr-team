@@ -44,6 +44,14 @@ DDL = [
 ]
 
 
+def is_busy(exc: BaseException) -> bool:
+    """SQLite 잠금 충돌(locked·busy)이면 True. 잠시 뒤 다시 하면 풀릴 수 있다."""
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    msg = str(exc).lower()
+    return "locked" in msg or "busy" in msg
+
+
 class Store:
     def __init__(self, home: Path):
         self.home = home
@@ -71,21 +79,30 @@ class Store:
                 self.conn.execute("PRAGMA journal_mode=WAL")
                 return
             except sqlite3.OperationalError as e:
-                msg = str(e).lower()
-                if ("locked" not in msg and "busy" not in msg) or time.monotonic() >= deadline:
+                if not is_busy(e) or time.monotonic() >= deadline:
                     raise
                 time.sleep(0.02)
 
+    def _schema_version(self) -> int:
+        if not self.one("SELECT name FROM sqlite_master WHERE type='table' AND name='meta'"):
+            return 0
+        row = self.one("SELECT value FROM meta WHERE key='schema_version'")
+        version = int(row["value"]) if row else 0
+        if version > SCHEMA_VERSION:
+            raise HorchError("schema_too_new",
+                             f"DB 스키마 {version} 은 이 horch 가 아는 {SCHEMA_VERSION} 보다 새롭다",
+                             FAIL, "horch 를 업데이트한다")
+        return version
+
     def _migrate(self) -> None:
+        """스키마가 이미 최신이면 쓰기 잠금을 잡지 않는다. 다른 프로세스가 잠금을 쥔 동안에도(예: run-use 판정)
+        열고 읽을 수 있게 한다. 만들거나 바꿔야 할 때만 BEGIN IMMEDIATE 안에서 다시 읽고 한다."""
+        if self._schema_version() == SCHEMA_VERSION:
+            return
         with self.tx():
-            version = 0
-            if self.one("SELECT name FROM sqlite_master WHERE type='table' AND name='meta'"):
-                row = self.one("SELECT value FROM meta WHERE key='schema_version'")
-                version = int(row["value"]) if row else 0
-            if version > SCHEMA_VERSION:
-                raise HorchError("schema_too_new",
-                                 f"DB 스키마 {version} 은 이 horch 가 아는 {SCHEMA_VERSION} 보다 새롭다",
-                                 FAIL, "horch 를 업데이트한다")
+            version = self._schema_version()  # 잠금을 기다리는 사이 다른 프로세스가 만들었을 수 있다
+            if version == SCHEMA_VERSION:
+                return
             if version == 0:
                 for stmt in DDL:
                     self.conn.execute(stmt)
@@ -133,7 +150,3 @@ def write_atomic(path: Path, text: str) -> None:
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)
-
-
-def row_dict(row: sqlite3.Row | None) -> dict | None:
-    return dict(row) if row is not None else None

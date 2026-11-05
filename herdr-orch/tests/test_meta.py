@@ -53,8 +53,14 @@ class MetaTest(HorchCase):
             "워커의 셸 명령을 모두 막을 수 있다.",
             "`--disable=hooks` 는 hook 을 끄고 확인 창도 없앤다",
             "horch 는 셸 명령으로 실행한다",
+            # 최종 리뷰 뒤 보강: 재시도와 새 Task 구분, 여러 줄 spec
+            "`--task <id> --retry` 는 `launch_failed` 를 다시 띄울 때만 쓴다",
+            "`outcome=failed` 로 끝난 Task 는 다시 열리지 않는다",
+            "`--task` 없이 새 Task 로 띄운다",
+            "--spec-file <경로>",
         ):
             self.assertIn(needle, proc.stdout)
+        self.assertEqual(proc.stdout.count("`--agent-arg` 로 권한·샌드박스 우회를 넘기면"), 1)  # 같은 항목이 두 번 없다
         self.assertNotIn("--agent-arg=--dangerously-bypass-hook-trust", proc.stdout)
         # abandon 은 abandoned 표시일 뿐이다. abandon 을 "정리" 라 부르면 release 없이 끝낸다(실환경 확인)
         for line in proc.stdout.splitlines():

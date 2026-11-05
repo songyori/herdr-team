@@ -1,4 +1,6 @@
 import os
+import sqlite3
+import threading
 import time
 import unittest
 from unittest import mock
@@ -253,6 +255,104 @@ class MailboxTest(HorchCase):
         self.assertEqual(wout["dispatch"], {"id": did, "state": "active"})
         _, none = self.horch("status")
         self.assertEqual((none["terminal"], none["run"]), (None, None))
+
+    def test_status_unanswered_only_for_running_dispatches(self):
+        # 버리거나 끝난 Dispatch 의 질문은 답할 필요가 없다. 남겨 두면 check --wait 를 띄울 이유가 끝나지 않는다
+        live = self.add_dispatch(self.run_id, did="dsp-00000001", terminal="t9")
+        gone = self.add_dispatch(self.run_id, did="dsp-00000002", terminal="t8", state="abandoned")
+        done = self.add_dispatch(self.run_id, did="dsp-00000003", terminal="t7", state="settled")
+        db = self.db()
+        for did in (live, gone, done):
+            db.execute("INSERT INTO messages(run_id, mailbox, sender, type, subject, body, dispatch_id, ask_key, created_at) "
+                       "VALUES (?, ?, ?, 'question', 'q', ?, ?, 'k', 'x')",
+                       (self.run_id, f"run:{self.run_id}", f"dispatch:{did}", f"q {did}", did))
+        db.commit()
+        code, out = self.horch("status", terminal="t100")
+        self.assertEqual(code, 0, out)
+        self.assertEqual([q["dispatch"] for q in out["run"]["unanswered"]], [live])
+
+    # --- 소유권은 첫 ack·take 트랜잭션 안에서도 확인한다 ---
+    def _store_as(self, terminal: str):
+        from horch.store import Store
+        patcher = mock.patch.dict(os.environ, dict(self.env, HC_TERMINAL_ID=terminal), clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        store = Store(self.home)
+        self.addCleanup(store.close)
+        return store
+
+    def _move_binding_after_lookup(self):
+        """comms.check 의 소유자 조회 바로 뒤(ack·take 트랜잭션 전)에 binding 을 t200 으로 옮긴다."""
+        from horch import auth
+        real = auth.owner_run_id
+        moved = []
+
+        def lookup(store):
+            rid = real(store)
+            if not moved:
+                moved.append(rid)
+                db = sqlite3.connect(self.home / "orch.db")
+                db.execute("UPDATE bindings SET terminal='t200' WHERE run_id=?", (rid,))
+                db.commit()
+                db.close()
+            return rid
+        return mock.patch.object(auth, "owner_run_id", side_effect=lookup)
+
+    def test_old_owner_cannot_ack_after_binding_moves(self):
+        from horch import comms
+        from horch.errors import DENIED, HorchError
+        self.horch("send", "--to", f"run:{self.run_id}", "--body", "x")
+        _, first = self.owner_check()
+        store = self._store_as("t100")
+        with self._move_binding_after_lookup(), self.assertRaises(HorchError) as cm:
+            comms.check(store, dispatch=None, wait=False, timeout_ms=1000, ack=first["delivery"])
+        self.assertEqual(cm.exception.exit_code, DENIED)
+        row = self.db().execute("SELECT acked_at FROM deliveries WHERE id=?", (first["delivery"],)).fetchone()
+        self.assertIsNone(row["acked_at"])
+
+    def test_old_owner_cannot_take_after_binding_moves(self):
+        from horch import comms
+        from horch.errors import DENIED, HorchError
+        self.horch("send", "--to", f"run:{self.run_id}", "--body", "x")
+        store = self._store_as("t100")
+        with self._move_binding_after_lookup(), self.assertRaises(HorchError) as cm:
+            comms.check(store, dispatch=None, wait=False, timeout_ms=1000, ack=None)
+        self.assertEqual(cm.exception.exit_code, DENIED)
+        self.assertIsNone(self.db().execute("SELECT 1 FROM deliveries").fetchone())
+        self.assertIsNone(self.db().execute("SELECT 1 FROM messages WHERE delivery_id IS NOT NULL").fetchone())
+
+    def test_wait_survives_brief_lock(self):
+        # 대기 중 다른 쓰기가 잠금을 busy_timeout 보다 오래 쥐어도 그 폴링만 건너뛰고 계속 기다린다
+        from horch import mailbox
+        store = self._store_as("t100")
+        store.conn.execute("PRAGMA busy_timeout=100")
+        box = f"run:{self.run_id}"
+        errors = []
+
+        def holder():
+            db = sqlite3.connect(self.home / "orch.db", isolation_level=None)
+            try:
+                limit = time.monotonic() + 5
+                while not db.execute("SELECT 1 FROM waiters").fetchone() and time.monotonic() < limit:
+                    time.sleep(0.01)
+                db.execute("BEGIN IMMEDIATE")
+                time.sleep(0.6)
+                db.execute("INSERT INTO messages(run_id, mailbox, sender, type, body, created_at) "
+                           "VALUES (?, ?, 'external:none', 'status', 'late', 'x')", (self.run_id, box))
+                db.execute("COMMIT")
+            except Exception as exc:  # 스레드 오류를 본 테스트에 드러낸다
+                errors.append(exc)
+            finally:
+                db.close()
+
+        th = threading.Thread(target=holder)
+        th.start()
+        self.addCleanup(th.join)
+        res = mailbox.check(store, box, wait=True, timeout_ms=5000, terminal="t100")
+        th.join()
+        self.assertEqual(errors, [])
+        self.assertEqual((res["reason"], res["count"]), ("message", 1))
+        self.assertEqual(res["messages"][0]["body"], "late")
 
 
 if __name__ == "__main__":

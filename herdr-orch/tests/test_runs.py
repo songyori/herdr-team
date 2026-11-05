@@ -1,4 +1,5 @@
 import json
+import time
 import unittest
 
 from tests.helpers import HorchCase
@@ -141,6 +142,70 @@ class RunUseTest(HorchCase):
         self.assertEqual(seen, ["database is locked"])
         self.assertEqual(out["previous_verdict"], "lost")
         self.assertEqual(self.owner(), "t200")
+
+    # --- 설계 12장: 넘겨받기 표 전부 ---
+    def test_ownerless_run_is_taken_without_probe(self):
+        code, out = self.horch("run-create", "--objective", "other", terminal="t100")  # 첫 Run 은 소유자 없음
+        self.assertEqual(code, 0, out)
+        self.assertIsNone(self.owner())
+        before = len(self.hc_calls())
+        code, out = self.use()
+        self.assertEqual(code, 0, out)
+        self.assertEqual((out["previous_owner"], out["previous_verdict"]), (None, None))
+        self.assertEqual(self.owner(), "t200")
+        self.assertNotIn(["get", "t100", "--json"], self.hc_calls()[before:])  # 판정할 소유자가 없다
+
+    def test_live_owner_refused_even_with_force(self):
+        code, out = self.use("--force")
+        self.assertEqual(code, 3, out)
+        self.assertEqual(out["error"]["code"], "owner_alive")
+        self.assertEqual(self.owner(), "t100")
+
+    def test_worker_terminal_cannot_use(self):
+        self.update_terminal("t100", state="finished")
+        self.add_dispatch(self.run_id, terminal="t9")
+        code, out = self.use(terminal="t9")
+        self.assertEqual(code, 5, out)
+        self.assertEqual(out["error"]["code"], "worker_terminal")
+        self.assertEqual(self.owner(), "t100")
+
+    def test_caller_previous_binding_is_dropped(self):
+        code, out = self.horch("run-create", "--objective", "mine", terminal="t200")
+        self.assertEqual(code, 0, out)
+        other = out["run"]["id"]
+        self.update_terminal("t100", state="finished")
+        code, out = self.use()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.owner(), "t200")
+        self.assertIsNone(self.db().execute("SELECT 1 FROM bindings WHERE run_id=?", (other,)).fetchone())
+
+    # --- 판정은 잠금 안에서 한다: 느린 hc 가 잠금을 오래 쥐지 않게 한다 ---
+    def test_slow_owner_probe_is_unverifiable_quickly(self):
+        self.delay_hc("get t100", 10)
+        t0 = time.monotonic()
+        code, out = self.use()
+        self.assertLess(time.monotonic() - t0, 6)
+        self.assertEqual(code, 3, out)
+        self.assertEqual(out["error"]["code"], "owner_unverifiable")
+        self.assertEqual(self.owner(), "t100")
+
+    def test_readers_work_during_slow_run_use(self):
+        self.delay_hc("get t100", 10)
+        probe = ["get", "t100", "--json"]
+        seen = self.hc_calls().count(probe)  # run-create 가 이미 t100 을 읽었다
+        proc = self.horch_bg("run-use", "--id", self.run_id, terminal="t200")
+        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        limit = time.monotonic() + 10
+        while self.hc_calls().count(probe) == seen:  # 판정(잠금 안의 hc get)이 시작될 때까지
+            self.assertLess(time.monotonic(), limit, "run-use 가 판정을 시작하지 않았다")
+            time.sleep(0.02)
+        t0 = time.monotonic()
+        code, out = self.horch("status", terminal="t100")
+        self.assertEqual(code, 0, out)
+        self.assertLess(time.monotonic() - t0, 2.0)  # 쓰기 잠금을 기다리지 않는다
+        self.assertEqual(out["run"]["id"], self.run_id)
+        code, out = self.finish(proc, timeout=20)
+        self.assertEqual((code, out["error"]["code"]), (3, "owner_unverifiable"), out)
 
     def test_unknown_run(self):
         code, out = self.horch("run-use", "--id", "run-ffffffff", terminal="t200")

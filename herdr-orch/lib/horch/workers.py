@@ -44,13 +44,18 @@ def reconcile_launching(store, run_id: str) -> list[str]:
 
 
 def cleanup_refused(store, run_id: str, deadline: float | None = None, until: float | None = None,
-                    pending: list[str] | None = None) -> list[str]:
+                    pending: list[str] | None = None,
+                    candidates: list[tuple[str, str]] | None = None) -> list[str]:
     """가드가 거부해 끝난 터미널을 hc rm 한다. 이름으로 후보를 찾고 라벨(horch.run·horch.dispatch)과 상태를 get 으로 확인한다.
     until(monotonic) 은 새 hc 호출을 시작해도 되는 한계다(틱 예산): 넘으면 새 호출을 시작하지 않는다.
     deadline(monotonic) 은 이미 시작한 호출 하나가 살 수 있는 한계다(호출당 SWEEP_HC_TIMEOUT_S 와 deadline 중 이른 쪽).
-    pending 목록(호출 사이에 이어 쓴다)에는 확인을 마치고 rm 만 남은 주소를 둔다: 다음 틱이 ls·get 없이 rm 부터 한다."""
+    pending 목록(호출 사이에 이어 쓴다)에는 확인을 마치고 rm 만 남은 주소를 둔다: 다음 틱이 ls·get 없이 rm 부터 한다.
+    candidates 목록(호출 사이에 이어 쓴다)에는 ls 로 찾았지만 아직 get 으로 확인하지 못한 (주소, 이름) 을 둔다:
+    ls 가 틱 예산을 넘겨도 다음 틱이 다시 ls 하지 않고 get 부터 이어 한다. ls 는 두 목록이 모두 비었을 때만 한다."""
     if pending is None:
         pending = []
+    if candidates is None:
+        candidates = []
 
     def may_start() -> bool:
         return not _expired(until) and not _expired(deadline)
@@ -73,25 +78,32 @@ def cleanup_refused(store, run_id: str, deadline: float | None = None, until: fl
     if not drain():
         return removed
     failed = {r["id"] for r in store.all("SELECT id FROM dispatches WHERE run_id=? AND state='launch_failed'", (run_id,))}
-    if not failed or not may_start():
+    if not failed:
+        candidates.clear()
         return removed
-    try:
-        terminals = hcio.ls_all(timeout=_hc_timeout(deadline))
-    except hcio.HcFailure:
-        return removed
-    for t in terminals:
-        if t.get("name") not in failed or t.get("state") != "finished":
-            continue
+    if not candidates and not pending:
+        if not may_start():
+            return removed
+        try:
+            terminals = hcio.ls_all(timeout=_hc_timeout(deadline))
+        except hcio.HcFailure:
+            return removed
+        candidates.extend((t["address"], t["name"]) for t in terminals
+                          if t.get("name") in failed and t.get("state") == "finished")
+    while candidates:
         if not may_start():
             break
+        address, name = candidates.pop(0)
+        if name not in failed:
+            continue
         try:
-            info = hcio.get(t["address"], timeout=_hc_timeout(deadline))
+            info = hcio.get(address, timeout=_hc_timeout(deadline))
         except hcio.HcFailure:
             continue
         labels = info.get("labels") or {}
         if (info.get("state") == "finished" and labels.get("horch.run") == run_id
-                and labels.get("horch.dispatch") == t["name"]):
-            pending.append(t["address"])
+                and labels.get("horch.dispatch") == name):
+            pending.append(address)
             if not drain():
                 break
     return removed
@@ -269,6 +281,7 @@ class Sweep:
     """소유자의 check --wait 가 틱마다 부른다(설계 9장 observed). sweep(deadline) -> 남은 일이 있으면 True.
 
     회차 처음에 launching 조정과 가드 거부 정리를 하고 그 Run 의 active Dispatch 를 줄 세운다.
+    거부 정리가 틱 예산을 넘기면 찾은 후보(refused)와 rm 할 주소(pending_rm)를 남겨 다음 틱이 이어 한다.
     한 틱은 min(대기 deadline, 지금 + 폴링 간격) 안에서만 새 판정을 시작하고, 남은 Dispatch 는 다음 틱에 이어 본다.
     회차 위치는 meta 의 sweep_cursor:<run> 에 남겨, 새 Sweep(다음 check --wait 호출)이 그 다음 Dispatch 부터 돈다.
     hc 호출 하나는 SWEEP_HC_TIMEOUT_S 와 대기 deadline 중 이른 쪽에 끊는다. 끊긴 판정은 모름이라 아무것도 쓰지 않는다.
@@ -278,6 +291,7 @@ class Sweep:
         self.store, self.run_id = store, run_id
         self.queue: list[str] = []
         self.pending_rm: list[str] = []  # 확인을 마쳤고 rm 만 남은 거부 터미널(틱을 넘겨 이어 간다)
+        self.refused: list[tuple[str, str]] = []  # ls 로 찾았고 get 확인이 남은 거부 터미널 (주소, 이름)
 
     def _cursor_key(self) -> str:
         return f"sweep_cursor:{self.run_id}"
@@ -304,10 +318,12 @@ class Sweep:
         until = min(deadline, time.monotonic() + mailbox.poll_interval())
         if not self.queue:
             reconcile_launching(self.store, self.run_id)
-            cleanup_refused(self.store, self.run_id, deadline=deadline, until=until, pending=self.pending_rm)
+            cleanup_refused(self.store, self.run_id, deadline=deadline, until=until, pending=self.pending_rm,
+                            candidates=self.refused)
             self.queue = self._order()
-        elif self.pending_rm:
-            cleanup_refused(self.store, self.run_id, deadline=deadline, until=until, pending=self.pending_rm)
+        elif self.pending_rm or self.refused:
+            cleanup_refused(self.store, self.run_id, deadline=deadline, until=until, pending=self.pending_rm,
+                            candidates=self.refused)
         while self.queue and not _expired(until):
             created_at, did = self.queue.pop(0)
             liveness.observe_one(self.store, self.run_id, did, timeout=_hc_timeout(deadline))

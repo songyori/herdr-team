@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """테스트용 가짜 hc. $FAKE_HC_DIR/state.json 을 읽고 바꾸며, 호출 argv 를 calls.jsonl 에 남긴다.
-state.json 의 "delay": {명령: 초} 가 있으면 그 명령은 처리 전에 그만큼 잔다."""
+state.json 의 "delay": {명령: 초} 가 있으면 그 명령은 처리 전에 그만큼 잔다.
+"<명령> <대상>"(예: "get t100") 키는 그 대상에만 적용되고 명령 키보다 먼저 본다."""
 import fcntl
 import json
 import os
@@ -123,7 +124,8 @@ def main(argv):
         f.write(json.dumps(argv) + "\n")
     with open(DIR / "lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        delay = float(json.loads((DIR / "state.json").read_text()).get("delay", {}).get(argv[0] if argv else "", 0))
+        delays = json.loads((DIR / "state.json").read_text()).get("delay", {})
+        delay = float(delays.get(" ".join(argv[:2]), delays.get(argv[0] if argv else "", 0)))
     if delay:
         time.sleep(delay)  # 느린 hc 흉내. 잠금 밖에서 자서 다른 hc 호출을 막지 않는다
     with open(DIR / "lock", "w") as lock:

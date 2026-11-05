@@ -41,7 +41,9 @@ class PreambleTest(unittest.TestCase):
                        "H --home /h check --dispatch dsp-1", "--ack",
                        "H --home /h escalate --dispatch dsp-1",
                        "H --home /h done --dispatch dsp-1 --outcome", "AskUserQuestion", "다른 워커를 띄우지 않는다",
-                       "horch 는 셸 명령으로 실행한다"):
+                       "horch 는 셸 명령으로 실행한다",
+                       "도구 시간 초과 등으로 horch 출력을 못 받았으면 같은 명령을 그대로 다시 실행한다(재호출 안전)",
+                       "같은 질문을 새로 하려면 다른 `--key` 를 준다(같은 key·같은 본문은 이전 답을 돌려준다)"):
             self.assertIn(needle, text)
 
 

@@ -102,6 +102,24 @@ class StoreTest(HorchCase):
         self.addCleanup(s.close)
         self.assertEqual(s.one("SELECT COUNT(*) AS n FROM runs")["n"], 4)
 
+    def test_open_needs_no_write_lock_when_schema_is_current(self):
+        # 다른 프로세스가 쓰기 잠금을 오래 쥐어도(예: run-use 판정 중) 마이그레이션이 필요 없으면 열고 읽는다
+        self.open().close()
+        other = sqlite3.connect(self.home / "orch.db", isolation_level=None)
+        self.addCleanup(other.close)
+        other.execute("BEGIN IMMEDIATE")
+        try:
+            t0 = time.monotonic()
+            s = Store(self.home)
+            try:
+                self.assertEqual(s.one("SELECT value FROM meta WHERE key='schema_version'")["value"],
+                                 str(SCHEMA_VERSION))
+            finally:
+                s.close()
+            self.assertLess(time.monotonic() - t0, 1.0)
+        finally:
+            other.execute("ROLLBACK")
+
     def test_migrate_failure_closes_connection(self):
         made = []
         real_connect = sqlite3.connect

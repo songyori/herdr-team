@@ -8,9 +8,10 @@ def render(*, task_id: str, dispatch_id: str, spec_path: str, horch: str) -> str
 
 1. 먼저 spec 파일을 읽고 그 일만 한다: {spec_path}
 2. 막히면 코디네이터에게 묻고 답이 올 때까지 기다린다:
-   {horch} ask --dispatch {d} --question "<질문>"
+   {horch} ask --dispatch {d} --question "<질문>" [--key <key>]
    exit 4(시간 초과)면 출력의 question id 로 다시 기다린다: {horch} ask --dispatch {d} --resume <question id>
-   출력을 못 받았으면 같은 명령을 다시 실행한다. 대화형 질문 도구(AskUserQuestion 등)는 쓰지 않는다. 사람이 보지 않는다.
+   같은 질문을 새로 하려면 다른 `--key` 를 준다(같은 key·같은 본문은 이전 답을 돌려준다).
+   대화형 질문 도구(AskUserQuestion 등)는 쓰지 않는다. 사람이 보지 않는다.
 3. 새 파일을 시작하기 전, 테스트를 돌린 뒤, done 직전에 코디네이터 메시지를 읽는다:
    {horch} check --dispatch {d}
    메시지를 처리한 뒤 {horch} check --dispatch {d} --ack <delivery> 를 count 가 0 이 될 때까지 반복한다.
@@ -19,4 +20,5 @@ def render(*, task_id: str, dispatch_id: str, spec_path: str, horch: str) -> str
    {horch} done --dispatch {d} --outcome succeeded|failed --summary "<세 문장 요약>" [--report-path <경로>] [--files-modified <경로>](파일마다 반복)
    출력을 못 받았으면 같은 인자로 다시 실행한다. done 뒤에는 새 일을 시작하지 않고 기다린다.
 6. horch 는 셸 명령으로 실행한다(다른 도구에는 $HC_TERMINAL_ID 가 없어 거부된다). horch 로 다른 워커를 띄우지 않는다.
+   도구 시간 초과 등으로 horch 출력을 못 받았으면 같은 명령을 그대로 다시 실행한다(재호출 안전).
 """

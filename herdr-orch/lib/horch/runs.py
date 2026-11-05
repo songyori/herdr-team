@@ -1,4 +1,4 @@
-"""Run 생성과 넘겨받기(설계 6장). status 는 Task 6 에서 더한다."""
+"""Run 만들기(run-create), 넘겨받기(run-use, 설계 6장), 호출자 상태(status)."""
 from __future__ import annotations
 
 import json
@@ -6,6 +6,10 @@ import json
 from . import auth, hcio, liveness
 from .errors import CONFLICT, FAIL, USAGE, HorchError
 from .ids import new_id, now
+
+# run-use 는 소유자 판정(hc get)을 쓰기 잠금 안에서 한다. 다른 프로세스는 busy_timeout(5초)만 기다리므로
+# 그보다 짧게 끊는다. 끊긴 판정은 모름(unverifiable)이라 --force 없이는 거부한다(설계 10장).
+USE_PROBE_TIMEOUT_S = 3.0
 
 
 def _caller_facts(terminal: str) -> tuple[str | None, str | None, list[str] | None]:
@@ -55,7 +59,7 @@ def use(store, run_id: str, force: bool) -> dict:
     space, tab, argv = _caller_facts(term)
     # 설계 6장: binding 조회, 생존 판정, 허용 검사, 갱신을 한 BEGIN IMMEDIATE 안에서 한다.
     # 판정하는 동안 다른 쓰기(같은 terminal·argv 로 다시 묶기 포함)는 binding 을 바꾸지 못한다.
-    # 판정은 hc get 한 번이다.
+    # 판정은 hc get 한 번이고 USE_PROBE_TIMEOUT_S 안에 끝나지 않으면 모름이다.
     with store.tx():
         owner = store.one("SELECT terminal, argv FROM bindings WHERE run_id=?", (run_id,))
         prev = owner["terminal"] if owner else None
@@ -63,7 +67,7 @@ def use(store, run_id: str, force: bool) -> dict:
             return {"run": run_json(store, run_id), "previous_owner": prev, "previous_verdict": None}
         verdict = None
         if prev:
-            verdict, _ = liveness.probe(prev, liveness.loads_argv(owner["argv"]))
+            verdict, _ = liveness.probe(prev, liveness.loads_argv(owner["argv"]), timeout=USE_PROBE_TIMEOUT_S)
             if verdict == "live":
                 raise HorchError("owner_alive", f"Run {run_id} 의 소유자 {prev} 가 살아 있다", CONFLICT)
             if verdict == "unverifiable" and not force:
@@ -92,8 +96,10 @@ def status(store) -> dict:
     open_delivery = store.one("SELECT id FROM deliveries WHERE mailbox=? AND acked_at IS NULL ORDER BY id LIMIT 1", (box,))
     unread = store.one("SELECT COUNT(*) AS n FROM messages WHERE mailbox=? AND delivery_id IS NULL AND type != 'reply'",
                        (box,))["n"]
+    # 답할 수 있는 질문만: 묻고 기다리는 워커(launching·active)의 것. 버리거나 끝난 Dispatch 의 질문은 뺀다
     unanswered = [{"id": r["id"], "dispatch": r["dispatch_id"], "body": r["body"][:200]} for r in store.all(
-        "SELECT q.id, q.dispatch_id, q.body FROM messages q WHERE q.run_id=? AND q.type='question' AND NOT EXISTS "
+        "SELECT q.id, q.dispatch_id, q.body FROM messages q JOIN dispatches d ON d.id=q.dispatch_id "
+        "WHERE q.run_id=? AND q.type='question' AND d.state IN ('launching','active') AND NOT EXISTS "
         "(SELECT 1 FROM messages r WHERE r.reply_to=q.id AND r.type='reply') ORDER BY q.id", (run_id,))]
     out["run"] = {**run_json(store, run_id), "dispatches": counts,
                   "open_delivery": open_delivery["id"] if open_delivery else None,

@@ -188,6 +188,24 @@ class SweepTest(HorchCase):
         self.assertNotIn("t70", self.hc_state()["terminals"])
         self.assertIn(["rm", "t70", "--json"], self.hc_calls())
 
+    def test_refused_cleanup_survives_slow_ls(self):
+        # ls 가 틱 예산(폴링 0.3초)보다 느려도 찾은 후보를 버리지 않는다. 다음 틱은 다시 ls 하지 않고 get·rm 을 이어 한다
+        failed = self.add_dispatch(self.run_id, did="dsp-0000000f", terminal=None, state="launch_failed")
+        self.add_terminal("t70", name=failed, state="finished",
+                          labels={"horch.run": self.run_id, "horch.dispatch": failed})
+        self.delay_hc("ls", 0.6)
+        with mock.patch.dict(os.environ, {"HORCH_POLL": "0.3"}):
+            sweep = workers.Sweep(self.store, self.run_id)
+            for _ in range(5):
+                sweep(time.monotonic() + 30)
+                if "t70" not in self.hc_state()["terminals"]:
+                    break
+        calls = self.hc_calls()
+        self.assertIn(["get", "t70", "--json"], calls)
+        self.assertIn(["rm", "t70", "--json"], calls)
+        self.assertNotIn("t70", self.hc_state()["terminals"])
+        self.assertEqual(sum(1 for c in calls if c[:1] == ["ls"]), 1)
+
     def test_probe_timeout_bounded_by_wait_deadline(self):
         self.delay_hc("get", 3)
         sweep = workers.Sweep(self.store, self.run_id)

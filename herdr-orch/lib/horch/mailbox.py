@@ -11,6 +11,7 @@ from .errors import USAGE, HorchError
 from .ids import now
 from .liveness import status_word
 from .paths import horch_cmd
+from .store import is_busy
 
 BATCH = 50
 
@@ -43,9 +44,12 @@ def message_json(row) -> dict:
             "created_at": row["created_at"]}
 
 
-def take(store, mailbox: str) -> dict:
-    """ack 안 된 Delivery 가 있으면 그대로, 없으면 새 묶음(reply 제외, 최대 50건)."""
+def take(store, mailbox: str, guard=None) -> dict:
+    """ack 안 된 Delivery 가 있으면 그대로, 없으면 새 묶음(reply 제외, 최대 50건).
+    guard 는 같은 트랜잭션 안에서 먼저 부른다(쓰기 잠금 아래라 그 사이 binding 이 옮겨지지 않는다)."""
     with store.tx():
+        if guard is not None:
+            guard()
         open_row = store.one("SELECT id FROM deliveries WHERE mailbox=? AND acked_at IS NULL ORDER BY id LIMIT 1",
                              (mailbox,))
         if open_row:
@@ -63,8 +67,11 @@ def take(store, mailbox: str) -> dict:
     return {"delivery": delivery, "messages": messages, "count": len(messages)}
 
 
-def ack(store, mailbox: str, delivery: int) -> None:
+def ack(store, mailbox: str, delivery: int, guard=None) -> None:
+    """guard 는 take 와 같이 트랜잭션 안에서 먼저 부른다."""
     with store.tx():
+        if guard is not None:
+            guard()
         if not store.one("SELECT id FROM deliveries WHERE id=? AND mailbox=?", (delivery, mailbox)):
             raise HorchError("unknown_delivery", f"이 메일함에 Delivery {delivery} 가 없다", USAGE)
         store.run("UPDATE deliveries SET acked_at=? WHERE id=? AND acked_at IS NULL", (now(), delivery))
@@ -104,12 +111,13 @@ def has_live_waiter(store, mailbox: str) -> bool:
 
 def check(store, mailbox: str, *, wait: bool = False, timeout_ms: int = 900000, ack_id: int | None = None,
           terminal: str | None = None, on_tick=None, guard=None) -> dict:
-    """guard: 대기 중 매 틱과 묶음을 돌려주기 전에 부른다. 호출자가 더는 이 메일함의 수신자가 아니면 예외를 낸다.
+    """guard: ack·take 트랜잭션 안(첫 ack·take 포함)과 대기 중 매 틱에 부른다. 읽기만 하고 트랜잭션을 열지 않는다.
+    호출자가 더는 이 메일함의 수신자가 아니면 예외를 낸다.
     on_tick(deadline): 대기 deadline(monotonic) 을 받아 그 안에서 일하고, 남은 일이 있으면 True 를 돌려준다.
     True 면 다음 반복에 곧바로 다시 부르고, 아니면 sweep 간격 뒤에 부른다."""
     if ack_id is not None:
-        ack(store, mailbox, ack_id)
-    res = take(store, mailbox)
+        ack(store, mailbox, ack_id, guard)
+    res = take(store, mailbox, guard)
     if res["count"] or not wait:
         return {**res, "reason": "message" if res["count"] else "empty"}
     pid = _register_waiter(store, mailbox, terminal)
@@ -133,10 +141,13 @@ def check(store, mailbox: str, *, wait: bool = False, timeout_ms: int = 900000, 
                         last_error = text
                     more = False
                 next_tick = time.monotonic() + (0 if more else sweep_interval())
-            res = take(store, mailbox)
-            if res["count"]:
-                if guard is not None:
-                    guard()  # 묶음을 돌려주기 전에 수신자 자격을 한 번 더 확인한다.
+            try:
+                res = take(store, mailbox, guard)  # 묶음을 돌려주기 전 수신자 확인은 take 트랜잭션 안에서 한다
+            except sqlite3.OperationalError as exc:
+                if not is_busy(exc):
+                    raise
+                res = None  # 다른 쓰기가 busy_timeout 보다 오래 잠갔다. 이번 폴링만 건너뛰고 다음 폴링에 다시 받는다
+            if res and res["count"]:
                 return {**res, "reason": "message"}
             left = deadline - time.monotonic()
             if left <= 0:

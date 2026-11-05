@@ -20,7 +20,8 @@ sys.path.insert(0, str(ROOT / "lib"))
 
 class HorchCase(unittest.TestCase):
     """가짜 hc 상태 파일: {"next": int, "terminals": {addr: {...}}, "fail": {cmd: {...}}, "screens": {addr: str}, "sent": [...]}
-    선택 키 "delay": {cmd: 초} 는 그 hc 명령을 처리 전에 그만큼 늦춘다(느린 hc 흉내, delay_hc)."""
+    선택 키 "delay": {cmd: 초} 는 그 hc 명령을 처리 전에 그만큼 늦춘다(느린 hc 흉내, delay_hc).
+    cmd 를 "get t100" 처럼 대상까지 쓰면 그 대상의 호출만 늦춘다."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()

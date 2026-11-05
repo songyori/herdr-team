@@ -1,4 +1,4 @@
-"""메시지 명령. send·check(Task 6), reply·ask·escalate·done(Task 9)."""
+"""메시지 명령(설계 7·9장): send, check(Run·Dispatch 메일함), reply(소유자), ask·escalate·done(워커)."""
 from __future__ import annotations
 
 import hashlib
