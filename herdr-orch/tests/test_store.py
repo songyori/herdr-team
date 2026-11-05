@@ -3,7 +3,9 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import time
 import unittest
+from unittest import mock
 
 from tests.helpers import ROOT, HorchCase
 from horch import procs
@@ -62,6 +64,58 @@ class StoreTest(HorchCase):
         for p in procs_:
             self.assertEqual(p.wait(timeout=60), 0)
         self.assertEqual(self.open().one("SELECT COUNT(*) AS n FROM runs")["n"], 200)
+
+    def test_concurrent_first_creation(self):
+        # 아직 없는 home 을 여러 프로세스가 동시에 처음 만든다
+        home = self.tmp / "fresh-home"
+        script = (
+            "import sys; sys.path.insert(0, sys.argv[1]);"
+            "from pathlib import Path; from horch.store import Store;"
+            "s = Store(Path(sys.argv[2]));"
+            "\nwith s.tx():\n"
+            "    s.run(\"INSERT INTO runs(id, objective, created_at, updated_at) VALUES (?, 'o', 'x', 'x')\", (f'run-{sys.argv[3]}',))\n"
+        )
+        ps = [subprocess.Popen([sys.executable, "-c", script, str(ROOT / "lib"), str(home), f"{n:08x}"])
+              for n in range(4)]
+        for p in ps:
+            self.assertEqual(p.wait(timeout=60), 0)
+        s = Store(home)
+        self.addCleanup(s.close)
+        self.assertEqual(s.one("SELECT COUNT(*) AS n FROM runs")["n"], 4)
+
+    def test_migrate_failure_closes_connection(self):
+        made = []
+        real_connect = sqlite3.connect
+
+        def connect(*a, **k):
+            conn = mock.Mock(wraps=real_connect(*a, **k))
+            made.append(conn)
+            return conn
+
+        with mock.patch.object(Store, "_migrate", side_effect=RuntimeError("boom")), \
+                mock.patch("sqlite3.connect", side_effect=connect):
+            with self.assertRaises(RuntimeError):
+                Store(self.home)
+        made[0].close.assert_called_once()
+
+    def test_rollback_failure_does_not_mask_original(self):
+        s = self.open()
+        real = s.conn
+
+        class Conn:
+            def execute(self, sql, *a):
+                if sql == "ROLLBACK":
+                    raise sqlite3.OperationalError("rollback failed")
+                return real.execute(sql, *a)
+
+        s.conn = Conn()
+        try:
+            with self.assertRaises(RuntimeError):
+                with s.tx():
+                    raise RuntimeError("boom")
+        finally:
+            s.conn = real
+            real.execute("ROLLBACK")
 
     def _run_task(self, s):
         with s.tx():
@@ -128,6 +182,40 @@ class ProcsTest(unittest.TestCase):
         started = procs.start_time(child.pid)
         child.wait()
         self.assertFalse(procs.alive(child.pid, started))
+
+    def test_start_time_independent_of_tz(self):
+        pid, _ = procs.me()
+        with mock.patch.dict(os.environ, {"TZ": "UTC"}):
+            recorded = procs.start_time(pid)
+        with mock.patch.dict(os.environ, {"TZ": "Asia/Seoul"}):
+            self.assertTrue(procs.alive(pid, recorded))
+
+    def test_zombie_is_dead(self):
+        child = subprocess.Popen(["sleep", "30"])
+        try:
+            recorded = procs.start_time(child.pid)
+            child.kill()
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                out = subprocess.run(["ps", "-o", "stat=", "-p", str(child.pid)],
+                                     capture_output=True, text=True).stdout.strip()
+                if out.startswith("Z"):
+                    break
+                time.sleep(0.02)
+            self.assertTrue(out.startswith("Z"))
+            self.assertFalse(procs.alive(child.pid, recorded))
+        finally:
+            child.wait()
+
+    def test_ps_failure_means_unknown_alive(self):
+        pid, started = procs.me()
+        with mock.patch("subprocess.run", side_effect=OSError("no ps")):
+            self.assertTrue(procs.alive(pid, started))
+
+    def test_empty_started_live_pid_is_alive(self):
+        pid, _ = procs.me()
+        self.assertTrue(procs.alive(pid, ""))
+        self.assertTrue(procs.alive(pid, None))
 
     def test_missing_values_are_dead(self):
         self.assertFalse(procs.alive(None, None))

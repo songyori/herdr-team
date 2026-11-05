@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -50,9 +51,29 @@ class Store:
         self.conn = sqlite3.connect(home / "orch.db", isolation_level=None, timeout=5.0)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA busy_timeout=5000")
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA foreign_keys=ON")
-        self._migrate()
+        try:
+            self._enable_wal()
+            self.conn.execute("PRAGMA foreign_keys=ON")
+            self._migrate()
+        except BaseException:
+            self.conn.close()
+            raise
+
+    def _enable_wal(self) -> None:
+        """새 home 을 여러 프로세스가 동시에 열면 WAL 전환이 busy_timeout 없이 곧장 locked 로 실패한다.
+        이미 wal 이면 건너뛰고, 아니면 최대 5초까지 짧게 재시도한다."""
+        deadline = time.monotonic() + 5.0
+        while True:
+            try:
+                if self.conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal":
+                    return
+                self.conn.execute("PRAGMA journal_mode=WAL")
+                return
+            except sqlite3.OperationalError as e:
+                msg = str(e).lower()
+                if ("locked" not in msg and "busy" not in msg) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.02)
 
     def _migrate(self) -> None:
         with self.tx():
@@ -75,7 +96,10 @@ class Store:
         try:
             yield self.conn
         except BaseException:
-            self.conn.execute("ROLLBACK")
+            try:
+                self.conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass  # 롤백 실패가 원래 예외를 가리지 않게 한다
             raise
         else:
             self.conn.execute("COMMIT")
