@@ -159,6 +159,85 @@ class MailboxTest(HorchCase):
         self.assertEqual(out["wake"], "sent")
         self.assertIsNone(self.db().execute("SELECT 1 FROM waiters").fetchone())
 
+    def test_wake_db_error_is_failed_db_not_exception(self):
+        import sqlite3
+        from horch import mailbox
+        from horch.store import Store
+        self.update_terminal("t100", status="idle")
+        box = f"run:{self.run_id}"
+        db = self.db()
+        db.execute("INSERT INTO waiters(mailbox, pid, pid_started, terminal, started_at) VALUES (?, 999999, 'never', 't100', 'x')", (box,))
+        db.execute("INSERT INTO messages(run_id, mailbox, sender, type, body, created_at) VALUES (?, ?, 'x', 'status', 'm', 'x')",
+                   (self.run_id, box))
+        db.commit()
+        store = Store(self.home)
+        self.addCleanup(store.conn.close)
+        store.conn.execute("PRAGMA busy_timeout=50")
+        locker = sqlite3.connect(self.home / "orch.db", isolation_level=None)
+        self.addCleanup(locker.close)
+        locker.execute("BEGIN IMMEDIATE")
+        try:
+            self.assertEqual(mailbox.wake(store, box), "failed_db")
+        finally:
+            locker.execute("ROLLBACK")
+        self.assertIsNotNone(self.db().execute("SELECT 1 FROM messages WHERE body='m'").fetchone())
+
+    def test_dead_waiter_cleanup_keeps_reused_pid_row(self):
+        from horch import mailbox
+        from horch.store import Store
+        box = f"run:{self.run_id}"
+        db = self.db()
+        db.execute("INSERT INTO waiters(mailbox, pid, pid_started, terminal, started_at) VALUES (?, 999999, 'never', 't100', 'x')", (box,))
+        db.commit()
+        store = Store(self.home)
+        self.addCleanup(store.conn.close)
+        real = store.all
+
+        def racing_all(sql, params=()):
+            rows = real(sql, params)
+            if "FROM waiters" in sql:  # 읽은 뒤 같은 pid 로 새 waiter 가 등록된 상황
+                db.execute("UPDATE waiters SET pid_started='fresh' WHERE pid=999999")
+                db.commit()
+            return rows
+        store.all = racing_all
+        mailbox.has_live_waiter(store, box)
+        row = self.db().execute("SELECT pid_started FROM waiters WHERE pid=999999").fetchone()
+        self.assertIsNotNone(row)
+
+    def test_owner_change_ends_run_wait_and_wake_not_suppressed(self):
+        proc = self.horch_bg("check", "--wait", "--timeout-ms", "20000", terminal="t100")
+        self._wait_for_waiter()
+        code, out = self.horch("run-create", "--objective", "other", terminal="t100")
+        self.assertEqual(code, 0, out)
+        self.add_terminal("t200", argv=["claude"], labels={"herdr.space": "spB", "herdr.tab": "tbB"}, status="working")
+        code, out = self.horch("run-use", "--id", self.run_id, terminal="t200")
+        self.assertEqual(code, 0, out)
+        code, sent = self.horch("send", "--to", f"run:{self.run_id}", "--body", "late")
+        self.assertEqual(code, 0, sent)
+        self.assertNotEqual(sent["wake"], "skipped_waiter")
+        code, out = self.finish(proc, timeout=10)
+        self.assertEqual(code, 5, out)
+        self.assertNotIn("messages", out)
+        self.assertIsNone(self.db().execute("SELECT 1 FROM waiters").fetchone())
+
+    def test_waiter_of_old_owner_does_not_suppress_wake(self):
+        from horch import procs
+        pid, started = procs.me()
+        db = self.db()
+        db.execute("INSERT INTO waiters(mailbox, pid, pid_started, terminal, started_at) VALUES (?, ?, ?, 't999', 'x')",
+                   (f"run:{self.run_id}", pid, started))
+        db.commit()
+        _, out = self.horch("send", "--to", f"run:{self.run_id}", "--body", "x")
+        self.assertEqual(out["wake"], "skipped_working")
+
+    def test_send_to_other_runs_or_unknown_dispatch_is_conflict(self):
+        did = self.add_dispatch(self.run_id)
+        self.make_owner("t300")
+        code, out = self.horch("send", "--to", f"dispatch:{did}", "--body", "x", terminal="t300")
+        self.assertEqual(code, 3, out)
+        code, out = self.horch("send", "--to", "dispatch:dsp-ffffffff", "--body", "x", terminal="t100")
+        self.assertEqual(code, 3, out)
+
     def test_status(self):
         self.horch("send", "--to", f"run:{self.run_id}", "--body", "x")
         code, out = self.horch("status", terminal="t100")

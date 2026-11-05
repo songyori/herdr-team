@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import time
 
 from . import hcio, procs
@@ -82,21 +83,27 @@ def _unregister_waiter(store, mailbox: str, pid: int) -> None:
 
 
 def has_live_waiter(store, mailbox: str) -> bool:
+    """살아 있고 지금 이 메일함의 수신자 터미널이 등록한 waiter 만 센다.
+    소유권이 옮겨간 뒤 남은 옛 소유자의 waiter 는 깨우기를 막지 못한다."""
+    target = _target(store, mailbox)
     live, dead = False, []
-    for row in store.all("SELECT pid, pid_started FROM waiters WHERE mailbox=?", (mailbox,)):
+    for row in store.all("SELECT pid, pid_started, terminal FROM waiters WHERE mailbox=?", (mailbox,)):
         if procs.alive(row["pid"], row["pid_started"]):
-            live = True
+            if target and row["terminal"] == target:
+                live = True
         else:
-            dead.append(row["pid"])
+            dead.append((row["pid"], row["pid_started"]))
     if dead:
         with store.tx():
-            for pid in dead:
-                store.run("DELETE FROM waiters WHERE mailbox=? AND pid=?", (mailbox, pid))
+            for pid, started in dead:
+                # pid 가 재사용돼 새 waiter 가 등록됐다면 pid_started 가 달라 지워지지 않는다.
+                store.run("DELETE FROM waiters WHERE mailbox=? AND pid=? AND pid_started=?", (mailbox, pid, started))
     return live
 
 
 def check(store, mailbox: str, *, wait: bool = False, timeout_ms: int = 900000, ack_id: int | None = None,
-          terminal: str | None = None, on_tick=None) -> dict:
+          terminal: str | None = None, on_tick=None, guard=None) -> dict:
+    """guard: 대기 중 매 틱과 묶음을 돌려주기 전에 부른다. 호출자가 더는 이 메일함의 수신자가 아니면 예외를 낸다."""
     if ack_id is not None:
         ack(store, mailbox, ack_id)
     res = take(store, mailbox)
@@ -110,6 +117,8 @@ def check(store, mailbox: str, *, wait: bool = False, timeout_ms: int = 900000, 
             if on_tick is not None and time.monotonic() >= next_tick:
                 on_tick()
                 next_tick = time.monotonic() + sweep_interval()
+            if guard is not None:
+                guard()
             res = take(store, mailbox)
             if res["count"]:
                 return {**res, "reason": "message"}
@@ -138,15 +147,15 @@ def wake_text(home, mailbox: str) -> str:
 
 
 def wake(store, mailbox: str) -> str:
-    """보조 깨우기. 트랜잭션 밖에서 부른다. 실패해도 예외를 내지 않는다."""
+    """보조 깨우기. 트랜잭션 밖에서 부른다. 실패해도 예외를 내지 않는다(DB 오류 포함: 메시지는 이미 커밋됐다)."""
     if os.environ.get("CODEX_SANDBOX"):
         return "skipped_sandbox"
-    if has_live_waiter(store, mailbox):
-        return "skipped_waiter"
-    terminal = _target(store, mailbox)
-    if not terminal:
-        return "no_target"
     try:
+        if has_live_waiter(store, mailbox):
+            return "skipped_waiter"
+        terminal = _target(store, mailbox)
+        if not terminal:
+            return "no_target"
         word = status_word(hcio.get(terminal))
         text = wake_text(store.home, mailbox)
         if word == "idle":
@@ -158,6 +167,8 @@ def wake(store, mailbox: str) -> str:
             hcio.send(terminal, text)
             return "sent"
         return f"skipped_{word or 'unknown'}"
+    except sqlite3.Error:
+        return "failed_db"
     except hcio.HcFailure as exc:
         return f"failed_{exc.kind}"
     except HorchError as exc:
