@@ -17,6 +17,7 @@ MAIN_REPLY_RE = re.compile(r"\[main\] reply (out-\d+)")
 STARTING_S = 180  # 띄운 지 이 시간 안이면 starting(설계 9.3)
 LIVE = ("launching", "active")
 CANCELED_HINT = "앞선 fix·drop 이 끝나지 않았다(실행 키가 취소됐다). 같은 명령을 다시 한다"
+_LOAD = object()  # annotate 의 cfg 를 주지 않았다: 필요할 때 읽는다
 
 
 def H(*args: str) -> list[str]:
@@ -28,17 +29,38 @@ def _run(p) -> dict:
     return run if isinstance(run, dict) else {}
 
 
+def _config(p):
+    """설정. 깨졌으면 None(상한을 모른다. 그 명령이 스스로 설정 오류를 낸다)."""
+    try:
+        return config.load(p)
+    except HteamError:
+        return None
+
+
+def _fix(cfg, tid: str, rnd: int, note: str) -> tuple[list[str] | None, str | None]:
+    """fix 를 권하되 라운드 상한(max_rounds)에 닿았으면 권하지 않는다. tasks.fix 가 --force-round 없이 exit 3 로 거부하고,
+    상한은 사용자가 정한다(설계 13장)."""
+    limit = cfg.max_rounds if cfg else None
+    if limit is not None and rnd >= limit:
+        return None, (f"max_rounds({limit}) 에 닿았다. fix 는 --force-round 없이 exit 3 로 거부한다. 메인에 묻고, 사용자가 "
+                      f"계속하라고 하면 {SHIM} fix {tid} --force-round --note …")
+    return H("fix", tid, "--note", note), None
+
+
 def _round_canceled(rd: dict | None) -> bool:
     """fix·drop 이 이 라운드를 닫는 중이다(취소를 저장한 뒤 멈췄거나 진행 중). review 의 round_canceled 와 같은 기준."""
     return bool(rd) and (bool(rd["work"].get("canceled")) or any(a.get("canceled") for a in rd["reviews"]))
 
 
-def locate(p, did: str | None, rows: list[dict] | None = None) -> dict | None:
+def locate(p, did: str | None, rows: list[dict] | None = None, *, states: list[dict] | None = None) -> dict | None:
     """Dispatch → {task, round, kind, attempt, current, status, recorded, canceled, finished}. 상태 파일에 없으면 horch 제목으로
-    찾는다. canceled: 현재 라운드를 fix·drop 이 닫는 중이다. finished: 그 리뷰 시도에 이미 결과가 있다."""
+    찾는다. canceled: 현재 라운드를 fix·drop 이 닫는 중이다. finished: 그 리뷰 시도에 이미 결과가 있다.
+    states 를 주면(state.all_states 결과) 상태 파일을 다시 읽지 않는다(wait 가 메시지마다 읽지 않게)."""
     if not did:
         return None
-    for st in state.all_states(p):
+    if states is None:
+        states = state.all_states(p)
+    for st in states:
         cur = state.current_round(st)
         for rd in st["rounds"]:
             last = rd is cur
@@ -57,10 +79,8 @@ def locate(p, did: str | None, rows: list[dict] | None = None) -> dict | None:
     info = roles.parse_title(row.get("title")) if row else None
     if not info:
         return None
-    try:
-        st = state.load(p, info["task"])
-    except HteamError:  # 손상된 상태 파일: 태스크를 모르는 것으로 본다
-        return None
+    # all_states 는 손상된 상태 파일을 뺀다. 그런 태스크는 모르는 것으로 본다
+    st = next((s for s in states if s["id"] == info["task"]), None)
     if not st:
         return None
     rd = state.current_round(st)
@@ -130,14 +150,17 @@ def _annotate_main(p, m: dict, rows: list[dict] | None) -> dict:
     return info
 
 
-def annotate(p, m: dict, rows: list[dict] | None, horch_cmd: str) -> dict:
-    """받은 메시지에 hteam 필드(kind·task·round·next·stale·duplicate)를 붙인다(설계 8.2)."""
+def annotate(p, m: dict, rows: list[dict] | None, horch_cmd: str, *, cfg=_LOAD,
+             states: list[dict] | None = None) -> dict:
+    """받은 메시지에 hteam 필드(kind·task·round·next·stale·duplicate)를 붙인다(설계 8.2).
+
+    cfg(라운드 상한)와 states(state.all_states)를 주면 다시 읽지 않는다. wait 는 묶음마다 한 번 읽어 넘긴다."""
     subject = m.get("subject") or ""
     if m.get("type") == "status" and subject.startswith("[main]"):
         return {**m, "hteam": _annotate_main(p, m, rows)}
     body = _body(m)
     did = m.get("dispatch") or body.get("dispatch")
-    loc = locate(p, did, rows)
+    loc = locate(p, did, rows, states=states)
     if loc is None:
         info = {"kind": "other"}
         if did:
@@ -153,25 +176,37 @@ def annotate(p, m: dict, rows: list[dict] | None, horch_cmd: str) -> dict:
     if not loc["current"]:
         return {**m, "hteam": {**info, "stale": True, "hint": "지난 라운드·시도의 메시지다. ack 만 한다"}}
     work = loc["kind"] == "work"
-    # 작업 기록을 쓰기 전에 실행자가 죽었으면(launch_failed 이거나 기록 없음) start 가 제목·Task 로 찾아 이어 붙인다
-    recover = work and (status == "launch_failed" or not loc["recorded"])
+    # 기록을 쓰기 전에 실행자가 죽었으면 먼저 이어 붙인다: 작업은 start(launch_failed 이거나 기록 없음), 리뷰는
+    # review(working 이거나 기록 없음. review-finish 는 기록 없는 시도를 review_not_launched 로 거부한다)
+    if work:
+        recover = status == "launch_failed" or not loc["recorded"]
+    else:
+        recover = status == "working" or not loc["recorded"]
+    resume = H("start", tid) if work else H("review", tid)
     t = m.get("type")
+    nxt, why = None, None
     if t == "worker_done":
-        if not work:
-            info["next"] = H("review-finish", tid)
-        elif recover:
-            info["next"] = H("start", tid)
+        if recover:
+            nxt = resume
+        elif not work:
+            nxt = H("review-finish", tid)
         elif body.get("outcome") == "succeeded":
-            info["next"] = H("review", tid)
+            nxt = H("review", tid)
         else:
-            info["next"] = H("fix", tid, "--note", f"작업 실패: {(body.get('summary') or '')[:200]}")
+            if cfg is _LOAD:
+                cfg = _config(p)
+            nxt, why = _fix(cfg, tid, loc["round"], f"작업 실패: {(body.get('summary') or '')[:200]}")
     elif t == "observed":
         kind = body.get("kind")
         if kind in ("exited", "lost"):
-            if not work:
-                info["next"] = H("review-finish", tid)
+            if recover:
+                nxt = resume
+            elif not work:
+                nxt = H("review-finish", tid)
             else:
-                info["next"] = H("start", tid) if recover else H("fix", tid, "--note", "이전 워커가 done 없이 끝남")
+                if cfg is _LOAD:
+                    cfg = _config(p)
+                nxt, why = _fix(cfg, tid, loc["round"], "이전 워커가 done 없이 끝남")
         elif kind == "idle":
             info["hint"] = (f"done 없이 턴을 마쳤다. `{horch_cmd} worker-show --dispatch {did} --lines 40` 로 보고 "
                             f"`{horch_cmd} send --to dispatch:{did} --body \"…\"` 로 이어가게 하거나 done 을 요구한다")
@@ -185,16 +220,19 @@ def annotate(p, m: dict, rows: list[dict] | None, horch_cmd: str) -> dict:
         info["hint"] = f"기획 문서로 답한다: `{horch_cmd} reply --id {m['id']} --body \"<답>\"`. 판단할 수 없으면 메인에 묻는다"
     elif t == "escalation":
         info["hint"] = "읽고 판단한다. 지시할 수 없으면 notify --type question 으로 메인에 묻는다"
-    if "next" in info:
+    if nxt is not None or why is not None:
         # 이 메시지 뒤에 태스크가 다음 단계로 넘어갔으면(ack 전에 처리했거나 다른 길로 넘어감) next 를 주지 않는다
         if work:
             moved = status not in ("working", "launch_failed")
         else:
-            moved = status != "reviewing" or loc.get("finished")
+            moved = status not in ("working", "reviewing") or loc.get("finished")
         if moved:
-            del info["next"]
             info["hint"] = (f"{tid} 는 이미 {status} 다(이 메시지 뒤에 넘어갔다). 이 메시지로 할 일은 없다. ack 하고 "
                             f"`{SHIM} status` 의 next 를 따른다")
+        elif nxt is not None:
+            info["next"] = nxt
+        else:
+            info["hint"] = why  # 라운드 상한: fix 대신 사용자에게 묻는다
     return {**m, "hteam": info}
 
 
@@ -212,65 +250,95 @@ def _current_slots(st: dict) -> list[tuple[dict, dict]]:
     return found
 
 
-def attention(p, rows: list[dict], seen: dict, grace: float) -> list[dict]:
+def _dict(value) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def attention(p, rows: list[dict], seen: dict, grace: float, *, states: list[dict] | None = None) -> list[dict]:
     """메시지 없이도 손볼 행(설계 8.2): grace 초 넘게 이어진 no_status, launch_failed. 끝나지 않은 태스크의 현재 라운드·
-    현재 시도 Dispatch 만 본다. 이미 알린 것(state/attention.json)은 다시 알리지 않는다."""
-    reported = read_json(p.attention, {})
-    reported = reported if isinstance(reported, dict) else {}
+    현재 시도 Dispatch 만 본다.
+
+    state/attention.json = {"reported": {Dispatch: 알린 단어}, "since": {Dispatch: no_status 를 처음 본 시각(epoch)}}.
+    한 번 알린 것은 다시 알리지 않는다. 처음 본 시각을 파일에 남기므로 wait 호출이 바뀌어도(메시지가 계속 와서 wait 가
+    자주 돌아와도) 이어 센다. no_status 가 풀리면 그 시각을 지운다(다시 no_status 가 되면 처음부터 센다).
+    seen 은 같은 처음 본 시각의 사본이다(호출자가 볼 수 있게 채운다)."""
+    if states is None:
+        states = state.all_states(p)
+    p.ensure_state()
     found = []
-    for st in state.all_states(p):
-        for slot, loc in _current_slots(st):
-            row = dispatch.slot_row(rows, slot)  # 기록된 Task 의 최신 시도, 기록 전이면 실행 키(제목)로 찾은 것
-            if row is None:
-                continue
-            word = row.get("attention")
-            if word == "no_status":
-                first = seen.setdefault(row["id"], time.monotonic())
-                if time.monotonic() - first < grace:
+    with flock(p.state / "attention.lock"):
+        data = _dict(read_json(p.attention, {}))
+        reported, since = dict(_dict(data.get("reported"))), dict(_dict(data.get("since")))
+        before = (dict(reported), dict(since))
+        now = time.time()
+        watching = set()
+        for st in states:
+            for slot, loc in _current_slots(st):
+                row = dispatch.slot_row(rows, slot)  # 기록된 Task 의 최신 시도, 기록 전이면 실행 키(제목)로 찾은 것
+                if row is None:
                     continue
-            elif word != "launch_failed":
-                seen.pop(row["id"], None)
-                continue
-            if reported.get(row["id"]) == word:
-                continue
-            nxt = H("start", loc["task"]) if loc["kind"] == "work" else H("review", loc["task"])
-            found.append({**loc, "dispatch": row["id"], "attention": word,
-                          "next": nxt if word == "launch_failed" else None, "horch_next": row.get("next"),
-                          "hint": ("시작 확인 창에서 멈췄을 수 있다. worker-show 로 화면을 보고 메인에 질문으로 올린다"
-                                   "(키를 누르지 않는다)" if word == "no_status" else "띄우기에 실패했다")})
-    if found:
-        with flock(p.state / "attention.lock"):
-            data = read_json(p.attention, {})
-            data = data if isinstance(data, dict) else {}
-            data.update({a["dispatch"]: a["attention"] for a in found})
-            write_json(p.attention, data)
+                did, word = row["id"], row.get("attention")
+                if word not in ("no_status", "launch_failed") or reported.get(did) == word:
+                    continue
+                if word == "no_status":
+                    watching.add(did)
+                    first = since.get(did)
+                    if not isinstance(first, (int, float)):
+                        first = since[did] = now
+                    if now - first < grace:
+                        continue
+                    hint = "시작 확인 창에서 멈췄을 수 있다. worker-show 로 화면을 보고 메인에 질문으로 올린다(키를 누르지 않는다)"
+                    item = {**loc, "dispatch": did, "attention": word, "next": None, "horch_next": row.get("next"),
+                            "hint": hint}
+                else:
+                    # horch 의 worker-start --retry 는 hteam 상태를 건너뛴다. hteam 명령(start·review)만 준다
+                    nxt = H("start", loc["task"]) if loc["kind"] == "work" else H("review", loc["task"])
+                    item = {**loc, "dispatch": did, "attention": word, "next": nxt, "hint": "띄우기에 실패했다"}
+                found.append(item)
+                reported[did] = word
+        since = {d: at for d, at in since.items() if d in watching}
+        if (reported, since) != before:
+            write_json(p.attention, {"reported": reported, "since": since})
+    seen.clear()
+    seen.update(since)
     return found
 
 
 def wait(p, ack: int | None, total: float) -> dict:
-    """`horch check --wait` 를 60초씩 나눠 부르고 그 사이마다 worker-list 를 본다(설계 8.2)."""
+    """`horch check --wait` 를 60초씩 나눠 부르고 그 사이마다 worker-list 를 본다(설계 8.2).
+
+    attention 은 메시지 없이 돌아온 chunk 뒤에도, 메시지를 돌려줄 때도 본다(메시지가 계속 와도 멈춘 워커를 놓치지 않게).
+    --ack 는 시간이 남지 않았어도(--timeout 0) 한다(기다리지 않는 check)."""
     h = Horch(p.horch_home)
     chunk, grace = env_float("HTEAM_WAIT_CHUNK", 60.0), env_float("HTEAM_NO_STATUS_GRACE", 60.0)
     deadline = time.monotonic() + total
     first_ack, seen = ack, {}
     while True:
         left = deadline - time.monotonic()
-        if left <= 0:
+        if left <= 0 and first_ack is None:
             return {"reason": "timeout", "delivery": None, "count": 0, "messages": [],
                     "hint": f"`{SHIM} status` 를 보고 태스크마다 next 를 따른다"}
-        span = min(chunk, left)
-        args = ["check", "--wait", "--timeout-ms", str(max(1, int(span * 1000)))]
+        args, span = ["check"], 0.0
+        if left > 0:
+            span = min(chunk, left)
+            args += ["--wait", "--timeout-ms", str(max(1, int(span * 1000)))]
         if first_ack is not None:
             args += ["--ack", str(first_ack)]
         data = h.ok(*args, timeout=span + 60)
         first_ack = None
+        # worker-list 를 읽지 못하면 오류로 끝난다. 묶음은 ack 하지 않았으므로 다음 wait 가 다시 받는다
+        rows = h.workers()
+        states = state.all_states(p)  # 이번 판단에 한 번만 읽는다
         if data.get("count"):
-            # worker-list 를 읽지 못하면 오류로 끝난다. 묶음은 ack 하지 않았으므로 다음 wait 가 다시 받는다
-            rows = h.workers()
-            return {"reason": "message", "delivery": data["delivery"], "count": data["count"],
-                    "messages": [annotate(p, m, rows, h.cmd()) for m in data["messages"]],
-                    "hint": f"모두 처리한 뒤 `{SHIM} wait --ack {data['delivery']}` 를 백그라운드로 다시 띄운다"}
-        found = attention(p, h.workers(), seen, grace)
+            cfg, cmd = _config(p), h.cmd()
+            out = {"reason": "message", "delivery": data["delivery"], "count": data["count"],
+                   "messages": [annotate(p, m, rows, cmd, cfg=cfg, states=states) for m in data["messages"]],
+                   "hint": f"모두 처리한 뒤 `{SHIM} wait --ack {data['delivery']}` 를 백그라운드로 다시 띄운다"}
+            found = attention(p, rows, seen, grace, states=states)
+            if found:
+                out["attention"] = found
+            return out
+        found = attention(p, rows, seen, grace, states=states)
         if found:
             return {"reason": "attention", "delivery": None, "count": 0, "messages": [], "attention": found,
                     "hint": f"행마다 hint·next 를 따른 뒤 `{SHIM} wait` 를 백그라운드로 다시 띄운다"}
@@ -288,7 +356,7 @@ def which(p, did: str) -> dict:
     return {"dispatch": did, **loc}
 
 
-def _live_hint(st: dict, rows: list[dict]) -> str | None:
+def _live_hint(st: dict, rows: list[dict], horch_cmd: str = "horch") -> str | None:
     """태스크의 작업·리뷰 Dispatch(모든 라운드) 가운데 launching·active 인 것이 있으면 정리 안내. accept 는 이때 exit 3 이다."""
     tid = st["id"]
     for rd in st.get("rounds", []):
@@ -300,17 +368,19 @@ def _live_hint(st: dict, rows: list[dict]) -> str | None:
                 if row["state"] == "launching":
                     return f"{did}({slot['title']})가 아직 launching 이다. accept 는 exit 3 로 거부한다. 끝난 뒤 accept 한다"
                 return (f"{did}({slot['title']})가 아직 active 다. accept 는 exit 3 로 거부한다(살아 있는 워커가 파일을 고칠 "
-                        f"수 있다). 워커를 끝낸 뒤 accept: horch worker-abandon --dispatch {did} --kill 뒤 horch "
+                        f"수 있다). 워커를 끝낸 뒤 accept: {horch_cmd} worker-abandon --dispatch {did} --kill 뒤 {horch_cmd} "
                         f"worker-release --dispatch {did}. 태스크를 버리려면 {SHIM} drop {tid} --force")
     return None
 
 
 def next_step(cfg, st: dict, by_task: dict[str, dict], have_rows: bool,
-              rows: list[dict] | None = None) -> tuple[list[str] | None, str | None]:
+              rows: list[dict] | None = None, horch_cmd: str | None = None) -> tuple[list[str] | None, str | None]:
     """태스크마다 다음 명령(설계 13장). 끝났다는 확실한 증거가 있을 때만 바꾸라고 하고, 모르면 기다린다.
 
-    by_task: horch Task → 최신 시도 행. rows 를 주면(worker-list 전체) 지난 시도·제목으로 찾은 Dispatch 까지 본다."""
+    by_task: horch Task → 최신 시도 행. rows 를 주면(worker-list 전체) 지난 시도·제목으로 찾은 Dispatch 까지 본다.
+    horch_cmd: 힌트에 넣을 horch 명령(--home 포함, Horch.cmd). 없으면 `horch`."""
     tid, s = st["id"], st["status"]
+    hc = horch_cmd or "horch"
     rd = state.current_round(st)
     if s == "pending":
         return H("start-ready"), None
@@ -337,14 +407,14 @@ def next_step(cfg, st: dict, by_task: dict[str, dict], have_rows: bool,
         if row["state"] in ("settled", "retained") or (row["state"] == "released" and row.get("outcome")):
             if row.get("outcome") == "succeeded":
                 return H("review", tid), None
-            return H("fix", tid, "--note", f"작업 실패: {(row.get('summary') or '')[:200]}"), None
+            return _fix(cfg, tid, st["round"], f"작업 실패: {(row.get('summary') or '')[:200]}")
         if row["state"] in ("abandoned", "released", "launch_failed") or row.get("verdict") in ("exited", "lost"):
-            return H("fix", tid, "--note", "이전 워커가 done 없이 끝남"), None
+            return _fix(cfg, tid, st["round"], "이전 워커가 done 없이 끝남")
         word = row.get("attention")
         if word == "idle":
-            return None, f"done 없이 턴을 마쳤다. horch send --to dispatch:{row['id']} 로 이어가게 하거나 done 을 요구한다"
+            return None, f"done 없이 턴을 마쳤다. {hc} send --to dispatch:{row['id']} 로 이어가게 하거나 done 을 요구한다"
         if word in ("blocked", "error", "no_status", "unverifiable"):
-            return None, f"{word}: horch worker-show --dispatch {row['id']} --lines 80 으로 보고 메인에 묻는다"
+            return None, f"{word}: {hc} worker-show --dispatch {row['id']} --lines 80 으로 보고 메인에 묻는다"
         return None, None
     if s == "reviewing":
         att = state.latest_attempt(rd)
@@ -361,21 +431,18 @@ def next_step(cfg, st: dict, by_task: dict[str, dict], have_rows: bool,
                 or row.get("verdict") in ("exited", "lost"):
             return H("review-finish", tid), None
         if row.get("attention") == "idle":
-            return None, f"리뷰어가 done 없이 턴을 마쳤다. horch send --to dispatch:{row['id']} 로 done 을 요구한다"
+            return None, f"리뷰어가 done 없이 턴을 마쳤다. {hc} send --to dispatch:{row['id']} 로 done 을 요구한다"
         return None, None
     if s == "approved":
         if not have_rows:
             return H("accept", tid), ("horch 정보를 읽지 못해 살아 있는 워커를 확인하지 못했다. 작업·리뷰 Dispatch 가 살아 "
                                       "있으면 accept 는 exit 3 로 거부한다(코디네이터 터미널에서 status 를 본다)")
-        live = _live_hint(st, rows if rows is not None else list(by_task.values()))
+        live = _live_hint(st, rows if rows is not None else list(by_task.values()), hc)
         if live:
             return None, live
         return H("accept", tid), None
     if s == "changes":
-        limit = cfg.max_rounds if cfg else None
-        if limit is not None and st["round"] >= limit:
-            return None, f"max_rounds({limit}) 에 닿았다. 메인에 묻는다(계속이면 fix {tid} --force-round --note …)"
-        return H("fix", tid, "--note", "리뷰 지적을 반영한다"), None
+        return _fix(cfg, tid, st["round"], "리뷰 지적을 반영한다")
     if s == "awaiting_user":
         return None, "사용자 일괄 승인을 기다린다(design-review)"
     return None, None
@@ -425,7 +492,8 @@ def status(p) -> dict:
             title = specs.load(p, st["id"]).title
         except HteamError:
             title = None
-        nxt, hint = next_step(cfg, st, by_task, horch_error is None, rows if horch_error is None else None)
+        nxt, hint = next_step(cfg, st, by_task, horch_error is None, rows if horch_error is None else None,
+                              horch_cmd=horch_cmd)
         rd = state.current_round(st)
         work = by_task.get(rd["work"].get("horch_task")) if rd and rd["work"].get("horch_task") else None
         items.append({"id": st["id"], "role": st.get("role"), "title": title, "status": st["status"],

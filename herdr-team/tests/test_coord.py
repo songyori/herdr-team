@@ -1,5 +1,7 @@
 """코디네이터 쪽(설계 8.2·13장): wait 주석과 attention, which, status 의 next."""
 import json
+import os
+import time
 import unittest
 
 from tests.helpers import BASE_CONFIG, COORD, TeamCase
@@ -385,6 +387,142 @@ class ContractTest(CoordCase):
         for task in self.hteam("status")[1]["tasks"]:
             if task["next"] is not None:
                 self.assertEqual(task["next"][0], H)
+
+
+class ReviewFindingsTest(CoordCase):
+    """Task 10 리뷰 지적: 라운드 상한, 메시지 사이 no_status, 기록 안 된 리뷰어, 실행 가능한 힌트."""
+
+    def run_id(self):
+        return json.loads((self.state_dir / "run.json").read_text())["run_id"]
+
+    # --- 1. 라운드 상한이면 fix 대신 사용자 안내 ---
+    def test_failed_work_at_round_limit_has_no_fix(self):
+        (self.team / "config.toml").write_text(BASE_CONFIG.replace("max_rounds = 3", "max_rounds = 1"))
+        self.started()
+        self.calm()
+        self.act_work("T-001", outcome="failed")
+        info = self.wait()["messages"][0]["hteam"]
+        self.assertNotIn("next", info)
+        self.assertIn("max_rounds", info["hint"])
+        self.assertIn("--force-round", info["hint"])
+        task = self.hteam("status")[1]["tasks"][0]
+        self.assertIsNone(task["next"])
+        self.assertIn("--force-round", task["hint"])
+
+    def test_exited_work_at_round_limit_has_no_fix(self):
+        (self.team / "config.toml").write_text(BASE_CONFIG.replace("max_rounds = 3", "max_rounds = 1"))
+        self.started()
+        term = self.calm()
+        self.update_terminal(term, state="finished")
+        info = self.wait()["messages"][0]["hteam"]
+        self.assertNotIn("next", info)
+        self.assertIn("--force-round", info["hint"])
+        task = self.hteam("status")[1]["tasks"][0]
+        self.assertIsNone(task["next"])
+        self.assertIn("max_rounds", task["hint"])
+
+    # --- 2. 메시지가 계속 와도 no_status 는 유예 시간 안에 알린다 ---
+    def test_no_status_attention_survives_message_traffic(self):
+        self.started()  # 워커가 상태를 보고하지 않는다(no_status)
+        self.add_terminal("t300", argv=["sh"])
+        found, ack = [], None
+        for i in range(5):
+            code, res = self.horch("send", "--to", f"run:{self.run_id()}", "--body", f"소식 {i}", terminal="t300")
+            self.assertEqual(code, 0, res)
+            out = self.wait(*(["--ack", str(ack)] if ack else []))
+            self.assertEqual(out["reason"], "message")
+            ack = out["delivery"]
+            found += out.get("attention") or []
+            if found:
+                break
+            time.sleep(0.3)
+        self.assertEqual([(a["attention"], a["task"]) for a in found], [("no_status", "T-001")])
+
+    # --- 3. 기록 전에 실행자가 죽은 재시도 리뷰어는 review 로 이어 붙인다 ---
+    def dead_auto_retry(self):
+        self.started()
+        self.calm()
+        self.act_work("T-001")
+        d = self.wait()["delivery"]
+        code, rev = self.hteam("review", "T-001")
+        self.assertEqual(code, 0, rev)
+        self.update_terminal(rev["terminal"], status="working")
+        self.act_review("T-001", write=False)  # 결과 파일 없이 done: review-finish 가 자동으로 다시 띄운다
+        d = self.wait("--ack", str(d))["delivery"]
+        self.assertEqual(self.wait("--ack", str(d), timeout="0.4")["reason"], "timeout")
+        code, _ = self.hteam("review-finish", "T-001", env={"HTEAM_TEST_DIE_AT": "after_launch"})
+        self.assertEqual(code, 137)
+        st = self.task_state("T-001")
+        att = st["rounds"][-1]["reviews"][-1]
+        self.assertEqual((st["status"], att["attempt"], att["dispatch"]), ("reviewing", 2, None))
+        _, rows = self.horch("worker-list")
+        did = next(r["id"] for r in rows["workers"] if r["title"] == "T-001 r1 리뷰 a2")
+        term = self.dispatch_row(did)["terminal"]
+        self.update_terminal(term, status="working")
+        return did, term
+
+    def test_unrecorded_retry_reviewer_done_suggests_review(self):
+        did, _ = self.dead_auto_retry()
+        self.act(did, {"done": {"outcome": "succeeded", "summary": "APPROVE"}})
+        info = self.wait()["messages"][0]["hteam"]
+        self.assertEqual((info["kind"], info["attempt"], info["next"]), ("review", 2, [H, "review", "T-001"]))
+
+    def test_unrecorded_retry_reviewer_exited_suggests_review(self):
+        _, term = self.dead_auto_retry()
+        self.update_terminal(term, state="finished")
+        msg = self.wait()["messages"][0]
+        self.assertEqual((msg["type"], msg["hteam"]["attempt"], msg["hteam"]["next"]),
+                         ("observed", 2, [H, "review", "T-001"]))
+
+    # --- 4. launch_failed attention 에 hteam 상태를 건너뛰는 horch 재시도 명령을 주지 않는다 ---
+    def test_launch_failed_attention_has_no_raw_horch_retry(self):
+        self.write_spec("T-001")
+        state.create(self.p, "T-001", "developer")
+        self.fail_hc("run", "boom")
+        self.hteam("start", "T-001")
+        att = self.wait()["attention"][0]
+        self.assertEqual(att["next"], [H, "start", "T-001"])
+        self.assertNotIn("worker-start", json.dumps(att))
+
+    # --- 5. --timeout 0 이어도 --ack 는 한다 ---
+    def test_wait_ack_with_zero_timeout_still_acks(self):
+        self.add_terminal("t300", argv=["sh"])
+        self.horch("send", "--to", f"run:{self.run_id()}", "--body", "x", terminal="t300")
+        d = self.wait()["delivery"]
+        self.wait("--ack", str(d), timeout="0")
+        self.assertEqual(self.wait(timeout="0.4")["reason"], "timeout")  # ack 됐으면 같은 묶음이 다시 오지 않는다
+
+    # --- 6. status 힌트의 horch 명령은 --home 까지 붙인 실행 가능한 명령이다 ---
+    def test_status_hints_use_full_horch_command(self):
+        out = self.started()  # no_status
+        task = self.hteam("status")[1]["tasks"][0]
+        self.assertIn(f"--home {self.horch_home} worker-show --dispatch {out['dispatch']}", task["hint"])
+        with state.edit(self.p, "T-001") as st:
+            state.move(st, "approved", "verdict")
+        task = self.hteam("status")[1]["tasks"][0]
+        self.assertIn(f"--home {self.horch_home} worker-abandon --dispatch {out['dispatch']}", task["hint"])
+
+    # --- 7. wait 는 메시지마다 상태 파일을 다시 읽지 않는다 ---
+    def test_wait_reads_states_once(self):
+        from unittest import mock
+        from hteam import coord
+        out = self.started()
+        self.calm()
+        for i in range(3):  # 워커가 보낸 글이라 Dispatch 가 붙는다(태스크 위치를 찾는다)
+            code, res = self.horch("send", "--to", f"run:{self.run_id()}", "--body", f"x{i}", terminal=out["terminal"])
+            self.assertEqual(code, 0, res)
+        calls = []
+        real = state.all_states
+
+        def counted(p):
+            calls.append(1)
+            return real(p)
+
+        with mock.patch.dict(os.environ, self._env("coordinator", None, None), clear=True), \
+                mock.patch.object(state, "all_states", counted):
+            out = coord.wait(self.p, None, 3)
+        self.assertEqual((out["reason"], out["count"]), ("message", 3))
+        self.assertEqual(len(calls), 1)
 
 
 if __name__ == "__main__":
