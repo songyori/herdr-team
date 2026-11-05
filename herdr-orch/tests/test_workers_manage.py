@@ -108,6 +108,24 @@ class SweepTest(HorchCase):
         steps = [b - a for a, b in zip([0, *counts], counts)]
         self.assertTrue(all(s <= 1 for s in steps), counts)  # 한 틱에 판정 하나: 남은 것은 다음 틱에
 
+    def test_tick_budget_is_poll_interval(self):
+        # 틱 예산은 sweep 간격(5초)이 아니라 폴링 간격(0.3초): 느린 hc 가 메시지 전달을 늦추지 않는다
+        with mock.patch.dict(os.environ, {"HORCH_SWEEP_INTERVAL": "5", "HORCH_POLL": "0.3"}):
+            self.delay_hc("get", 0.4)
+            sweep = workers.Sweep(self.store, self.run_id)
+            t0 = time.monotonic()
+            more = sweep(time.monotonic() + 30)
+            self.assertLess(time.monotonic() - t0, 1.0)
+            self.assertTrue(more)
+            self.assertEqual(self.observed(), 1)
+
+    def test_position_survives_new_sweep(self):
+        # 호출마다 새 Sweep 이어도 회차 위치는 meta 에 남아 마지막 워커까지 간다
+        self.delay_hc("get", 0.4)
+        for _ in range(3):
+            workers.Sweep(self.store, self.run_id)(time.monotonic() + 0.5)
+        self.assertEqual(self.observed(), 3)
+
     def test_probe_timeout_bounded_by_wait_deadline(self):
         self.delay_hc("get", 3)
         sweep = workers.Sweep(self.store, self.run_id)
@@ -217,6 +235,22 @@ class ManageTest(HorchCase):
         self.assertEqual((row["attention"], row["next"]), (None, None))
         _, shown = self.o("worker-show", "--dispatch", did2, "--lines", "0")
         self.assertEqual((shown["worker"]["attention"], shown["worker"]["next"]), (None, None))
+
+    def test_list_works_on_migrated_v1_db(self):
+        db = self.db()
+        db.execute("DROP INDEX dispatch_task_attempt")
+        db.execute("ALTER TABLE dispatches DROP COLUMN agent_args")
+        db.execute("UPDATE meta SET value='1' WHERE key='schema_version'")
+        db.commit()
+        code, out = self.o("worker-list")
+        self.assertEqual(code, 0, out)
+        self.assertEqual([w["id"] for w in out["workers"]], [self.did])
+        self.assertEqual(out["workers"][0]["agent_args"], [])
+
+    def test_list_query_uses_task_attempt_index(self):
+        plan = " ".join(str(tuple(r)) for r in self.db().execute("EXPLAIN QUERY PLAN " + workers._ROWS + " WHERE d.run_id=?",
+                                                                (self.run_id,)))
+        self.assertIn("dispatch_task_attempt", plan)
 
     def test_list_state_typo_is_usage(self):
         code, out = self.o("worker-list", "--state", "setled")

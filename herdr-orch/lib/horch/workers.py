@@ -243,7 +243,8 @@ class Sweep:
     """소유자의 check --wait 가 틱마다 부른다(설계 9장 observed). sweep(deadline) -> 남은 일이 있으면 True.
 
     회차 처음에 launching 조정과 가드 거부 정리를 하고 그 Run 의 active Dispatch 를 줄 세운다.
-    한 틱은 min(대기 deadline, 지금 + sweep 간격) 안에서만 새 판정을 시작하고, 남은 Dispatch 는 다음 틱에 이어 본다.
+    한 틱은 min(대기 deadline, 지금 + 폴링 간격) 안에서만 새 판정을 시작하고, 남은 Dispatch 는 다음 틱에 이어 본다.
+    회차 위치는 meta 의 sweep_cursor:<run> 에 남겨, 새 Sweep(다음 check --wait 호출)이 그 다음 Dispatch 부터 돈다.
     hc 호출 하나는 SWEEP_HC_TIMEOUT_S 와 대기 deadline 중 이른 쪽에 끊는다. 끊긴 판정은 모름이라 아무것도 쓰지 않는다.
     """
 
@@ -251,15 +252,37 @@ class Sweep:
         self.store, self.run_id = store, run_id
         self.queue: list[str] = []
 
+    def _cursor_key(self) -> str:
+        return f"sweep_cursor:{self.run_id}"
+
+    def _order(self) -> list[tuple[str, str]]:
+        """active Dispatch 를 (created_at, id) 순으로, 저장된 위치 다음부터 한 바퀴 돌게 줄 세운다."""
+        rows = [(r["created_at"], r["id"]) for r in self.store.all(
+            "SELECT created_at, id FROM dispatches WHERE run_id=? AND state='active' ORDER BY created_at, id",
+            (self.run_id,))]
+        cur = self.store.one("SELECT value FROM meta WHERE key=?", (self._cursor_key(),))
+        if cur and "|" in cur["value"]:
+            pos = tuple(cur["value"].split("|", 1))
+            after = [r for r in rows if r > pos]
+            return after + [r for r in rows if r <= pos]
+        return rows
+
+    def _advance(self, created_at: str, dispatch_id: str) -> None:
+        with self.store.tx():
+            self.store.run("INSERT INTO meta(key, value) VALUES (?, ?) "
+                           "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                           (self._cursor_key(), f"{created_at}|{dispatch_id}"))
+
     def __call__(self, deadline: float) -> bool:
-        until = min(deadline, time.monotonic() + mailbox.sweep_interval())
+        until = min(deadline, time.monotonic() + mailbox.poll_interval())
         if not self.queue:
             reconcile_launching(self.store, self.run_id)
-            cleanup_refused(self.store, self.run_id, deadline=deadline)
-            self.queue = [r["id"] for r in self.store.all(
-                "SELECT id FROM dispatches WHERE run_id=? AND state='active' ORDER BY created_at, id", (self.run_id,))]
+            cleanup_refused(self.store, self.run_id, deadline=until)
+            self.queue = self._order()
         while self.queue and not _expired(until):
-            liveness.observe_one(self.store, self.run_id, self.queue.pop(0), timeout=_hc_timeout(deadline))
+            created_at, did = self.queue.pop(0)
+            liveness.observe_one(self.store, self.run_id, did, timeout=_hc_timeout(deadline))
+            self._advance(created_at, did)
         return bool(self.queue)
 
 

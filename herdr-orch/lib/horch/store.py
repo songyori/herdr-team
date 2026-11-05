@@ -10,7 +10,7 @@ from typing import Iterator
 
 from .errors import FAIL, HorchError
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 DDL = [
     "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -28,6 +28,7 @@ DDL = [
         created_at TEXT NOT NULL, settled_at TEXT, closed_at TEXT)""",
     "CREATE UNIQUE INDEX dispatch_one_running ON dispatches(task_id) WHERE state IN ('launching','active')",
     "CREATE INDEX dispatch_terminal ON dispatches(terminal)",
+    "CREATE INDEX dispatch_task_attempt ON dispatches(task_id, attempt)",
     """CREATE TABLE messages(id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, mailbox TEXT NOT NULL,
         sender TEXT NOT NULL, type TEXT NOT NULL, subject TEXT, body TEXT NOT NULL, reply_to INTEGER,
         dispatch_id TEXT, ask_key TEXT, created_at TEXT NOT NULL, delivery_id INTEGER)""",
@@ -89,6 +90,13 @@ class Store:
                 for stmt in DDL:
                     self.conn.execute(stmt)
                 self.conn.execute("INSERT INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
+            elif version < 2:
+                # v1 -> v2: dispatches.agent_args 열과 (task_id, attempt) 인덱스
+                cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(dispatches)")}
+                if "agent_args" not in cols:
+                    self.conn.execute("ALTER TABLE dispatches ADD COLUMN agent_args TEXT")
+                self.conn.execute("CREATE INDEX IF NOT EXISTS dispatch_task_attempt ON dispatches(task_id, attempt)")
+                self.conn.execute("UPDATE meta SET value='2' WHERE key='schema_version'")
 
     @contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:

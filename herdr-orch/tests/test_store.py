@@ -28,6 +28,25 @@ class StoreTest(HorchCase):
         self.assertEqual(stat.S_IMODE(os.stat(self.home).st_mode), 0o700)
         self.assertEqual(s.one("PRAGMA journal_mode")[0], "wal")
 
+    def test_migrates_v1_to_v2(self):
+        s = self.open()
+        # v1 (agent_args 열도, task·attempt 인덱스도 없던 시절) 로 되돌린다
+        s.run("INSERT INTO runs(id, objective, created_at, updated_at) VALUES ('run-1','o','t','t')")
+        s.run("INSERT INTO tasks(id, run_id, title, spec, created_at) VALUES ('tsk-1','run-1','T','S','t')")
+        s.run("INSERT INTO dispatches(id, task_id, run_id, attempt, agent, cwd, state, created_at) "
+              "VALUES ('dsp-1','tsk-1','run-1',1,'claude','/x','settled','t')")
+        s.run("DROP INDEX dispatch_task_attempt")
+        s.run("ALTER TABLE dispatches DROP COLUMN agent_args")
+        s.run("UPDATE meta SET value='1' WHERE key='schema_version'")
+        s.close()
+        s2 = self.open()
+        cols = {r["name"] for r in s2.all("PRAGMA table_info(dispatches)")}
+        self.assertIn("agent_args", cols)
+        self.assertEqual(s2.one("SELECT value FROM meta WHERE key='schema_version'")["value"], "2")
+        self.assertEqual(s2.one("SELECT id, agent_args FROM dispatches")["id"], "dsp-1")
+        idx = {r["name"] for r in s2.all("PRAGMA index_list(dispatches)")}
+        self.assertIn("dispatch_task_attempt", idx)
+
     def test_refuses_newer_schema(self):
         self.open().run("UPDATE meta SET value='99' WHERE key='schema_version'")
         with self.assertRaises(HorchError) as cm:
