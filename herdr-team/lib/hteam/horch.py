@@ -95,6 +95,7 @@ class Horch:
             raise failure(code, data, args)
         return data
 
-    def workers(self) -> list[dict]:
-        """worker-list 행. 코디네이터(Run 소유자) 터미널에서만 된다."""
-        return list(self.ok("worker-list").get("workers") or [])
+    def workers(self, states=None) -> list[dict]:
+        """worker-list 행. 코디네이터(Run 소유자) 터미널에서만 된다. states 를 주면 그 상태만(--state 반복)."""
+        flags = [x for s in states or () for x in ("--state", s)]
+        return list(self.ok("worker-list", *flags).get("workers") or [])

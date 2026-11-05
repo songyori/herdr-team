@@ -62,7 +62,10 @@ class Barrier:
 
     def kill(self) -> None:
         """시간이 넘었다. 자식(horch)과 그 프로세스 그룹(hc 호출)을 죽이고 거둔다. 예외를 내지 않는다.
-        horch 가 만든 launching Dispatch 는 실행자가 죽었으므로 horch 가 launch_failed 로 바꾼다(제목으로 복구)."""
+        horch 가 만든 launching Dispatch 는 실행자가 죽었으므로 horch 가 launch_failed 로 바꾼다(제목으로 복구).
+        이미 거둔 뒤면 아무것도 하지 않는다(그 pid·pgid 는 재사용될 수 있다)."""
+        if self.proc.returncode is not None:
+            return
         try:
             # 자식은 새 세션의 리더라 pgid == pid 다. 거두기 전이라 pid 가 재사용되지 않으므로 늘 그룹을 죽인다.
             # 리더가 좀비면 macOS 의 getpgid 는 ESRCH 를 내지만 killpg 는 남은 자손에 닿는다

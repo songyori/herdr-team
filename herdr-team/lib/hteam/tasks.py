@@ -81,24 +81,22 @@ LIVE = ("launching", "active")
 
 
 class Capacity:
-    """start-ready 한 호출의 동시 수 상한(설계 5.4).
-
-    held: 이 호출에서 시작 바이트를 보낸 뒤 오류가 난(워커가 떴는지 모르는) 태스크. 호출이 끝날 때까지 자리를 차지한다."""
+    """start-ready 한 호출의 동시 수 상한(설계 5.4). h 는 점유 검사의 worker-list 에 쓴다."""
 
     def __init__(self, h, limit: int):
         self.h = h
         self.limit = limit
-        self.held: set[str] = set()
 
 
 def _may_run(st: dict, cap: Capacity, rows) -> bool:
-    """launch_failed 태스크의 현재 라운드 워커가 떠 있을 수 있나: 실행자·장벽 자식이 살아 있다, 이 호출에서 결과를
-    모르게 됐다, 기록된 horch Task 나 실행 키의 Dispatch 가 launching·active 다."""
+    """launch_failed 태스크의 현재 라운드 워커가 떠 있을 수 있나: 실행자·장벽 자식이 살아 있다, 또는 기록된 horch
+    Task 나 실행 키의 Dispatch 가 launching·active 다. launched 는 시작 바이트 전에 저장되므로, 바이트 뒤 무슨 오류가
+    났든(horch non-ok·시간 초과·기록 실패) 산 Dispatch 는 새 worker-list 에서 제목으로 보인다."""
     rd = state.current_round(st)
     if not rd:
         return False
     slot = rd["work"]
-    if dispatch.busy(st, slot) or st["id"] in cap.held:
+    if dispatch.busy(st, slot):
         return True
     if not (slot.get("launched") or slot.get("horch_task")):
         return False  # 장벽 자식을 기록한 적이 없다: horch 를 실행하지 않았다
@@ -115,7 +113,7 @@ def occupied(p, tid: str, cap: Capacity) -> list[str]:
 
     def rows() -> list[dict]:
         if not seen:
-            seen.append(cap.h.workers())
+            seen.append(cap.h.workers(states=LIVE))  # 상태로 거른 뒤에만 horch 가 hc 로 행을 살핀다
         return seen[0]
 
     return [s["id"] for s in state.all_states(p) if s["id"] != tid and
@@ -187,10 +185,9 @@ def run_work(p, cfg, h, tid: str) -> dict:
                 st["rounds"][-1].update(agent=res["agent"], model=res["model"], effort=res["effort"])
             state.move(st, "working", "launched", dispatch=res["dispatch"])
             rd = st["rounds"][-1]
-    except BaseException as exc:
-        if isinstance(exc, HteamError):
-            dispatch.left_running(exc, res)
-        raise dispatch.mark_started(exc)
+    except HteamError as exc:
+        dispatch.left_running(exc, res)
+        raise
     return {"task": tid, "round": rd["round"], "status": "working", "agent": rd["agent"], "model": rd["model"],
             "effort": rd["effort"], **res}
 
@@ -252,8 +249,6 @@ def start_ready(p) -> dict:
             started.append({"task": tid, "round": res["round"], "dispatch": res["dispatch"],
                             "warnings": res["warnings"]})
         except Exception as exc:
-            if dispatch.maybe_started(exc):
-                cap.held.add(tid)  # 워커가 떴는지 모른다. 이 호출이 끝날 때까지 자리를 차지한다
             if not isinstance(exc, HteamError):  # 버그·예상 밖 오류도 이 태스크만 실패로 둔다(cli 의 internal 모양)
                 failed.append({"task": tid, "error": {"code": "internal", "message": f"{type(exc).__name__}: {exc}",
                                                       "hint": ""}})

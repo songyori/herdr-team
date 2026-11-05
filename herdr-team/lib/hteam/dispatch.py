@@ -113,22 +113,6 @@ def left_running(exc: HteamError, info: dict) -> HteamError:
     return exc
 
 
-STARTED = "hteam_start_byte_sent"
-
-
-def mark_started(exc: BaseException) -> BaseException:
-    """시작 바이트를 보낸 뒤의 오류다: 워커가 떴는지 모른다. start-ready 는 그 태스크를 그 호출 동안 동시 수에 센다."""
-    try:
-        setattr(exc, STARTED, True)
-    except Exception:
-        pass
-    return exc
-
-
-def maybe_started(exc: BaseException) -> bool:
-    return bool(getattr(exc, STARTED, False))
-
-
 def _send(barrier):
     def after_save(_st) -> None:
         die_at("after_child")
@@ -143,19 +127,16 @@ def _run_barrier(p, tid: str, pick, argv: list[str], expect) -> tuple[int, dict]
         # 위 검사가 막는다)이나 바이트 뒤(horch 가 떴다. 기록·working 전이가 막는다)에만 저장된다
         with owned(p, tid, pick, expect, after_save=_send(barrier)) as st:
             pick(st)["launched"] = barrier.record()
-    except BaseException as exc:
-        if barrier.sent:
-            raise mark_started(exc)  # 바이트를 보내다 실패했다. horch 가 떴는지 모른다
-        barrier.abort()
+    except BaseException:
+        if not barrier.sent:  # 바이트를 보내다 실패했으면 자식을 두고(이미 떴을 수 있다) 오류만 낸다
+            barrier.abort()
         raise
     try:
         code, out, err = barrier.go()
     except subprocess.TimeoutExpired:
         barrier.kill()  # 멈춘 horch 가 동시 수 자리를 붙잡지 않게. 그 Dispatch 는 horch 가 launch_failed 로 바꾼다
-        raise mark_started(HteamError("launch_timeout", f"{tid} 의 horch worker-start 가 제한 시간 안에 끝나지 않았다",
-                                      FAIL, "horch 를 끝냈다. 같은 명령을 다시 하면 제목으로 찾아 이어 한다")) from None
-    except BaseException as exc:
-        raise mark_started(exc)
+        raise HteamError("launch_timeout", f"{tid} 의 horch worker-start 가 제한 시간 안에 끝나지 않았다", FAIL,
+                         "horch 를 끝냈다. 같은 명령을 다시 하면 제목으로 찾아 이어 한다") from None
     die_at("after_launch")
     return code, parse(out, err)
 
@@ -199,18 +180,15 @@ def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str |
             else:
                 s["horch_task"] = data.get("task") or s.get("horch_task")
                 s["error"] = {"exit": code, **(data.get("error") or {})}
-    except BaseException as exc:
-        if ok and isinstance(exc, HteamError):
+    except HteamError as exc:
+        if ok:
             left_running(exc, data)
-        raise mark_started(exc)
+        raise
     if not ok:
-        # 시작 바이트 뒤다. horch 가 non-ok 로 끝나도(record_failed·terminal_mismatch·bad_output) Dispatch 는 이미
-        # active 일 수 있다. 결과를 모르는 것으로 표시한다
         err = data.get("error") or {}
-        exc = HteamError("launch_failed", f"horch worker-start 실패: {err.get('code')}: {err.get('message')}",
+        raise HteamError("launch_failed", f"horch worker-start 실패: {err.get('code')}: {err.get('message')}",
                          MISSING if code == MISSING else FAIL, err.get("hint") or "",
                          data={"horch": data, "warnings": warnings})
-        raise mark_started(exc)
     if data.get("warning"):
         warnings.append(data["warning"])
     warnings += list(data.get("warnings") or [])

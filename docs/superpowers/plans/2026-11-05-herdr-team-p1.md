@@ -3726,8 +3726,8 @@ def _send(barrier):
 
 
 def _run_barrier(p, tid: str, pick, argv: list[str]) -> tuple[int, dict]:
-    """장벽 부분만 보인다. 실제 코드(Task 6 리뷰 수정)는 기록·바이트 때 실행 권한을 다시 확인하고(dispatch.owned:
-    이전 상태·취소·실행자) 시작 바이트 뒤 오류를 표시한다(mark_started). state.edit 의 after_save 도 그때 더했다."""
+    """장벽 부분만 보인다. 실제 코드(Task 6 리뷰 수정)는 기록·바이트 때 실행 권한을 다시 확인한다(dispatch.owned:
+    이전 상태·취소·실행자). state.edit 의 after_save 도 그때 더했다."""
     barrier = Barrier(argv)
     try:
         # 기록을 저장한 직후 같은 태스크 잠금 안에서 시작 바이트를 보낸다(after_save: 저장 뒤 잠금을 쥔 채 부른다).

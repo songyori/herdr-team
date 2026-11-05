@@ -35,6 +35,13 @@ class StartCase(TeamCase):
         with mock.patch.dict(os.environ, self._env("coordinator", None, None), clear=True):
             yield
 
+    @staticmethod
+    def dead_record():
+        """죽은 프로세스 기록: 띄우고 거둔 pid 에 맞지 않는 시작 시각(pid 가 재사용돼도 죽은 것으로 본다)."""
+        proc = subprocess.Popen([sys.executable, "-c", "pass"])
+        proc.wait()
+        return {"pid": proc.pid, "started": "Thu Jan  1 00:00:00 1970"}
+
     def set_max_parallel(self, n):
         (self.team / "config.toml").write_text(BASE_CONFIG.replace("max_parallel = 4", f"max_parallel = {n}"))
 
@@ -546,7 +553,7 @@ class StartReadyTest(StartCase):
                          [("T-002", "internal", "RuntimeError: boom")])
 
     def test_uncertain_launch_holds_slot_within_call(self):
-        """시작 바이트 뒤 기록 저장이 실패했다(워커는 떴다). 그 태스크는 이 호출이 끝날 때까지 자리를 차지한다."""
+        """시작 바이트 뒤 기록 저장이 실패했다(워커는 떴다). 그 워커는 새 worker-list 에서 제목으로 보여 자리를 차지한다."""
         self.set_max_parallel(1)
         self.make_task("T-001", owns="src/a/**")
         self.make_task("T-002", owns="src/b/**")
@@ -581,12 +588,12 @@ class StartReadyTest(StartCase):
 
     def test_nonok_horch_with_active_dispatch_holds_slot(self):
         """horch 가 non-ok(record_failed 등)로 끝났지만 Dispatch 는 active 다. 앞서 worker-list 를 이미 본 뒤여도
-        그 태스크는 자리를 차지한다(시작 바이트 뒤 오류는 held, 점유 검사마다 worker-list 를 새로 본다)."""
+        그 태스크는 자리를 차지한다(launched 는 바이트 전에 저장되고, 점유 검사마다 worker-list 를 새로 본다)."""
         self.set_max_parallel(1)
         for tid, owns in (("T-000", "src/z/**"), ("T-001", "src/a/**"), ("T-002", "src/b/**")):
             self.make_task(tid, owns=owns)
         with state.edit(self.p, "T-000") as st:  # 취소된 launch_failed(기록된 자식): T-001 의 점유 검사가 worker-list 를 본다
-            slot = {**dispatch.new_slot("T-000 r1 작업"), "launched": {"pid": 999999, "started": ""}, "canceled": True}
+            slot = {**dispatch.new_slot("T-000 r1 작업"), "launched": self.dead_record(), "canceled": True}
             st["rounds"] = [{"round": 1, "round_base": None, "agent": "claude", "model": None, "effort": None,
                              "note": None, "supplement": None, "work": slot, "reviews": [], "verdict": None}]
             st.update(round=1, status="launch_failed")
@@ -634,6 +641,74 @@ class StartReadyTest(StartCase):
         self.assertEqual(self.dispatch_row(did)["state"], "settled")
         self.assertEqual([s["task"] for s in out["started"]], ["T-001", "T-002"], out)
         self.assertEqual({w["task"]: w["reason"] for w in out["waiting"]}, {"T-003": "deps"})
+
+
+    def _go_failing_for(self, title):
+        """title 의 장벽만 hc run 실패로 horch 가 깨끗이 실패하게 하는 go(Dispatch launch_failed, 산 워커 없음)."""
+        real_go = launch.Barrier.go
+
+        def go(barrier, timeout=600):
+            if title not in barrier.proc.args and "--retry" not in barrier.proc.args:
+                return real_go(barrier, timeout)
+            self.fail_hc("run", "boom")
+            try:
+                return real_go(barrier, timeout)
+            finally:
+                with self._hc_locked() as hc:
+                    hc["fail"].clear()
+        return go
+
+    def test_clean_horch_failure_leaves_slot_free(self):
+        """horch 가 깨끗이 실패한(산 워커 없는) 태스크는 자리를 잡지 않는다. 같은 호출의 다음 태스크가 뜬다."""
+        self.set_max_parallel(1)
+        self.make_task("T-001", owns="src/a/**")
+        self.make_task("T-002", owns="src/b/**")
+        with self.in_process(), mock.patch.object(launch.Barrier, "go", self._go_failing_for("T-001 r1 작업")):
+            with self.assertRaises(HteamError) as cm:
+                tasks.start_ready(self.p)
+        data = cm.exception.data
+        self.assertEqual([(f["task"], f["error"]["code"]) for f in data["failed"]], [("T-001", "launch_failed")])
+        self.assertEqual([s["task"] for s in data["started"]], ["T-002"])
+
+    def test_clean_horch_failure_never_starves_across_calls(self):
+        """호출을 거듭해도 깨끗이 실패하는 태스크가 뒤 태스크를 굶기지 않는다. 대기 사유는 실제로 뜬 T-002 다."""
+        self.set_max_parallel(1)
+        self.make_task("T-001", owns="src/a/**")
+        self.make_task("T-002", owns="src/b/**")
+        go = self._go_failing_for("T-001 r1 작업")
+        for call in range(3):
+            with self.subTest(call=call), self.in_process(), mock.patch.object(launch.Barrier, "go", go):
+                try:
+                    data = tasks.start_ready(self.p)
+                except HteamError as exc:
+                    data = exc.data
+                self.assertEqual(self.task_state("T-002")["status"], "working")
+                live = [r["title"] for r in self.horch_tasks() if r["state"] in ("launching", "active")]
+                self.assertEqual(live, ["T-002 r1 작업"])
+                if call:
+                    self.assertEqual([(w["task"], w["reason"]) for w in data["waiting"]], [("T-001", "limit")])
+                    self.assertIn("T-002", data["waiting"][0]["detail"])
+                    self.assertNotIn("T-001", data["waiting"][0]["detail"].split(":")[-1])
+
+    def test_occupancy_asks_only_launching_and_active(self):
+        """점유 검사는 worker-list --state launching --state active 만 묻는다(잠금 안에서 hc 호출을 줄인다)."""
+        self.make_task("T-001", owns="src/a/**")
+        with state.edit(self.p, "T-001") as st:
+            slot = {**dispatch.new_slot("T-001 r1 작업"), "launched": self.dead_record()}
+            st["rounds"] = [{"round": 1, "round_base": None, "agent": "claude", "model": None, "effort": None,
+                             "note": None, "supplement": None, "work": slot, "reviews": [], "verdict": None}]
+            st.update(round=1, status="launch_failed")
+        h = mock.Mock()
+        h.workers.return_value = []
+        self.assertEqual(tasks.occupied(self.p, "T-002", tasks.Capacity(h, 1)), [])
+        h.workers.assert_called_once_with(states=("launching", "active"))
+        with self.in_process():
+            real = __import__("hteam.horch", fromlist=["Horch"]).Horch(self.p.horch_home)
+        with mock.patch.object(real, "ok", return_value={"ok": True, "workers": []}) as ok:
+            self.assertEqual(real.workers(states=("launching", "active")), [])
+            real.workers()
+        self.assertEqual([c.args for c in ok.call_args_list],
+                         [("worker-list", "--state", "launching", "--state", "active"), ("worker-list",)])
 
 
 class ComposeTest(StartCase):
@@ -698,6 +773,16 @@ class BarrierTest(unittest.TestCase):
         self.assertTrue(b.proc.stdout.closed and b.proc.stderr.closed)
 
 
+    def test_kill_after_reap_is_noop(self):
+        """거둔 뒤에는 pgid 가 재사용될 수 있다. kill 은 아무것도 하지 않는다."""
+        b = launch.Barrier([sys.executable, "-c", "pass"])
+        b.go(timeout=30)
+        self.assertIsNotNone(b.proc.returncode)
+        with mock.patch.object(launch.os, "killpg") as killpg, mock.patch.object(b.proc, "kill") as kill:
+            b.kill()
+        killpg.assert_not_called()
+        kill.assert_not_called()
+
     def test_kill_reaches_group_of_zombie_leader(self):
         """자식(그룹 리더)이 거두기 전 좀비가 되고 자손만 남았다. macOS 의 getpgid 는 좀비에 ESRCH 를 내지만
         killpg 는 그룹에 닿는다. kill 은 그룹을 늘 죽인다."""
@@ -707,12 +792,16 @@ class BarrierTest(unittest.TestCase):
         b = launch.Barrier([sys.executable, "-c", prog])
         b.send()
         gpid = int(b.proc.stdout.readline())
-        self.addCleanup(lambda: procs.alive(gpid, None) and os.kill(gpid, 9))
+        gstarted = procs.start_time(gpid)
+        self.assertTrue(gstarted)
+        self.addCleanup(lambda: procs.alive(gpid, gstarted) and os.kill(gpid, 9))  # 같은 시작 시각일 때만(우리 것)
         for _ in range(250):  # 자식이 끝나 좀비가 될 때까지(거두지 않는다)
             state_ = procs._ps_state(b.pid)
             if state_ and state_[0].startswith("Z"):
                 break
             __import__("time").sleep(0.02)
+        else:
+            self.fail("5초 안에 자식이 좀비가 되지 않았다")
         b.kill()
         self.assertIsNotNone(b.proc.returncode)
         for _ in range(100):
