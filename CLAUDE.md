@@ -18,10 +18,14 @@ Claude 가 만든 산출물은 Codex 가 검증한다. 다음 네 시점에 반�
 
 | 시점 | 대상 | 명령 |
 |---|---|---|
-| 설계 문서 작성·자체 검토 뒤, 사용자 검토 전 | 설계 문서 | `codex exec --sandbox read-only -o .codex-reviews/<이름>.md "<프롬프트>"` |
+| 설계 문서 작성·자체 검토 뒤, 사용자 검토 전 | 설계 문서 | `scripts/codex-review.sh doc <이름> <프롬프트 파일>` |
 | 구현 계획 작성 뒤, 실행 전 | 계획 문서 | 위와 같다 |
-| 태스크 커밋마다 | 그 커밋 | `codex review --commit <sha>` |
-| main 병합 전 | 브랜치 전체 | `codex review --base main` |
+| 태스크 커밋마다 | 그 커밋 | `scripts/codex-review.sh commit <sha>` |
+| main 병합 전 | 브랜치 전체 | `scripts/codex-review.sh base main` |
+
+- 리뷰는 셸 백그라운드가 아니라 Herdr pane 에서 돌린다. 스크립트가 호출한 터미널과 같은 탭에 pane 을 띄우고 터미널 주소를 출력한다. 끝나면 pane 이 닫힌다.
+- 리뷰가 끝나기를 붙잡고 기다리지 않는다. `hc wait <주소> --timeout 3600` 을 백그라운드로 걸어 끝났다는 알림만 받고, 그동안 다른 일을 한다.
+- 결과는 `.codex-reviews/<이름>.md`, 전체 출력은 `.log`, 종료 코드는 `.exit` 에 남는다. 커밋 리뷰 이름은 `commit-<sha 7자>`, 브랜치 리뷰는 `base-<브랜치>` 다.
 
 - 문서 리뷰 프롬프트는 문서 경로와 함께 다음을 묻는다: 잘못된 가정, 빠진 실패 경로, 문서 안의 모순, 구현할 수 없는 요구, 범위 과잉. 심각도(P0–P3)와 근거 위치를 붙이게 한다.
 - 결과는 `.codex-reviews/` 에 남긴다(커밋하지 않는다).
