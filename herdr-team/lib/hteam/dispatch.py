@@ -1,4 +1,4 @@
-"""horch Task 실행과 복구(설계 5.4, 6.1): 시작 장벽, 제목(실행 키)으로 찾기, 같은 Task 다시 띄우기.
+"""horch Task 실행·복구·정리(설계 5.4, 6.1, 6.4): 시작 장벽, 제목(실행 키)으로 찾기, 같은 Task 다시 띄우기, 정리(cleanup).
 
 실행 기록(slot)은 상태 파일 안의 dict 다(작업: rounds[-1].work, 리뷰: rounds[-1].reviews[i]).
 필드: title(실행 키), horch_task, dispatch, launched(시작 장벽 자식 {pid, started}), error, canceled, cleaned.
@@ -107,8 +107,17 @@ def owned(p, tid: str, pick, expect=None, after_save=None) -> Iterator[dict]:
 
 def left_running(exc: HteamError, info: dict) -> HteamError:
     """horch 워커가 이미 떴는데 실행 권한을 잃었다. 기록하지 않고(working 도 아님) 정리는 fix·drop 에 맡긴다.
-    fix·drop 은 기록된 horch Task, 없으면 실행 키(제목)의 모든 Dispatch 를 horch 상태로 골라 정리한다."""
-    exc.hint = "horch 워커가 이미 떴지만 working 으로 두지 않았다. 진행 중인 fix·drop 이 horch 상태로 그 Dispatch 를 정리한다"
+
+    fix·drop 은 기록된 horch Task, 없으면 실행 키(제목)의 모든 Dispatch 를 horch 상태로 골라 정리한다. 이 실행자가
+    살아 있는 동안 그 fix·drop 은 launching 으로 멈추고 마지막 전이(새 라운드·dropped)를 쓰지 않는다(tasks._closing).
+    그래서 태스크가 닫힌 채(done·dropped) 이 오류가 나는 일은 hteam 밖에서 상태를 바꾼 경우뿐이다. 그때는 직접 정리한다."""
+    if exc.code == "task_closed":
+        did = info.get("dispatch") or info.get("task")
+        exc.hint = (f"horch 워커({did})가 이미 떴지만 태스크가 이미 닫혀 기록하지 않았다. horch worker-abandon --kill 과 "
+                    "worker-release 로 직접 정리한다")
+    else:
+        exc.hint = ("horch 워커가 이미 떴지만 working 으로 두지 않았다. 실행 키를 취소한 fix·drop 을 다시 부르면 horch "
+                    "상태로 그 Dispatch 를 찾아 정리한다")
     exc.data = {**exc.data, "horch": info}
     return exc
 
@@ -198,3 +207,48 @@ def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str |
 
 def row_by_id(rows: list[dict], did: str | None) -> dict | None:
     return next((r for r in rows if r["id"] == did), None) if did else None
+
+
+def slot_row(rows: list[dict], slot: dict) -> dict | None:
+    """실행 기록의 현재 horch Dispatch: 기록된 Task 의 최신 시도, Task 가 없으면 실행 키(제목)로 찾은 것
+    (기록 전에 죽은 실행자가 띄운 것), 그것도 없으면 기록된 Dispatch."""
+    if slot.get("horch_task"):
+        return latest_for_task(rows, slot["horch_task"])
+    if slot.get("launched"):
+        return find_by_title(rows, slot["title"])[0]
+    return row_by_id(rows, slot.get("dispatch"))
+
+
+def slot_rows(rows: list[dict], slot: dict) -> list[dict]:
+    """실행 기록의 모든 horch Dispatch(정리 대상 고르기, 설계 6.4): 기록된 Task 의 모든 시도, Task 가 기록되지 않았으면
+    그 실행 키(제목)의 모든 Task 의 시도. 둘 다 없으면 horch 를 실행한 적이 없다(시작 장벽)."""
+    if slot.get("horch_task"):
+        return [r for r in rows if r.get("task") == slot["horch_task"]]
+    if slot.get("launched"):
+        return [r for r in rows if r.get("title") == slot["title"]]
+    return []
+
+
+CLEANABLE = ("active", "settled", "retained", "abandoned")
+
+
+def cleanup(h, did: str, *, kill: bool) -> dict:
+    """Dispatch 정리(설계 6.4): settled·retained·abandoned 는 release, active 는 kill 이면 abandon --kill 뒤 release.
+
+    launch_failed 는 건드리지 않는다(horch 가 가드가 거부한 터미널을 정리한다). launching 이면 exit 3 launching,
+    active 이고 kill 이 아니면 exit 3 worker_active. 상태는 이 호출에서 새로 묻는다."""
+    row = row_by_id(h.workers(), did)
+    if row is None:
+        return {"dispatch": did, "before": None, "state": None, "outcome": None}
+    before = s = row["state"]
+    if s == "launching":
+        raise HteamError("launching", f"Dispatch {did} 가 아직 launching 이다", CONFLICT, "잠시 뒤 다시 한다")
+    if s == "active":
+        if not kill:
+            raise HteamError("worker_active", f"Dispatch {did} 가 아직 active 다", CONFLICT, "끝내려면 --force")
+        h.ok("worker-abandon", "--dispatch", did, "--kill")
+        s = "abandoned"
+    if s in ("settled", "retained", "abandoned"):
+        h.ok("worker-release", "--dispatch", did)
+        s = "released"
+    return {"dispatch": did, "before": before, "state": s, "outcome": row.get("outcome")}

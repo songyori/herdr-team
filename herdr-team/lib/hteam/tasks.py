@@ -1,12 +1,16 @@
 """작업 라운드(설계 5.4·6.4): start, start-ready, fix, accept, drop."""
 from __future__ import annotations
 
+import contextlib
+import os
+from typing import Iterator
+
 from . import compose, config, dispatch, gitio, plan, procs, roles, specs, state
 from .errors import CONFLICT, FAIL, USAGE, HteamError
 from .globs import any_overlap, within
 from .horch import Horch
 from .paths import find_project
-from .util import write_atomic
+from .util import die_at, write_atomic
 
 
 def work_slot(st: dict) -> dict:
@@ -263,6 +267,216 @@ def start_ready(p) -> dict:
     return {"started": started, "waiting": waiting}
 
 
+FIX_FROM = ("changes", "launch_failed", "working", "awaiting_user")
+# 판정 전 라운드: 이 라운드로 Dispatch 를 띄울 수 있다(start 복구, review, review-finish 자동 재시도, review --retry)
+IN_FLIGHT = frozenset({"launch_failed", "working", "reviewing"})
+
+
+def _slots(st: dict) -> list[dict]:
+    """모든 라운드의 실행 기록(작업, 리뷰 시도)."""
+    return [s for rd in st.get("rounds", []) for s in (rd["work"], *rd["reviews"])]
+
+
+def _round_targets(h, st: dict, *, kill: bool) -> dict[str, list[str]]:
+    """정리할 Dispatch: {실행 키: [Dispatch, …]}. 모든 라운드의 모든 실행 기록(작업·리뷰 시도)을 본다.
+
+    고르는 기준은 horch 의 실제 상태다(cleaned 표시가 아니다): 기록된 horch Task 의 모든 시도, Task 가 기록되지 않았으면
+    그 실행 키(제목)의 모든 Task 의 시도(dispatch.slot_rows) 가운데 active·settled·retained·abandoned. 그래서 앞선
+    fix·drop 이 멈춘 뒤 다시 불러도, 같은 Task 를 다시 띄워 남은 이전 시도가 있어도 빠짐없이 정리한다.
+    launch_failed 는 건드리지 않는다. 실행자가 살아 있거나 launching 이면 exit 3 launching, kill 없는 active 는
+    exit 3 worker_active."""
+    slots = _slots(st)
+    rows = h.workers() if slots else []
+    targets: dict[str, list[str]] = {}
+    for slot in slots:
+        if dispatch.busy(st, slot):
+            raise HteamError("launching", f"{slot['title']} 를 띄우는 실행자가 아직 살아 있다", CONFLICT, "나중에 다시 한다")
+        for row in dispatch.slot_rows(rows, slot):
+            did = row["id"]
+            if row["state"] == "launching":
+                raise HteamError("launching", f"Dispatch {did} 가 아직 launching 이다", CONFLICT, "나중에 다시 한다",
+                                 data={"dispatch": did})
+            if row["state"] == "active" and not kill:
+                raise HteamError("worker_active", f"Dispatch {did}({slot['title']}) 가 아직 active 다", CONFLICT,
+                                 "워커를 끝내고 버리려면 --force", data={"dispatch": did})
+            if row["state"] in dispatch.CLEANABLE:
+                targets.setdefault(slot["title"], []).append(did)
+    return targets
+
+
+def _release(p, h, tid: str, targets: dict[str, list[str]], *, kill: bool) -> list[dict]:
+    """대상을 정리한다. 한 실행 기록의 Dispatch 를 모두 정리하면 그 기록에 cleaned 를 쓴다(기록일 뿐 대상 선택에는
+    쓰지 않는다). 실패하면 예외(다시 부르면 horch 상태로 남은 것을 다시 고른다)."""
+    released = []
+    for title, dids in targets.items():
+        released += [dispatch.cleanup(h, did, kill=kill) for did in dids]
+        with state.edit(p, tid) as cur:
+            for slot in _slots(cur):
+                if slot["title"] == title:
+                    slot["cleaned"] = True
+    return released
+
+
+def _cancel_open(st: dict) -> None:
+    """현재 라운드의 끝나지 않은 실행 키와 리뷰 시도를 canceled 로(이후 start·review 가 복구하지 않는다).
+
+    판정 전 라운드(launch_failed·working·reviewing)면 작업 실행 키도 취소한다. reviewing 은 끝나지 않은 시도가 없어도
+    (review_failed·review_tampered 뒤) 라운드에 취소를 남겨, 정리 중 멈춘 drop 뒤 review --retry 가 새 리뷰어를 띄우지
+    않게 한다(review 는 취소가 있는 라운드에 exit 3 round_canceled)."""
+    rd = state.current_round(st)
+    if not rd:
+        return
+    if st["status"] in IN_FLIGHT:
+        rd["work"]["canceled"] = True
+    for att in rd["reviews"]:
+        if att.get("result") is None:
+            att["canceled"] = True
+
+
+def _changed(tid: str, seen: dict, cur: dict) -> HteamError:
+    if cur["status"] in state.CLOSED:
+        return state.closed_error(cur)
+    return HteamError("state_changed", f"{tid} 가 정리하는 사이 바뀌었다({seen['status']} r{seen['round']} → "
+                      f"{cur['status']} r{cur['round']})", CONFLICT,
+                      "다른 명령이 이 태스크를 바꿨다. hteam status 로 확인한 뒤 다시 한다", data={"status": cur["status"]})
+
+
+def _launcher_alive(st: dict) -> bool:
+    """이 프로세스가 아닌 실행자(start·fix·review 가 Dispatch 를 띄우는 중)가 아직 살아 있나."""
+    launcher = st.get("launcher") or {}
+    return launcher.get("pid") != os.getpid() and procs.record_alive(launcher)
+
+
+def _close_round(p, h, tid: str, *, kill: bool, check=None, seen: dict | None = None) -> list[dict]:
+    """fix·drop 이 공유하는 순서 규칙(설계 6.4):
+    1) 바꾸기 전에 거부할 것을 확인한다(대상 미리 고르기: launching, kill 없는 active. check).
+    2) 끝나지 않은 실행 키·리뷰 시도의 취소를 먼저 저장한다(이후 start·review 가 그 기록으로 Dispatch 를 띄우지 않는다).
+    3) 취소 뒤 대상을 다시 골라 정리한다. 그 사이 상태·라운드가 바뀌었으면(다른 명령) 정리하지 않고 exit 3.
+    호출자는 이것이 끝난 뒤에만 _closing 으로 마지막 전이(dropped 또는 새 라운드)를 쓴다. 어디서 멈춰도 같은 명령을 다시
+    부르면 이어 한다.
+
+    check(st) 는 취소를 저장하는 태스크 잠금 안에서 먼저 부른다(거부하면 아무것도 바꾸지 않는다). seen 에 취소 때 본
+    상태·라운드를 채운다. 진행 중인 review-finish 와 겹치지 않게 finish 잠금 안에서 한다. 잠금 순서(프로젝트 → finish →
+    태스크)를 지키려고 프로젝트 잠금은 쥐지 않는다."""
+    seen = {} if seen is None else seen
+    with state.finish_lock(p, tid):
+        _round_targets(h, state.require(p, tid), kill=kill)
+        with state.edit(p, tid) as cur:
+            if cur["status"] in state.CLOSED:
+                raise state.closed_error(cur)
+            if check is not None:
+                check(cur)
+            _cancel_open(cur)
+            seen.update(status=cur["status"], round=cur["round"])
+        die_at("after_cancel")
+        cur = state.require(p, tid)
+        if (cur["status"], cur["round"]) != (seen["status"], seen["round"]):
+            raise _changed(tid, seen, cur)  # 취소 전에 다른 명령이 라운드를 쓰고 띄운 워커는 이 명령의 대상이 아니다
+        return _release(p, h, tid, _round_targets(h, cur, kill=kill), kill=kill)
+
+
+@contextlib.contextmanager
+def _closing(p, tid: str, seen: dict) -> Iterator[dict]:
+    """마지막 전이(새 라운드·dropped, 설계 6.4 4)를 쓸 상태를 내준다. 프로젝트 잠금 → 태스크 잠금 아래에서 취소 때 본
+    상태·라운드 그대로이고 살아 있는 실행자가 없는지 다시 본다(아니면 exit 3). 그래서 그 사이 start·fix 가 라운드를 쓰고
+    워커를 띄우는 중이면, 정리 대상으로 고른 적 없는 그 워커 위에 dropped·새 라운드를 쓰지 않는다."""
+    with state.project_lock(p):
+        with state.edit(p, tid) as st:
+            if (st["status"], st["round"]) != (seen["status"], seen["round"]):
+                raise _changed(tid, seen, st)
+            if _launcher_alive(st):
+                raise HteamError("launching", f"{tid} 의 Dispatch 를 띄우는 실행자({st['launcher'].get('key')})가 아직 "
+                                 "살아 있다", CONFLICT, "끝난 뒤 같은 명령을 다시 한다")
+            yield st
+
+
+def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: bool, cli: dict) -> dict:
+    """새 라운드(설계 6.4). 입력(사양·owns·잠금)을 먼저 검사하고, 이전 라운드들의 작업·리뷰 Dispatch 를 모두 정리한
+    뒤에만 새 라운드를 쓰고 띄운다(이전 워커와 새 워커가 같은 폴더에서 함께 일하지 않게). 일하는 중인 워커는
+    abandon --kill 뒤 release."""
+    cfg = config.load(p)
+    spec = specs.check(p, cfg, tid)
+    choice = config.resolve(cfg, spec.role, spec.front, cli)
+    if supplement is not None:
+        state.check_id(supplement)
+        if not p.spec_path(supplement).is_file():
+            raise HteamError("unknown_task", f"--supplement {supplement} 사양이 없다", USAGE)
+    h = Horch(p.horch_home)
+
+    def allowed(st: dict) -> None:
+        if st["status"] in state.CLOSED:
+            raise state.closed_error(st)
+        if st["status"] not in FIX_FROM:
+            raise HteamError("bad_state", f"{tid} 는 {st['status']} 다(fix 는 {', '.join(FIX_FROM)} 에서)", CONFLICT,
+                             data={"status": st["status"]})
+        if st["status"] != "awaiting_user" and st["round"] >= cfg.max_rounds and not force_round:
+            raise HteamError("max_rounds", f"{tid} 는 이미 {st['round']} 라운드다(상한 {cfg.max_rounds})", CONFLICT,
+                             "사용자가 계속하라고 하면 --force-round(한 라운드만 넘긴다)",
+                             data={"round": st["round"], "max_rounds": cfg.max_rounds})
+
+    allowed(state.require(p, tid))
+    owns = checked_owns(cfg, spec)  # 입력 검사(owns·잠금)는 이전 워커를 정리하기 전에 한다
+    _check_locks(p, cfg, spec, owns)
+    seen: dict = {}
+    _close_round(p, h, tid, kill=True, check=allowed, seen=seen)
+    with _closing(p, tid, seen) as st:
+        _check_locks(p, cfg, spec, owns)
+        old = st["status"]
+        st["role"] = spec.role  # 첫 실행과 같이 워커가 뜨는 사양의 직무로 맞춘다. planner 하나 검사가 저장된 직무를 본다
+        rd = _new_round(st, st["round"] + 1, gitio.head(p.root), choice, note=note, supplement=supplement)
+        text = compose.work_spec(p, cfg, spec, rd, owns)
+        st["rounds"].append(rd)
+        st["round"] = rd["round"]
+        st["owns"] = owns
+        st["note"] = note
+        _begin(p, st, rd, text, "fix", previous=old, force_round=force_round)
+    return run_work(p, cfg, h, tid)
+
+
+def accept(p, tid: str) -> dict:
+    """approved → done(승인 직무면 awaiting_user), awaiting_user → done(설계 6.4). 작업 Dispatch 를 release 한다
+    (같은 horch Task 의 이전 시도도). 정리하지 못하면 경고로 남기고 cleaned 는 쓰지 않는다. 전이는 한다."""
+    cfg = config.load(p)
+    st = state.require(p, tid)
+    if st["status"] in state.CLOSED:
+        raise state.closed_error(st)
+    if st["status"] not in ("approved", "awaiting_user"):
+        raise HteamError("bad_state", f"{tid} 는 {st['status']} 다(accept 는 approved·awaiting_user 에서)", CONFLICT,
+                         data={"status": st["status"]})
+    to = "awaiting_user" if st["status"] == "approved" and cfg.is_approval(st["role"]) else "done"
+    warnings: list[str] = []
+    slot = work_slot(st)
+    cleaned = bool(slot.get("cleaned"))
+    if not cleaned:
+        try:
+            h = Horch(p.horch_home)
+            for row in dispatch.slot_rows(h.workers(), slot):
+                if row["state"] not in ("launch_failed", "released"):  # launching·active 는 cleanup 이 거부한다
+                    dispatch.cleanup(h, row["id"], kill=False)
+            cleaned = True
+        except HteamError as exc:
+            warnings.append(f"작업 Dispatch({slot['title']})를 정리하지 못했다: {exc.message}")
+    with state.edit(p, tid, expect={st["status"]}) as cur:
+        work_slot(cur)["cleaned"] = cleaned
+        state.move(cur, to, "accept")
+    return {"task": tid, "status": to, "warnings": warnings}
+
+
+def drop(p, tid: str, force: bool) -> dict:
+    """dropped 로(설계 6.4). 끝나지 않은 실행 키와 리뷰 시도는 canceled. active 는 --force 로만 abandon --kill 뒤
+    release. 모든 대상의 정리를 확인한 뒤, 취소 때 본 상태·라운드 그대로일 때만 dropped 를 쓴다(pending 이면 그 사이
+    start 가 라운드를 쓰지 않았을 때만)."""
+    h = Horch(p.horch_home)
+    st = state.require(p, tid)
+    if st["status"] in state.CLOSED:
+        raise state.closed_error(st)
+    seen: dict = {}
+    released = _close_round(p, h, tid, kill=force, seen=seen)
+    with _closing(p, tid, seen) as cur:
+        state.move(cur, "dropped", "drop", force=force)
+    return {"task": tid, "status": "dropped", "released": released}
+
+
 def _cli(args) -> dict:
     return {k: getattr(args, k) for k in ("model", "effort", "worker") if getattr(args, k, None)}
 
@@ -279,6 +493,24 @@ def _cmd_start_ready(args) -> dict:
     return start_ready(p)
 
 
+def _cmd_fix(args) -> dict:
+    p = find_project(args.root)
+    roles.require_coordinator(p)
+    return fix(p, args.task, note=args.note, supplement=args.supplement, force_round=args.force_round, cli=_cli(args))
+
+
+def _cmd_accept(args) -> dict:
+    p = find_project(args.root)
+    roles.require_coordinator(p)
+    return accept(p, args.task)
+
+
+def _cmd_drop(args) -> dict:
+    p = find_project(args.root)
+    roles.require_coordinator(p)
+    return drop(p, args.task, args.force)
+
+
 def _overrides(s) -> None:
     s.add_argument("--model")
     s.add_argument("--effort")
@@ -291,3 +523,17 @@ def register(sub) -> None:
     _overrides(s)
     s.set_defaults(func=_cmd_start)
     sub.add_parser("start-ready").set_defaults(func=_cmd_start_ready)
+    s = sub.add_parser("fix")
+    s.add_argument("task")
+    s.add_argument("--note")
+    s.add_argument("--supplement", help="디렉터 보강 태스크 ID(설계 11.4)")
+    s.add_argument("--force-round", action="store_true")
+    _overrides(s)
+    s.set_defaults(func=_cmd_fix)
+    s = sub.add_parser("accept")
+    s.add_argument("task")
+    s.set_defaults(func=_cmd_accept)
+    s = sub.add_parser("drop")
+    s.add_argument("task")
+    s.add_argument("--force", action="store_true")
+    s.set_defaults(func=_cmd_drop)

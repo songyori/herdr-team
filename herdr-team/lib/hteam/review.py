@@ -5,7 +5,8 @@ git 출력(최상위 기준)은 gitio.from_top 으로 바꾸고, 프로젝트 �
 제외 경로에도 들지 않는다: 사전 검사는 그것을 owns 밖으로 지적하고, 변조 검사는 경고로만 남긴다(설계 6.3 3).
 blob 에는 gitio.to_top 으로 최상위 기준 경로를 넘긴다.
 
-잠금 순서: review-finish 잠금(state/tasks/T-xxx.finish.lock) → 태스크 잠금. 프로젝트 잠금은 쓰지 않는다.
+잠금 순서: finish 잠금(state.finish_lock, state/tasks/T-xxx.finish.lock) → 태스크 잠금. 프로젝트 잠금은 쓰지 않는다.
+fix·drop 도 취소·정리하는 동안 finish 잠금을 잡는다(설계 6.4).
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from .errors import CONFLICT, FAIL, HteamError
 from .globs import matches_any
 from .horch import Horch
 from .paths import SHIM, find_project, review_rel
-from .util import die_at, flock, now, write_atomic
+from .util import die_at, now, write_atomic
 
 AUTO_ATTEMPTS = 2  # 라운드당 자동 시도(설계 6.3 6)
 VERDICTS = ("APPROVE", "REQUEST_CHANGES")
@@ -443,10 +444,9 @@ def _warning_body(warnings: list[str]) -> str | None:
 
 def review_finish(p, tid: str) -> dict:
     """같은 태스크의 review-finish 는 한 번에 하나만 돈다. 겹치면 옛 시도 정보를 쥔 호출이 이미 옮긴 파일을 못 찾아
-    재시도를 띄우는 사이 다른 호출이 승인으로 옮긴다. 잠금은 태스크 잠금보다 먼저 잡는다."""
-    state.check_id(tid)
-    p.ensure_state()
-    with flock(p.task_states / f"{tid}.finish.lock"):
+    재시도를 띄우는 사이 다른 호출이 승인으로 옮긴다. 잠금은 태스크 잠금보다 먼저 잡는다(fix·drop 의 취소·정리도 같은
+    잠금을 잡으므로 이 호출이 끝난 뒤에 취소한다)."""
+    with state.finish_lock(p, tid):
         return _finish(p, tid)
 
 
