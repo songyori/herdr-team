@@ -543,7 +543,7 @@ UI 기반 태스크가 `tokens.json` 을 CSS 변수·테마로 옮기고 공통 
 ### 11.4 보강과 일괄 승인
 
 - 디자이너 태스크가 모두 `awaiting_user` 가 되면 코디네이터가 최신 라운드 보고서의 추가 제안을 모아 디렉터 보강 태스크 하나를 만든다(owns `docs/design/system/**`, `docs/design/direction.md`). 끝나면 제안한 화면마다 `fix --supplement <보강 태스크>`, UI 기반이 이미 `done` 이면 "토큰 갱신" 개발 태스크를 더한다.
-- `hteam design-review`: 승인 직무 태스크가 모두 `awaiting_user` 이고 진행 중·시작 직전 승인 태스크가 없을 때 outbox 에 `approval` 항목 하나를 쓴다. `context` 에 태스크마다 한 줄과 링크(보고서의 마지막 claude.ai 아티팩트 URL, `design_system_url` 은 빼고). 선택지 "모두 승인" / "수정 요청". 같은 태스크·라운드 묶음을 이미 물었으면 exit 3. 기록은 `state/design-review.json`.
+- `hteam design-review`: `awaiting_user` 인 승인 직무 태스크가 하나 이상 있고, 진행 중(`working`·`reviewing`·`approved`·`changes`·`launch_failed`)이거나 지금 바로 시작할 수 있는(의존 충족·잠금 비어 있음) 승인 직무 태스크가 없을 때, 그 순간 `awaiting_user` 인 승인 태스크 전부를 한 묶음으로 outbox 에 `approval` 항목 하나로 쓴다. 승인 태스크 사이에 비승인 태스크가 끼어 있으면(승인 → 비승인 → 승인) 앞 묶음을 먼저 묻고, 뒤 승인 태스크는 다음 묶음이 된다(모든 승인 태스크가 대기 상태가 되기를 기다리면 서로 기다리다 멈춘다). `context` 에 태스크마다 한 줄과 링크(보고서의 마지막 claude.ai 아티팩트 URL, `design_system_url` 은 빼고). 선택지 "모두 승인" / "수정 요청". 같은 태스크·라운드 묶음을 이미 물었으면 exit 3. 기록은 `state/design-review.json`.
 - 코디네이터가 답을 해석한다: 승인이면 `accept`(`awaiting_user` → `done`), 아니면 해당 태스크 `fix --note`, 그 태스크에 의존하는 승인 태스크도 이어서 `fix`.
 
 ### 11.5 AI 티 금지 목록 (`design-rules.md`)
