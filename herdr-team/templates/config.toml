@@ -1,6 +1,6 @@
 # herdr-team 설정(설계 4장). 이 파일이 있으면 herdr-team 프로젝트다.
 max_parallel = 4          # start-ready 가 동시에 둘 working 태스크 수
-user_approval_roles = []  # 리뷰 승인 뒤 사용자 일괄 승인을 기다릴 직무(2단계에서 designer)
+user_approval_roles = ["designer"]  # 리뷰 승인 뒤 사용자 일괄 승인(hteam design-review)을 기다릴 직무
 
 [coordinator]
 model = "opus"
@@ -33,6 +33,15 @@ claude_effort = "xhigh"
 codex_model = "gpt-6.1-sol"
 codex_effort = "high"
 owns = ["docs/planning/**"]
+
+# 화면 디자인. claude 만 된다(설계 4.2). 승인 직무라 리뷰 승인 뒤 사용자 일괄 승인을 기다린다.
+[roles.designer]
+title = "디자인"
+claude_model = "sonnet"
+claude_effort = "xhigh"
+codex_model = "gpt-6.1-sol"
+codex_effort = "medium"
+owns = ["docs/design/**", "assets/**"]
 
 [roles.developer]
 title = "개발"

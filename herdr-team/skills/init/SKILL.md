@@ -35,7 +35,7 @@ argument-hint: "<프로젝트 설명>"
 |---|---|---|---|
 
 - 직무별 owns: `.herdr-team/config.toml` 의 `[roles.*].owns`. 예: Next.js 면 developer `["src/**", "app/**", "package.json"]`.
-- 추가 직무: 기본 직무(planner·developer·tester)로 부족할 때만. `.herdr-team/roles/<직무>.md`(기본 직무 문서와 같은 절 구성)와 config 항목을 같이 만든다.
+- 직무: 기본 직무는 planner·designer·developer·tester 다. 화면이 없는 프로젝트(CLI·라이브러리 등)면 `[roles.designer]` 와 `user_approval_roles` 의 `"designer"` 를 빼고 `.herdr-team/roles/designer.md` 를 지우자고 제안한다. 추가 직무는 기본 직무로 부족할 때만 둔다. `.herdr-team/roles/<직무>.md`(기본 직무 문서와 같은 절 구성)와 config 항목을 같이 만든다.
 - 필요한 도구(Chrome DevTools MCP 등). 이미 설치된 것은 넣지 않는다. 넣는다면 프로젝트 범위(`.mcp.json`)로만 넣는다.
 - Claude 권한 모드(`[agents.claude].args`): 워커는 사람 없이 돌므로 `--permission-mode=bypassPermissions` 가 필요할 수 있다. `[agents.claude].args` 는 워커·리뷰어뿐 아니라 코디네이터에도 붙는다. 넣으면 워커·리뷰어·코디네이터가 확인 없이 사용자의 git·클라우드 자격 증명과 셸 환경을 그대로 쓴다는 위험을 표에 적는다. 사용자가 승인했을 때만 넣는다.
 - AskUserQuestion 한 번으로 승인받는다. 선택지 "전부 승인 (추천)", "바꾸지 않고 진행". 일부 제외는 Other 로 받는다.

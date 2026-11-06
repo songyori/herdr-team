@@ -533,7 +533,7 @@ orca-team 0.3 의 인터뷰를 옮긴다. 직무 문서 `roles/planner.md` 가 �
 ### 11.2 디자인 (designer)
 
 - 화면마다 태스크 하나. owns `docs/design/screens/<화면>/**`, `assets/<화면>/**`.
-- 계정 기본이 아니라 프로젝트 디자인 시스템으로 Claude Design 화면을 만든다. 화면 원본을 `docs/design/screens/<화면>/` 에 둔다(Codex 리뷰가 읽는다).
+- 계정 기본이 아니라 프로젝트 디자인 시스템으로 Claude Design 화면을 만든다. 화면 원본을 `docs/design/screens/<화면>/` 에 둔다(Codex 리뷰가 읽는다). 2단계 기본형은 원본(`index.html`·`notes.md`)을 만들고, Artifact 도구를 쓸 수 있으면 같은 화면을 claude.ai 아티팩트로 올려 보고서에 URL 을 적는다. 디자인 시스템·이미지·금지 목록 검사는 3단계다.
 - 토큰을 새로 만들지 않는다. 모자란 값은 가장 가까운 토큰을 쓰고 보고서의 `### 시스템 추가 제안` 에 적는다.
 - 래스터 에셋은 `hteam image`(12장)로 만들고 직접 보고 확인한 뒤 커밋한다.
 - 보고서: 아티팩트 URL, 화면 목록, 시스템 URL, 추가 제안, 금지 목록 점검, 이미지 프롬프트와 수.

@@ -100,7 +100,8 @@ class ScaffoldTest(TeamCase):
         code, out = self.scaffold()
         self.assertEqual(code, 0, out)
         for rel in (".herdr-team/config.toml", ".herdr-team/coordinator.md", ".herdr-team/roles/planner.md",
-                    ".herdr-team/roles/developer.md", ".herdr-team/roles/tester.md", ".herdr-team/bin/hteam",
+                    ".herdr-team/roles/designer.md", ".herdr-team/roles/developer.md", ".herdr-team/roles/tester.md",
+                    ".herdr-team/bin/hteam",
                     ".herdr-team/project.md", "CLAUDE.md", "AGENTS.md", ".gitignore"):
             self.assertIn(rel, out["created"])
         claude = (self.proj / "CLAUDE.md").read_text()
@@ -400,14 +401,35 @@ class TemplateContractTest(unittest.TestCase):
         self.assertIn("5단계가 어떻게 끝나도(exit 1·3·4 포함) 6단계로 간다. setup-mode 를 켠 채 두지 않는다.", init)
         self.assertIn("`[agents.claude].args` 는 워커·리뷰어뿐 아니라 코디네이터에도 붙는다", init)
 
-    def test_phase1_roles_only(self):
+    def test_template_roles(self):
         import tomllib
+        from hteam import plan
         raw = tomllib.loads((ROOT / "templates/config.toml").read_text(encoding="utf-8"))
-        self.assertEqual(set(raw["roles"]), {"planner", "developer", "tester"})
-        self.assertEqual(raw["user_approval_roles"], [])
+        self.assertEqual(set(raw["roles"]), {"planner", "designer", "developer", "tester"})
+        self.assertEqual(raw["user_approval_roles"], ["designer"])
+        self.assertEqual(raw["roles"]["designer"]["owns"], ["docs/design/**", "assets/**"])
         self.assertEqual(config.validate(raw), [])
         self.assertEqual(sorted(p.name for p in (ROOT / "templates/roles").iterdir()),
-                         ["developer.md", "planner.md", "tester.md"])
+                         ["designer.md", "developer.md", "planner.md", "tester.md"])
+        designer = (ROOT / "templates/roles/designer.md").read_text(encoding="utf-8")
+        for needle in ("docs/design/screens/<화면>/index.html", "- 아티팩트: <claude.ai URL 또는 없음>",
+                       "사용자 일괄 승인", "코드(`src/`)"):
+            self.assertIn(needle, designer)
+        developer = (ROOT / "templates/roles/developer.md").read_text(encoding="utf-8")
+        self.assertIn("패키지는 임시 venv(또는 프로젝트의 격리 환경) 안에서만 설치한다. 전역·시스템 Python 에 설치하지 않고 "
+                      "`--user` 도 쓰지 않는다.", developer)
+
+        def task(key, role, owns, deps=()):
+            return {"key": key, "role": role, "title": f"{key} 제목", "owns": list(owns), "depends_on": list(deps),
+                    "target": "대상", "change": "바꿀 것", "constraints": "제약", "acceptance": ["확인 1"]}
+        # 템플릿 설정으로 화면마다 designer 태스크를 두고 개발이 그것에 의존하는 그래프가 plan check 를 통과한다
+        cfg = config.build(raw)
+        screens = [task("login-screen", "designer", ["docs/design/screens/login/**", "assets/login/**"]),
+                   task("list-screen", "designer", ["docs/design/screens/list/**", "assets/list/**"])]
+        app = task("app", "developer", ["src/**"], ["login-screen", "list-screen"])
+        self.assertEqual(plan.validate(cfg, screens + [app]), ([], [["login-screen", "list-screen"], ["app"]]))
+        chained = [screens[0], task("login-more", "designer", ["docs/design/screens/login/**"], ["login-screen"])]
+        self.assertTrue(any("승인 직무 태스크" in e for e in plan.validate(cfg, chained)[0]))
 
     def test_no_personal_paths_or_trust_all(self):
         import re

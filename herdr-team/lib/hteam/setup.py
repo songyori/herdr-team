@@ -25,6 +25,7 @@ FILES = {
     "config.toml": ".herdr-team/config.toml",
     "coordinator.md": ".herdr-team/coordinator.md",
     "roles/planner.md": ".herdr-team/roles/planner.md",
+    "roles/designer.md": ".herdr-team/roles/designer.md",
     "roles/developer.md": ".herdr-team/roles/developer.md",
     "roles/tester.md": ".herdr-team/roles/tester.md",
     "shim.py": ".herdr-team/bin/hteam",
