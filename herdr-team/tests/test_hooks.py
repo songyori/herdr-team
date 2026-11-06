@@ -1,15 +1,27 @@
 """Claude Code 훅(설계 9.4): 역할 판별과 캐시, PreToolUse 가드, Stop, SessionStart."""
+import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
+import time
 import unittest
+from pathlib import Path
 
 from tests.helpers import COORD, MAIN, NONCE, ROOT, TeamCase
 from hteam import state
 from hteam.paths import Project
 
 HOOK = ROOT / "hooks" / "hteam_hook.py"
+
+
+def load_hook():
+    """훅 스크립트를 모듈로 가져온다(순수 함수 시험용). hteam 모듈은 훅이 실제로 돌 때만 가져온다."""
+    spec = importlib.util.spec_from_file_location("hteam_hook_under_test", HOOK)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class HookCase(TeamCase):
@@ -44,6 +56,24 @@ class HookCase(TeamCase):
         code, out = self.hteam("start", tid)
         self.assertEqual(code, 0, out)
         return out["terminal"]
+
+    def hook_bg(self, event, payload, *, terminal=None, env=None):
+        e = dict(self.env, CLAUDE_PROJECT_DIR=str(self.proj))
+        if terminal:
+            e["HC_TERMINAL_ID"] = terminal
+        e.update(env or {})
+        proc = subprocess.Popen([sys.executable, str(HOOK), event], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, env=e)
+        proc.stdin.write(json.dumps({"session_id": "s1", "cwd": str(self.proj), **payload}))
+        proc.stdin.close()
+        proc.stdin = None  # communicate() 가 닫힌 stdin 을 flush 하지 않게(Python 3.11)
+        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        return proc
+
+    def worker(self):
+        """끝난 Dispatch 의 워커 터미널(hc 라벨 horch.dispatch): 역할 worker 를 빨리 만든다."""
+        self.add_terminal("t50", labels={"horch.dispatch": "dsp-old"})
+        return "t50"
 
     def cached(self, sid):
         path = self.state_dir / "sessions" / sid
@@ -174,6 +204,71 @@ class GuardTest(HookCase):
             out = self.hook("guard", {"tool_name": "Bash", "tool_input": {"command": cmd}}, terminal=MAIN)
             self.assertIsNone(out, cmd)
 
+    def test_main_bash_horch_only_when_executed(self):
+        """설계 9.4: 메인이 horch 를 직접 실행할 때만 거부한다. 인자·본문에 나오는 낱말은 막지 않는다."""
+        for cmd in ('.herdr-team/bin/hteam tell "horch 상태 봐 줘"', "ls herdr-orch/bin/horch",
+                    "grep -rn horch herdr-team/lib"):
+            out = self.hook("guard", {"tool_name": "Bash", "tool_input": {"command": cmd}}, terminal=MAIN)
+            self.assertIsNone(out, cmd)
+        for cmd in ('echo "$(horch status)"', "env X=1 horch status", 'bash -c "horch status"', "horch>/dev/null"):
+            out = self.hook("guard", {"tool_name": "Bash", "tool_input": {"command": cmd}}, terminal=MAIN)
+            self.assertEqual(self.decision(out), "deny", cmd)
+
+    def test_notebook_and_multiedit(self):
+        def tool(name, key, rel, **kw):
+            return self.decision(self.hook("guard", {"tool_name": name, "tool_input": {key: str(self.proj / rel)}}, **kw))
+        self.assertEqual(tool("NotebookEdit", "notebook_path", "src/a.ipynb", terminal=MAIN), "deny")
+        self.assertEqual(tool("NotebookEdit", "notebook_path", ".herdr-team/state/a.ipynb", coordinator=True), "deny")
+        self.assertIsNone(tool("NotebookEdit", "notebook_path", "docs/superpowers/a.ipynb", terminal=MAIN))
+        self.assertEqual(tool("MultiEdit", "file_path", "src/a.py", coordinator=True), "deny")
+        self.assertIsNone(tool("MultiEdit", "file_path", "CLAUDE.md", terminal=MAIN))
+
+    def ask_with_context(self, n):
+        text = f"질문 {n} 을 확정할까요?\n예: 확정이면 진행한다"
+        ctx = f"## 맥락 {n}\n" + f"질문 {n} 의 배경 설명이다. 앞 80자가 넘게 길다. " * 3
+        code, out = self.hteam("notify", "--type", "question", "--json", "-", stdin=json.dumps({
+            "question": text, "context": ctx,
+            "options": [{"label": "확정 (추천)", "description": "추천 사유: 빠진 것이 없다"},
+                        {"label": "수정", "description": "고칠 곳을 말한다"}]}))
+        self.assertEqual(code, 0, out)
+        return text, ctx
+
+    def test_context_already_shown_is_allowed(self):
+        text, ctx = self.ask_with_context(1)
+        transcript = self.tmp / "t.jsonl"
+        transcript.write_text(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": ctx}]}})
+                              + "\n")
+        out = self.hook("guard", {"tool_name": "AskUserQuestion", "transcript_path": str(transcript),
+                                  "tool_input": {"questions": [{"question": text}]}}, terminal=MAIN)
+        self.assertIsNone(out)
+        self.assertFalse((self.state_dir / "context-denied.json").exists())
+
+    def test_context_denied_updates_do_not_race(self):
+        """두 질문을 거의 함께 물어도 거부 기록이 사라지지 않는다(읽고 고쳐 쓰기를 잠금 안에서 한다)."""
+        texts = [self.ask_with_context(n)[0] for n in (1, 2)]
+        transcript = self.tmp / "t.jsonl"
+        transcript.write_text("")
+        self.hook("session-start", terminal=MAIN)  # 역할 캐시를 먼저 만든다
+        gate = self.tmp / "gate"
+
+        def ask(text, env=None):
+            return self.hook_bg("guard", {"tool_name": "AskUserQuestion", "transcript_path": str(transcript),
+                                          "tool_input": {"questions": [{"question": text}]}}, terminal=MAIN, env=env)
+        first = ask(texts[0], {"HTEAM_TEST_PAUSE_AT": "context_denied_read", "HTEAM_TEST_PAUSE_FILE": str(gate)})
+        deadline = time.monotonic() + 20
+        while not gate.with_name("gate.reached").exists():
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.05)
+        second = ask(texts[1])
+        time.sleep(1.5)  # 잠금이 없으면 이 사이에 둘째가 읽고 쓰고 끝난다
+        gate.touch()
+        for proc in (first, second):
+            out, err = proc.communicate(timeout=30)
+            self.assertEqual(proc.returncode, 0, err)
+            self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "deny")
+        ids = json.loads((self.state_dir / "context-denied.json").read_text())["ids"]
+        self.assertEqual(len(set(ids)), 2, ids)
+
     def test_worker_ask_hints(self):
         planner = self.worker_terminal("T-001", "planner")
         dev = self.worker_terminal("T-002", "developer")
@@ -229,6 +324,14 @@ class StopTest(HookCase):
             (self.state_dir / "watch.pid").write_text(json.dumps({"pid": pid, "started": "Thu Jan  1 00:00:00 2026"}))
             out = self.hook("stop", terminal=MAIN)
             self.assertEqual(out and out["decision"], "block", pid)
+
+    def test_setup_mode_or_missing_run_file_does_not_block(self):
+        (self.state_dir / "setup-mode").write_text("x")
+        self.assertIsNone(self.hook("stop", terminal=MAIN))  # 코디네이터가 살아 있고 watch 가 없어도
+        (self.state_dir / "setup-mode").unlink()
+        (self.state_dir / "run.json").unlink()
+        self.assertIsNone(self.hook("stop", terminal=MAIN))
+        self.assertEqual(self.hook_log(), "")
 
     def test_corrupt_run_file_does_not_block_stop(self):
         (self.state_dir / "run.json").write_text("[]")
@@ -287,6 +390,95 @@ class PathGuardTest(HookCase):
                 out = self.hook("guard", {"tool_name": "Write", "tool_input": {"file_path": raw}}, **kw)
                 self.assertEqual(self.decision(out), "deny", (raw, kw))
         self.assertEqual(self.hook_log(), "")  # 훅 오류가 아니라 판단이다
+
+    def test_setup_mode_still_denies_unresolvable(self):
+        (self.state_dir / "setup-mode").write_text("x")
+        self.assertIsNone(self.edit("src/app.py", terminal=MAIN))
+        out = self.hook("guard", {"tool_name": "Write", "tool_input": {"file_path": ""}}, terminal=MAIN)
+        self.assertEqual(self.decision(out), "deny")
+
+    def test_case_and_firmlink_spellings_are_inside(self):
+        """대소문자를 가리지 않는 파일 시스템(macOS 기본)이나 firmlink(/System/Volumes/Data) 경로로 적어도
+        같은 폴더면 프로젝트 안이다. 경로 글자가 아니라 폴더 동일성(st_dev, st_ino)으로 본다."""
+        spellings = []
+        upper = self.tmp / "PROJ"
+        if upper.exists() and os.path.samefile(upper, self.proj):
+            spellings.append(upper)
+        data = Path("/System/Volumes/Data" + str(self.proj))
+        if data.exists() and os.path.samefile(data, self.proj):
+            spellings.append(data)
+        if not spellings:
+            self.skipTest("대소문자를 가리는 파일 시스템이고 firmlink 도 없다")
+        worker = self.worker()
+        for root in spellings:
+            write = {"tool_name": "Write"}
+            for rel in ("src/app.py", ".herdr-team/state/run.json"):
+                out = self.hook("guard", {**write, "tool_input": {"file_path": str(root / rel)}}, terminal=MAIN)
+                self.assertEqual(self.decision(out), "deny", (root, rel))
+            out = self.hook("guard", {**write, "session_id": "w", "tool_input": {
+                "file_path": str(root / ".herdr-team/state/run.json")}}, terminal=worker)
+            self.assertEqual(self.decision(out), "deny", root)
+            out = self.hook("guard", {**write, "tool_input": {"file_path": str(root / ".herdr-team/tasks/T-001.md")}},
+                            coordinator=True)
+            self.assertIsNone(out, root)
+
+    def test_relative_and_home_paths(self):
+        """상대 경로는 훅 입력의 cwd 기준, `~` 는 홈으로 푼다."""
+        (self.proj / "docs" / "superpowers").mkdir(parents=True)
+        out = self.hook("guard", {"tool_name": "Write", "cwd": str(self.proj / "docs" / "superpowers"),
+                                  "tool_input": {"file_path": "../../src/x.py"}}, terminal=MAIN)
+        self.assertEqual(self.decision(out), "deny")
+        out = self.hook("guard", {"tool_name": "Write", "cwd": str(self.team),
+                                  "tool_input": {"file_path": "tasks/T-001.md"}}, coordinator=True)
+        self.assertIsNone(out)
+        out = self.hook("guard", {"tool_name": "Write", "session_id": "w",
+                                  "tool_input": {"file_path": "~/proj/.herdr-team/state/x"}},
+                        terminal=self.worker(), env={"HOME": str(self.tmp)})
+        self.assertEqual(self.decision(out), "deny")
+
+
+class HorchRuleTest(unittest.TestCase):
+    """메인 Bash 의 horch 직접 실행 판별(순수 함수). 설계 9.4 는 '직접 부르면' 거부한다."""
+
+    DENY = ("herdr-orch/bin/horch status", "python3 /x/bin/horch --home h check", "horch send", "horch",
+            'echo "$(horch status)"', "echo `horch status`", "env X=1 horch status", "X=1 horch status",
+            "sudo -u x horch status", "nice -n 5 horch status", '"herdr-orch/bin/horch" status',
+            'bash -c "horch status"', "sh -lc 'horch status'", 'eval "horch status"', "cd x && ./horch status",
+            "herdr-orch/bin/horch\tstatus", "horch>/dev/null", ">/dev/null horch status", "ls; horch status | jq .",
+            "(horch status)", "nohup horch watch &", "diff <(horch status) x", "echo a#b; horch status",
+            "ls\nhorch status", 'cat <<EOF\n$(horch status)\nEOF', 'hteam tell "unbalanced horch')
+    ALLOW = (".herdr-team/bin/hteam tell hi", "ls herdr-orch/", "echo horchestra", 'hteam tell "horch 상태 봐 줘"',
+             '.herdr-team/bin/hteam tell "check horch status"', "ls herdr-orch/bin/horch",
+             "grep -rn horch herdr-team/lib", "git log --grep horch", "cat herdr-orch/bin/horch",
+             "herdr-orch/bin/horch.py status", "echo '$(horch status)'", "hteam tell '`horch status` 결과를 봐 줘'",
+             "hteam answer q-1 \"don't use horch\"",
+             "hteam tell \"$(cat <<'EOF'\n`horch status` 결과를 봐 줘\nhorch status 는 메인이 부르지 않는다\nEOF\n)\"")
+
+    def test_rule(self):
+        calls = load_hook().calls_horch
+        self.assertEqual([c for c in self.DENY if not calls(c)], [])
+        self.assertEqual([c for c in self.ALLOW if calls(c)], [])
+
+
+class HookImportTest(TeamCase):
+    def test_import_failure_is_logged_and_allowed(self):
+        """hteam 모듈은 herdr-team 프로젝트에서만 가져온다. 가져오지 못하면 오류 기록을 남기고 통과한다."""
+        plugin = self.tmp / "plugin"
+        (plugin / "hooks").mkdir(parents=True)
+        shutil.copy(HOOK, plugin / "hooks" / "hteam_hook.py")
+        (plugin / "lib" / "hteam").mkdir(parents=True)
+        (plugin / "lib" / "hteam" / "__init__.py").write_text("raise ImportError('깨진 설치')\n", encoding="utf-8")
+        body = {"session_id": "s", "tool_name": "Write", "tool_input": {"file_path": "/x"}}
+
+        def run(cwd):
+            proc = subprocess.run([sys.executable, str(plugin / "hooks" / "hteam_hook.py"), "guard"],
+                                  input=json.dumps({**body, "cwd": str(cwd)}), capture_output=True, text=True,
+                                  env=self.env, cwd=str(cwd), timeout=30)
+            return proc.returncode, proc.stdout, proc.stderr
+        self.assertEqual(run(self.tmp), (0, "", ""))  # herdr-team 프로젝트가 아니면 가져오지도 않는다
+        self.init_project()
+        self.assertEqual(run(self.proj), (0, "", ""))
+        self.assertIn("깨진 설치", (self.state_dir / "hook-errors.log").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
