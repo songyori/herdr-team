@@ -20,8 +20,10 @@ def _name(args: tuple[str, ...]) -> str:
     return args[i] if i < len(args) else ""
 
 
-def run(root, *args: str, check: bool = True, input: str | None = None, raw: bool = False) -> subprocess.CompletedProcess:
-    """raw 면 출력을 바이트로 둔다(파일명이 UTF-8 이 아닐 수 있는 출력을 부르는 쪽이 os.fsdecode 로 푼다)."""
+def run(root, *args: str, check: bool = True, input: str | bytes | None = None,
+        raw: bool = False) -> subprocess.CompletedProcess:
+    """raw 면 입출력을 바이트로 둔다(파일명이 UTF-8 이 아닐 수 있는 출력은 부르는 쪽이 os.fsdecode 로 푼다. input 도
+    바이트로 준다)."""
     try:
         proc = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=not raw, input=input,
                               timeout=120)
@@ -37,8 +39,10 @@ def run(root, *args: str, check: bool = True, input: str | None = None, raw: boo
     return proc
 
 
-def _z(text: str) -> list[str]:
-    return [x for x in text.split("\0") if x]
+def _zb(data: bytes) -> list[str]:
+    """NUL 로 나눈 git 출력(바이트) → 경로. os.fsdecode(surrogateescape)로 푼다: UTF-8 이 아닌 이름도 손실 없이 남고
+    text 모드처럼 \\r 을 줄바꿈으로 바꾸지 않는다. 그대로 argv 로 넘기면 같은 바이트가 된다."""
+    return [os.fsdecode(x) for x in data.split(b"\0") if x]
 
 
 def head(root) -> str:
@@ -60,13 +64,14 @@ def glob_spec(pattern: str) -> str:
 
 def log_since(root, base: str) -> list[tuple[str, str]]:
     """base 이후(base 제외) 커밋을 오래된 것부터 (sha, 제목)."""
-    out = run(root, "log", "--reverse", "--format=%H%x1f%s%x1e", f"{base}..HEAD").stdout
+    out = run(root, "log", "--reverse", "--format=%H%x1f%s%x1e", f"{base}..HEAD", raw=True).stdout
     pairs = []
-    for rec in out.split("\x1e"):
-        rec = rec.strip("\n")
+    for rec in out.split(b"\x1e"):
+        rec = rec.strip(b"\n")
         if rec:
-            sha, _, subject = rec.partition("\x1f")
-            pairs.append((sha, subject))
+            sha, _, subject = rec.partition(b"\x1f")
+            # 제목은 `[T-xxx]` 접두사만 본다. UTF-8 이 아닌 제목도 실패하지 않게 바꿔 읽는다
+            pairs.append((sha.decode("ascii"), subject.decode("utf-8", "replace")))
     return pairs
 
 
@@ -78,12 +83,12 @@ def commit_files(root, sha: str) -> list[str]:
         args = ("diff-tree", "-r", "--name-only", "-z", "--no-renames", parents[0], sha)
     else:
         args = ("diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "--root", "--no-renames", sha)
-    return _z(run(root, *ABSOLUTE, *args).stdout)
+    return _zb(run(root, *ABSOLUTE, *args, raw=True).stdout)
 
 
 def diff_names(root, a: str, b: str) -> list[str]:
     """a 와 b 사이에 바뀐 경로(최상위 기준, 저장소 전체). 이름 바꾸기는 양쪽 경로를 다 낸다."""
-    return _z(run(root, *ABSOLUTE, "diff", "--name-only", "-z", "--no-renames", a, b).stdout)
+    return _zb(run(root, *ABSOLUTE, "diff", "--name-only", "-z", "--no-renames", a, b, raw=True).stdout)
 
 
 def _yes_no(proc: subprocess.CompletedProcess, args: tuple[str, ...]) -> bool:
@@ -106,8 +111,8 @@ def dirty(root, pathspecs: list[str]) -> list[str]:
     if not pathspecs:
         return []
     out = run(root, *ABSOLUTE, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames", "--",
-              *pathspecs).stdout
-    entries, found = _z(out), []
+              *pathspecs, raw=True).stdout
+    entries, found = _zb(out), []
     i = 0
     while i < len(entries):
         entry = entries[i]
@@ -116,21 +121,32 @@ def dirty(root, pathspecs: list[str]) -> list[str]:
     return found
 
 
-def tracked_changes(root) -> list[str]:
+def file_mode(root) -> bool:
+    """git 이 실행 비트를 보는가(core.fileMode, 없으면 true). false 면 git 처럼 변조 검사도 실행 비트를 보지 않는다."""
+    return run(root, "config", "--bool", "core.fileMode", check=False).stdout.strip() != "false"
+
+
+def tracked_changes(root, exec_bit: bool | None = None) -> list[str]:
     """HEAD 와 다른 추적 파일(작업 트리나 인덱스 어느 한쪽이라도), 최상위 기준, 저장소 전체. 이름 바꾸기는 양쪽 경로를
     다 낸다(`git mv 제품 제외경로` 가 옛 경로를 숨기지 못하게). `git diff HEAD` 는 작업 트리만 HEAD 와 견주므로
-    스테이징한 뒤 작업 트리만 되돌린 변경은 `diff --cached` 로 더한다."""
-    work = _z(run(root, *ABSOLUTE, "diff", "--name-only", "-z", "--no-renames", "HEAD").stdout)
-    staged = _z(run(root, *ABSOLUTE, "diff", "--cached", "--name-only", "-z", "--no-renames", "HEAD").stdout)
+    스테이징한 뒤 작업 트리만 되돌린 변경은 `diff --cached` 로 더한다. exec_bit 를 주면 core.fileMode 를 그 값으로
+    고정해 견준다(리뷰 동안 바뀐 설정이 실행 비트 변경을 숨기지 못하게)."""
+    flags = (*ABSOLUTE, *(() if exec_bit is None else ("-c", f"core.fileMode={'true' if exec_bit else 'false'}")))
+    work = _zb(run(root, *flags, "diff", "--name-only", "-z", "--no-renames", "HEAD", raw=True).stdout)
+    staged = _zb(run(root, *flags, "diff", "--cached", "--name-only", "-z", "--no-renames", "HEAD", raw=True).stdout)
     return sorted(set(work) | set(staged))
 
 
-def index_blobs(root, paths: list[str]) -> dict[str, str | None]:
-    """최상위 기준 경로(글자 그대로)의 인덱스 객체 ID(blob 과 견줄 수 있다). 인덱스에 없으면 None. 충돌 중이라 단계가
-    여럿이면 `단계:ID` 를 이어 붙인다(어느 blob 과도 같지 않다). 경로를 argv 로 넘기면 대량 변경에서 ARG_MAX 를
-    넘으므로 인덱스 전체(`:(top)`, root 가 하위 폴더여도 저장소 전체)를 한 번 읽어 거른다. 저장소 어딘가의 UTF-8
-    이 아닌 파일명이 디코딩 오류를 내지 않게 바이트로 읽고 os.fsdecode(surrogateescape, 손실 없음)로 푼다. UTF-8
-    이름은 다른 git 출력(text)과 같은 글자로 풀린다."""
+def _entry(mode: str, oid: str) -> str:
+    """git 항목 `모드:객체 ID`. 트리·인덱스의 모드는 core.fileMode 와 상관없이 그대로다(설정은 작업 트리만 본다)."""
+    return f"{mode}:{oid}"
+
+
+def index_entries(root, paths: list[str]) -> dict[str, str | None]:
+    """최상위 기준 경로(글자 그대로)의 인덱스 항목 `모드:객체 ID`(tree_entry·worktree_entries 와 견줄 수 있다). 인덱스에
+    없으면 None. 충돌 중이라 단계가 여럿이면 `단계:모드:ID` 를 쉼표로 잇는다(어느 항목과도 같지 않다). 경로를 argv 로
+    넘기면 대량 변경에서 ARG_MAX 를 넘으므로 인덱스 전체(`:(top)`, root 가 하위 폴더여도 저장소 전체)를 한 번 읽어
+    거른다. 바이트로 읽고 os.fsdecode 로 푼다(UTF-8 이 아닌 이름도 손실 없이, 다른 git 출력과 같은 글자로)."""
     result: dict[str, str | None] = dict.fromkeys(paths)
     if not paths:
         return result
@@ -138,32 +154,40 @@ def index_blobs(root, paths: list[str]) -> dict[str, str | None]:
     found: dict[str, list[str]] = {}
     for entry in (x for x in out.split(b"\0") if x):
         meta, _, name = entry.partition(b"\t")
-        _, sha, stage = meta.decode("ascii").split()
-        found.setdefault(os.fsdecode(name), []).append(sha if stage == "0" else f"{stage}:{sha}")
-    result.update({name: ",".join(shas) for name, shas in found.items() if name in result})
+        mode, sha, stage = meta.decode("ascii").split()
+        item = _entry(mode, sha)
+        found.setdefault(os.fsdecode(name), []).append(item if stage == "0" else f"{stage}:{item}")
+    result.update({name: ",".join(items) for name, items in found.items() if name in result})
     return result
 
 
 def untracked(root) -> list[str]:
     """root 아래의 추적하지 않는 파일(무시 규칙 적용), root 기준."""
-    return sorted(_z(run(root, "ls-files", "--others", "--exclude-standard", "-z").stdout))
+    return sorted(_zb(run(root, "ls-files", "--others", "--exclude-standard", "-z", raw=True).stdout))
+
+
+def tree_entry(root, commit: str, path: str) -> str | None:
+    """commit 의 path(git 최상위 기준, 글자 그대로) 항목 `모드:객체 ID`. 없다고 확인되면 None. git 이 읽지 못하면(잘못된
+    리비전, 손상·권한) git_failed 다. `rev-parse commit:path` 는 둘을 같은 exit 1 로 내서 ls-tree 를 쓴다."""
+    out = run(root, "ls-tree", "-z", "--full-tree", commit, "--", literal(path), raw=True).stdout
+    for entry in _zb(out):
+        meta, _, name = entry.partition("\t")
+        if name == path:
+            mode, _, oid = meta.split()
+            return _entry(mode, oid)
+    return None
 
 
 def blob(root, commit: str, path: str) -> str | None:
-    """commit 의 path(git 최상위 기준, 글자 그대로) 객체 ID. 없다고 확인되면 None. git 이 읽지 못하면(잘못된 리비전,
-    손상·권한) git_failed 다. `rev-parse commit:path` 는 둘을 같은 exit 1 로 내서 ls-tree 를 쓴다."""
-    out = run(root, "ls-tree", "-z", "--full-tree", commit, "--", literal(path)).stdout
-    for entry in _z(out):
-        meta, _, name = entry.partition("\t")
-        if name == path:
-            return meta.split()[2]
-    return None
+    """commit 의 path 객체 ID(없으면 None). tree_entry 의 ID 부분이다."""
+    found = tree_entry(root, commit, path)
+    return found.split(":", 1)[1] if found else None
 
 
 def _ref_present(root, ref: str) -> bool:
     """ref 가 느슨한 파일이나 packed-refs 로 존재하는가(깨졌어도). 버전에 기대지 않는다."""
     from pathlib import Path
-    loose = run(root, "rev-parse", "--git-path", ref).stdout.strip()
+    loose = _out_line(run(root, "rev-parse", "--git-path", ref, raw=True).stdout)
     if (Path(root) / loose).exists():  # git -C 기준 상대 경로이므로 root 에 붙인다(절대 경로면 그대로)
         return True
     listed = run(root, "for-each-ref", "--format=%(refname)", ref).stdout.split()
@@ -197,9 +221,16 @@ def has_head(root) -> bool:
     raise HteamError("git_failed", f"HEAD 를 풀지 못했다(비거나 깨진 ref?): {detail[-300:]}", FAIL)
 
 
+def _out_line(data: bytes) -> str:
+    """git 이 한 줄로 내는 경로(바이트) → 글자. 출력 구분자인 마지막 LF 하나만 지우고 os.fsdecode 로 푼다(이름의 \\r·끝
+    공백·UTF-8 이 아닌 바이트는 그대로)."""
+    return os.fsdecode(data[:-1] if data.endswith(b"\n") else data)
+
+
 def top_prefix(root) -> str:
-    """root 의 git 최상위 기준 경로(`sub/` 꼴, 최상위면 빈 문자열). root 기준 경로를 blob 에 넘길 때 앞에 붙인다."""
-    return run(root, "rev-parse", "--show-prefix").stdout.rstrip("\n")
+    """root 의 git 최상위 기준 경로(`sub/` 꼴, 최상위면 빈 문자열). root 기준 경로를 blob 에 넘길 때 앞에 붙인다.
+    바이트로 읽는다(text 모드는 폴더 이름의 \\r 을 \\n 으로 바꿔 프로젝트 안 경로를 밖으로 잘못 나눈다)."""
+    return _out_line(run(root, "rev-parse", "--show-prefix", raw=True).stdout)
 
 
 def is_ancestor(root, a: str, b: str) -> bool:
@@ -251,16 +282,68 @@ def to_top(prefix: str, path: str) -> str:
     return posixpath.normpath(prefix + path) if prefix else path
 
 
-def hash_files(root, paths: list[str]) -> dict[str, str | None]:
-    """root 기준 경로(`../` 포함)의 작업 트리 내용 해시(필터 적용, blob 과 견줄 수 있다). 없는 파일은 None.
+def toplevel(root) -> str:
+    """git 최상위 폴더(git 이 낸 실제 경로)."""
+    return _out_line(run(root, "rev-parse", "--show-toplevel", raw=True).stdout)
 
-    `hash-object --stdin-paths` 는 상대 경로를 git 최상위 기준으로 읽는다(root 가 하위 폴더면 root 기준 경로로는
-    다른 파일을 읽거나 실패한다). 그래서 절대 경로로 넘긴다."""
-    import os
-    full = {x: os.path.normpath(os.path.join(str(root), x)) for x in paths}
+
+def _through_link(top: str, full: str) -> bool:
+    """full 의 상위 폴더(top 아래) 가운데 심볼릭 링크가 있나. 있으면 git 은 그 파일을 없는 것으로 본다."""
+    cur = top
+    for part in os.path.relpath(full, top).split(os.sep)[:-1]:
+        if part == "..":
+            return False  # 저장소 밖(git 경로에서는 나오지 않는다)
+        cur = os.path.join(cur, part)
+        if os.path.islink(cur):
+            return True
+    return False
+
+
+def worktree_entries(root, paths: list[str], exec_bit: bool = True,
+                     index: dict[str, str | None] | None = None) -> dict[str, str | None]:
+    """root 기준 경로(`../` 포함)의 작업 트리 항목 `모드:객체 ID`(tree_entry·index_entries 와 견줄 수 있다). 없으면 None.
+
+    git 이 보는 대로 본다. 심볼릭 링크는 따라가지 않는다: 120000 과 링크 글자의 blob 이다. 상위 폴더가 링크면 git 처럼
+    그 파일은 없다. 일반 파일은 실행 비트로 100755·100644 와 git 필터를 적용한 hash-object 다. exec_bit 가 거짓이면
+    (core.fileMode=false) git 처럼 실행 비트를 믿지 않고 index(root 기준 경로 → 인덱스 항목)의 모드를 쓴다(없거나
+    충돌 중이면 100644). 폴더는 그 자리가 서브모듈 작업 트리면 160000 과 그 HEAD, 아니면 `dir`. 그 밖(FIFO 등)은 `other`.
+    lstat 할 수 없는 경로(권한, 파일 시스템이 거부하는 이름)는 없는 것이다.
+    hash-object 는 최상위에서 최상위 기준 경로를 argv 로 넘겨 부른다(`--stdin-paths` 는 줄 끝 \\r 을 지우고 `"` 로
+    시작하면 따옴표를 풀며, 절대 경로는 .gitattributes 의 필터가 맞지 않는다). ARG_MAX 를 넘지 않게 나눠 부른다."""
+    import stat
     result: dict[str, str | None] = dict.fromkeys(paths)
-    present = [x for x in paths if os.path.isfile(full[x])]
-    if present:
-        hashes = run(root, "hash-object", "--stdin-paths", input="\n".join(full[x] for x in present) + "\n").stdout.split()
-        result.update(zip(present, hashes))
+    if not paths:
+        return result
+    top, prefix = toplevel(root), top_prefix(root)
+    regular: list[tuple[str, str, str]] = []  # (root 기준, 최상위 기준, 모드)
+    for rel in paths:
+        name = to_top(prefix, rel)
+        full = os.path.join(top, name)
+        if _through_link(top, full):
+            continue
+        try:
+            info = os.lstat(full)
+        except OSError:
+            continue
+        if stat.S_ISLNK(info.st_mode):
+            oid = run(top, "hash-object", "--stdin", input=os.readlink(os.fsencode(full)), raw=True).stdout
+            result[rel] = f"120000:{oid.decode('ascii').strip()}"
+        elif stat.S_ISREG(info.st_mode):
+            if exec_bit:
+                mode = "100755" if info.st_mode & stat.S_IXUSR else "100644"
+            else:
+                mode = "100755" if ((index or {}).get(rel) or "").startswith("100755:") else "100644"
+            regular.append((rel, name, mode))
+        elif stat.S_ISDIR(info.st_mode):
+            sub = run(full, "rev-parse", "--show-toplevel", "HEAD", check=False, raw=True)
+            lines = sub.stdout.split(b"\n")
+            mine = sub.returncode == 0 and len(lines) > 1 and os.fsdecode(lines[0]) == os.path.realpath(full)
+            result[rel] = f"160000:{lines[1].decode('ascii').strip()}" if mine else "dir"
+        else:
+            result[rel] = "other"
+    for i in range(0, len(regular), 500):
+        chunk = regular[i:i + 500]
+        oids = run(top, "hash-object", "--", *[name for _, name, _ in chunk]).stdout.split()
+        for (rel, _, mode), oid in zip(chunk, oids):
+            result[rel] = f"{mode}:{oid}"
     return result

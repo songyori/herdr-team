@@ -620,10 +620,10 @@ class SubdirPlanTest(TeamCase):
 
 
 class GitioTest(TeamCase):
-    def test_index_blobs_reads_index_once_without_path_argv(self):
+    def test_index_entries_read_index_once_without_path_argv(self):
         # 리뷰 기준점은 저장소 전체 변경을 거르기 전에 묻는다. 경로마다 argv 를 늘리면 대량 변경에서 ARG_MAX 를 넘는다
         self.commit("src/a.py", "a\n", "a")
-        want = self.git("rev-parse", ":src/a.py").strip()
+        want = "100644:" + self.git("rev-parse", ":src/a.py").strip()
         paths = ["src/a.py", "README.md"] + [f"bulk/{i:05d}/" + "x" * 80 for i in range(20000)]
         calls, real = [], gitio.run
 
@@ -631,12 +631,42 @@ class GitioTest(TeamCase):
             calls.append(args)
             return real(root, *args, **kw)
         with mock.patch.object(gitio, "run", spy):
-            got = gitio.index_blobs(self.proj, paths)
+            got = gitio.index_entries(self.proj, paths)
         self.assertEqual(len(calls), 1)
         self.assertLess(sum(len(a) for a in calls[0]), 200)
         self.assertEqual((got["src/a.py"], len(got)), (want, len(paths)))
         self.assertIsNotNone(got["README.md"])
         self.assertIsNone(got[paths[-1]])
+
+    def test_worktree_entries_see_what_git_sees(self):
+        self.commit("x.txt", "x\n", "x")
+        blob = self.git("rev-parse", "HEAD:x.txt").strip()
+        (self.tmp / "out.txt").write_text("x\n")
+        (self.proj / "link.txt").symlink_to(self.tmp / "out.txt")
+        os.chmod(self.proj / "x.txt", 0o755)
+        got = gitio.worktree_entries(self.proj, ["x.txt", "link.txt", "nope.txt"])
+        self.assertEqual(got["x.txt"], f"100755:{blob}")
+        self.assertTrue(got["link.txt"].startswith("120000:"))
+        self.assertNotEqual(got["link.txt"], f"120000:{blob}")  # 링크 대상의 내용이 아니라 링크 글자다
+        self.assertIsNone(got["nope.txt"])
+        # 실행 비트를 믿지 않으면(core.fileMode=false) git 처럼 인덱스의 모드를 쓴다
+        self.assertEqual(gitio.worktree_entries(self.proj, ["x.txt"], exec_bit=False)["x.txt"], f"100644:{blob}")
+        self.assertEqual(gitio.worktree_entries(self.proj, ["x.txt"], exec_bit=False,
+                                                index={"x.txt": f"100755:{blob}"})["x.txt"], f"100755:{blob}")
+        self.assertEqual(gitio.tree_entry(self.proj, "HEAD", "x.txt"), f"100644:{blob}")
+        self.assertEqual(gitio.blob(self.proj, "HEAD", "x.txt"), blob)
+
+    def test_top_prefix_keeps_carriage_return_in_folder_name(self):
+        # 하위 프로젝트 폴더 이름의 \r 이 text 모드로 \n 이 되면 그 안 변경을 프로젝트 밖(`../`)으로 잘못 나눈다
+        sub = self.proj / "app\r"
+        try:
+            sub.mkdir()
+        except OSError as exc:
+            self.skipTest(f"이 파일 시스템은 \\r 이 든 이름을 만들지 못한다: {exc}")
+        prefix = gitio.top_prefix(sub)
+        self.assertEqual(prefix, "app\r/")
+        self.assertEqual(gitio.from_top(prefix, "app\r/README.md"), "README.md")
+        self.assertEqual(gitio.toplevel(sub), os.path.realpath(self.proj))
 
     def test_git_errors_are_not_answers(self):
         first = self.head()

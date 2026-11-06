@@ -316,6 +316,110 @@ class TamperTest(ReviewCase):
         self.assertIn("scratch.log", body)
 
 
+class TamperEntryTest(ReviewCase):
+    """변조 검사는 git 이 보는 항목(모드와 객체 ID)으로 견준다: 심볼릭 링크, 실행 비트, 링크 폴더, 손실 없는 경로."""
+
+    def finish(self):
+        return self.hteam("review-finish", "T-001")
+
+    def assert_tamper(self, path):
+        self.act_review("T-001", "APPROVE")
+        code, out = self.finish()
+        self.assertEqual((code, out["error"]["code"]), (1, "review_tampered"), out)
+        self.assertIn(path, out["tamper"]["paths"])
+        return out
+
+    def test_file_swapped_for_symlink_with_same_content_is_tamper(self):
+        self.reviewing()
+        outside = self.tmp / "outside.md"
+        outside.write_text("# proj\n")  # README.md 와 같은 내용
+        readme = self.proj / "README.md"
+        readme.unlink()
+        readme.symlink_to(outside)
+        self.assertEqual(self.assert_tamper("README.md")["tamper"]["paths"], ["README.md"])
+
+    def test_folder_swapped_for_symlink_is_tamper(self):
+        self.commit("lib/x.txt", "x\n", "lib")
+        self.reviewing()
+        (self.proj / "lib").rename(self.tmp / "lib-real")
+        (self.proj / "lib").symlink_to(self.tmp / "lib-real")  # lib/x.txt 의 내용은 그대로 읽힌다
+        self.assert_tamper("lib/x.txt")
+
+    def test_exec_bit_change_is_tamper(self):
+        self.reviewing()
+        os.chmod(self.proj / "README.md", 0o755)
+        self.assertEqual(self.assert_tamper("README.md")["tamper"]["paths"], ["README.md"])
+
+    def test_exec_bit_is_ignored_when_git_ignores_modes(self):
+        self.git("config", "core.fileMode", "false")
+        self.reviewing()
+        os.chmod(self.proj / "README.md", 0o755)
+        self.act_review("T-001", "APPROVE")
+        code, out = self.finish()
+        self.assertEqual((code, out.get("status")), (0, "approved"), out)
+
+    def test_staged_exec_bit_is_tamper_even_when_git_ignores_modes(self):
+        # core.fileMode=false 는 작업 트리의 실행 비트만 믿지 않는다. 인덱스에 올린 모드 변경은 실제 변경이다
+        self.git("config", "core.fileMode", "false")
+        self.reviewing()
+        self.git("update-index", "--chmod=+x", "README.md")
+        self.assertEqual(self.assert_tamper("README.md")["tamper"]["paths"], ["README.md"])
+
+    def test_file_mode_flipped_during_review_does_not_hide_chmod(self):
+        self.reviewing()
+        os.chmod(self.proj / "README.md", 0o755)
+        self.git("config", "core.fileMode", "false")  # 리뷰어가 설정을 바꿔 숨기려 했다
+        self.assert_tamper("README.md")
+
+    def test_carriage_return_in_path_is_read_losslessly(self):
+        name = "a\rb.txt"
+        try:
+            self.commit(name, "x\n", "cr")
+        except (OSError, AssertionError) as exc:
+            self.skipTest(f"이 파일 시스템은 \\r 이 든 이름을 만들지 못한다: {exc}")
+        self.reviewing()
+        (self.proj / name).write_text("리뷰어가 고침\n")
+        self.assertEqual(self.assert_tamper(name)["tamper"]["paths"], [name])
+
+    def test_non_utf8_changed_path_is_kept_losslessly(self):
+        # 기준점의 바뀐 경로에 UTF-8 이 아닌 이름이 있어도 리뷰가 멈추지 않고 그 이름 그대로 견준다. macOS(APFS) 는 그런
+        # 파일을 만들지 못하므로 인덱스에만 넣고(skip-worktree) 스테이징만 바꾼다
+        import subprocess
+        name = os.fsencode("bad-") + b"\xff.txt"
+        git = ["git", "-C", str(self.proj)]
+
+        def plumb(*args, data=None):
+            done = subprocess.run(git + list(args), input=data, capture_output=True, env=self.env)
+            if done.returncode:
+                self.skipTest(f"git 이 비 UTF-8 이름을 받지 않는다: {done.stderr!r}")
+            return done.stdout.strip()
+        one = plumb("hash-object", "-w", "--stdin", data=b"1\n")
+        two = plumb("hash-object", "-w", "--stdin", data=b"2\n")
+        plumb("update-index", "--add", "--cacheinfo", b"100644," + one + b"," + name)
+        plumb("update-index", "--skip-worktree", name)
+        plumb("commit", "-q", "-m", "비 UTF-8 이름")
+        plumb("update-index", "--cacheinfo", b"100644," + two + b"," + name)  # 스테이징만 바뀌었다(기준점에 남는다)
+        self.worked()
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual((code, out.get("status")), (0, "reviewing"), out)
+        self.assertIn(os.fsdecode(name), self.attempt("T-001")["baseline"]["index"])
+        self.act_review("T-001", "APPROVE")
+        code, out = self.finish()
+        self.assertEqual((code, out.get("status")), (0, "approved"), out)
+
+
+class LosslessJsonTest(unittest.TestCase):
+    def test_surrogates_round_trip_as_valid_utf8(self):
+        from hteam.util import dumps, show
+        value = {"bad-\udcff.txt": ["a\rb", "정상"]}
+        text = dumps(value, indent=2)
+        text.encode("utf-8")  # 올바른 UTF-8 이다(짝 없는 서로게이트는 이스케이프됐다)
+        self.assertIn("\\udcff", text)
+        self.assertEqual(json.loads(text), value)
+        self.assertEqual(show("bad-\udcff.txt"), "bad-\\xff.txt")
+        self.assertEqual(show("정상 a\rb"), "정상 a\rb")
+
+
 class AttemptTest(ReviewCase):
     def test_failed_attempt_retries_once_then_review_failed(self):
         self.reviewing()

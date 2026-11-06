@@ -6,12 +6,12 @@ from __future__ import annotations
 
 import argparse
 import importlib
-import json
 import signal
 import sys
 
 from .errors import FAIL, USAGE, HteamError
 from .paths import VERSION
+from .util import dumps
 
 # 명령을 등록하는 모듈. 태스크마다 한 줄씩 더한다.
 COMMAND_MODULES: tuple[str, ...] = (
@@ -43,7 +43,7 @@ def build_parser() -> Parser:
 
 
 def _emit(obj: dict) -> None:
-    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    sys.stdout.write(dumps(obj) + "\n")
     sys.stdout.flush()
 
 
@@ -55,7 +55,7 @@ def main(argv: list[str]) -> int:
         # 결과의 _after(인자 없는 함수)는 출력에 넣지 않고 JSON 을 출력한 뒤에 부른다.
         after = result.pop("_after", None)
         # 성공 봉투도 try 안에서 직렬화한다. dict 가 아니거나 JSON 으로 못 바꾸면 internal 오류로 알린다.
-        line = json.dumps({"ok": True, **result}, ensure_ascii=False)
+        line = dumps({"ok": True, **result})
     except HteamError as exc:
         _emit(exc.to_json())
         return exc.exit_code

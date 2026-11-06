@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .errors import USAGE, HteamError
 from .paths import SHIM, TEMPLATES, report_rel, review_rel
-from .util import fill
+from .util import fill, show
 
 ASK_ROLES = ("planner", "director")  # 사용자에게 직접 묻는 직무(설계 7.5)
 
@@ -77,4 +77,4 @@ def review_prompt(p, cfg, spec, rd: dict, att: dict) -> str:
                 spec_path=f".herdr-team/tasks/{tid}.md", role_doc=f".herdr-team/roles/{spec.role}.md",
                 report=report_rel(tid), prior=", ".join(f"`{x}`" for x in prior) or "없음",
                 commits="\n".join(f"- {c['sha'][:10]} {c['subject']}" for c in commits) or "- 없음",
-                files="\n".join(f"- `{f}`" for f in files) or "- 없음").rstrip() + "\n"
+                files="\n".join(f"- `{show(f)}`" for f in files) or "- 없음").rstrip() + "\n"

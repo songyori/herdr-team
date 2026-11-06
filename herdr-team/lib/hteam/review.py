@@ -20,7 +20,7 @@ from .errors import CONFLICT, FAIL, HteamError
 from .globs import matches_any
 from .horch import Horch
 from .paths import SHIM, find_project, review_rel
-from .util import die_at, now, write_atomic
+from .util import die_at, now, show, write_atomic
 
 AUTO_ATTEMPTS = 2  # 라운드당 자동 시도(설계 6.3 6)
 VERDICTS = ("APPROVE", "REQUEST_CHANGES")
@@ -107,7 +107,7 @@ def prechecks(p, cfg, st: dict, spec, commits: list[dict], files: list[str]) -> 
 def _precheck_fail(p, tid: str, n: int, problems: list[str]) -> dict:
     rel = review_rel(tid, n)
     text = (f"# {tid} r{n} 리뷰 (출처: hteam 사전 검사)\n\n리뷰어를 띄우지 않았다. 수정 라운드에서 다음을 고친다.\n\n"
-            "## 지적 사항\n" + "".join(f"- [P1] {x}\n" for x in problems) + "\nVERDICT: REQUEST_CHANGES\n")
+            "## 지적 사항\n" + "".join(f"- [P1] {show(x)}\n" for x in problems) + "\nVERDICT: REQUEST_CHANGES\n")
     write_atomic(p.root / rel, text)
     die_at("after_precheck_write")
     if gitio.dirty(p.root, [gitio.literal(rel)]):
@@ -125,28 +125,36 @@ def _precheck_fail(p, tid: str, n: int, problems: list[str]) -> dict:
 
 
 def _index(p, prefix: str, paths: list[str]) -> dict[str, str | None]:
-    """프로젝트 기준 경로의 인덱스 객체 ID(gitio.index_blobs 는 최상위 기준 경로를 받는다)."""
+    """프로젝트 기준 경로의 인덱스 항목 `모드:객체 ID`(gitio.index_entries 는 최상위 기준 경로를 받는다)."""
     tops = {x: gitio.to_top(prefix, x) for x in paths}
-    blobs = gitio.index_blobs(p.root, list(tops.values()))
-    return {x: blobs[t] for x, t in tops.items()}
+    entries = gitio.index_entries(p.root, list(tops.values()))
+    return {x: entries[t] for x, t in tops.items()}
 
 
 def baseline(p, tid: str) -> dict:
-    """변조 기준점(설계 6.1 5): HEAD, HEAD 와 다른 추적 파일(작업 트리·인덱스)의 작업 트리 내용 해시와 인덱스 객체
-    ID, 추적 안 된 파일, 진행 중인 다른 태스크. 경로는 프로젝트 기준이다. 추적 파일은 저장소 전체를 본다(프로젝트
-    밖은 `../`, 리뷰 동안 바뀌면 경고를 내려고). 추적 안 된 파일은 프로젝트 안만 본다."""
+    """변조 기준점(설계 6.1 5): HEAD, HEAD 와 다른 추적 파일(작업 트리·인덱스)의 작업 트리 항목과 인덱스 항목
+    (`모드:객체 ID`), 추적 안 된 파일, 진행 중인 다른 태스크, git 이 작업 트리의 실행 비트를 보는지(exec_bit,
+    core.fileMode. 거짓이면 작업 트리 파일의 모드는 인덱스의 모드다).
+    경로는 프로젝트 기준이다. 추적 파일은 저장소 전체를 본다(프로젝트 밖은 `../`, 리뷰 동안 바뀌면 경고를 내려고).
+    추적 안 된 파일은 프로젝트 안만 본다."""
     others = [s["id"] for s in state.all_states(p) if s["id"] != tid and s["status"] in ("working", "launch_failed")]
     prefix = gitio.top_prefix(p.root)
-    changed = _rel(prefix, gitio.tracked_changes(p.root))
-    return {"at": now(), "head": gitio.head(p.root), "dirty": gitio.hash_files(p.root, changed),
-            "index": _index(p, prefix, changed), "untracked": gitio.untracked(p.root), "in_progress": others}
+    exec_bit = gitio.file_mode(p.root)
+    changed = _rel(prefix, gitio.tracked_changes(p.root, exec_bit))
+    index = _index(p, prefix, changed)
+    return {"at": now(), "head": gitio.head(p.root), "exec_bit": exec_bit,
+            "dirty": gitio.worktree_entries(p.root, changed, exec_bit, index), "index": index,
+            "untracked": gitio.untracked(p.root), "in_progress": others}
 
 
 def tamper_check(p, tid: str, base: dict) -> tuple[dict | None, list[str]]:
     """설계 6.3 3. (변조 기록 또는 None, 경고).
 
     변조: fast-forward 가 아닌 HEAD 이동, 프로젝트 안 제외 경로 밖의 추적 파일 변경과 커밋. 경고: 프로젝트 안의 추적 안 된
-    새 파일, 프로젝트 밖(`../`)에서 바뀐 추적 파일과 커밋(hteam 작업은 owns 밖을 건드리지 않으므로 모노레포의 다른 일이다)."""
+    새 파일, 프로젝트 밖(`../`)에서 바뀐 추적 파일과 커밋(hteam 작업은 owns 밖을 건드리지 않으므로 모노레포의 다른 일이다).
+    견주는 값은 git 항목 `모드:객체 ID` 다: 내용이 같아도 심볼릭 링크로 바꾸거나 실행 비트를 바꾸면 변조다. 트리·인덱스의
+    모드는 그대로 견주고, 작업 트리의 실행 비트는 기준점 때의 core.fileMode 로 본다(false 면 인덱스의 모드). 값이 객체
+    ID 뿐인 옛 기준점(이 형식 전)은 모두 달라 보여 변조로 멈춘다."""
     states = {s["id"]: s for s in state.all_states(p)}
     during = [s["id"] for s in states.values() if s["id"] != tid and any(
         h.get("event") in ("start", "fix") and h.get("at", "") >= base["at"] for h in s.get("history", []))]
@@ -160,6 +168,7 @@ def tamper_check(p, tid: str, base: dict) -> tuple[dict | None, list[str]]:
 
     prefix = gitio.top_prefix(p.root)
     head = gitio.head(p.root)
+    exec_bit = base.get("exec_bit", True)  # 기준점 때의 core.fileMode 로 고정한다(리뷰어가 설정을 바꿔도)
     record = {"head_before": base["head"], "head_after": head, "excluded_tasks": excluded_tasks}
     if head != base["head"] and not gitio.is_ancestor(p.root, base["head"], head):
         return {**record, "reason": "HEAD 가 fast-forward 가 아니게 움직였다", "paths": []}, []
@@ -174,9 +183,9 @@ def tamper_check(p, tid: str, base: dict) -> tuple[dict | None, list[str]]:
                 continue
             outside.update(f for f in files if _outside(f))
             bad.update(f for f in files if not _outside(f) and not excluded(f))
-    changed = _rel(prefix, gitio.tracked_changes(p.root))
-    now_dirty = gitio.hash_files(p.root, changed)
+    changed = _rel(prefix, gitio.tracked_changes(p.root, exec_bit))
     now_index = _index(p, prefix, changed)
+    now_dirty = gitio.worktree_entries(p.root, changed, exec_bit, now_index)
     candidates = set(base["dirty"]) | set(now_dirty)
     if head != base["head"]:
         candidates |= set(_rel(prefix, gitio.diff_names(p.root, base["head"], head)))
@@ -184,12 +193,15 @@ def tamper_check(p, tid: str, base: dict) -> tuple[dict | None, list[str]]:
         if excluded(path):
             continue
         top = gitio.to_top(prefix, path)  # ls-tree --full-tree 는 최상위 기준 경로를 받는다
-        before = base["dirty"][path] if path in base["dirty"] else gitio.blob(p.root, base["head"], top)
-        after = now_dirty[path] if path in now_dirty else gitio.blob(p.root, head, top)
+
+        def tree(commit: str, top: str = top) -> str | None:
+            return gitio.tree_entry(p.root, commit, top)
+        before = base["dirty"][path] if path in base["dirty"] else tree(base["head"])
+        after = now_dirty[path] if path in now_dirty else tree(head)
         moved = before != after
         if not moved and "index" in base:  # 스테이징한 뒤 작업 트리만 되돌린 변경은 인덱스에만 남는다
-            before = base["index"][path] if path in base["index"] else gitio.blob(p.root, base["head"], top)
-            after = now_index[path] if path in now_index else gitio.blob(p.root, head, top)
+            before = base["index"][path] if path in base["index"] else tree(base["head"])
+            after = now_index[path] if path in now_index else tree(head)
             moved = before != after
         if moved:
             (outside if _outside(path) else bad).add(path)
@@ -458,9 +470,9 @@ def _warning_body(warnings: list[str]) -> str | None:
     outside = [w for w in warnings if _outside(w)]
     parts = []
     if fresh:
-        parts.append("리뷰 동안 생긴 추적하지 않는 새 파일:\n" + "\n".join(f"- {w}" for w in fresh))
+        parts.append("리뷰 동안 생긴 추적하지 않는 새 파일:\n" + "\n".join(f"- {show(w)}" for w in fresh))
     if outside:
-        parts.append("리뷰 동안 프로젝트 밖에서 바뀐 추적 파일:\n" + "\n".join(f"- {w}" for w in outside))
+        parts.append("리뷰 동안 프로젝트 밖에서 바뀐 추적 파일:\n" + "\n".join(f"- {show(w)}" for w in outside))
     return "\n\n".join(parts) or None
 
 

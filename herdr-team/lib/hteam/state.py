@@ -12,7 +12,7 @@ import re
 from typing import Iterator
 
 from .errors import CONFLICT, FAIL, USAGE, HteamError
-from .util import flock, now, read_json, write_atomic
+from .util import dumps, flock, now, read_json, write_atomic
 
 STATUSES = ("pending", "working", "launch_failed", "reviewing", "approved", "changes", "awaiting_user", "done",
             "dropped")
@@ -91,7 +91,7 @@ def require(p, tid: str) -> dict:
 
 def save(p, st: dict) -> None:
     st["updated_at"] = now()
-    write_atomic(p.state_path(st["id"]), json.dumps(st, ensure_ascii=False, indent=2) + "\n")
+    write_atomic(p.state_path(st["id"]), dumps(st, indent=2) + "\n")  # 기준점의 경로가 UTF-8 이 아니어도 쓴다
 
 
 def closed_error(st: dict) -> HteamError:

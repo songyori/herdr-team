@@ -71,8 +71,25 @@ def read_json_strict(path: Path, default):
         raise bad_side_file(path, f"JSON 이 아니다: {exc}") from None
 
 
+_SURROGATE = re.compile(r"[\ud800-\udfff]")
+
+
+def dumps(obj, indent: int | None = None) -> str:
+    """JSON 글(ensure_ascii=False). UTF-8 이 아닌 파일명을 os.fsdecode 로 푼 짝 없는 서로게이트(\\udcXX)는 `\\udcXX` 로
+    이스케이프한다: 결과는 늘 올바른 UTF-8 이고 json.loads 가 같은 글자로 되읽는다(손실 없음)."""
+    return _SURROGATE.sub(lambda m: f"\\u{ord(m.group()):04x}", json.dumps(obj, ensure_ascii=False, indent=indent))
+
+
+def show(text: str) -> str:
+    """사람이 읽는 글(리뷰 파일·프롬프트·커밋 본문)에 넣을 경로. UTF-8 이 아닌 바이트는 `\\xff` 꼴로 보인다."""
+    try:
+        return os.fsencode(text).decode("utf-8", "backslashreplace")
+    except UnicodeEncodeError:  # surrogateescape 로 만들 수 없는 서로게이트
+        return text.encode("utf-8", "backslashreplace").decode("utf-8")
+
+
 def write_json(path: Path, obj) -> None:
-    write_atomic(path, json.dumps(obj, ensure_ascii=False, indent=2) + "\n")
+    write_atomic(path, dumps(obj, indent=2) + "\n")
 
 
 @contextlib.contextmanager
