@@ -60,6 +60,11 @@ class GlobTest(unittest.TestCase):
         self.assertTrue(overlaps("docs/a.md", "docs/*.md"))
         self.assertFalse(overlaps("docs/a.md", "src/**"))
         self.assertEqual(any_overlap(["src/**", "x"], ["src/a/**"]), [("src/**", "src/a/**")])
+        # 대소문자를 구분하지 않는 파일시스템에서는 같은 경로다(구분하는 곳에서는 병렬 시작만 막혀 안전하다)
+        for a, b in (("src/Foo/**", "src/foo/**"), ("SRC/a.py", "src/A.py"), ("src/Foo", "src/foo/*.py"),
+                     ("Docs/*.md", "docs/x/**")):
+            self.assertTrue(overlaps(a, b) and overlaps(b, a), (a, b))
+        self.assertEqual(any_overlap(["src/Foo/**"], ["src/foo/**"]), [("src/Foo/**", "src/foo/**")])
 
     def test_owns_problem(self):
         for good in ("src/**", "src/*.py", "a/**/b", "src/?.py", "docs/a.md", "**"):
@@ -145,6 +150,11 @@ class PlanCheckTest(TeamCase):
         self.assertEqual(len(errs), 1)
         self.assertIn("a 와 b 의 owns 가 겹친다", errs[0])
         self.assertEqual(self.errors([task("a"), task("b", owns=["src/auth/**"], deps=["a"])]), [])
+
+    def test_owns_overlap_ignores_case(self):
+        errs = self.errors([task("a", owns=["src/Foo/**"]), task("b", owns=["src/foo/**"])])
+        self.assertEqual(len(errs), 1, errs)
+        self.assertIn("a 와 b 의 owns 가 겹친다(src/Foo/** ↔ src/foo/**)", errs[0])
 
     def test_approval_chain_with_overlap_is_refused(self):
         tasks = [task("dir", "director", ["docs/design/system/**"]),

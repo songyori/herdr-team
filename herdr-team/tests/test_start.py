@@ -116,6 +116,16 @@ class StartTest(StartCase):
         code, out = self.hteam("start", "T-005")
         self.assertEqual((code, out["error"]["code"]), (3, "planner_busy"))
 
+    def test_owns_lock_ignores_case(self):
+        # 대소문자를 구분하지 않는 파일시스템(macOS 기본)에서 src/Foo 와 src/foo 는 같은 디렉터리다
+        self.make_task("T-001", owns="src/Foo/**")
+        self.make_task("T-002", owns="src/foo/**")
+        self.assertEqual(self.hteam("start", "T-001")[0], 0)
+        code, out = self.hteam("start", "T-002")
+        self.assertEqual((code, out["error"]["code"]), (3, "owns_locked"), out)
+        self.assertEqual(out["conflicts"][0]["pairs"], [["src/foo/**", "src/Foo/**"]])
+        self.assertEqual(self.task_state("T-002")["status"], "pending")
+
     def test_launch_failure_then_retry_same_horch_task(self):
         self.make_task("T-001")
         self.fail_hc("run", "boom")

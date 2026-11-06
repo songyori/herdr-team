@@ -76,7 +76,12 @@ def _under(a: str, b: str) -> bool:
 
 
 def overlaps(a: str, b: str) -> bool:
-    """두 glob 의 고정 접두사 중 하나가 다른 하나의 접두사면 겹친다고 본다. 고정 경로는 그 아래까지 덮는다."""
+    """두 glob 의 고정 접두사 중 하나가 다른 하나의 접두사면 겹친다고 본다. 고정 경로는 그 아래까지 덮는다.
+
+    대소문자는 구분하지 않는다: 대소문자를 무시하는 파일시스템(macOS 기본)에서 `src/Foo` 와 `src/foo` 는 같은
+    디렉터리다. 구분하는 파일시스템에서는 병렬 시작만 막혀 안전한 쪽이다. matches·within 은 그대로 구분한다
+    (owns 안·밖 판정을 넓히면 사전 검사·변조 검사가 놓친다)."""
+    a, b = a.casefold(), b.casefold()
     pa, pb = literal_prefix(a), literal_prefix(b)
     if pa == a and pb == b:
         return matches(a, b) or matches(b, a)
