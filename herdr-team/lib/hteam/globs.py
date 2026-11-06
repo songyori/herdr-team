@@ -5,6 +5,7 @@ git `:(glob)` pathspec 과 같게 읽히도록 와일드카드 없는 경로는 
 from __future__ import annotations
 
 import re
+import unicodedata
 from functools import lru_cache
 
 GLOB_CHARS = "*?["
@@ -75,13 +76,23 @@ def _under(a: str, b: str) -> bool:
     return "**" in b or b.count("/") > a.count("/")
 
 
+def _fold(x: str) -> str:
+    """대소문자·유니코드 정규화 별칭을 한 표기로(정준 대소문자 무시 비교: casefold(NFD) 뒤 NFC 로 다시 합친다.
+    합친 글자는 `?` 한 글자로 남는다)."""
+    return unicodedata.normalize("NFC", unicodedata.normalize("NFD", x).casefold())
+
+
 def overlaps(a: str, b: str) -> bool:
     """두 glob 의 고정 접두사 중 하나가 다른 하나의 접두사면 겹친다고 본다. 고정 경로는 그 아래까지 덮는다.
 
-    대소문자는 구분하지 않는다: 대소문자를 무시하는 파일시스템(macOS 기본)에서 `src/Foo` 와 `src/foo` 는 같은
-    디렉터리다. 구분하는 파일시스템에서는 병렬 시작만 막혀 안전한 쪽이다. matches·within 은 그대로 구분한다
-    (owns 안·밖 판정을 넓히면 사전 검사·변조 검사가 놓친다)."""
-    a, b = a.casefold(), b.casefold()
+    원래 글자 그대로의 판정이나 _fold 한 판정 가운데 하나라도 겹치면 겹친다. 대소문자를 무시하는 파일시스템(macOS
+    기본)에서 `src/Foo` 와 `src/foo`, NFC·NFD 로 쓴 `src/café` 는 같은 디렉터리다. 원래 판정을 함께 보는 것은 접기가
+    글자 수를 바꿀 수 있어서다(`ß` → `ss` 면 `?` 가 맞지 않는다). 거짓 겹침은 병렬 시작만 막아 안전한 쪽이다.
+    matches·within 은 그대로 구분한다(owns 안·밖 판정을 넓히면 사전 검사·변조 검사가 놓친다)."""
+    return _overlaps(a, b) or _overlaps(_fold(a), _fold(b))
+
+
+def _overlaps(a: str, b: str) -> bool:
     pa, pb = literal_prefix(a), literal_prefix(b)
     if pa == a and pb == b:
         return matches(a, b) or matches(b, a)

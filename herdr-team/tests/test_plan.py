@@ -5,6 +5,7 @@ import json
 import os
 import pathlib
 import subprocess
+import unicodedata
 import unittest
 from unittest import mock
 
@@ -65,6 +66,15 @@ class GlobTest(unittest.TestCase):
                      ("Docs/*.md", "docs/x/**")):
             self.assertTrue(overlaps(a, b) and overlaps(b, a), (a, b))
         self.assertEqual(any_overlap(["src/Foo/**"], ["src/foo/**"]), [("src/Foo/**", "src/foo/**")])
+        # casefold 가 한 글자를 여럿으로 늘려도(ß → ss) 원래 판정이 겹치면 겹친다(`?` 는 한 글자다)
+        self.assertTrue(overlaps("src/straße.py", "src/stra?e.py") and overlaps("src/stra?e.py", "src/straße.py"))
+        # macOS 는 NFC·NFD 표기를 같은 디렉터리로 본다
+        nfc, nfd = (unicodedata.normalize(form, "src/café/**") for form in ("NFC", "NFD"))
+        self.assertNotEqual(nfc, nfd)
+        self.assertTrue(overlaps(nfc, nfd) and overlaps(nfd, nfc))
+        self.assertTrue(overlaps(unicodedata.normalize("NFD", "src/CAFÉ/a.py"), "src/café/**"))
+        for a, b in (("src/café/**", "src/cafe/**"), ("src/Foo/**", "src/bar/**"), ("src/straße.py", "src/stra?e.txt")):
+            self.assertFalse(overlaps(a, b) or overlaps(b, a), (a, b))
 
     def test_owns_problem(self):
         for good in ("src/**", "src/*.py", "a/**/b", "src/?.py", "docs/a.md", "**"):
