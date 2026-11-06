@@ -124,15 +124,22 @@ def _precheck_fail(p, tid: str, n: int, problems: list[str]) -> dict:
             "problems": problems, "commit": sha}
 
 
+def _index(p, prefix: str, paths: list[str]) -> dict[str, str | None]:
+    """프로젝트 기준 경로의 인덱스 객체 ID(gitio.index_blobs 는 최상위 기준 경로를 받는다)."""
+    tops = {x: gitio.to_top(prefix, x) for x in paths}
+    blobs = gitio.index_blobs(p.root, list(tops.values()))
+    return {x: blobs[t] for x, t in tops.items()}
+
+
 def baseline(p, tid: str) -> dict:
-    """변조 기준점(설계 6.1 5): HEAD, HEAD 와 다른 추적 파일의 내용 해시, 추적 안 된 파일, 진행 중인 다른 태스크.
-    경로는 프로젝트 기준이다. 추적 파일은 저장소 전체를 본다(프로젝트 밖은 `../`, 리뷰 동안 바뀌면 경고를 내려고).
-    추적 안 된 파일은 프로젝트 안만 본다."""
+    """변조 기준점(설계 6.1 5): HEAD, HEAD 와 다른 추적 파일(작업 트리·인덱스)의 작업 트리 내용 해시와 인덱스 객체
+    ID, 추적 안 된 파일, 진행 중인 다른 태스크. 경로는 프로젝트 기준이다. 추적 파일은 저장소 전체를 본다(프로젝트
+    밖은 `../`, 리뷰 동안 바뀌면 경고를 내려고). 추적 안 된 파일은 프로젝트 안만 본다."""
     others = [s["id"] for s in state.all_states(p) if s["id"] != tid and s["status"] in ("working", "launch_failed")]
     prefix = gitio.top_prefix(p.root)
-    return {"at": now(), "head": gitio.head(p.root),
-            "dirty": gitio.hash_files(p.root, _rel(prefix, gitio.tracked_changes(p.root))),
-            "untracked": gitio.untracked(p.root), "in_progress": others}
+    changed = _rel(prefix, gitio.tracked_changes(p.root))
+    return {"at": now(), "head": gitio.head(p.root), "dirty": gitio.hash_files(p.root, changed),
+            "index": _index(p, prefix, changed), "untracked": gitio.untracked(p.root), "in_progress": others}
 
 
 def tamper_check(p, tid: str, base: dict) -> tuple[dict | None, list[str]]:
@@ -167,7 +174,9 @@ def tamper_check(p, tid: str, base: dict) -> tuple[dict | None, list[str]]:
                 continue
             outside.update(f for f in files if _outside(f))
             bad.update(f for f in files if not _outside(f) and not excluded(f))
-    now_dirty = gitio.hash_files(p.root, _rel(prefix, gitio.tracked_changes(p.root)))
+    changed = _rel(prefix, gitio.tracked_changes(p.root))
+    now_dirty = gitio.hash_files(p.root, changed)
+    now_index = _index(p, prefix, changed)
     candidates = set(base["dirty"]) | set(now_dirty)
     if head != base["head"]:
         candidates |= set(_rel(prefix, gitio.diff_names(p.root, base["head"], head)))
@@ -177,7 +186,12 @@ def tamper_check(p, tid: str, base: dict) -> tuple[dict | None, list[str]]:
         top = gitio.to_top(prefix, path)  # ls-tree --full-tree 는 최상위 기준 경로를 받는다
         before = base["dirty"][path] if path in base["dirty"] else gitio.blob(p.root, base["head"], top)
         after = now_dirty[path] if path in now_dirty else gitio.blob(p.root, head, top)
-        if before != after:
+        moved = before != after
+        if not moved and "index" in base:  # 스테이징한 뒤 작업 트리만 되돌린 변경은 인덱스에만 남는다
+            before = base["index"][path] if path in base["index"] else gitio.blob(p.root, base["head"], top)
+            after = now_index[path] if path in now_index else gitio.blob(p.root, head, top)
+            moved = before != after
+        if moved:
             (outside if _outside(path) else bad).add(path)
     fresh = {u for u in set(gitio.untracked(p.root)) - set(base["untracked"]) if not excluded(u)}
     warnings = sorted(fresh | outside)

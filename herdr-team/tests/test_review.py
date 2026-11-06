@@ -231,6 +231,34 @@ class TamperTest(ReviewCase):
         self.assertEqual((code, out.get("error", {}).get("code")), (1, "review_tampered"), out)
         self.assertEqual(out["tamper"]["paths"], ["src/app.py"])
 
+    def stage_then_restore(self, rel: str, text: str) -> None:
+        """rel 을 text 로 고쳐 스테이징한 뒤 작업 트리만 되돌린다. `git diff HEAD` 에는 나오지 않고 인덱스에만 남는다."""
+        path = self.proj / rel
+        original = path.read_text(encoding="utf-8")
+        path.write_text(text, encoding="utf-8")
+        self.git("add", "--", rel)
+        path.write_text(original, encoding="utf-8")
+        self.assertEqual(self.git("diff", "--name-only", "HEAD", "--", rel), "")
+        self.assertEqual(self.git("diff", "--cached", "--name-only", "--", rel).split(), [rel])
+
+    def test_staged_then_restored_product_edit_is_tamper(self):
+        self.reviewing()
+        self.act_review("T-001", "APPROVE")
+        self.stage_then_restore("src/app.py", "리뷰어가 고침\n")
+        code, out = self.finish()
+        self.assertEqual((code, out.get("error", {}).get("code")), (1, "review_tampered"), out)
+        self.assertEqual(out["tamper"]["paths"], ["src/app.py"])
+
+    def test_index_only_change_kept_from_baseline_is_not_tamper(self):
+        self.worked()
+        self.stage_then_restore("README.md", "리뷰 전에 스테이징\n")  # owns 밖이라 사전 검사는 보지 않는다
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual((code, out.get("status")), (0, "reviewing"), out)
+        self.assertIn("README.md", self.attempt("T-001")["baseline"]["index"])
+        self.act_review("T-001", "APPROVE")
+        code, out = self.finish()
+        self.assertEqual((code, out.get("status")), (0, "approved"), out)
+
     def test_committed_rename_out_of_product_is_tamper(self):
         self.reviewing()
         self.act_review("T-001", "APPROVE")
@@ -551,6 +579,20 @@ class SubdirReviewTest(ReviewCase):
         self.act_review("T-001", "APPROVE", extra={"delete": ["src/app.py"], "write": {"../README.md": "리뷰어\n"}})
         code, out = self.hteam("review-finish", "T-001")
         self.assertEqual((code, out["error"]["code"]), (1, "review_tampered"), out)
+        self.assertEqual(out["tamper"]["paths"], ["src/app.py"])  # 프로젝트 밖은 경고다
+        self.assertEqual(self.attempt("T-001")["warnings"], ["../README.md"])
+
+    def test_index_only_tamper_is_scoped_to_project(self):
+        self.reviewing()
+        self.act_review("T-001", "APPROVE")
+        for rel, text in (("src/app.py", "리뷰어가 고침\n"), ("../README.md", "리뷰어\n")):
+            path = self.proj / rel  # 스테이징한 뒤 작업 트리만 되돌린다(인덱스에만 남는다)
+            original = path.read_text(encoding="utf-8")
+            path.write_text(text, encoding="utf-8")
+            self.git("add", "--", rel)
+            path.write_text(original, encoding="utf-8")
+        code, out = self.hteam("review-finish", "T-001")
+        self.assertEqual((code, out.get("error", {}).get("code")), (1, "review_tampered"), out)
         self.assertEqual(out["tamper"]["paths"], ["src/app.py"])  # 프로젝트 밖은 경고다
         self.assertEqual(self.attempt("T-001")["warnings"], ["../README.md"])
 

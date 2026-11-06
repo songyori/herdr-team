@@ -112,9 +112,28 @@ def dirty(root, pathspecs: list[str]) -> list[str]:
 
 
 def tracked_changes(root) -> list[str]:
-    """HEAD 와 다른 추적 파일(스테이징·작업 트리 모두), 최상위 기준, 저장소 전체. 이름 바꾸기는 양쪽 경로를 다 낸다
-    (`git mv 제품 제외경로` 가 옛 경로를 숨기지 못하게)."""
-    return _z(run(root, *ABSOLUTE, "diff", "--name-only", "-z", "--no-renames", "HEAD").stdout)
+    """HEAD 와 다른 추적 파일(작업 트리나 인덱스 어느 한쪽이라도), 최상위 기준, 저장소 전체. 이름 바꾸기는 양쪽 경로를
+    다 낸다(`git mv 제품 제외경로` 가 옛 경로를 숨기지 못하게). `git diff HEAD` 는 작업 트리만 HEAD 와 견주므로
+    스테이징한 뒤 작업 트리만 되돌린 변경은 `diff --cached` 로 더한다."""
+    work = _z(run(root, *ABSOLUTE, "diff", "--name-only", "-z", "--no-renames", "HEAD").stdout)
+    staged = _z(run(root, *ABSOLUTE, "diff", "--cached", "--name-only", "-z", "--no-renames", "HEAD").stdout)
+    return sorted(set(work) | set(staged))
+
+
+def index_blobs(root, paths: list[str]) -> dict[str, str | None]:
+    """최상위 기준 경로(글자 그대로)의 인덱스 객체 ID(blob 과 견줄 수 있다). 인덱스에 없으면 None. 충돌 중이라 단계가
+    여럿이면 `단계:ID` 를 이어 붙인다(어느 blob 과도 같지 않다)."""
+    result: dict[str, str | None] = dict.fromkeys(paths)
+    if not paths:
+        return result
+    out = run(root, "ls-files", "-s", "-z", "--full-name", "--", *[f":(top,literal){x}" for x in paths]).stdout
+    found: dict[str, list[str]] = {}
+    for entry in _z(out):
+        meta, _, name = entry.partition("\t")
+        _, sha, stage = meta.split()
+        found.setdefault(name, []).append(sha if stage == "0" else f"{stage}:{sha}")
+    result.update({name: ",".join(shas) for name, shas in found.items() if name in result})
+    return result
 
 
 def untracked(root) -> list[str]:
