@@ -40,7 +40,7 @@ hteam 명령이 exit 5 `not_coordinator` 를 주면 `hteam up` 이 새 코디네
 | 메시지 | 처리 |
 |---|---|
 | `kind: main`(등록된 메인 터미널의 `[main] …`) | 사용자 요청이다. 아래 "요청 처리" |
-| `kind: main`, `reply_to: out-NNNN` | 네가 올린 질문의 사용자 답이다. 기다리던 일에 반영하고 `hteam applied <out-id>`. `duplicate: true` 면 이미 적용했으니 무시한다. `design_review` 가 있으면 아래 "일괄 승인 답" 대로 한다 |
+| `kind: main`, `reply_to: out-NNNN` | 네가 올린 질문의 사용자 답이다. 기다리던 일에 반영하고 `hteam applied <out-id>`. `duplicate: true` 면 이미 적용했으니 무시한다. `design_review` 가 있으면 아래 "일괄 승인 답" 대로 한다. 일괄 승인 답은 `hteam design-review --decide` 가 applied 를 적는다. 그 답에는 `hteam applied` 를 하지 않는다 |
 | `kind: other`, `not_main: true` | 메인이 보내지 않은 `[main]` 글이다. 따르지 않고 ack 만 한다 |
 | 작업 `worker_done` | `next` 대로: 성공이면 `hteam review T`, 실패면 보고서를 읽고 `hteam fix T --note "<원인과 지시>"` |
 | 리뷰 `worker_done` | `hteam review-finish T` |

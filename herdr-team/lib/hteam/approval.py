@@ -82,6 +82,9 @@ def _decision_problem(b: dict) -> str | None:
         return f"{name}: decision.fix 가 [{{task, round, note, because}}] 가 아니다"
     if not all(_task_ok(e) for e in d["accept"]):
         return f"{name}: decision.accept 가 [{{task, round}}] 가 아니다"
+    if not all(isinstance(e, dict) and isinstance(e.get("task"), str) and state.ID_RE.fullmatch(e["task"])
+               and isinstance(e.get("why"), str) for e in d["skipped"]):
+        return f"{name}: decision.skipped 가 [{{task, why}}] 가 아니다"
     if d.get("done") is not None and not isinstance(d["done"], str):
         return f"{name}: decision.done 이 시각이나 null 이 아니다"
     return None
@@ -433,6 +436,32 @@ def _decision_input(text: str | None, b: dict) -> dict[str, str]:
     return {k: v.strip() for k, v in fix.items()}
 
 
+CARRY = "이전 요청도 그대로 반영한다: "
+
+
+def _pending_request(st: dict) -> str | None:
+    """지금 라운드가 결정이 연 사용자 요청 라운드이고 아직 사용자에게 다시 보이지 않았으면(queued·진행 중·리뷰 중, 즉
+    awaiting_user 가 아니면) 그 요청. 그 라운드를 닫고 새로 열 때 이어 적는다."""
+    rd = state.current_round(st) or {}
+    if rd.get("from_user") and rd.get("note") and st["status"] != "awaiting_user":
+        return rd["note"]
+    return None
+
+
+def _merge(own: list[str], earlier: str | None, ups: list[str]) -> str:
+    """고칠 태스크의 요청 = 이번 사용자 요청 → 아직 반영하지 않은 앞 요청(그 라운드의 note) → 선행의 사용자 요청.
+    앞 요청에 이미 든 요청(" / " 로 나뉜 한 조각)은 다시 적지 않는다."""
+    def has(part: str) -> bool:
+        pat = f"(?:^| / |{re.escape(CARRY)}){re.escape(part)}(?: / |$)"
+        return earlier is not None and re.search(pat, earlier) is not None
+
+    parts = [x for x in own if not has(x)]
+    if earlier:
+        parts.append(f"{CARRY}{earlier}")
+    parts += [x for x in ups if not has(x)]
+    return " / ".join(parts)
+
+
 def _compute(p, cfg, b: dict, wanted: dict[str, str]) -> dict:
     """결정을 한 번 계산한다(프로젝트 잠금 안). 고칠 태스크 = 지목된 묶음 태스크 + 그것에 직간접으로 의존하는 승인 태스크
     전부(다른 묶음 포함). 각자 지금 라운드와 사용자 요청을 적는다. 지목된 태스크의 라운드가 다른 결정 때문에 이미 바뀌었어도
@@ -474,12 +503,12 @@ def _compute(p, cfg, b: dict, wanted: dict[str, str]) -> dict:
             if st["status"] in state.CLOSED:
                 skipped.append({"task": tid, "why": f"{st['status']}: 끝난 태스크라 고칠 수 없다(메인에 알린다)"})
                 continue
-        parts = [wanted[tid]] if tid in direct else []
-        prev = state.current_round(st) or {}
-        if tid in direct and tid not in live and prev.get("from_user") and prev.get("note"):
-            parts.append(f"이전 요청도 그대로 반영한다: {prev['note']}")  # 다른 결정이 연 라운드의 요청을 잃지 않는다
-        parts += [f"선행 {d} 의 사용자 요청을 반영한다: {wanted[d]}" for d in ups]
-        fix[tid] = {"task": tid, "round": st["round"], "note": " / ".join(parts), "because": ups}
+        # 지목된 태스크든 의존 태스크든, 지금 라운드가 아직 반영하지 않은 사용자 요청 라운드면 그 요청을 잇는다
+        # (다른 결정이 연 라운드를 이 결정이 닫는다. 답이 온 순서·선행이 여럿인 경우에도 요청을 잃지 않는다)
+        fix[tid] = {"task": tid, "round": st["round"],
+                    "note": _merge([wanted[tid]] if tid in direct else [], _pending_request(st),
+                                   [f"선행 {d} 의 사용자 요청을 반영한다: {wanted[d]}" for d in ups]),
+                    "because": ups}
     # 선행부터(결정 안의 선행 수가 적은 것부터). 라운드를 연 시각이 선행 → 의존 순서가 된다
     order = sorted(fix.values(), key=lambda e: (len([x for x in fix if x in graph.ancestors(e["task"])]),
                                                 state.id_number(e["task"])))
@@ -518,7 +547,7 @@ def _apply(p, oid: str, d: dict) -> dict:
         die_at("decision_after_fix")
     for e in d["accept"]:
         try:
-            tasks.accept(p, e["task"], expect_round=e["round"])
+            tasks.accept(p, e["task"], expect_round=e["round"], decision=oid)
             accepted.append(e["task"])
         except HteamError as exc:
             if exc.code not in ("round_changed", "task_closed"):

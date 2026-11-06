@@ -652,6 +652,160 @@ class ApprovalDecisionTest(DecisionCase):
         self.assertEqual(self.task_state("T-002")["status"], "awaiting_user")
 
 
+class ApprovalFollowupTest(DecisionCase):
+    """Task 4 리뷰 뒤: 앞선 사용자 요청 잇기, accept·fix 의 결정 차단과 라운드 우선, 리뷰 지적 유지, 기록 검사."""
+
+    def work(self, tid):
+        rnd = self.task_state(tid)["round"]
+        return (self.state_dir / f"tasks/{tid}/r{rnd}-work.md").read_text(encoding="utf-8")
+
+    def held(self, fix):
+        """T-001 의 묶음(out-0001) 결정을 기록만 하고 멈췄다(적용 전)."""
+        code, _ = self.decide("out-0001", fix, env={"HTEAM_TEST_DIE_AT": "decision_recorded"})
+        self.assertEqual(code, 137)
+
+    def test_dependent_refix_keeps_an_earlier_request_in_reverse_order(self):
+        # 둘째 묶음의 답(T-003 글꼴)을 먼저 처리하고 첫 묶음의 답(T-001 버튼)이 뒤에 왔다. T-003 은 의존 태스크로 다시
+        # 고쳐지지만 아직 띄우지 않은 앞 사용자 요청(글꼴)을 잃지 않는다
+        self.task("T-001", "awaiting_user")
+        self.assertEqual(self.review()[1].get("id"), "out-0001")
+        self.task("T-003", "awaiting_user", depends="T-001")
+        self.assertEqual(self.review()[1].get("id"), "out-0002")
+        self.assertEqual(self.decide("out-0002", {"T-003": "글꼴을 바꾼다"})[0], 0)
+        self.assertEqual(self.decide("out-0001", {"T-001": "버튼을 크게"})[0], 0)
+        self.assertEqual(self.rounds("T-003"), [("T-003", "launch_failed", 3)])
+        work = self.work("T-003")
+        self.assertIn("글꼴을 바꾼다", work)
+        self.assertIn("선행 T-001 의 사용자 요청을 반영한다: 버튼을 크게", work)
+
+    def test_dependent_of_two_predecessors_in_different_batches_keeps_both_requests(self):
+        self.task("T-001", "awaiting_user")
+        self.assertEqual(self.review()[1].get("id"), "out-0001")
+        self.task("T-002", "awaiting_user")
+        self.assertEqual(self.review()[1].get("id"), "out-0002")
+        self.task("T-003", "awaiting_user", depends="T-001, T-002")  # 아직 묻지 않았다
+        self.assertEqual(self.decide("out-0001", {"T-001": "버튼을 크게"})[0], 0)
+        self.assertEqual(self.decide("out-0002", {"T-002": "글꼴을 바꾼다"})[0], 0)
+        self.assertEqual(self.rounds("T-003"), [("T-003", "launch_failed", 3)])
+        work = self.work("T-003")
+        self.assertIn("선행 T-001 의 사용자 요청을 반영한다: 버튼을 크게", work)
+        self.assertIn("선행 T-002 의 사용자 요청을 반영한다: 글꼴을 바꾼다", work)
+
+    def test_request_already_carried_is_not_written_twice(self):
+        earlier = "버튼을 크게 / 이전 요청도 그대로 반영한다: 선행 T-001 의 사용자 요청을 반영한다: 색을 바꾼다"
+        merged = approval._merge(["버튼을 크게"], earlier, ["선행 T-001 의 사용자 요청을 반영한다: 색을 바꾼다",
+                                                         "선행 T-002 의 사용자 요청을 반영한다: 글꼴"])
+        self.assertEqual(merged, f"이전 요청도 그대로 반영한다: {earlier} / 선행 T-002 의 사용자 요청을 반영한다: 글꼴")
+        self.assertEqual(approval._merge(["글꼴"], None, ["선행 T-001 의 사용자 요청을 반영한다: 버튼"]),
+                         "글꼴 / 선행 T-001 의 사용자 요청을 반영한다: 버튼")
+
+    def test_replay_passes_an_accept_item_a_separate_fix_moved_on(self):
+        # 결정(모두 승인)을 기록한 뒤 적용 전에 따로 한 fix 가 T-001 을 r2 로 옮겼다. 다시 하면 그 항목은 한 것으로 넘기고
+        # 결정을 끝낸다(bad_state 로 멈춰 다른 묶음을 decision_pending 으로 막지 않는다)
+        self.task("T-001", "awaiting_user")
+        self.review()
+        self.held({})
+        code, out = self.hteam("fix", "T-001", "--note=따로 고친다")
+        self.assertEqual((code, self.task_state("T-001")["round"]), (0, 2), out)
+        code, out = self.decide("out-0001")
+        self.assertEqual((code, out.get("passed"), out.get("accepted")), (0, ["T-001"], []), out)
+        self.assertIsNotNone(self.record()["batches"][0]["decision"]["done"])
+
+    def test_accept_round_mismatch_changes_nothing(self):
+        self.task("T-001", "awaiting_user")
+        code, out = self.hteam("accept", "T-001", "--round", "2")
+        self.assertEqual((code, out["error"]["code"], out.get("round")), (3, "round_changed", 1), out)
+        self.assertEqual(self.rounds("T-001"), [("T-001", "awaiting_user", 1)])
+
+    def test_dependent_in_changes_keeps_the_review_findings(self):
+        from hteam.paths import review_rel
+        self.task("T-001", "awaiting_user")
+        self.review()
+        self.task("T-002", "changes", depends="T-001")
+        with state.edit(self.p, "T-002") as st:
+            st["rounds"][-1]["verdict"] = "REQUEST_CHANGES"
+        prior = review_rel("T-002", 1)
+        self.commit(prior, "# 리뷰\nREQUEST_CHANGES: 여백이 틀렸다\n", "[T-002] review r1: REQUEST_CHANGES")
+        self.assertEqual(self.decide("out-0001", {"T-001": "버튼을 크게"})[0], 0)
+        work = self.work("T-002")
+        self.assertIn(f"`{prior}` 의 지적을 모두 다룬다", work)
+        self.assertIn("사용자 요청: 선행 T-001 의 사용자 요청을 반영한다: 버튼을 크게", work)
+        self.assertNotIn("이전 리뷰는 승인이었다", work)
+
+    def test_dependents_reviewing_or_approved_are_rebuilt(self):
+        self.task("T-001", "awaiting_user")
+        self.review()
+        self.task("T-002", "reviewing", depends="T-001")
+        self.task("T-003", "approved", depends="T-001")
+        code, out = self.decide("out-0001", {"T-001": "버튼을 크게"})
+        self.assertEqual((code, [f["task"] for f in out["fixed"]]), (0, ["T-001", "T-002", "T-003"]), out)
+        self.assertEqual(self.rounds("T-002", "T-003"), [("T-002", "launch_failed", 2), ("T-003", "launch_failed", 2)])
+
+    def test_accept_of_a_held_target_is_refused(self):
+        self.task("T-001", "awaiting_user")
+        self.review()
+        self.held({"T-001": "버튼을 크게"})
+        code, out = self.hteam("accept", "T-001")
+        self.assertEqual((code, out["error"]["code"], out.get("pending")), (3, "decision_pending", "out-0001"), out)
+        self.assertEqual(self.rounds("T-001"), [("T-001", "awaiting_user", 1)])
+        code, out = self.decide("out-0001")  # 사용자 수정 요청이 그대로 적용된다
+        self.assertEqual((code, out.get("fixed")), (0, [{"task": "T-001", "round": 2}]), out)
+
+    def test_plain_fix_of_a_held_task_is_refused_before_cancel(self):
+        self.task("T-001", "awaiting_user")
+        self.review()
+        self.task("T-002", "working", depends="T-001")
+        self.held({"T-001": "버튼을 크게"})
+        code, out = self.hteam("fix", "T-002", "--note=따로 고친다")
+        self.assertEqual((code, out["error"]["code"], out.get("pending")), (3, "decision_pending", "out-0001"), out)
+        self.assertFalse(self.task_state("T-002")["rounds"][-1]["work"].get("canceled"))  # 라운드를 닫지 않았다
+        self.assertEqual(self.rounds("T-002"), [("T-002", "working", 1)])
+
+    def test_canceled_decision_item_points_at_decide(self):
+        # 결정의 fix 가 취소를 저장한 뒤 멈췄다. status 는 닫는 중 안내가 아니라 결정을 마저 하라고 한다
+        self.task("T-001", "awaiting_user")
+        self.review()
+        self.task("T-002", "working", depends="T-001")
+        self.held({"T-001": "버튼을 크게"})
+        with state.edit(self.p, "T-002") as st:
+            st["rounds"][-1]["work"]["canceled"] = True
+        task = {t["id"]: t for t in self.hteam("status")[1]["tasks"]}["T-002"]
+        self.assertEqual(task["next"], [H, "design-review", "--decide", "out-0001"])
+
+    def test_decision_with_bad_skipped_is_a_bad_record(self):
+        self.task("T-001", "awaiting_user")
+        self.review()
+        data = self.record()
+        data["batches"][0]["decision"] = {"at": "2026-11-06T10:00:00Z", "input": {}, "fix": [], "accept": [],
+                                          "skipped": [{"task": "T-001"}], "done": None}  # why 가 없다
+        path = self.state_dir / "design-review.json"
+        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        before = path.read_text(encoding="utf-8")
+        code, out = self.decide("out-0001")
+        self.assertEqual((code, out["error"]["code"]), (1, "bad_side_file"), out)
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+
+    def test_supplement_fix_from_awaiting_user_is_not_a_user_request(self):
+        self.task("T-001", "awaiting_user")
+        self.write_spec("T-009", "designer", owns="docs/design/system/**", commit=False)
+        code, out = self.hteam("fix", "T-001", "--supplement", "T-009", "--note=보강을 반영한다")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("from_user", self.task_state("T-001")["rounds"][-1])
+        work = self.work("T-001")
+        self.assertIn("코디네이터 메모: 보강을 반영한다", work)
+        self.assertNotIn("사용자가 일괄 승인에서 수정을 요청했다", work)
+
+    def test_status_hint_for_a_stale_approval_task(self):
+        self.task("T-001", "awaiting_user")
+        self.task("T-002", "awaiting_user", depends="T-001")
+        self.opened("T-001", 1, "2026-11-06T09:00:00Z")
+        self.opened("T-002", 1, "2026-11-06T10:00:00Z")
+        self.opened("T-001", 2, "2026-11-06T10:05:00Z")  # 선행이 결정 밖에서 다시 고쳐졌다
+        task = {t["id"]: t for t in self.hteam("status")[1]["tasks"]}["T-002"]
+        self.assertIsNone(task["next"])
+        self.assertIn("선행 T-001 가 이 라운드를 연 뒤에 결정 밖에서 고쳐졌다", task["hint"])
+
+
 class ApprovalFlowTest(DecisionCase):
     """실제 워커로: accept → awaiting_user → design-review → 메인 답 → wait 주석 → 결정 → start-ready(설계 11.4)."""
 
@@ -786,6 +940,15 @@ class ApprovalFlowTest(DecisionCase):
         task = {t["id"]: t for t in out["tasks"]}["T-001"]
         self.assertIsNone(task["next"])
 
+    def test_unreadable_record_hint_does_not_say_applied(self):
+        self.task("T-001", "awaiting_user")
+        self.assertEqual(self.review()[0], 0)
+        self.assertEqual(self.hteam("answer", "out-0001", "모두 승인 (추천)", as_="main")[0], 0)
+        (self.state_dir / "design-review.json").write_text("{broken", encoding="utf-8")
+        [info] = self.wait_mains()
+        self.assertIn("warning", info)
+        self.assertNotIn(f"{H} applied", info["hint"])  # 일괄 승인 답인지 모르면 손으로 applied 하라고 하지 않는다
+
 
 class ApprovalDocsTest(unittest.TestCase):
     def test_coordinator_and_main_docs(self):
@@ -799,6 +962,11 @@ class ApprovalDocsTest(unittest.TestCase):
         main = (ROOT / "templates" / "CLAUDE.section.md").read_text(encoding="utf-8")
         self.assertIn("`수정 요청: <태스크 ID 와 고칠 내용>`", main)
         self.assertIn("디자인 `docs/design/`", main)
+
+    def test_design_review_answer_is_applied_by_decide(self):
+        coord = (ROOT / "templates" / "coordinator.md").read_text(encoding="utf-8")
+        self.assertIn("일괄 승인 답은 `hteam design-review --decide` 가 applied 를 적는다. 그 답에는 `hteam applied` 를 하지 "
+                      "않는다", coord)
 
 
 if __name__ == "__main__":

@@ -470,15 +470,16 @@ def _closing(p, tid: str, seen: dict) -> Iterator[dict]:
 
 
 def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: bool, cli: dict,
-        expect_round: int | None = None, queue: bool = False, from_user: bool | None = None,
+        expect_round: int | None = None, queue: bool = False, from_user: bool = False,
         extra_from: tuple[str, ...] = ()) -> dict:
     """새 라운드(설계 6.4). 입력(사양·owns·잠금)을 먼저 검사하고, 이전 라운드들의 작업·리뷰 Dispatch 를 모두 정리한
     뒤에만 새 라운드를 쓰고 띄운다(이전 워커와 새 워커가 같은 폴더에서 함께 일하지 않게). 일하는 중인 워커는
     abandon --kill 뒤 release.
 
     일괄 승인 결정(설계 11.4)이 부를 때: queue 면 새 라운드를 쓰고 띄우지 않는다(launch_failed, queued. start-ready 가
-    의존이 풀린 뒤 띄운다). from_user 가 None 이면 awaiting_user 에서 연 라운드가 사용자 요청이다. extra_from 은
-    FIX_FROM 밖에서 더 받을 상태다(결정이 고치는 의존 태스크는 리뷰 중·승인됨이어도 다시 만든다)."""
+    의존이 풀린 뒤 띄운다). from_user 면 사용자 요청 라운드다(결정만 준다. awaiting_user 에서의 다른 fix, 예를 들어
+    --supplement 는 사용자 요청이 아니다). extra_from 은 FIX_FROM 밖에서 더 받을 상태다(결정이 고치는 의존 태스크는
+    리뷰 중·승인됨이어도 다시 만든다)."""
     cfg = config.load(p)
     spec = specs.check(p, cfg, tid)
     choice = config.resolve(cfg, spec.role, spec.front, cli)
@@ -505,6 +506,8 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
     allowed(state.require(p, tid))
     owns = checked_owns(cfg, spec)  # 입력 검사(owns·잠금)는 이전 워커를 정리하기 전에 한다
     _check_locks(p, cfg, spec, owns)
+    if not queue:  # 끝나지 않은 결정이 고치는 태스크면 워커를 죽이거나 라운드를 닫기 전에 거부한다(_closing 에서 다시 본다)
+        _start_gate(p, cfg, spec, check_deps=False)
     seen: dict = {}
     _close_round(p, h, tid, kill=True, check=allowed, seen=seen)
     with _closing(p, tid, seen) as st:
@@ -512,10 +515,12 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
         if not queue:  # 결정 밖의 fix 는 끝나지 않은 결정이 고치는 태스크를 띄우지 않는다(결정 자신의 fix 는 queue 다)
             _start_gate(p, cfg, spec, check_deps=False)
         old = st["status"]
+        prior = state.current_round(st) or {}
         st["role"] = spec.role  # 첫 실행과 같이 워커가 뜨는 사양의 직무로 맞춘다. planner 하나 검사가 저장된 직무를 본다
         rd = _new_round(st, st["round"] + 1, gitio.head(p.root), choice, note=note, supplement=supplement)
-        if (old == "awaiting_user") if from_user is None else from_user:
+        if from_user:
             rd["from_user"] = True  # 사용자 일괄 승인의 수정 요청(설계 11.4). 수정 블록이 사용자 요청으로 적는다
+            rd["prior_verdict"] = prior.get("verdict")  # 이전 라운드의 리뷰 판정. 수정 요청이면 그 지적도 다루게 한다
         if queue:
             rd["queued"] = True
         text = compose.work_spec(p, cfg, spec, rd, owns)
@@ -578,7 +583,18 @@ def _live_error(tid: str, slot: dict, row: dict, horch_cmd: str) -> HteamError:
                       f"worker-release --dispatch {did}. 태스크를 버리려면 {SHIM} drop {tid} --force", data={"dispatch": did})
 
 
-def accept(p, tid: str, expect_round: int | None = None) -> dict:
+def _held_for_accept(p, tid: str, decision: str | None) -> None:
+    """끝나지 않은 일괄 승인 결정이 고치는 태스크(또는 그 의존 태스크)는 손으로 accept 하지 않는다. 사용자 수정 요청이
+    결정을 다시 할 때 round_changed 로 조용히 사라진다(설계 11.4). decision 은 그 결정 자신의 accept 항목(_apply)이다."""
+    from . import approval  # approval 이 tasks 를 쓴다. 불러오는 순서가 꼬이지 않게 여기서 가져온다
+    held = approval.held_by_decision(p, tid)
+    if held and held != decision:
+        raise HteamError("decision_pending", f"{tid} 는 끝나지 않은 일괄 승인 결정 {held} 이 고치는 태스크이거나 그 "
+                         "의존 태스크다", CONFLICT, f"`{SHIM} design-review --decide {held}` 로 결정을 마저 한다",
+                         data={"pending": held})
+
+
+def accept(p, tid: str, expect_round: int | None = None, decision: str | None = None) -> dict:
     """approved → done(승인 직무면 awaiting_user), awaiting_user → done(설계 6.4). 작업 Dispatch 를 release 한다
     (같은 horch Task 의 이전 시도도).
 
@@ -588,12 +604,13 @@ def accept(p, tid: str, expect_round: int | None = None) -> dict:
     release 실패는 Dispatch 마다 경고로 남기고 cleaned 는 쓰지 않는다. 전이는 한다."""
     cfg = config.load(p)
     st = state.require(p, tid)
+    _expect_round(tid, st, expect_round)  # 상태보다 먼저: 다른 라운드로 옮겨 갔으면 그 항목은 이미 처리된 것이다
     if st["status"] in state.CLOSED:
         raise state.closed_error(st)
     if st["status"] not in ("approved", "awaiting_user"):
         raise HteamError("bad_state", f"{tid} 는 {st['status']} 다(accept 는 approved·awaiting_user 에서)", CONFLICT,
                          data={"status": st["status"]})
-    _expect_round(tid, st, expect_round)
+    _held_for_accept(p, tid, decision)
     to = "awaiting_user" if st["status"] == "approved" and cfg.is_approval(st["role"]) else "done"
     h = Horch(p.horch_home)
     rows = h.workers()
@@ -616,6 +633,7 @@ def accept(p, tid: str, expect_round: int | None = None) -> dict:
                 warnings.append(f"작업 Dispatch {row['id']}({slot['title']})를 정리하지 못했다: {exc.message}")
     die_at("accept_before_final")
     with state.project_lock(p):  # 선행의 새 라운드(fix 가 같은 잠금 안에서 쓴다)와 겹치지 않게 이 안에서 다시 본다
+        _held_for_accept(p, tid, decision)  # 결정 기록도 같은 잠금 안에서 쓴다
         if st["status"] == "awaiting_user" and cfg.is_approval(st["role"]):
             _refuse_stale(p, cfg, tid)
         with state.edit(p, tid, expect={st["status"]}) as cur:

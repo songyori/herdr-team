@@ -158,6 +158,8 @@ def _design_review(p, info: dict, oid: str, m: dict, states: list[dict] | None) 
         view = approval.reply_view(p, oid, m.get("body") or "", states)
     except HteamError as exc:
         info["warning"] = f"이 답이 일괄 승인 답인지 보지 못했다: {exc.message}. 고친 뒤 다시 받는다(결정하지 않는다)"
+        # 일괄 승인 답이면 applied 는 --decide 가 적는다. 모르는 채로 손으로 적으면 결정 없이 답이 사라진다
+        info["hint"] = "일괄 승인 기록을 읽지 못했다. 이 답을 처리하지 않고 applied 도 적지 않는다. 메인에 알려 기록을 고친 뒤 다시 받는다"
         return
     if view is not None:
         info["design_review"] = view
@@ -419,11 +421,11 @@ def next_step(cfg, st: dict, by_task: dict[str, dict], have_rows: bool,
     if s in state.CLOSED or not rd:
         return None, None
     slot = rd["work"]
-    if _round_canceled(rd):
-        return None, CANCELED_HINT
-    if appr is not None and tid in appr.get("replay", {}):
+    if appr is not None and tid in appr.get("replay", {}):  # 결정의 fix 가 취소를 저장한 뒤 멈췄어도 결정을 마저 한다
         oid = appr["replay"][tid]  # 일반 fix·accept 를 권하지 않는다(사용자 요청은 결정 기록에 있다)
         return H("design-review", "--decide", oid), f"일괄 승인 결정 {oid} 을 기록대로 마저 한다"
+    if _round_canceled(rd):
+        return None, CANCELED_HINT
     no_rows = None if have_rows else "horch 정보를 읽지 못했다(코디네이터 터미널에서 본다)"
 
     def latest(horch_task):
