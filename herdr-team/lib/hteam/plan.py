@@ -190,8 +190,16 @@ def check(p, cfg, path: Path) -> dict:
     groups = _checked(cfg, tasks)
     plan = read_json(p.plan_file, None)
     if plan is not None:
-        _keep_applied(plan["tasks"], tasks)
+        _keep_applied(_surviving(p, plan), tasks)
     return {"tasks": len(tasks), "groups": groups}
+
+
+def _surviving(p, plan: dict) -> dict:
+    """plan.json 의 tasks 가운데 다음 apply 의 복구(_settle) 뒤에도 남을 항목(읽기 전용). pending 이 아니면 남는다.
+    pending 은 _settle 처럼 사양이 HEAD 에 있으면(커밋 뒤에 멈춤, 마저 끝낸다) 남고 없으면(되돌린다) 빠진다."""
+    pending = {r["key"]: _rel(p, r["id"]) for r in plan.get("pending", [])}
+    committed = set(_committed(p, list(pending.values())))
+    return {k: v for k, v in plan["tasks"].items() if k not in pending or pending[k] in committed}
 
 
 def digest(task: dict) -> str:

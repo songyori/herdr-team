@@ -249,6 +249,37 @@ class PlanApplyTest(TeamCase):
             self.assertEqual((code, out["error"]["code"], out["error"]["message"]),
                              (2, "plan_changed", needle), out)
 
+    def test_check_skips_pending_that_recovery_rolls_back(self):
+        # 커밋 전에 멈춘 apply 의 pending 은 다음 apply 가 되돌린다. 그 초안을 고쳐도 check 와 apply --append 가 같이 받는다
+        base = [task("a")]
+        self.write_plan(base)
+        self.assertEqual(self.hteam("plan", "apply")[0], 0)
+        self.write_plan(base + [task("b", "tester", ["tests/**"])])
+        code, out = self.hteam("plan", "apply", "--append", env={"HTEAM_TEST_DIE_AT": "plan_before_commit"})
+        self.assertEqual(code, 137, out)
+        self.assertEqual([r["key"] for r in self.pending()], ["b"])
+        edited = base + [task("b", "tester", ["tests/**"], title="고친 초안")]
+        self.write_plan([task("a", title="바뀜")] + edited[1:])  # 적용한 항목은 여전히 비교한다
+        code, out = self.hteam("plan", "check", as_=None)
+        self.assertEqual((code, out["error"]["code"]), (2, "plan_changed"), out)
+        self.write_plan(edited)
+        code, out = self.hteam("plan", "check", as_=None)
+        self.assertEqual((code, out.get("tasks")), (0, 2), out)
+        code, out = self.hteam("plan", "apply", "--append")
+        self.assertEqual((code, out.get("applied")), (0, [{"key": "b", "id": "T-002"}]), out)
+        self.assertIn("title: 고친 초안", (self.proj / ".herdr-team/tasks/T-002.md").read_text())
+
+    def test_check_compares_pending_committed_before_crash(self):
+        # 커밋 뒤에 멈춘 apply 의 pending 은 다음 apply 가 마저 끝낸다. 고치면 check 도 apply 처럼 거부한다
+        self.write_plan([task("a"), task("b", "tester", ["tests/**"])])
+        self.die("plan_after_commit")
+        self.assertEqual([r["key"] for r in self.pending()], ["a", "b"])
+        self.write_plan([task("a"), task("b", "tester", ["tests/**"], title="바뀜")])
+        for args in (("check",), ("apply", "--append")):
+            code, out = self.hteam("plan", *args, as_=None if args == ("check",) else "coordinator")
+            self.assertEqual((code, out["error"]["code"], out["error"]["message"]),
+                             (2, "plan_changed", "이미 적용한 b 의 내용이 바뀌었다"), (args, out))
+
     def test_missing_plan_json_with_planned_tasks(self):
         self.write_plan([task("a")])
         self.assertEqual(self.hteam("plan", "apply")[0], 0)
