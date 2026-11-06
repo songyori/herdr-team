@@ -68,10 +68,15 @@ def _spec_file(p, tid: str, n: int):
     return p.task_dir(tid) / f"r{n}-work.md"
 
 
+FINISHED = frozenset({"done", "awaiting_user", "approved", "dropped"})
+
+
 def _finished_round(st: dict) -> int:
-    """이 선행에서 지금 볼 수 있는 마지막 끝난 라운드. done·awaiting_user 면 지금 라운드, 아니면(일하는 중·리뷰 중·고치는
-    중·띄우지 않은 라운드) 그 앞 라운드다(0 은 끝난 결과가 없다)."""
-    return st["round"] if st["status"] in ("done", "awaiting_user") else max(st["round"] - 1, 0)
+    """이 선행에서 지금 볼 수 있는 마지막 끝난 라운드. done·awaiting_user·approved·dropped 면 지금 라운드, 아니면(일하는
+    중·리뷰 중·고치는 중·띄우지 않은 라운드) 그 앞 라운드다(0 은 끝난 결과가 없다). approved 는 리뷰가 승인한 라운드가
+    이미 커밋됐고 accept 는 파일을 바꾸지 않는다. dropped 는 새 라운드를 열지 않으므로 앞 라운드로 적으면 의존 태스크가
+    영영 stale 이 된다."""
+    return st["round"] if st["status"] in FINISHED else max(st["round"] - 1, 0)
 
 
 def _basis(p, tid: str) -> dict[str, int]:

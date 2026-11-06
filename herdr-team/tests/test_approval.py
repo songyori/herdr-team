@@ -310,6 +310,47 @@ class DesignReviewTest(ApprovalCase):
             st["rounds"][-1]["basis"] = {}
         self.assertEqual(approval.stale(self.p, config.load(self.p), state.all_states(self.p)), {"T-002": ["T-001"]})
 
+    def start_dependent(self):
+        """T-001 에 의존하는 T-002 를 손으로 띄우고 그 라운드의 basis 를 돌려준다."""
+        self.write_spec("T-002", "designer", owns="docs/design/screens/t-002/**", depends="T-001", commit=False)
+        state.create(self.p, "T-002", "designer")
+        code, out = self.hteam("start", "T-002")
+        self.assertEqual(code, 0, out)
+        return self.task_state("T-002")["rounds"][-1]["basis"]
+
+    def test_predecessor_dropped_after_approval_is_finished(self):
+        # T-001 r1 을 awaiting_user 에서 버린 뒤 T-002 가 떴다. 버린 태스크는 새 라운드를 열지 않는다: stale 이 아니다
+        self.task("T-001", "awaiting_user")
+        self.move("T-001", "dropped")
+        self.assertEqual(self.start_dependent(), {"T-001": 1})
+        self.move("T-002", "awaiting_user")
+        self.assertEqual(approval.stale(self.p, config.load(self.p), state.all_states(self.p)), {})
+
+    def test_fix_after_predecessor_dropped_mid_round_is_not_stale(self):
+        # T-002 r1 이 T-001 r1 을 보고 뜬 뒤 T-001 r2 를 일하다 버렸다. T-002 r1 은 stale 이고, 힌트대로 fix 한 r2 는 아니다
+        self.task("T-001", "awaiting_user")
+        self.assertEqual(self.start_dependent(), {"T-001": 1})
+        self.move("T-001", "working", rnd=2)
+        self.move("T-001", "dropped")
+        self.move("T-002", "awaiting_user")
+        cfg = config.load(self.p)
+        self.assertEqual(approval.stale(self.p, cfg, state.all_states(self.p)), {"T-002": ["T-001"]})
+        code, out = self.hteam("fix", "T-002", "--note=선행이 버려졌다")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.task_state("T-002")["rounds"][-1]["basis"], {"T-001": 2})
+        self.move("T-002", "awaiting_user")
+        self.assertEqual(approval.stale(self.p, cfg, state.all_states(self.p)), {})
+        code, out = self.review()
+        self.assertEqual((code, out.get("tasks")), (0, [{"task": "T-002", "round": 2}]), out)
+
+    def test_approved_predecessor_round_is_finished(self):
+        # 리뷰가 승인한 T-001 r2 는 이미 커밋됐다. accept 는 파일을 바꾸지 않으므로 그 사이 뜬 T-002 는 r2 를 봤다
+        self.task("T-001", "approved", rnd=2)
+        self.assertEqual(self.start_dependent(), {"T-001": 2})
+        self.move("T-002", "awaiting_user")
+        self.move("T-001", "awaiting_user")
+        self.assertEqual(approval.stale(self.p, config.load(self.p), state.all_states(self.p)), {})
+
     def test_planner_held_by_the_single_planner_rule_does_not_block(self):
         # 승인 직무가 기획이다. 기획은 한 번에 하나라 T-001 이 끝나기 전에는 T-002 를 시작할 수 없다(planner_busy)
         (self.team / "config.toml").write_text(
