@@ -343,13 +343,14 @@ class DesignReviewTest(ApprovalCase):
         code, out = self.review()
         self.assertEqual((code, out.get("tasks")), (0, [{"task": "T-002", "round": 2}]), out)
 
-    def test_approved_predecessor_round_is_finished(self):
-        # 리뷰가 승인한 T-001 r2 는 이미 커밋됐다. accept 는 파일을 바꾸지 않으므로 그 사이 뜬 T-002 는 r2 를 봤다
+    def test_approved_predecessor_round_is_not_yet_finished(self):
+        # approved 에는 작업 워커가 아직 살아 있을 수 있다(리뷰는 worker-retain 실패를 견딘다). 그 워커가 같은 라운드에서
+        # 더 고치면 r2 결과가 바뀌므로 approved 는 끝난 라운드가 아니다(보수적: 승인 그대로면 stale 이 한 번 더 뜬다)
         self.task("T-001", "approved", rnd=2)
-        self.assertEqual(self.start_dependent(), {"T-001": 2})
+        self.assertEqual(self.start_dependent(), {"T-001": 1})
         self.move("T-002", "awaiting_user")
         self.move("T-001", "awaiting_user")
-        self.assertEqual(approval.stale(self.p, config.load(self.p), state.all_states(self.p)), {})
+        self.assertEqual(approval.stale(self.p, config.load(self.p), state.all_states(self.p)), {"T-002": ["T-001"]})
 
     def test_planner_held_by_the_single_planner_rule_does_not_block(self):
         # 승인 직무가 기획이다. 기획은 한 번에 하나라 T-001 이 끝나기 전에는 T-002 를 시작할 수 없다(planner_busy)

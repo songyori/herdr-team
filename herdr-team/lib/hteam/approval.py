@@ -9,7 +9,7 @@ approved·changes·launch_failed)이거나 지금 바로 시작할 수 있는(�
 stale: 승인 태스크의 선행(직간접)이 이 태스크의 현재 라운드를 연 뒤에 새 라운드를 열었으면 이 태스크는 옛 선행을 보고
 만든 것이다. 일괄 승인 결정(decide)은 의존 승인 태스크를 선행과 함께 고치므로 stale 은 결정 밖에서 선행을 고친 경우뿐이다.
 읽기만 하는 검사다: stale 인 awaiting_user 태스크는 묻지 않고(approval_stale) accept 가 받지 않는다. 기준은 그 라운드의
-워커를 새로 띄울 때 본 선행의 끝난 라운드(basis, tasks._finished_round: 선행이 done·awaiting_user·approved·dropped 면
+워커를 새로 띄울 때 본 선행의 끝난 라운드(basis, tasks._finished_round: 선행이 done·awaiting_user·dropped 면
 그 라운드, 아니면 앞 라운드. 같은 라운드 복구가 기존 Dispatch 를 이어 붙이면 그대로 둔다)다. basis 에 없는 선행은
 라운드 0 을 본 것으로 본다. basis 가 없는 라운드(옛 기록)는 history 의 그 라운드 start·fix 시각으로 본다.
 
@@ -145,7 +145,7 @@ def stale(p, cfg, states: list[dict], graph: Graph | None = None) -> dict[str, l
     """{승인 태스크: [이 태스크의 현재 라운드를 띄운 뒤에 새 라운드를 연 선행]}. 끝난 태스크는 보지 않는다.
 
     기준은 그 라운드의 워커를 새로 띄울 때 본 선행의 끝난 라운드(`basis`, tasks._launch_basis·_finished_round: 선행이
-    done·awaiting_user·approved·dropped 면 그 라운드, 아니면 앞 라운드)다: 선행의 지금 라운드가 그보다 크면 stale 이다.
+    done·awaiting_user·dropped 면 그 라운드, 아니면 앞 라운드)다: 선행의 지금 라운드가 그보다 크면 stale 이다.
     basis 에 없는 선행은 0 으로 본다(_seen). 미리 만들어 둔(queued) 라운드는 실제로 띄울 때 기록하므로, 기다리는 동안
     선행이 리뷰에서 한 번 더 고쳐져도 그 최신 선행을 보고 만든 결과는 stale 이 아니다. 같은 라운드 복구가 옛 Dispatch 를
     이어 붙이면 basis 는 처음 것 그대로라 그 사이 고쳐진 선행을 놓치지 않는다. basis 가 없는 라운드(옛 기록)는 라운드를
