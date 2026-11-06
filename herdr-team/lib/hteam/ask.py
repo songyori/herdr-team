@@ -102,8 +102,9 @@ def pending(p, tid: str) -> dict:
 
 
 def history(p, tid: str) -> dict:
+    """이 태스크의 모든 질문과 답(이전 라운드 포함). render 는 메인이 사용자에게 보인 질문 그대로다(context·선택지)."""
     acks = _acks(p)
-    return {"history": [_item(p, e, acks) for e in _entries(p, tid)]}
+    return {"history": [{**_item(p, e, acks), "render": e["render"]} for e in _entries(p, tid)]}
 
 
 def _cmd(args) -> dict:

@@ -49,7 +49,9 @@ def work_spec(p, cfg, spec, rd: dict, owns: list[str]) -> str:
         if (p.root / prior).is_file():
             parts.append(f"`{prior}` 의 지적을 모두 다룬다. 지적마다 어떻게 다뤘는지 보고서 `## r{n}` 절에 적는다.")
         if spec.role in ASK_ROLES:
-            parts.append(f"먼저 `{SHIM} ask-user --task {tid} --pending` 과 `--history` 로 이전 질문과 답을 확인한다.")
+            parts.append(f"먼저 `{SHIM} ask-user --task {tid} --pending` 과 `--history` 로 이전 질문과 답을 확인한다. "
+                         f"답이 없는 질문이 있으면 새로 묻지 않고 `{SHIM} ask-user --task {tid} --wait <id>` 로 그 답을 "
+                         "기다린다(Bash `timeout: 600000`).")
         if rd.get("supplement"):
             sup = rd["supplement"]
             parts.append(f"디렉터 보강 태스크 {sup} 의 결과(`{report_rel(sup)}`, `docs/design/system/`)를 반영한다.")
