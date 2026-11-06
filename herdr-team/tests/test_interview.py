@@ -50,6 +50,8 @@ class PlannerDocTest(unittest.TestCase):
             self.assertIn(needle, review)
         self.assertIn("--wait <id>", section(self.text, "사용자에게 묻기"))
         self.assertIn("designer 태스크", section(self.text, "tasks.toml 형식"))
+        # plan.py 의 디렉터 규칙: director 직무가 있으면 director 태스크 하나, 에셋 전용이 아닌 designer 는 그것에 의존
+        self.assertIn("director 태스크를 정확히 하나", section(self.text, "tasks.toml 형식"))
 
 
 class FixRoundQuestionTest(TeamCase):

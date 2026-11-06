@@ -105,6 +105,7 @@ acceptance = ["…", "…"]       # 관찰할 수 있는 완료 기준
 - 텍스트 필드 안에 `## ` 로 시작하는 줄을 쓰지 않는다.
 - 화면이 있으면 화면마다 designer 태스크를 하나 둔다: key `<화면>-screen`, owns `["docs/design/screens/<화면>/**", "assets/<화면>/**"]`. 그 화면을 구현하는 developer 태스크는 그 designer 태스크에 의존한다(사용자 일괄 승인 뒤에 시작된다).
 - designer 태스크끼리 의존 관계면 owns 가 겹치면 안 된다(`plan check` 가 거부한다: 선행이 승인을 기다리며 잠금을 쥔 채 후행을 기다려 일괄 승인이 멈춘다).
+- 설정에 `[roles.director]` 가 있고 designer 태스크가 있으면 director 태스크를 정확히 하나 두고, 에셋 전용(owns 가 모두 `assets/`)이 아닌 designer 태스크는 모두 그 director 태스크에 직간접으로 의존하게 한다(`plan check` 규칙). 기본 설정에는 director 가 없다.
 - 이미 적용한(plan apply 한) `[[task]]` 는 key 와 내용을 그대로 둔다. 빼거나 고치지 않고 새 `[[task]]` 만 더한다(바꿀 일은 새 key 의 태스크로 만든다).
 - 끝내기 전에 `.herdr-team/bin/hteam plan check --file docs/planning/tasks.toml` 이 통과해야 한다(리뷰 사전 검사도 같은 검사를 한다).
 
