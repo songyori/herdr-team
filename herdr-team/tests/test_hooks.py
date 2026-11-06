@@ -308,6 +308,13 @@ class StopTest(HookCase):
         self.assertIsNone(self.hook("stop", {"stop_hook_active": True}, terminal=MAIN))
         self.assertIsNone(self.hook("stop", {"session_id": "c"}, coordinator=True))
 
+    def test_main_outside_herdr_is_not_blocked_every_turn(self):
+        # $HC_TERMINAL_ID 가 없는 세션은 메인이지만 watch 를 띄울 수 없다(require_main 이 exit 5). 매 턴 막지 않는다
+        self.assertIsNone(self.hook("stop", {"session_id": "out1"}))
+        out = self.hook("session-start", {"session_id": "out2"})
+        self.assertIn("Herdr 터미널이 아니다", out["hookSpecificOutput"]["additionalContext"])
+        self.assertEqual(self.hook("stop", {"session_id": "in1"}, terminal=MAIN)["decision"], "block")
+
     def test_live_watch_or_dead_coordinator_passes(self):
         proc = self.hteam_bg("watch", as_="main")
         deadline = __import__("time").monotonic() + 10

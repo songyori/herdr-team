@@ -194,6 +194,26 @@ class PrecheckTest(ReviewCase):
         code, out = self.applied_then_planner(lambda first: first + more)
         self.assertEqual((code, out.get("status")), (0, "reviewing"), out)
 
+    def test_partial_plan_apply_is_not_sent_back_to_the_planner(self):
+        # 앞선 plan apply 가 사양 일부만 커밋하고 멈췄다(plan_incomplete). 기획자가 고칠 수 없으므로 수정 라운드로 보내지
+        # 않고 코디네이터에게 exit 3 으로 알린다
+        two = ('[[task]]\nkey = "a"\nrole = "developer"\ntitle = "a 제목"\nowns = ["src/**"]\n'
+               'target = "대상"\nchange = "바꿀 것"\nconstraints = "제약"\nacceptance = ["확인 1"]\n\n'
+               '[[task]]\nkey = "b"\nrole = "tester"\ntitle = "b 제목"\nowns = ["tests/**"]\n'
+               'target = "대상"\nchange = "바꿀 것"\nconstraints = "제약"\nacceptance = ["확인 1"]\n')
+        self.commit("docs/planning/tasks.toml", two, "기획 초안")
+        code, _ = self.hteam("plan", "apply", env={"HTEAM_TEST_DIE_AT": "plan_before_commit"})
+        self.assertEqual(code, 137)
+        self.git("add", "--", ".herdr-team/tasks/T-001.md")
+        self.git("commit", "-q", "-m", "a 만 커밋", "--", ".herdr-team/tasks/T-001.md")
+        self.started("T-003", "planner")
+        self.act_work("T-003", files={"docs/planning/spec.md": "기획\n"})
+        code, out = self.hteam("review", "T-003")
+        self.assertEqual((code, out["error"]["code"]), (3, "plan_incomplete"), out)
+        self.assertIn("같은 review 를 다시 한다", out["error"]["hint"])
+        self.assertEqual(self.task_state("T-003")["status"], "working")
+        self.assertFalse((self.proj / "docs/reviews/T-003").exists())
+
     def test_resume_after_precheck_commit(self):
         self.started()
         self.act_work("T-001", commit=False)

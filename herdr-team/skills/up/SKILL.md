@@ -9,7 +9,7 @@ description: >
 
 이 세션은 메인이다. 아래 `hteam` 은 `.herdr-team/bin/hteam` 이다.
 
-1. `hteam status` 를 실행한다.
+1. `hteam status` 를 실행한다. `run_error` 가 있으면 `.herdr-team/state/run.json` 이 손상됐다. 고치지 말고 그 내용을 사용자에게 알리고 멈춘다(`hteam up` 도 exit 1 `bad_run_file` 로 거부한다).
 2. `coordinator.alive` 와 `coordinator.starting` 이 모두 false 면 `hteam up --wait-run 180` 을 Bash `timeout: 240000` 으로 실행한다.
    - exit 4 면 코디네이터 pane 이 확인 창(폴더 신뢰 등)에서 멈췄을 수 있다. 사용자에게 그 pane 을 보라고 알린다. 키를 대신 누르지 않는다.
    - exit 3 `coordinator_unverifiable` 이면 기록된 코디네이터 터미널(`terminal`)의 상태를 확인할 수 없다(기록은 그대로 두었다). 사용자에게 그 pane 이 끝났는지 묻는다. 끝났다고 하면 `hteam up --force --wait-run 180`, 아니면 그대로 둔다.

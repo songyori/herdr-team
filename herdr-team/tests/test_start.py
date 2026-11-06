@@ -171,6 +171,47 @@ class StartTest(StartCase):
         self.assertEqual(len(self.horch_tasks()), 1)
         self.assertEqual(self.task_state("T-001")["status"], "working")
 
+    def adopt_finished(self, tid, outcome):
+        """실행자가 horch 를 띄운 뒤 기록 전에 죽었고, 그 사이 워커가 done 했다. 다시 start 하면 끝난 Dispatch 를 이어 붙인다."""
+        self.make_task(tid)
+        self.assertEqual(self.hteam("start", tid, env={"HTEAM_TEST_DIE_AT": "after_launch"})[0], 137)
+        [row] = self.horch_tasks()
+        code, out = self.act(row["id"], {"done": {"outcome": outcome, "summary": "워커가 끝냈다"}})
+        self.assertEqual(code, 0, out)
+        code, out = self.hteam("start", tid)
+        self.assertEqual((code, out["mode"], out["state"]), (0, "adopt", "settled"), out)
+        return out
+
+    def test_adopting_succeeded_worker_points_to_review(self):
+        # 그 worker_done 은 launch_failed 때 왔다(next 는 start). 다시 오지 않으므로 start 가 다음 명령을 준다
+        out = self.adopt_finished("T-001", "succeeded")
+        self.assertEqual(out["next"], [".herdr-team/bin/hteam", "review", "T-001"])
+
+    def test_adopting_failed_worker_points_to_fix(self):
+        out = self.adopt_finished("T-001", "failed")
+        self.assertEqual(out["next"][:4], [".herdr-team/bin/hteam", "fix", "T-001", "--note"])
+        self.assertIn("워커가 끝냈다", out["next"][4])
+
+    def test_start_ready_keeps_hint_for_failed_worker_at_round_limit(self):
+        # 라운드 상한이면 fix 를 권하지 않고 메인에 물으라는 hint 만 준다. start-ready 의 started 행도 그것을 버리지 않는다
+        (self.team / "config.toml").write_text(BASE_CONFIG.replace("max_rounds = 3", "max_rounds = 1"))
+        self.make_task("T-001")
+        self.assertEqual(self.hteam("start", "T-001", env={"HTEAM_TEST_DIE_AT": "after_launch"})[0], 137)
+        [row] = self.horch_tasks()
+        self.assertEqual(self.act(row["id"], {"done": {"outcome": "failed", "summary": "실패"}})[0], 0)
+        code, out = self.hteam("start-ready")
+        self.assertEqual(code, 0, out)
+        [started] = out["started"]
+        self.assertNotIn("next", started)
+        self.assertIn("max_rounds", started["hint"])
+
+    def test_adopting_live_worker_has_no_next(self):
+        self.make_task("T-001")
+        self.hteam("start", "T-001", env={"HTEAM_TEST_DIE_AT": "after_launch"})
+        code, out = self.hteam("start", "T-001")
+        self.assertEqual((code, out["mode"], out["state"]), (0, "adopt", "active"), out)
+        self.assertNotIn("next", out)  # 일하는 중이다. worker_done 을 기다린다
+
     def test_live_launcher_is_launching_and_canceled_key(self):
         self.make_task("T-001")
         self.hteam("start", "T-001", env={"HTEAM_TEST_DIE_AT": "after_child"})

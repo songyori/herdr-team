@@ -144,7 +144,14 @@ def _annotate_main(p, m: dict, rows: list[dict] | None, states: list[dict] | Non
     hit = MAIN_REPLY_RE.fullmatch(m.get("subject") or "")
     if hit:
         oid = hit.group(1)
-        info.update(reply_to=oid, duplicate=oid in outbox.applied_ids(p))
+        try:
+            duplicate = oid in outbox.applied_ids(p)
+        except HteamError as exc:  # 적용 기록을 읽지 못했다. 빈 기록으로 보면 적용한 답을 다시 처리한다
+            info.update(reply_to=oid, duplicate=None,
+                        hint=f"{exc.message}. 이 답을 이미 적용했는지 모른다. `{SHIM} status` 로 태스크 상태를 보고 적용한 "
+                             "흔적이 있으면 다시 하지 않는다. 메인에 알려 사용자가 기록을 고치게 한다")
+            return info
+        info.update(reply_to=oid, duplicate=duplicate)
         info["hint"] = ("이미 적용한 답이다. ack 만 한다" if info["duplicate"]
                         else f"{oid} 의 답이다. 처리한 뒤 `{SHIM} applied {oid}`")
         if not info["duplicate"]:
@@ -509,8 +516,8 @@ def _awaiting(st: dict, appr: dict | None) -> tuple[list[str] | None, str | None
     return H("design-review"), None
 
 
-def coordinator_view(p) -> dict:
-    run = _run(p)
+def coordinator_view(p, run: dict | None = None) -> dict:
+    run = _run(p) if run is None else run
     term = run.get("coordinator_terminal")
     verdict = herdr.probe(term, run.get("coordinator_argv")) if term else None
     launched = age_seconds(run.get("launched_at") or (run.get("pending_launch") or {}).get("at"))
@@ -572,8 +579,13 @@ def status(p) -> dict:
                       "next": nxt, "hint": hint})
     questions = [_question(q) for q in outbox.open_questions(p, warnings)]
     warnings += [f"{tid} 상태 파일을 읽지 못해 목록에서 뺐다" for tid in state.unreadable_ids(p)]
-    out = {"tasks": items, "config_error": config_error, "horch_error": horch_error, "horch": horch_cmd,
-           "coordinator": coordinator_view(p), "watch_alive": outbox.watch_alive(p),
+    run, run_error = {}, None
+    try:
+        run = outbox._run(p)
+    except HteamError as exc:  # 손상된 run.json 을 없는 것처럼 숨기지 않는다(up·tell 은 bad_run_file 로 거부한다)
+        run_error = exc.message
+    out = {"tasks": items, "config_error": config_error, "run_error": run_error, "horch_error": horch_error,
+           "horch": horch_cmd, "coordinator": coordinator_view(p, run), "watch_alive": outbox.watch_alive(p),
            "open_questions": questions, "unread_outbox": outbox.unread(p)}
     if warnings:
         out["warnings"] = warnings

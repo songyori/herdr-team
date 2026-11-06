@@ -92,6 +92,10 @@ def prechecks(p, cfg, st: dict, spec, commits: list[dict], files: list[str]) -> 
         try:
             plan.check(p, cfg, p.root / plan.PLAN_FILE)
         except HteamError as exc:
+            if exc.code == "plan_incomplete":  # 앞선 plan apply(코디네이터)가 남긴 일이다. 기획자가 고칠 수 없다
+                raise HteamError("plan_incomplete", f"{tid} 를 리뷰하기 전에 앞선 plan apply 를 정리해야 한다: {exc.message}",
+                                 CONFLICT, f"{exc.hint}. 메인에 알려 사용자가 정리한 뒤 같은 review 를 다시 한다",
+                                 data=exc.data) from None
             detail = "; ".join(exc.data.get("errors") or []) or exc.message
             found.append(f"`{plan.PLAN_FILE}` 가 plan check 를 통과하지 못한다: {detail}")
     # status --porcelain 은 최상위 기준 경로를 낸다(pathspec 은 프로젝트 기준). 이 태스크의 리뷰 폴더는 hteam 이 쓴다:

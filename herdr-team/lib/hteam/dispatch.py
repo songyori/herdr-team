@@ -172,8 +172,9 @@ def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str |
             raise
         # 이어 붙인 Dispatch 의 실제 에이전트·모델을 돌려준다. 호출자가 라운드·시도 기록을 그것에 맞춘다
         return {"mode": "adopt", "horch_task": row["task"], "dispatch": row["id"], "terminal": row.get("terminal"),
-                "state": row["state"], "agent": row.get("agent"), "model": row.get("model"),
-                "effort": row.get("effort"), "warnings": warnings}
+                "state": row["state"], "outcome": row.get("outcome"), "summary": row.get("summary"),
+                "agent": row.get("agent"), "model": row.get("model"), "effort": row.get("effort"),
+                "warnings": warnings}
     opts = []
     if model:
         opts += ["--model", model]

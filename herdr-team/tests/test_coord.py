@@ -153,6 +153,13 @@ class WhichStatusTest(CoordCase):
         self.assertIsNone(task["next"])
         self.assertIn("같은 명령을 다시 한다", task["hint"])
 
+    def test_status_reports_corrupt_run_file(self):
+        (self.state_dir / "run.json").write_text("{broken")
+        code, out = self.hteam("status", as_="main")
+        self.assertEqual(code, 0, out)
+        self.assertIn("run.json", out["run_error"])
+        self.assertIsNone(out["coordinator"]["terminal"])
+
     def test_status_from_main_and_broken_config(self):
         self.started()
         (self.team / "config.toml").write_text("max_parallel = [")

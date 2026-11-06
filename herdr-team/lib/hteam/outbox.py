@@ -20,7 +20,7 @@ from . import herdr, procs, roles, state
 from .errors import CONFLICT, DENIED, FAIL, USAGE, HteamError
 from .horch import Horch
 from .paths import SHIM, find_project
-from .util import die_at, env_float, flock, now, read_json, write_atomic, write_json
+from .util import bad_side_file, die_at, env_float, flock, now, read_json, read_json_strict, write_atomic, write_json
 
 TYPES = ("progress", "question", "approval", "done")
 RENDER_KEYS = {"header", "question", "context", "options", "multiSelect"}
@@ -501,7 +501,12 @@ def answer(p, oid: str, text: str) -> dict:
 
 
 def applied_ids(p) -> dict:
-    return read_json(p.applied, {}) or {}
+    """적용한 답 기록(out-id → 시각). 없으면 {}. 읽지 못하면 bad_side_file 이다: 빈 기록으로 보면 적용한 답을 다시
+    처리하고(같은 fix 를 두 번 등) mark_applied 가 덮어써 기록을 잃는다."""
+    data = read_json_strict(p.applied, {})
+    if not isinstance(data, dict):
+        raise bad_side_file(p.applied, "JSON 객체가 아니다")
+    return data
 
 
 def mark_applied(p, oid: str) -> dict:

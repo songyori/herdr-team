@@ -229,8 +229,28 @@ def run_work(p, cfg, h, tid: str) -> dict:
     except HteamError as exc:
         dispatch.left_running(exc, res, h)
         raise
-    return {"task": tid, "round": rd["round"], "status": "working", "agent": rd["agent"], "model": rd["model"],
-            "effort": rd["effort"], **res}
+    out = {"task": tid, "round": rd["round"], "status": "working", "agent": rd["agent"], "model": rd["model"],
+           "effort": rd["effort"], **res}
+    nxt, hint = _adopted_next(cfg, tid, rd["round"], res)
+    if nxt is not None:
+        out["next"] = nxt
+    if hint:
+        out["hint"] = hint
+    return out
+
+
+def _adopted_next(cfg, tid: str, rnd: int, res: dict) -> tuple[list[str] | None, str | None]:
+    """이어 붙인 작업 Dispatch 가 이미 끝났으면(done 뒤 settled·retained·released) 다음 명령. 그 worker_done 은 태스크가
+    launch_failed 일 때 와서(그때 next 는 start) 다시 오지 않으므로 여기서 준다(아니면 wait 가 시간 초과까지 기다린다)."""
+    if res.get("mode") != "adopt" or res.get("state") not in ("settled", "retained", "released"):
+        return None, None
+    if res.get("outcome") == "succeeded":
+        return [SHIM, "review", tid], "이어 붙인 작업 워커가 이미 성공으로 끝났다"
+    if rnd >= cfg.max_rounds:
+        return None, (f"이어 붙인 작업 워커가 실패로 끝났고 max_rounds({cfg.max_rounds}) 에 닿았다. 메인에 묻고, 사용자가 "
+                      f"계속하라고 하면 {SHIM} fix {tid} --force-round --note …")
+    return ([SHIM, "fix", tid, "--note", f"작업 실패: {(res.get('summary') or '')[:200]}"],
+            "이어 붙인 작업 워커가 이미 실패로 끝났다")
 
 
 def start(p, tid: str, cli: dict, cfg=None, h=None, cap: Capacity | None = None) -> dict:
@@ -290,7 +310,7 @@ def start_ready(p) -> dict:
             die_at("start_ready_checked")  # 테스트: 의존을 본 뒤 시작 전에 결정이 끼는 순서를 재현한다
             res = start(p, tid, {}, cfg=cfg, h=h, cap=cap)
             started.append({"task": tid, "round": res["round"], "dispatch": res["dispatch"],
-                            "warnings": res["warnings"]})
+                            "warnings": res["warnings"], **{k: res[k] for k in ("next", "hint") if res.get(k)}})
         except Exception as exc:
             if not isinstance(exc, HteamError):  # 버그·예상 밖 오류도 이 태스크만 실패로 둔다(cli 의 internal 모양)
                 failed.append({"task": tid, "error": {"code": "internal", "message": f"{type(exc).__name__}: {exc}",

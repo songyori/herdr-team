@@ -431,6 +431,13 @@ class TemplateContractTest(unittest.TestCase):
         chained = [screens[0], task("login-more", "designer", ["docs/design/screens/login/**"], ["login-screen"])]
         self.assertTrue(any("승인 직무 태스크" in e for e in plan.validate(cfg, chained)[0]))
 
+    def test_cleanup_rules_in_docs(self):
+        coord = (ROOT / "templates/coordinator.md").read_text(encoding="utf-8")
+        self.assertIn("`start-ready` 의 `started` 행에도 `next`·`hint` 가 붙을 수 있다", coord)
+        self.assertIn("exit 3 `plan_incomplete`", coord)
+        up = (ROOT / "skills/up/SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("`run_error`", up)
+
     def test_no_personal_paths_or_trust_all(self):
         import re
         private = re.compile(r"/[U]sers/|/private/[t]mp|~[/]Workspace|/[h]ome/")

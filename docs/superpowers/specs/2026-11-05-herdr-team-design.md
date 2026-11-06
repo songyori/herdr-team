@@ -591,6 +591,8 @@ orca-team 의 금지 규칙 10개를 옮긴다(이모지 장식, 왼쪽 강조 �
 | 메인의 답 전송이 끊김 | 다시 보낸다. `hteam wait` 가 `out-id` 로 중복을 표시한다 |
 | 질문 답을 읽은 뒤 워커가 죽음 | 답은 ack 전까지 다시 조회된다(`--pending`·`--history`) |
 | `launch_failed` | `hteam start T`(같은 라운드, 같은 horch Task 를 `--retry` 로) |
+| 이어 붙인 작업 워커가 이미 끝남(기록 전 실행자 사망 뒤 done) | 그 `worker_done` 은 다시 오지 않는다. `start`(`start-ready` 의 `started` 행) 결과의 `next`(`review` 또는 `fix --note`)를 따르고, 라운드 상한이면 `hint` 대로 메인에 묻는다 |
+| hteam 커밋이 워커 커밋의 `index.lock` 과 겹침 | 경로 지정 커밋이 10초까지 기다렸다 다시 한다. 그래도 남으면 메인에 알린다(지우지 않는다) |
 | 코디네이터가 죽음 | 메인의 `/herdr-team:up` 또는 `hteam up` 이 다시 띄우고 `hteam bind` 가 `run-use` 로 넘겨받는다. ack 안 된 메시지는 다시 온다 |
 | 메인이 꺼짐 | `/herdr-team:up` 이 `reask` 로 열린 질문을 다시 묻는다 |
 | 설정이 깨짐 | 설정을 읽는 명령은 exit 2. 통신 명령은 계속 동작. `status` 에 `config_error` |

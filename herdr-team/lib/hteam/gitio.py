@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 
 from .errors import FAIL, MISSING, HteamError
+from .util import env_float
 
 
 # 작업 트리를 직접 stat 하게 한다. core.fsmonitor 훅이 "바뀐 것 없음" 이라고 답하면 git diff·status·ls-files 가 stat 을
@@ -40,7 +42,9 @@ def run(root, *args: str, check: bool = True, input: str | bytes | None = None,
         err = proc.stderr or proc.stdout
         if raw:
             err = err.decode("utf-8", "replace")
-        raise HteamError("git_failed", f"git {_name(args)} 실패: {err.strip()[-300:]}", FAIL)
+        # index.lock 은 git 의 긴 안내문 앞에 나와 300자로 자르면 사라질 수 있다. 자르기 전에 표시한다(_wait_index)
+        raise HteamError("git_failed", f"git {_name(args)} 실패: {err.strip()[-300:]}", FAIL,
+                         data={"index_lock": True} if "index.lock" in err else None)
     return proc
 
 
@@ -275,20 +279,40 @@ def is_ancestor(root, a: str, b: str) -> bool:
     return _yes_no(run(root, *args, check=False), args)
 
 
+def _wait_index(root, *args: str) -> None:
+    """index 를 쓰는 git 명령. 같은 폴더의 다른 git(워커의 커밋)이 index.lock 을 쥔 순간이면 잠깐 기다렸다 다시 한다.
+    잠금을 얻지 못해 실패한 add·commit·rm 은 아무것도 바꾸지 않았으므로 다시 해도 된다. HTEAM_GIT_LOCK_WAIT 초(기본 10)
+    안에 풀리지 않으면 git_failed 와 할 일을 알린다."""
+    deadline = time.monotonic() + env_float("HTEAM_GIT_LOCK_WAIT", 10.0)
+    while True:
+        try:
+            run(root, *args)
+            return
+        except HteamError as exc:
+            if not exc.data.get("index_lock"):
+                raise
+            if time.monotonic() >= deadline:
+                exc.hint = ("다른 git 명령(같은 폴더에서 일하는 워커의 커밋 등)이 `.git/index.lock` 을 쥐고 있다. 끝난 뒤 같은 "
+                            "명령을 다시 한다. git 이 돌지 않는데도 남아 있으면 메인에 알린다(직접 지우지 않는다)")
+                raise
+            time.sleep(0.2)
+
+
 def commit_paths(root, paths: list[str], subject: str, body: str | None = None) -> str:
-    """경로 지정 커밋. 다른 워커가 스테이징한 파일을 담지 않는다. 경로의 `*?[` 가 glob 으로 읽히지 않게 literal 로 넘긴다."""
+    """경로 지정 커밋. 다른 워커가 스테이징한 파일을 담지 않는다. 경로의 `*?[` 가 glob 으로 읽히지 않게 literal 로 넘긴다.
+    다른 git 이 index.lock 을 쥐고 있으면 잠깐 기다린다(_wait_index)."""
     named = [literal(p) for p in paths]
-    run(root, "add", "--", *named)
+    _wait_index(root, "add", "--", *named)
     args = ["commit", "-q", "-m", subject]
     if body:
         args += ["-m", body]
-    run(root, *args, "--", *named)
+    _wait_index(root, *args, "--", *named)
     return head(root)
 
 
 def unstage(root, paths: list[str]) -> None:
     """HEAD 에 없는 새 파일을 인덱스에서만 뺀다(작업 트리 파일은 그대로). 인덱스에 없으면 넘어간다."""
-    run(root, "rm", "--cached", "-q", "-f", "--ignore-unmatch", "--", *[literal(p) for p in paths])
+    _wait_index(root, "rm", "--cached", "-q", "-f", "--ignore-unmatch", "--", *[literal(p) for p in paths])
 
 
 def last_commit(root, path: str) -> str | None:

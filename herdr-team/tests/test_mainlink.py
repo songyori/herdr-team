@@ -155,6 +155,22 @@ class AnswerTest(LinkCase):
         self.assertEqual([q["id"] for q in outbox.open_questions(self.p)], [second])
 
 
+class AppliedRecordTest(LinkCase):
+    def test_corrupt_applied_record_is_kept_and_reported(self):
+        from hteam import coord
+        oid = self.notify_q()
+        self.assertEqual(self.hteam("answer", oid, "a", as_="main")[0], 0)
+        path = self.state_dir / "applied.json"
+        path.write_text("{broken")
+        code, out = self.hteam("applied", oid)
+        self.assertEqual((code, out["error"]["code"]), (1, "bad_side_file"), out)
+        self.assertEqual(path.read_text(), "{broken")  # 빈 기록으로 덮어쓰지 않았다
+        msg = {"id": 9, "type": "status", "subject": f"[main] reply {oid}", "body": "a", "sender": "external:t1"}
+        info = coord.annotate(self.p, msg, [], "horch")["hteam"]
+        self.assertEqual((info["kind"], info["reply_to"], info["duplicate"]), ("main", oid, None))
+        self.assertIn("이미 적용했는지 모른다", info["hint"])
+
+
 class AskUserTest(LinkCase):
     def setUp(self):
         super().setUp()

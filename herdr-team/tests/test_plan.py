@@ -766,6 +766,29 @@ class GitioTest(TeamCase):
         self.assertEqual(gitio.commit_files(self.proj, sha), ["a[1].txt"])
         self.assertEqual(gitio.untracked(self.proj), ["a1.txt"])
 
+    def test_commit_paths_waits_for_index_lock(self):
+        # 같은 폴더의 워커 커밋이 index.lock 을 쥔 순간이면 잠깐 기다렸다 다시 한다
+        import threading
+        lock = self.proj / ".git" / "index.lock"
+        (self.proj / "a.txt").write_text("a\n")
+        lock.write_text("")
+        timer = threading.Timer(0.5, lock.unlink)
+        timer.start()
+        self.addCleanup(timer.cancel)
+        with mock.patch.dict(os.environ, {**self.env, "HTEAM_GIT_LOCK_WAIT": "10"}, clear=True):
+            sha = gitio.commit_paths(self.proj, ["a.txt"], "a")
+        self.assertEqual(gitio.commit_files(self.proj, sha), ["a.txt"])
+
+    def test_commit_paths_gives_up_on_stale_index_lock(self):
+        (self.proj / "a.txt").write_text("a\n")
+        (self.proj / ".git" / "index.lock").write_text("")
+        with mock.patch.dict(os.environ, {**self.env, "HTEAM_GIT_LOCK_WAIT": "0.3"}, clear=True):
+            with self.assertRaises(HteamError) as cm:
+                gitio.commit_paths(self.proj, ["a.txt"], "a")
+        self.assertEqual((cm.exception.code, cm.exception.data.get("index_lock")), ("git_failed", True))
+        self.assertIn("index.lock", cm.exception.hint)
+        self.assertIn("직접 지우지 않는다", cm.exception.hint)
+
     def test_git_timeout_is_json_error(self):
         with mock.patch("hteam.gitio.subprocess.run", side_effect=subprocess.TimeoutExpired(["git"], 120)):
             with self.assertRaises(HteamError) as cm:

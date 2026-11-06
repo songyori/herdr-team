@@ -323,6 +323,9 @@ def session_start(p, payload: dict):
         return None
     lines = ["herdr-team 프로젝트다. 너는 메인이다(사용자와 대화하는 세션). 첫 지시가 코디네이터나 워커 지시면 이 안내를 무시한다.",
              f"- 먼저 `/herdr-team:up` 을 실행한다. 산출물 작업은 `{SHIM} tell \"<요청>\"` 으로 코디네이터에게 넘긴다."]
+    if not os.environ.get("HC_TERMINAL_ID", "").strip():
+        lines.append("- 이 세션은 Herdr 터미널이 아니다($HC_TERMINAL_ID 없음). tell·watch·answer 는 Herdr 터미널의 메인 "
+                     "세션에서만 된다. 사용자에게 Herdr 안에서 다시 열라고 알린다.")
     asked = len(outbox.open_questions(p))
     if asked:
         lines.append(f"- 답하지 않은 질문이 {asked}건 있다. `/herdr-team:up` 이 `hteam reask` 로 다시 보여 준다.")
@@ -336,10 +339,13 @@ def role_mark(p, payload: dict):
 
 def stop(p, payload: dict):
     """메인이고 코디네이터가 살아 있는데 watch 가 없으면 턴을 끝내지 못하게 한다. stop_hook_active 면 다시 막지 않는다.
+    Herdr 터미널 밖($HC_TERMINAL_ID 없음)의 메인은 watch 를 띄울 수 없으므로(require_main 이 exit 5) 막지 않는다.
 
     watch 생존은 watch.pid 기록(pid + 시작 시각)으로 본다. 죽었거나 pid 가 다른 프로세스에 다시 쓰였으면 watch 가 없다.
     run.json 을 읽지 못하면 bad_run_file 이 오류 기록으로 남고 막지 않는다."""
     if payload.get("stop_hook_active") or p.setup_mode.exists() or role_of(p, payload) != "main":
+        return None
+    if not os.environ.get("HC_TERMINAL_ID", "").strip():
         return None
     if outbox.watch_alive(p):
         return None
