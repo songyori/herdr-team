@@ -41,24 +41,26 @@
 ```
 herdr-team/
   lib/hteam/
-    approval.py   새로: 승인 상황 view, design-review 묶음·기록·복구, 답 주석 reply_view·reply_hint(Task 3·4)
+    approval.py   새로: 승인 상황 view·stale, design-review 묶음·기록 검사·복구, 답 주석 reply_view·reply_hint(Task 3·4)
     cli.py        COMMAND_MODULES 에 "approval"(Task 3), 출력 JSON 은 util.dumps(Task 5)
     paths.py      Project.design_review(Task 3)
     util.py       read_json_strict·bad_side_file(Task 3), dumps·show(Task 5)
-    tasks.py      accept 의 awaiting_user next(Task 4), fix 의 from_user(Task 4), 이어 붙인 워커의 next(Task 6)
+    tasks.py      accept·fix 의 --round, accept 의 stale 거부·awaiting_user next, fix 의 from_user(Task 4), 이어 붙인 워커의 next·hint(Task 6)
     compose.py    수정 라운드의 열린 질문(Task 2), 사용자 수정 요청 블록(Task 4), 리뷰 프롬프트 경로 표시(Task 5)
-    coord.py      awaiting_user next·답 주석(Task 4), applied 손상·run_error(Task 6)
-    gitio.py      무손실 경로·git 항목(모드:ID)·작업 트리 항목(Task 5), index.lock 다시 시도(Task 6)
+    coord.py      awaiting_user next·답 주석·한 Delivery 안의 중복(Task 4), applied 손상·run_error(Task 6)
+    gitio.py      무손실 경로(top_prefix 포함)·git 항목(모드:ID)·작업 트리 항목(Task 5), index.lock 다시 시도(Task 6)
     review.py     기준점·변조 검사를 git 항목으로, 경로 표시(Task 5), plan_incomplete 를 코디네이터에게(Task 6)
     state.py      save 가 util.dumps(Task 5)
     dispatch.py   adopt 결과에 outcome·summary(Task 6)
-    outbox.py     applied_ids 엄격 읽기(Task 6)
+    outbox.py     append 의 reuse(같은 잠금 안에서 찾기, Task 3), applied_ids 엄격 읽기(Task 6)
+    ask.py        --history 에 원래 render(Task 2)
     setup.py      scaffold 가 roles/designer.md 를 복사(Task 1)
   hooks/hteam_hook.py   Herdr 터미널 밖 메인(Task 6)
   templates/
     config.toml           [roles.designer], user_approval_roles = ["designer"](Task 1)
     roles/designer.md     새로(Task 1)
     roles/planner.md      체크리스트·확정 질문·리뷰 기준·designer 태스크(Task 2)
+    roles/developer.md    패키지 설치는 임시 venv·격리 환경에서만(Task 1)
     coordinator.md        일괄 승인 흐름(Task 4), next·plan_incomplete(Task 6)
     CLAUDE.section.md     approval 의 수정 요청, 디자인 위치(Task 4)
   skills/init/SKILL.md    designer 직무 안내(Task 1)
@@ -73,7 +75,8 @@ herdr-team/
     test_hooks.py         Herdr 터미널 밖 메인(Task 6)
     test_coord.py         run_error(Task 6)
     test_mainlink.py      applied 손상(Task 6)
-docs/superpowers/specs/2026-11-05-herdr-team-design.md   15.4 2단계 결과와 설계 동기화(Task 7)
+docs/superpowers/specs/2026-11-05-herdr-team-design.md   동작을 바꾼 태스크가 같은 커밋에서 맞춘다: 11.2(Task 1),
+                                                         11.4(Task 3·4), 6.4·7.4(Task 4), 6.3(Task 5), 13장(Task 6), 15.4 결과(Task 7)
 ```
 
 ### 새 기록 `state/design-review.json`(Task 3)
@@ -89,29 +92,30 @@ docs/superpowers/specs/2026-11-05-herdr-team-design.md   15.4 2단계 결과와 
 ### 태스크 상태에 더하는 것
 
 - 라운드 기록 `rounds[i].from_user: true`: awaiting_user 에서 `fix` 로 연 라운드(사용자 수정 요청, Task 4).
+- 새 필드는 아니지만 stale 판정(Task 3)이 history 의 `start`·`fix` 기록(`round`, `at`)으로 라운드를 연 시각을 읽는다.
 - 리뷰 기준점 `baseline.exec_bit`(core.fileMode), `dirty`·`index` 의 값은 `모드:객체 ID`(Task 5). 이 커밋 전에 만든 기준점은 값이 객체 ID 뿐이라 그 시도의 review-finish 는 변조로 본다(배포 전 중간 형식이라 옮기지 않는다. 사용자가 확인한 뒤 `review --retry`).
 
 ## 태스크 순서와 의존
 
 1(designer 직무·설정) → 2(기획 인터뷰) → 3(design-review) → 4(승인 흐름 연결) → 5(정리: 변조 검사) → 6(정리: 루프·훅) → 7(실환경 확인·결과 기록·브랜치 리뷰).
 
-2 는 1 의 코드에 기대지 않는다(planner 문서가 designer 태스크를 설명하므로 1 뒤에 둔다). 4 는 3 의 `approval.view`·`approval.load` 를 쓴다. 6 은 3 의 `util.read_json_strict` 를 쓰고 4 가 고친 `coord._annotate_main` 을 다시 고친다. 5 와 6 은 `gitio.py` 의 서로 다른 부분을 고친다(5 는 경로를 내는 함수와 `run` 의 시그니처, 6 은 `run` 의 오류 부분과 `commit_paths`·`unstage`). 각 태스크의 "찾을 내용"은 앞 태스크를 적용한 뒤의 코드다.
+2 는 1 의 코드에 기대지 않는다(planner 문서가 designer 태스크를 설명하므로 1 뒤에 둔다). 4 는 3 의 `approval.view`·`approval.load`·`approval.stale`·`approval.Graph` 를 쓴다. 6 은 3 의 `util.read_json_strict` 를 쓰고 4 가 고친 `coord._annotate_main` 을 다시 고친다. 5 와 6 은 `gitio.py` 의 서로 다른 부분을 고친다(5 는 경로를 내는 함수와 `run` 의 시그니처, 6 은 `run` 의 오류 부분과 `commit_paths`·`unstage`). 각 태스크의 "찾을 내용"은 앞 태스크를 적용한 뒤의 코드다.
 
 요구된 태스크 수: 기능 넷(1–4), 정리 둘(5–6), 실환경 하나(7). 정리는 리뷰어가 따로 판단할 수 있게 변조 검사(5)와 루프·훅(6)으로 나눴다.
 
 ---
 ### Task 1: designer 기본 직무와 승인 직무 설정
 
-설계 4장·11.2(기본만)·15.3 2번: 설정 템플릿에 `[roles.designer]` 를 더하고 `user_approval_roles = ["designer"]` 로 둔다. designer 직무 문서(기본)를 만들고 scaffold 가 복사한다. init 스킬은 화면이 없는 프로젝트면 designer 를 빼자고 제안한다. 상태 기계(awaiting_user 전이, 의존 끝 조건, 승인 사슬 plan check, director·designer 는 claude 만)는 1단계 코드에 이미 있다. 이 태스크는 템플릿·scaffold 만 바꾼다.
+설계 4장·11.2(기본만)·15.3 2번: 설정 템플릿에 `[roles.designer]` 를 더하고 `user_approval_roles = ["designer"]` 로 둔다. designer 직무 문서(기본)를 만들고 scaffold 가 복사한다. init 스킬은 화면이 없는 프로젝트면 designer 를 빼자고 제안한다. developer 직무 문서에 패키지 설치 규칙(임시 venv 나 프로젝트의 격리 환경에서만)을 더한다(사용자 결정, 1단계 실환경에서 워커가 전역 Python 에 설치하려 했다). designer 기본형을 설계 11.2 에 적는다. 상태 기계(awaiting_user 전이, 의존 끝 조건, 승인 사슬 plan check, director·designer 는 claude 만)는 1단계 코드에 이미 있다. 이 태스크는 템플릿·scaffold 만 바꾼다.
 
 **Files:**
 - Create: `herdr-team/templates/roles/designer.md`
-- Modify: `herdr-team/templates/config.toml`, `herdr-team/lib/hteam/setup.py`(`FILES`), `herdr-team/skills/init/SKILL.md`
+- Modify: `herdr-team/templates/config.toml`, `herdr-team/templates/roles/developer.md`, `herdr-team/lib/hteam/setup.py`(`FILES`), `herdr-team/skills/init/SKILL.md`, `docs/superpowers/specs/2026-11-05-herdr-team-design.md`(11.2)
 - Test: `herdr-team/tests/test_setup.py`(`ScaffoldTest.test_creates_files_and_never_overwrites`, `TemplateContractTest`)
 
 **Interfaces:**
 - Consumes: `config.validate(raw)`, `config.build(raw)`, `plan.validate(cfg, tasks) -> (errors, groups)`(기존)
-- Produces: 템플릿 직무 `planner·designer·developer·tester`, `user_approval_roles = ["designer"]`, designer owns `["docs/design/**", "assets/**"]`. 직무 문서 `.herdr-team/roles/designer.md` 의 보고서 줄 `- 아티팩트: <claude.ai URL 또는 없음>`(Task 3 의 `approval.link` 가 마지막 claude.ai URL 을 읽는다). 화면 원본 위치 `docs/design/screens/<화면>/index.html`.
+- Produces: 템플릿 직무 `planner·designer·developer·tester`, `user_approval_roles = ["designer"]`, designer owns `["docs/design/**", "assets/**"]`. developer 직무 문서의 설치 규칙(임시 venv·격리 환경에서만, 전역·시스템 Python·`--user` 금지). 직무 문서 `.herdr-team/roles/designer.md` 의 보고서 줄 `- 아티팩트: <claude.ai URL 또는 없음>`(Task 3 의 `approval.link` 가 마지막 claude.ai URL 을 읽는다). 화면 원본 위치 `docs/design/screens/<화면>/index.html`.
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
@@ -158,6 +162,9 @@ docs/superpowers/specs/2026-11-05-herdr-team-design.md   15.4 2단계 결과와 
         for needle in ("docs/design/screens/<화면>/index.html", "- 아티팩트: <claude.ai URL 또는 없음>",
                        "사용자 일괄 승인", "코드(`src/`)"):
             self.assertIn(needle, designer)
+        developer = (ROOT / "templates/roles/developer.md").read_text(encoding="utf-8")
+        self.assertIn("패키지는 임시 venv(또는 프로젝트의 격리 환경) 안에서만 설치한다. 전역·시스템 Python 에 설치하지 않고 "
+                      "`--user` 도 쓰지 않는다.", developer)
 
         def task(key, role, owns, deps=()):
             return {"key": key, "role": role, "title": f"{key} 제목", "owns": list(owns), "depends_on": list(deps),
@@ -175,7 +182,7 @@ docs/superpowers/specs/2026-11-05-herdr-team-design.md   15.4 2단계 결과와 
 - [ ] **Step 2: 실패 확인**
 
 Run: `bash herdr-team/tests/run.sh -k test_template_roles -k test_creates_files_and_never_overwrites`
-Expected: FAIL — 템플릿에 designer 직무와 `roles/designer.md` 가 없다(`AssertionError`), scaffold 의 `created` 에 `.herdr-team/roles/designer.md` 가 없다.
+Expected: FAIL — 템플릿에 designer 직무와 `roles/designer.md` 가 없다(`AssertionError`), scaffold 의 `created` 에 `.herdr-team/roles/designer.md` 가 없다, developer 문서에 설치 규칙이 없다.
 
 - [ ] **Step 3: 구현**
 
@@ -249,6 +256,17 @@ owns = ["docs/design/**", "assets/**"]
 - 래스터 이미지 만들기, 디자인 토큰·디자인 시스템 새로 만들기(3단계의 `hteam image` 와 디자인 디렉터가 한다).
 ```
 
+**Edit** `herdr-team/templates/roles/developer.md`
+
+```markdown
+- 비밀값을 코드·커밋에 넣지 않는다.
+```
+
+```markdown
+- 비밀값을 코드·커밋에 넣지 않는다.
+- 패키지는 임시 venv(또는 프로젝트의 격리 환경) 안에서만 설치한다. 전역·시스템 Python 에 설치하지 않고 `--user` 도 쓰지 않는다.
+```
+
 **Edit** `herdr-team/lib/hteam/setup.py`
 
 ```python
@@ -272,6 +290,18 @@ owns = ["docs/design/**", "assets/**"]
 - 직무: 기본 직무는 planner·designer·developer·tester 다. 화면이 없는 프로젝트(CLI·라이브러리 등)면 `[roles.designer]` 와 `user_approval_roles` 의 `"designer"` 를 빼고 `.herdr-team/roles/designer.md` 를 지우자고 제안한다. 추가 직무는 기본 직무로 부족할 때만 둔다. `.herdr-team/roles/<직무>.md`(기본 직무 문서와 같은 절 구성)와 config 항목을 같이 만든다.
 ```
 
+설계 11.2 에 2단계 기본형을 적는다(같은 커밋).
+
+**Edit** `docs/superpowers/specs/2026-11-05-herdr-team-design.md`
+
+```markdown
+- 계정 기본이 아니라 프로젝트 디자인 시스템으로 Claude Design 화면을 만든다. 화면 원본을 `docs/design/screens/<화면>/` 에 둔다(Codex 리뷰가 읽는다).
+```
+
+```markdown
+- 계정 기본이 아니라 프로젝트 디자인 시스템으로 Claude Design 화면을 만든다. 화면 원본을 `docs/design/screens/<화면>/` 에 둔다(Codex 리뷰가 읽는다). 2단계 기본형은 원본(`index.html`·`notes.md`)을 만들고, Artifact 도구를 쓸 수 있으면 같은 화면을 claude.ai 아티팩트로 올려 보고서에 URL 을 적는다. 디자인 시스템·이미지·금지 목록 검사는 3단계다.
+```
+
 - [ ] **Step 4: 통과 확인**
 
 Run: `bash herdr-team/tests/run.sh -k test_setup -k test_config`
@@ -281,12 +311,13 @@ Expected: OK(실패 없음).
 
 ```bash
 git grep -n -I -P '/[U]sers/|/private/[t]mp|~[/]Workspace' -- . ':!.codex-reviews' || true
-git add -- herdr-team/templates/roles/designer.md herdr-team/templates/config.toml herdr-team/lib/hteam/setup.py \
-  herdr-team/skills/init/SKILL.md herdr-team/tests/test_setup.py
-git commit -m "feat(herdr-team): designer 기본 직무와 승인 직무 설정 템플릿
+git add -- herdr-team/templates/roles/designer.md herdr-team/templates/roles/developer.md herdr-team/templates/config.toml \
+  herdr-team/lib/hteam/setup.py herdr-team/skills/init/SKILL.md herdr-team/tests/test_setup.py \
+  docs/superpowers/specs/2026-11-05-herdr-team-design.md
+git commit -m "feat(herdr-team): designer 기본 직무와 승인 직무 설정 템플릿, developer 설치 규칙
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/templates herdr-team/lib/hteam/setup.py \
-  herdr-team/skills/init/SKILL.md herdr-team/tests/test_setup.py
+  herdr-team/skills/init/SKILL.md herdr-team/tests/test_setup.py docs/superpowers/specs/2026-11-05-herdr-team-design.md
 ```
 
 Expected: `git grep` 출력 없음, 커밋 성공. 컨트롤러가 `scripts/codex-review.sh commit HEAD` 를 돌리고 Global Constraints 의 Codex 규칙대로 처리한다.
@@ -294,15 +325,15 @@ Expected: `git grep` 출력 없음, 커밋 성공. 컨트롤러가 `scripts/code
 ---
 ### Task 2: 기획 인터뷰 — 체크리스트 12항목과 확정 질문
 
-설계 10장: 인터뷰 규칙은 planner 직무 문서가 담는다. 짧은 질문을 하나씩 `hteam ask-user` 로 하고, 체크리스트 12항목이 모두 "결정" 또는 "범위 밖"이 될 때까지 묻고(질문 수 제한 없음, 뻔한 항목은 "자동 결정"), 마지막 질문은 확정(`context` 에 계획 핵심·자동 결정·태스크 그래프 표, 선택지 "확정 (추천)" / "수정할 부분 있음")이다. 수정 라운드의 기획자는 먼저 `--pending` 과 열린 질문의 `--wait` 를 확인한다. 리뷰어는 `hteam ask-user --history` 로 실제 질문과 답을 확인한다(읽기 전용 명령이라 리뷰어 규칙 안이다). 코드는 수정 블록 문구 한 줄만 바꾼다(열린 질문을 새로 묻지 않고 기다린다). 그 밖의 인터뷰 장치(`ask-user`, 한 태스크 한 질문, 프로젝트마다 기획 하나 `planner_busy`, planner 사전 검사 `plan check`)는 1단계에 있다.
+설계 10장: 인터뷰 규칙은 planner 직무 문서가 담는다. 짧은 질문을 하나씩 `hteam ask-user` 로 하고, 체크리스트 12항목이 모두 "결정" 또는 "범위 밖"이 될 때까지 묻고(질문 수 제한 없음, 뻔한 항목은 "자동 결정"), 마지막 질문은 확정(`context` 에 계획 핵심·자동 결정·태스크 그래프 표, 선택지 "확정 (추천)" / "수정할 부분 있음")이다. 수정 라운드의 기획자는 먼저 `--pending` 과 열린 질문의 `--wait` 를 확인한다. 리뷰어는 `hteam ask-user --history` 로 실제 질문(보인 `render` 그대로: context·선택지)과 답을 확인한다(읽기 전용 명령이라 리뷰어 규칙 안이다). 코드는 둘만 바꾼다: 수정 블록 문구(열린 질문을 새로 묻지 않고 기다린다), `--history` 에 원래 `render` 를 더한다(Codex 계획 리뷰 r1: 이력에 context 가 없으면 확정 질문의 그래프를 확인할 수 없다). 그 밖의 인터뷰 장치(`ask-user`, 한 태스크 한 질문, 프로젝트마다 기획 하나 `planner_busy`, planner 사전 검사 `plan check`)는 1단계에 있다.
 
 **Files:**
-- Modify: `herdr-team/templates/roles/planner.md`, `herdr-team/lib/hteam/compose.py`(수정 블록)
+- Modify: `herdr-team/templates/roles/planner.md`, `herdr-team/lib/hteam/compose.py`(수정 블록), `herdr-team/lib/hteam/ask.py`(`history` 에 `render`)
 - Create: `herdr-team/tests/test_interview.py`
 
 **Interfaces:**
 - Consumes: `outbox.validate_render(obj, default_header) -> dict`(기존), `compose.work_spec(p, cfg, spec, rd, owns) -> str`(기존), `hteam ask-user --task T --json - | --wait ID | --pending | --history`(기존)
-- Produces: planner 문서의 절 `## 인터뷰 체크리스트`(12항목, 상태 `미정`·`결정`·`자동 결정`·`범위 밖`), `## 확정 질문`(선택지 `확정 (추천)`·`수정할 부분 있음`), `## 리뷰 기준(리뷰어가 본다)`. 수정 라운드 사양의 문장 `` `.herdr-team/bin/hteam ask-user --task T-xxx --wait <id>` 로 그 답을 기다린다 ``.
+- Produces: planner 문서의 절 `## 인터뷰 체크리스트`(12항목, 상태 `미정`·`결정`·`자동 결정`·`범위 밖`), `## 확정 질문`(선택지 `확정 (추천)`·`수정할 부분 있음`), `## 리뷰 기준(리뷰어가 본다)`. 수정 라운드 사양의 문장 `` `.herdr-team/bin/hteam ask-user --task T-xxx --wait <id>` 로 그 답을 기다린다 ``. `hteam ask-user --task T --history` 의 항목에 원래 질문 `render`(header·question·context·options)를 더한다(리뷰어가 확정 질문에 보인 태스크 그래프를 tasks.toml 과 견준다).
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
@@ -357,7 +388,7 @@ class PlannerDocTest(unittest.TestCase):
         for needle in ("마지막 질문은 늘 확정 질문이다", "`plan check` 가 통과한 뒤", "확정 질문을 다시 한다"):
             self.assertIn(needle, confirm)
         review = section(self.text, "리뷰 기준(리뷰어가 본다)")
-        for needle in ("ask-user --task <이 태스크> --history", "답이 `확정 (추천)` 이다", "12항목"):
+        for needle in ("ask-user --task <이 태스크> --history", "답이 `확정 (추천)` 이다", "12항목", "`render.context`"):
             self.assertIn(needle, review)
         self.assertIn("--wait <id>", section(self.text, "사용자에게 묻기"))
         self.assertIn("designer 태스크", section(self.text, "tasks.toml 형식"))
@@ -366,7 +397,7 @@ class PlannerDocTest(unittest.TestCase):
 class FixRoundQuestionTest(TeamCase):
     """수정 라운드의 기획자는 앞 라운드의 열린 질문을 새로 묻지 않고 기다린다(설계 10장)."""
 
-    QUESTION = {"question": "저장 위치는?\n예: 파일이면 서버가 필요 없다",
+    QUESTION = {"question": "저장 위치는?\n예: 파일이면 서버가 필요 없다", "context": "앞선 답: 웹 앱이다",
                 "options": [{"label": "파일 (추천)", "description": "추천 사유: 서버가 없다"},
                             {"label": "DB", "description": "서버가 필요하다"}]}
 
@@ -395,6 +426,8 @@ class FixRoundQuestionTest(TeamCase):
         self.assertIn("`.herdr-team/bin/hteam ask-user --task T-001 --wait <id>` 로 그 답을 기다린다", work)
         code, out = self.hteam("ask-user", "--task", "T-001", "--history", as_=None)
         self.assertEqual([(i["id"], i["answer"]) for i in out["history"]], [("out-0001", None)])
+        shown = out["history"][0]["render"]  # 리뷰어가 사용자에게 보인 그대로 본다(context·선택지)
+        self.assertEqual((shown["context"], [o["label"] for o in shown["options"]]), ("앞선 답: 웹 앱이다", ["파일 (추천)", "DB"]))
         self.assertEqual([q["id"] for q in outbox.open_questions(self.p)], ["out-0001"])  # r2 도 working 이다
         code, out = self.ask()  # r2 워커가 같은 질문을 새로 하면 열린 질문 때문에 거부된다
         self.assertEqual((code, out["error"]["code"], out.get("id")), (3, "question_open", "out-0001"), out)
@@ -410,7 +443,7 @@ if __name__ == "__main__":
 - [ ] **Step 2: 실패 확인**
 
 Run: `bash herdr-team/tests/run.sh -k test_interview`
-Expected: FAIL — planner 문서에 `## 인터뷰 체크리스트`·`## 확정 질문`·`## 리뷰 기준(리뷰어가 본다)` 이 없고(`ValueError: substring not found`, 예시 질문 하나), r2 사양에 `--wait <id>` 문장이 없다.
+Expected: FAIL — planner 문서에 `## 인터뷰 체크리스트`·`## 확정 질문`·`## 리뷰 기준(리뷰어가 본다)` 이 없고(`ValueError: substring not found`, 예시 질문 하나), r2 사양에 `--wait <id>` 문장이 없고, `--history` 항목에 `render` 가 없다(`KeyError`).
 
 - [ ] **Step 3: 구현**
 
@@ -498,10 +531,10 @@ EOF
 - 확정 답을 `interview.md` 에 적고 `--ack` 한 뒤 보고서를 커밋하고 done 한다.
 
 ## 리뷰 기준(리뷰어가 본다)
-- `.herdr-team/bin/hteam ask-user --task <이 태스크> --history` 로 실제 질문과 답을 본다(읽기만 한다). `interview.md` 의 질문 기록이 그것과 맞는다.
+- `.herdr-team/bin/hteam ask-user --task <이 태스크> --history` 로 실제 질문과 답을 본다(읽기만 한다). 항목마다 `render` 가 사용자에게 보인 질문 그대로다(context·선택지). `interview.md` 의 질문 기록이 그것과 맞는다.
 - 마지막 질문이 확정 질문이고 답이 `확정 (추천)` 이다. 그 뒤에 다른 질문이 없다.
 - 체크리스트 12항목이 모두 `결정`·`자동 결정`·`범위 밖` 이고 근거가 있다. spec.md 가 그 결정을 담는다.
-- `tasks.toml` 이 `plan check` 를 통과하고 확정 질문의 태스크 그래프 표와 같다.
+- `tasks.toml` 이 `plan check` 를 통과하고 확정 질문의 `render.context` 에 보인 태스크 그래프 표와 같다.
 
 ## tasks.toml 형식
 ````
@@ -536,6 +569,23 @@ designer 태스크를 그래프에 넣는 규칙을 더한다.
                          "기다린다(Bash `timeout: 600000`).")
 ```
 
+이력에 원래 질문을 더한다(리뷰어가 보인 그대로 확인한다).
+
+**Edit** `herdr-team/lib/hteam/ask.py`
+
+```python
+def history(p, tid: str) -> dict:
+    acks = _acks(p)
+    return {"history": [_item(p, e, acks) for e in _entries(p, tid)]}
+```
+
+```python
+def history(p, tid: str) -> dict:
+    """이 태스크의 모든 질문과 답(이전 라운드 포함). render 는 메인이 사용자에게 보인 질문 그대로다(context·선택지)."""
+    acks = _acks(p)
+    return {"history": [{**_item(p, e, acks), "render": e["render"]} for e in _entries(p, tid)]}
+```
+
 - [ ] **Step 4: 통과 확인**
 
 Run: `bash herdr-team/tests/run.sh -k test_interview -k test_start -k test_mainlink`
@@ -545,11 +595,12 @@ Expected: OK(실패 없음). `test_start` 는 수정 블록 문구를 검사하�
 
 ```bash
 git grep -n -I -P '/[U]sers/|/private/[t]mp|~[/]Workspace' -- . ':!.codex-reviews' || true
-git add -- herdr-team/templates/roles/planner.md herdr-team/lib/hteam/compose.py herdr-team/tests/test_interview.py
+git add -- herdr-team/templates/roles/planner.md herdr-team/lib/hteam/compose.py herdr-team/lib/hteam/ask.py \
+  herdr-team/tests/test_interview.py
 git commit -m "feat(herdr-team): 기획 인터뷰 체크리스트·확정 질문·리뷰 기준, 수정 라운드의 열린 질문 기다리기
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/templates/roles/planner.md \
-  herdr-team/lib/hteam/compose.py herdr-team/tests/test_interview.py
+  herdr-team/lib/hteam/compose.py herdr-team/lib/hteam/ask.py herdr-team/tests/test_interview.py
 ```
 
 Expected: `git grep` 출력 없음, 커밋 성공. 컨트롤러가 `scripts/codex-review.sh commit HEAD` 를 돌리고 Global Constraints 의 Codex 규칙대로 처리한다.
@@ -557,22 +608,28 @@ Expected: `git grep` 출력 없음, 커밋 성공. 컨트롤러가 `scripts/code
 ---
 ### Task 3: `hteam design-review` — 승인 직무 일괄 승인 묶음
 
-설계 11.4: `awaiting_user` 인 승인 직무 태스크가 하나 이상 있고, 진행 중(`working`·`reviewing`·`approved`·`changes`·`launch_failed`)이거나 지금 바로 시작할 수 있는(사양 통과·의존 충족·잠금 비어 있음) 승인 직무 태스크가 없을 때, 그 순간 `awaiting_user` 인 승인 태스크를 한 묶음으로 outbox 에 `approval` 항목 하나로 쓴다. 승인 → 비승인 → 승인 사슬의 뒤 태스크는 비승인 태스크가 `done` 이어야 시작할 수 있으므로 앞 묶음을 막지 않고 다음 묶음이 된다. `context` 에는 태스크마다 한 줄과 링크(보고서의 마지막 claude.ai URL, design_system_url 은 뺀다)를 넣고 선택지는 "모두 승인 (추천)" / "수정 요청" 이다. 같은 태스크·라운드를 이미 물었으면 exit 3. 기록은 `state/design-review.json`.
+설계 11.4: `awaiting_user` 인 승인 직무 태스크가 하나 이상 있고, 진행 중(`working`·`reviewing`·`approved`·`changes`·`launch_failed`)이거나 지금 바로 시작할 수 있는(사양 통과·의존 충족·잠금 비어 있음) 승인 직무 태스크가 없을 때, 그 순간 `awaiting_user` 인 승인 태스크를 한 묶음으로 outbox 에 `approval` 항목 하나로 쓴다. 승인 → 비승인 → 승인 사슬의 뒤 태스크는 비승인 태스크가 `done` 이어야 시작할 수 있으므로 앞 묶음을 막지 않고 다음 묶음이 된다. `context` 에는 태스크마다 한 줄과 링크(보고서의 마지막 claude.ai URL, design_system_url 은 뺀다)를 넣고 선택지는 "모두 승인 (추천)" / "수정 요청" 이다(사용자 결정). 같은 태스크·라운드를 이미 물었으면 exit 3. 기록은 `state/design-review.json`.
 
-정한 것(설계가 정하지 않은 부분): 한 (태스크, 라운드)는 한 번만 묻는다. 이미 물은 태스크가 답을 기다리는 동안 새 태스크가 awaiting_user 가 되면 새 묶음에는 새 태스크만 넣는다(같은 태스크를 두 질문에 넣지 않는다). 수정 라운드는 라운드가 달라 다시 묻는다. 링크가 없으면 보고서 경로를 쓴다. 상태 파일 하나라도 읽지 못하면 묶음을 잘못 나눌 수 있어 묻지 않는다(exit 1 `bad_state_file`). 쓰는 순서는 기록(id 없음) → outbox(묶음 id `batch` 를 붙인다) → 기록의 id 이고 모두 프로젝트 잠금 안이다. 그 사이 죽으면 다음 호출이 새 묶음보다 먼저 outbox 에서 같은 `batch` 를 찾아 id 를 채우거나, 없으면 저장한 render 로 마저 쓴다.
+정한 것(설계가 정하지 않은 부분, 이 커밋에서 설계 11.4 에 옮긴다):
+- 한 (태스크, 라운드)는 한 번만 묻는다. 이미 물은 태스크가 답을 기다리는 동안 새 태스크가 awaiting_user 가 되면 새 묶음에는 새 태스크만 넣는다. 수정 라운드는 라운드가 달라 다시 묻는다. 링크가 없으면 보고서 경로를 쓴다.
+- **stale**: 승인 태스크의 선행(직간접)이 이 태스크의 현재 라운드를 연 뒤에 새 라운드를 열었으면(사용자 수정 요청으로 고쳐졌으면) 이 태스크는 옛 선행을 보고 만든 것이다. 설계 11.4 "그 태스크에 의존하는 승인 태스크도 이어서 fix"(사용자 결정)를 기계적으로 지키려고, stale 인 awaiting_user 태스크가 있으면 묻지 않고 exit 3 `approval_stale` 로 그 태스크의 fix 를 요구한다(다른 묶음에 들어갔거나, 코디네이터가 선행만 고치고 죽었어도 놓치지 않는다). 라운드를 연 시각은 상태 history 의 그 라운드 `start`·`fix` 기록이다. 같은 초에 열린 것은 함께 고친 것으로 본다(stale 아님).
+- 상태 파일 하나라도 읽지 못하면 묶음을 잘못 나눌 수 있어 묻지 않는다(exit 1 `bad_state_file`). 기록은 모양을 모두 검사한다(묶음 id·시각·out-id·태스크·라운드·render, 묶음·out-id·태스크 라운드 중복). 어기면 쓰기 전에 exit 1 `bad_side_file`.
+- 쓰는 순서는 기록(id 없음) → outbox(묶음 id `batch` 를 붙인다) → 기록의 id 이고 모두 프로젝트 잠금 안이다. 그 사이 죽으면 다음 호출이 새 묶음보다 먼저 마저 쓴다. outbox 에서 같은 `batch` 를 찾는 일은 `outbox.append` 의 잠금 안에서, 마지막 LF 가 빠진 줄을 완결한 뒤에 한다(잠금 밖에서 찾으면 LF 만 빠진 항목을 못 보고 같은 질문을 두 번 쓴다).
 
 **Files:**
 - Create: `herdr-team/lib/hteam/approval.py`, `herdr-team/tests/test_approval.py`
-- Modify: `herdr-team/lib/hteam/util.py`(`read_json_strict`, `bad_side_file`), `herdr-team/lib/hteam/paths.py`(`Project.design_review`), `herdr-team/lib/hteam/cli.py`(`COMMAND_MODULES`)
+- Modify: `herdr-team/lib/hteam/util.py`(`read_json_strict`, `bad_side_file`), `herdr-team/lib/hteam/paths.py`(`Project.design_review`), `herdr-team/lib/hteam/cli.py`(`COMMAND_MODULES`), `herdr-team/lib/hteam/outbox.py`(`append` 의 `reuse`)
+- Modify: `docs/superpowers/specs/2026-11-05-herdr-team-design.md`(11.4 의 design-review 문단)
 
 **Interfaces:**
-- Consumes: `config.load(p)`, `cfg.is_approval(role)`, `cfg.role_title(role)`, `specs.check(p, cfg, tid)`, `specs.load(p, tid).title`, `tasks.deps_met(p, cfg, spec)`, `tasks.checked_owns(cfg, spec)`, `tasks.lock_conflicts(p, tid, owns)`, `tasks._unreadable(p, ids) -> HteamError`, `state.project_lock(p)`, `state.all_states(p)`, `state.unreadable_ids(p)`, `outbox.append(p, fields) -> entry`, `outbox.read_outbox(p)`, `outbox.validate_render(obj, header)`, `roles.require_coordinator(p)`, `util.die_at(point)`(모두 기존)
+- Consumes: `config.load(p)`, `cfg.is_approval(role)`, `cfg.role_title(role)`, `specs.check(p, cfg, tid)`, `specs.load(p, tid)`(`title`, `role`, `depends_on`), `tasks.deps_met(p, cfg, spec)`, `tasks.checked_owns(cfg, spec)`, `tasks.lock_conflicts(p, tid, owns)`, `tasks._unreadable(p, ids) -> HteamError`, `state.project_lock(p)`, `state.all_states(p)`, `state.unreadable_ids(p)`, `state.ID_RE`, `state.CLOSED`, `outbox.read_outbox(p)`, `outbox.validate_render(obj, header)`, `roles.require_coordinator(p)`, `util.die_at(point)`(모두 기존)
 - Produces:
   - `util.read_json_strict(path, default)`: 없으면 `default`, 읽지 못하거나 JSON 이 아니면 `HteamError("bad_side_file", …, 1)`. `util.bad_side_file(path, why) -> HteamError`.
   - `Project.design_review` = `state/design-review.json`.
-  - `approval.load(p) -> {"batches": [...]}`(모양이 틀리면 `bad_side_file`), `approval.asked(data) -> {(task, round): out-id | None}`, `approval.view(p, cfg, states=None, data=None) -> {"waiting": [state], "blockers": [{"task", "status", "why"}], "fresh": [state], "asked": {...}}`, `approval.link(p, tid) -> str`, `approval.render(p, cfg, states) -> render`, `approval.design_review(p) -> {"id", "batch", "tasks": [{"task", "round"}], "resumed", "hint"}`. 상수 `approval.APPROVE = "모두 승인 (추천)"`, `approval.REVISE = "수정 요청"`, `approval.HEADER = "디자인 승인"`.
-  - 명령 `hteam design-review`(코디네이터만). 오류: exit 2 `no_approval_roles`, exit 3 `nothing_to_approve`·`already_asked`(data `asked`: out-id 목록)·`approval_not_ready`(data `blockers`), exit 1 `bad_side_file`·`bad_state_file`.
-  - 테스트 도우미 `tests.test_approval.ApprovalCase`(설정 `APPROVAL`, `task(tid, status, role=, rnd=, depends=, title=)`, `move(tid, status, rnd=)`, `review(**kw)`, `outbox_items()`). Task 4 가 쓴다.
+  - `outbox.append(p, fields, guard=None, reuse=None)`: `reuse(entries)` 가 항목을 돌려주면 쓰지 않고 그것을 돌려준다(같은 잠금 안, 끊긴 마지막 줄을 완결한 뒤).
+  - `approval.load(p) -> {"batches": [...]}`(검사, 틀리면 `bad_side_file`), `approval.asked(data) -> {(task, round): out-id | None}`, `approval.Graph(p)`(`deps(tid)`, `role(tid)`, `ancestors(tid)`), `approval.opened(st) -> str | None`, `approval.stale(p, cfg, states, graph=None) -> {task: [선행]}`, `approval.view(p, cfg, states=None, data=None) -> {"waiting", "blockers": [{"task", "status", "why"}], "fresh", "asked", "stale": [{"task", "round", "because"}]}`, `approval.link(p, tid) -> str`, `approval.render(p, cfg, states) -> render`, `approval.design_review(p) -> {"id", "batch", "tasks": [{"task", "round"}], "resumed", "hint"}`. 상수 `approval.APPROVE = "모두 승인 (추천)"`, `approval.REVISE = "수정 요청"`, `approval.HEADER = "디자인 승인"`.
+  - 명령 `hteam design-review`(코디네이터만). 오류: exit 2 `no_approval_roles`, exit 3 `nothing_to_approve`·`approval_stale`(data `stale`)·`already_asked`(data `asked`)·`approval_not_ready`(data `blockers`), exit 1 `bad_side_file`·`bad_state_file`.
+  - 테스트 도우미 `tests.test_approval.ApprovalCase`(설정 `APPROVAL`, `task(tid, status, role=, rnd=, depends=, title=)`, `move(tid, status, rnd=)`, `opened(tid, rnd, at)`, `review(**kw)`, `outbox_items()`). Task 4 가 쓴다.
   - die_at 지점 `design_review_recorded`(기록 뒤), `design_review_appended`(outbox 항목 뒤).
 
 - [ ] **Step 1: 실패하는 테스트 작성**
@@ -580,7 +637,7 @@ Expected: `git grep` 출력 없음, 커밋 성공. 컨트롤러가 `scripts/code
 **Create** `herdr-team/tests/test_approval.py`
 
 ```python
-"""사용자 일괄 승인(설계 11.4): design-review 의 묶음·조건·기록·링크·복구."""
+"""사용자 일괄 승인(설계 11.4): design-review 의 묶음·조건·stale·기록·링크·복구."""
 import json
 import unittest
 
@@ -620,11 +677,20 @@ class ApprovalCase(TeamCase):
                 st["round"] = rnd
             state.move(st, status, "test")
 
+    def opened(self, tid, rnd, at):
+        """그 라운드를 연 기록(fix)을 남기고 라운드를 바꾼다. stale 판정이 이 시각을 본다."""
+        with state.edit(self.p, tid) as st:
+            st["round"] = rnd
+            st["history"].append({"at": at, "from": st["status"], "to": st["status"], "event": "fix", "round": rnd})
+
     def review(self, **kw):
         return self.hteam("design-review", **kw)
 
     def outbox_items(self):
         return outbox.read_outbox(self.p)
+
+    def record(self):
+        return json.loads((self.state_dir / "design-review.json").read_text(encoding="utf-8"))
 
 
 class DesignReviewTest(ApprovalCase):
@@ -644,8 +710,7 @@ class DesignReviewTest(ApprovalCase):
         self.assertIn("- T-001 r1 [디자인] 로그인 화면: https://claude.ai/artifact/abc-1", render["context"])
         self.assertIn("- T-002 r1 [디자인] 목록 화면: docs/tasks/T-002/report.md", render["context"])  # 링크가 없다
         outbox.validate_render(render, "디자인 승인")
-        rec = json.loads((self.state_dir / "design-review.json").read_text(encoding="utf-8"))
-        self.assertEqual([(b["batch"], b["id"]) for b in rec["batches"]], [("dr-0001", "out-0001")])
+        self.assertEqual([(b["batch"], b["id"]) for b in self.record()["batches"]], [("dr-0001", "out-0001")])
         self.assertIn("out-0001", [q["id"] for q in outbox.open_questions(self.p)])
 
     def test_waits_for_approval_tasks_in_progress(self):
@@ -690,6 +755,23 @@ class DesignReviewTest(ApprovalCase):
         code, out = self.review()
         self.assertEqual((code, out.get("id"), out.get("tasks")), (0, "out-0003", [{"task": "T-001", "round": 2}]), out)
 
+    def test_task_built_on_an_older_predecessor_is_not_asked(self):
+        # T-002 r1 은 T-001 r1 을 보고 만들었다. 그 뒤 사용자 요청으로 T-001 r2 가 열렸다: T-002 도 고쳐야 한다
+        self.task("T-001", "awaiting_user")
+        self.task("T-002", "awaiting_user", depends="T-001")
+        self.opened("T-001", 1, "2026-11-06T09:00:00Z")
+        self.opened("T-002", 1, "2026-11-06T10:00:00Z")
+        self.opened("T-001", 2, "2026-11-06T10:05:00Z")
+        code, out = self.review()
+        self.assertEqual((code, out["error"]["code"]), (3, "approval_stale"), out)
+        self.assertEqual(out["stale"], [{"task": "T-002", "round": 1, "because": ["T-001"]}])
+        self.assertIn("--round 1", out["error"]["hint"])
+        self.assertEqual(approval.stale(self.p, config.load(self.p), state.all_states(self.p)), {"T-002": ["T-001"]})
+        self.opened("T-002", 2, "2026-11-06T10:05:00Z")  # 선행과 함께(같은 초에) 고쳤다: stale 이 아니다
+        code, out = self.review()
+        self.assertEqual((code, out.get("tasks")), (0, [{"task": "T-001", "round": 2}, {"task": "T-002", "round": 2}]),
+                         out)
+
     def test_nothing_to_approve_and_permissions(self):
         code, out = self.review()
         self.assertEqual((code, out["error"]["code"]), (3, "nothing_to_approve"), out)
@@ -713,18 +795,35 @@ class DesignReviewTest(ApprovalCase):
         self.assertEqual((code, out.get("id"), out.get("batch"), out.get("resumed")), (0, "out-0002", "dr-0002", True),
                          out)
         self.assertEqual([e["id"] for e in self.outbox_items()], ["out-0001", "out-0002"])  # 두 번 묻지 않았다
-        rec = json.loads((self.state_dir / "design-review.json").read_text(encoding="utf-8"))
-        self.assertEqual([b["id"] for b in rec["batches"]], ["out-0001", "out-0002"])
+        self.assertEqual([b["id"] for b in self.record()["batches"]], ["out-0001", "out-0002"])
+
+    def test_resume_finds_entry_missing_only_its_last_lf(self):
+        # 항목 JSON 은 다 썼는데 마지막 LF 만 못 쓰고 죽었다. 다음 호출은 그 항목을 완결해 쓰고 새로 쓰지 않는다
+        self.task("T-001", "awaiting_user")
+        code, _ = self.review(env={"HTEAM_TEST_DIE_AT": "design_review_appended"})
+        self.assertEqual(code, 137)
+        path = self.state_dir / "outbox.jsonl"
+        path.write_bytes(path.read_bytes().rstrip(b"\n"))
+        code, out = self.review()
+        self.assertEqual((code, out.get("id"), out.get("resumed")), (0, "out-0001", True), out)
+        self.assertEqual([(e["id"], e["batch"]) for e in self.outbox_items()], [("out-0001", "dr-0001")])
+        self.assertEqual(self.record()["batches"][0]["id"], "out-0001")
 
     def test_corrupt_record_is_kept(self):
         self.task("T-001", "awaiting_user")
         path = self.state_dir / "design-review.json"
-        for text in ("{broken", '{"batches": [{"batch": 1}]}'):
-            with self.subTest(text):
+        good = {"batch": "dr-0001", "at": "2026-11-06T10:00:00Z", "id": "out-0001",
+                "tasks": [{"task": "T-009", "round": 1}], "render": approval.render(self.p, config.load(self.p), [])}
+        for broken in ("{broken", {"batches": [{"batch": 1}]}, {"batches": [{**good, "id": None, "render": 42}]},
+                       {"batches": [{**good, "id": 7}]}, {"batches": [good, {**good, "batch": "dr-0002", "id": "out-0002"}]},
+                       {"batches": [good, {**good, "tasks": [{"task": "T-008", "round": 1}]}]},
+                       {"batches": [{**good, "tasks": [{"task": "T-009", "round": 0}]}]}):
+            with self.subTest(broken):
+                text = broken if isinstance(broken, str) else json.dumps(broken, ensure_ascii=False)
                 path.write_text(text, encoding="utf-8")
                 code, out = self.review()
                 self.assertEqual((code, out["error"]["code"]), (1, "bad_side_file"), out)
-                self.assertEqual(path.read_text(encoding="utf-8"), text)
+                self.assertEqual(path.read_text(encoding="utf-8"), text)  # 덮어쓰지 않았다
         self.assertEqual(self.outbox_items(), [])
 
     def test_unreadable_state_refuses(self):
@@ -843,6 +942,42 @@ def read_json_strict(path: Path, default):
     "coord",
 ```
 
+outbox 의 덧붙이기에 "같은 잠금 안에서 찾아 있으면 쓰지 않는다"를 더한다.
+
+**Edit** `herdr-team/lib/hteam/outbox.py`
+
+```python
+def append(p, fields: dict, guard=None) -> dict:
+    """outbox 에 flock 으로 한 줄을 더한다. guard(entries) 는 같은 잠금 안에서 먼저 부른다.
+```
+
+```python
+def append(p, fields: dict, guard=None, reuse=None) -> dict:
+    """outbox 에 flock 으로 한 줄을 더한다. guard(entries) 는 같은 잠금 안에서 먼저 부른다. reuse(entries) 가 항목을
+    돌려주면 쓰지 않고 그 항목을 돌려준다(이미 쓴 같은 항목. 끊긴 마지막 줄을 완결한 뒤에 보므로 LF 만 빠진 항목도 찾는다).
+```
+
+**Edit** `herdr-team/lib/hteam/outbox.py`
+
+```python
+        count, items, _ = _parse(raw)
+        if guard is not None:
+            guard([e for _, e in items])
+        entry = {"id": f"out-{count + 1:04d}", "at": now(), **fields, "answered": False}
+```
+
+```python
+        count, items, _ = _parse(raw)
+        entries = [e for _, e in items]
+        if guard is not None:
+            guard(entries)
+        if reuse is not None:
+            found = reuse(entries)
+            if found is not None:
+                return found
+        entry = {"id": f"out-{count + 1:04d}", "at": now(), **fields, "answered": False}
+```
+
 **Create** `herdr-team/lib/hteam/approval.py`
 
 ```python
@@ -854,11 +989,15 @@ approved·changes·launch_failed)이거나 지금 바로 시작할 수 있는(�
 하나로 묻는다. 승인 → 비승인 → 승인 사슬의 뒤 태스크는 비승인 태스크가 done 이어야 시작할 수 있으므로 앞 묶음을 막지
 않고 다음 묶음이 된다.
 
+stale: 승인 태스크의 선행(직간접)이 이 태스크의 현재 라운드를 연 뒤에 새 라운드를 열었으면(사용자 수정 요청으로 고쳐짐)
+이 태스크는 옛 선행을 보고 만든 것이다. 설계 11.4 의 "그 태스크에 의존하는 승인 태스크도 이어서 fix" 를 지키려고 stale
+인 awaiting_user 태스크가 있으면 묻지 않는다(approval_stale). 라운드를 연 시각은 history 의 그 라운드 start·fix 기록이다.
+
 기록 `state/design-review.json` = {"batches": [{"batch": "dr-0001", "at", "id": "out-NNNN" | null, "render",
 "tasks": [{"task", "round"}]}]}. 한 (태스크, 라운드)는 한 번만 묻는다(수정 라운드는 라운드가 달라 다시 묻는다).
 쓰는 순서: 기록(id 없음) → outbox 항목(batch 를 붙인다) → 기록의 id. 모두 프로젝트 잠금 안에서 한다. 그 사이 죽으면
 다음 호출이 새 묶음보다 먼저 outbox 에서 같은 batch 를 찾아 id 를 채우거나, 없으면 저장한 render 로 마저 쓴다(같은
-묶음을 두 번 묻지 않는다). 기록을 읽지 못하면 덮어쓰지 않고 exit 1 이다.
+묶음을 두 번 묻지 않는다). 기록을 읽지 못하거나 모양이 틀리면 덮어쓰지 않고 exit 1 이다.
 """
 from __future__ import annotations
 
@@ -872,6 +1011,8 @@ from .util import bad_side_file, die_at, now, read_json_strict, write_json
 PROGRESS = frozenset({"working", "reviewing", "approved", "changes", "launch_failed"})
 # 아티팩트 링크. 괄호·따옴표·꺾쇠·공백·제어 문자는 URL 밖이다(context 에 그대로 들어가므로 render 검사를 지나야 한다)
 URL_RE = re.compile(r"https://claude\.ai/[A-Za-z0-9._~:/?#@!$&*+,;=%-]+")
+BATCH_RE = re.compile(r"dr-\d{4,}")
+OUT_RE = re.compile(r"out-\d{4,}")
 CONTEXT_MAX = 4000
 TITLE_MAX = 60
 HEADER = "디자인 승인"
@@ -879,24 +1020,116 @@ APPROVE = "모두 승인 (추천)"
 REVISE = "수정 요청"
 
 
-def _valid(b) -> bool:
-    return (isinstance(b, dict) and isinstance(b.get("batch"), str) and isinstance(b.get("tasks"), list)
-            and all(isinstance(t, dict) and isinstance(t.get("task"), str) and isinstance(t.get("round"), int)
-                    for t in b["tasks"]))
+def _task_ok(t) -> bool:
+    return (isinstance(t, dict) and isinstance(t.get("task"), str) and state.ID_RE.fullmatch(t["task"]) is not None
+            and isinstance(t.get("round"), int) and not isinstance(t["round"], bool) and t["round"] >= 1)
+
+
+def _problem(b) -> str | None:
+    """묶음 기록 하나의 모양 문제(없으면 None)."""
+    if not isinstance(b, dict):
+        return "묶음이 객체가 아니다"
+    if not isinstance(b.get("batch"), str) or not BATCH_RE.fullmatch(b["batch"]):
+        return f"batch 가 dr-NNNN 이 아니다: {b.get('batch')!r}"
+    if not isinstance(b.get("at"), str):
+        return f"{b['batch']}: at 이 없다"
+    if b.get("id") is not None and not (isinstance(b["id"], str) and OUT_RE.fullmatch(b["id"])):
+        return f"{b['batch']}: id 가 out-NNNN 이나 null 이 아니다: {b['id']!r}"
+    if not isinstance(b.get("tasks"), list) or not b["tasks"] or not all(_task_ok(t) for t in b["tasks"]):
+        return f"{b['batch']}: tasks 가 [{{task, round}}] 가 아니다"
+    try:
+        outbox.validate_render(b.get("render"), HEADER)
+    except HteamError as exc:
+        return f"{b['batch']}: render 가 질문 형식이 아니다({exc.message})"
+    return None
 
 
 def load(p) -> dict:
-    """design-review.json. 없으면 빈 기록. 읽지 못하거나 모양이 다르면 bad_side_file(덮어쓰지 않는다)."""
+    """design-review.json. 없으면 빈 기록. 읽지 못하거나 모양이 틀리면(필수 필드·타입, 묶음·out-id·태스크 라운드 중복)
+    bad_side_file 이다(덮어쓰지 않는다. 그 기록으로 outbox 에 쓰지도 않는다)."""
     data = read_json_strict(p.design_review, {"batches": []})
-    if not isinstance(data, dict) or not isinstance(data.get("batches"), list) or \
-            not all(_valid(b) for b in data["batches"]):
-        raise bad_side_file(p.design_review, "batches 목록 모양이 아니다")
+    if not isinstance(data, dict) or not isinstance(data.get("batches"), list):
+        raise bad_side_file(p.design_review, "batches 목록이 아니다")
+    batches, ids, keys = set(), set(), set()
+    for b in data["batches"]:
+        why = _problem(b)
+        if why is None:
+            mine = {(t["task"], t["round"]) for t in b["tasks"]}
+            if b["batch"] in batches:
+                why = f"{b['batch']} 가 두 번 나온다"
+            elif b.get("id") is not None and b["id"] in ids:
+                why = f"{b['id']} 가 두 묶음에 있다"
+            elif len(mine) != len(b["tasks"]) or mine & keys:
+                why = f"{b['batch']}: 같은 태스크·라운드를 두 번 물었다"
+            keys |= mine
+        if why:
+            raise bad_side_file(p.design_review, why)
+        batches.add(b["batch"])
+        if b.get("id") is not None:
+            ids.add(b["id"])
     return data
 
 
 def asked(data: dict) -> dict[tuple[str, int], str | None]:
     """이미 물은 (태스크, 라운드) → 그 묶음의 out-id(쓰다 멈췄으면 None)."""
     return {(t["task"], t["round"]): b.get("id") for b in data["batches"] for t in b["tasks"]}
+
+
+class Graph:
+    """사양의 depends_on 으로 본 태스크 그래프(읽기만). 사양을 읽지 못하는 태스크는 의존이 없고 직무를 모르는 것으로 본다."""
+
+    def __init__(self, p):
+        self.p = p
+        self._deps: dict[str, list[str]] = {}
+        self._roles: dict[str, str | None] = {}
+
+    def deps(self, tid: str) -> list[str]:
+        if tid not in self._deps:
+            try:
+                spec = specs.load(self.p, tid)
+                self._deps[tid], self._roles[tid] = list(spec.depends_on), spec.role
+            except HteamError:
+                self._deps[tid], self._roles[tid] = [], None
+        return self._deps[tid]
+
+    def role(self, tid: str) -> str | None:
+        self.deps(tid)
+        return self._roles[tid]
+
+    def ancestors(self, tid: str) -> set[str]:
+        """직간접 선행(순환이 있어도 끝난다)."""
+        seen: set[str] = set()
+        todo = list(self.deps(tid))
+        while todo:
+            d = todo.pop()
+            if d != tid and d not in seen:
+                seen.add(d)
+                todo += self.deps(d)
+        return seen
+
+
+def opened(st: dict) -> str | None:
+    """현재 라운드를 연 시각(그 라운드의 가장 이른 start·fix 기록). 없으면 None(stale 을 판단하지 않는다)."""
+    times = [h["at"] for h in st.get("history") or [] if isinstance(h, dict) and h.get("event") in ("start", "fix")
+             and h.get("round") == st.get("round") and isinstance(h.get("at"), str)]
+    return min(times) if times else None
+
+
+def stale(p, cfg, states: list[dict], graph: Graph | None = None) -> dict[str, list[str]]:
+    """{승인 태스크: [이 태스크의 현재 라운드를 연 뒤에 새 라운드를 연 선행]}. 끝난 태스크는 보지 않는다. 시각이 같으면
+    (같은 초에 함께 고쳤다) stale 이 아니다."""
+    graph = graph or Graph(p)
+    by_id = {s["id"]: s for s in states}
+    found: dict[str, list[str]] = {}
+    for st in states:
+        mine = opened(st)
+        if mine is None or st["status"] in state.CLOSED or not cfg.is_approval(st.get("role")):
+            continue
+        newer = sorted(a for a in graph.ancestors(st["id"])
+                       if a in by_id and (o := opened(by_id[a])) is not None and o > mine)
+        if newer:
+            found[st["id"]] = newer
+    return found
 
 
 def _startable(p, cfg, st: dict) -> bool:
@@ -911,9 +1144,11 @@ def _startable(p, cfg, st: dict) -> bool:
 
 def view(p, cfg, states: list[dict] | None = None, data: dict | None = None) -> dict:
     """지금의 승인 상황. waiting: awaiting_user 승인 태스크, blockers: 진행 중이거나 지금 시작할 수 있는 승인 태스크,
-    fresh: waiting 가운데 아직 묻지 않은 것, asked: 물은 (태스크, 라운드) → out-id. 상태는 읽기만 한다."""
+    stale: waiting 가운데 선행이 그 뒤에 고쳐진 것({task, round, because}), fresh: waiting 가운데 stale 이 아니고 아직 묻지
+    않은 것, asked: 물은 (태스크, 라운드) → out-id. 상태는 읽기만 한다."""
     states = state.all_states(p) if states is None else states
     done = asked(load(p) if data is None else data)
+    behind = stale(p, cfg, states)
     waiting, blockers = [], []
     for st in states:
         if not cfg.is_approval(st.get("role")):
@@ -924,8 +1159,9 @@ def view(p, cfg, states: list[dict] | None = None, data: dict | None = None) -> 
             blockers.append({"task": st["id"], "status": st["status"], "why": "진행 중"})
         elif st["status"] == "pending" and _startable(p, cfg, st):
             blockers.append({"task": st["id"], "status": "pending", "why": "지금 시작할 수 있다"})
-    fresh = [st for st in waiting if (st["id"], st["round"]) not in done]
-    return {"waiting": waiting, "blockers": blockers, "fresh": fresh, "asked": done}
+    late = [{"task": st["id"], "round": st["round"], "because": behind[st["id"]]} for st in waiting if st["id"] in behind]
+    fresh = [st for st in waiting if st["id"] not in behind and (st["id"], st["round"]) not in done]
+    return {"waiting": waiting, "blockers": blockers, "stale": late, "fresh": fresh, "asked": done}
 
 
 def _urls(text: str) -> list[str]:
@@ -990,13 +1226,14 @@ def render(p, cfg, sts: list[dict]) -> dict:
 
 
 def _write(p, data: dict, b: dict) -> None:
-    """기록한 묶음 b 를 outbox 에 쓰고 기록에 id 를 적는다. outbox 에 같은 batch 가 이미 있으면(앞 호출이 쓰고 죽음)
-    그것을 쓴다."""
-    entry = next((e for e in outbox.read_outbox(p) if e.get("type") == "approval" and e.get("batch") == b["batch"]),
-                 None)
-    if entry is None:
-        entry = outbox.append(p, {"type": "approval", "render": b["render"], "from": "coordinator", "batch": b["batch"]})
-        die_at("design_review_appended")
+    """기록한 묶음 b 를 outbox 에 쓰고 기록에 id 를 적는다. 같은 batch 항목이 이미 있으면(앞 호출이 쓰고 죽음) 그것을
+    쓴다. 찾기와 쓰기는 outbox 잠금 안에서 한다(append 의 reuse)."""
+    def mine(entries: list[dict]) -> dict | None:
+        return next((e for e in entries if e.get("type") == "approval" and e.get("batch") == b["batch"]), None)
+
+    entry = outbox.append(p, {"type": "approval", "render": b["render"], "from": "coordinator", "batch": b["batch"]},
+                          reuse=mine)
+    die_at("design_review_appended")
     b["id"] = entry["id"]
     write_json(p.design_review, data)
 
@@ -1023,6 +1260,13 @@ def design_review(p) -> dict:
         v = view(p, cfg, data=data)
         if not v["waiting"]:
             raise HteamError("nothing_to_approve", "awaiting_user 인 승인 직무 태스크가 없다", CONFLICT)
+        if v["stale"]:
+            names = ", ".join(f"{s['task']} r{s['round']}(선행 {', '.join(s['because'])})" for s in v["stale"])
+            fixes = "; ".join(f"`hteam fix {s['task']} --round {s['round']} --note=\"선행 {', '.join(s['because'])} 의 "
+                              "수정을 반영한다\"`" for s in v["stale"])
+            raise HteamError("approval_stale", f"선행이 그 뒤에 고쳐져 다시 만들어야 하는 승인 태스크가 있다: {names}",
+                             CONFLICT, f"{fixes}. 그 태스크들이 다시 승인된 뒤 design-review 를 다시 부른다",
+                             data={"stale": v["stale"]})
         if not v["fresh"]:
             ids = sorted({v["asked"][(s["id"], s["round"])] for s in v["waiting"]})
             raise HteamError("already_asked", f"awaiting_user 승인 태스크는 이미 물었다: {', '.join(ids)}", CONFLICT,
@@ -1051,21 +1295,35 @@ def register(sub) -> None:
     sub.add_parser("design-review").set_defaults(func=_cmd)
 ```
 
+설계 11.4 에 이 태스크가 정한 것을 옮긴다(같은 커밋).
+
+**Edit** `docs/superpowers/specs/2026-11-05-herdr-team-design.md`
+
+```markdown
+같은 태스크·라운드 묶음을 이미 물었으면 exit 3. 기록은 `state/design-review.json`.
+```
+
+```markdown
+같은 태스크·라운드 묶음을 이미 물었으면 exit 3. 기록은 `state/design-review.json`. 한 (태스크, 라운드)는 한 번만 묻는다: 이미 물은 태스크가 답을 기다리는 동안 새로 awaiting_user 가 된 태스크는 다음 묶음이 되고, 수정 라운드는 라운드가 달라 다시 묻는다. 링크가 없으면 보고서 경로를 보인다. 선택지 label 은 render 규칙(7.4)대로 `모두 승인 (추천)` / `수정 요청` 이다. 묶음 기록을 먼저 쓰고 outbox 항목에 묶음 id 를 붙인다. 그 사이 죽으면 다음 호출이 그 묶음을 마저 쓴다(같은 묶음을 찾는 일은 outbox 잠금 안에서 한다. 두 번 묻지 않는다). 선행(직간접)이 그 태스크의 현재 라운드를 연 뒤에 새 라운드를 열었으면(사용자 요청으로 고쳐졌으면) 그 태스크는 stale 이다: 옛 선행을 보고 만들었으므로 묻지 않고 exit 3 `approval_stale` 로 그 태스크의 `fix` 를 요구한다(라운드를 연 시각은 상태 history 의 start·fix 기록, 같은 초면 함께 고친 것).
+```
+
 - [ ] **Step 4: 통과 확인**
 
-Run: `bash herdr-team/tests/run.sh -k test_approval -k test_cli`
-Expected: OK(실패 없음).
+Run: `bash herdr-team/tests/run.sh -k test_approval -k test_cli -k test_mainlink`
+Expected: OK(실패 없음). `test_mainlink` 는 `outbox.append` 의 기존 동작(ID·LF 복구·guard)을 검사한다.
 
 - [ ] **Step 5: 커밋(구현자는 여기서 멈춘다)**
 
 ```bash
 git grep -n -I -P '/[U]sers/|/private/[t]mp|~[/]Workspace' -- . ':!.codex-reviews' || true
 git add -- herdr-team/lib/hteam/approval.py herdr-team/lib/hteam/util.py herdr-team/lib/hteam/paths.py \
-  herdr-team/lib/hteam/cli.py herdr-team/tests/test_approval.py
-git commit -m "feat(herdr-team): design-review 로 승인 직무 태스크를 한 번에 묻는다
+  herdr-team/lib/hteam/cli.py herdr-team/lib/hteam/outbox.py herdr-team/tests/test_approval.py \
+  docs/superpowers/specs/2026-11-05-herdr-team-design.md
+git commit -m "feat(herdr-team): design-review 로 승인 직무 태스크를 한 번에 묻는다(stale 은 묻지 않는다)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam/approval.py herdr-team/lib/hteam/util.py \
-  herdr-team/lib/hteam/paths.py herdr-team/lib/hteam/cli.py herdr-team/tests/test_approval.py
+  herdr-team/lib/hteam/paths.py herdr-team/lib/hteam/cli.py herdr-team/lib/hteam/outbox.py \
+  herdr-team/tests/test_approval.py docs/superpowers/specs/2026-11-05-herdr-team-design.md
 ```
 
 Expected: `git grep` 출력 없음, 커밋 성공. 컨트롤러가 `scripts/codex-review.sh commit HEAD` 를 돌리고 Global Constraints 의 Codex 규칙대로 처리한다.
@@ -1073,22 +1331,25 @@ Expected: `git grep` 출력 없음, 커밋 성공. 컨트롤러가 `scripts/code
 ---
 ### Task 4: 승인 흐름 연결 — accept·status·wait 답 주석·사용자 수정 라운드·문서
 
-설계 11.4·6.4·13장: 승인 직무 태스크를 accept 하면 `awaiting_user` 가 되고 다음 명령이 `design-review` 다. `status` 는 awaiting_user 태스크마다 `next`(묻지 않았고 막는 승인 태스크가 없으면 `design-review`) 또는 `hint`(어느 질문의 답을 기다리는지, 어느 승인 태스크를 기다리는지)를 준다. 1단계 `coord.py` 의 awaiting_user hint 가 없는 명령을 가리키던 것을 이것으로 바꾼다. `wait` 는 일괄 승인 질문의 답(`[main] reply out-NNNN`)에 `design_review`(묶음, `approve_all`, 태스크마다 `pending`·`depends_on`)를 붙인다. 코디네이터가 답을 해석한다: 승인이면 accept, 아니면 해당 태스크 `fix --note`, 그 태스크에 의존하는 승인 태스크도 이어서 fix. awaiting_user 에서 연 수정 라운드는 사양의 수정 블록이 "사용자 요청"으로 적는다.
+설계 11.4·6.4·7.4·13장: 승인 직무 태스크를 accept 하면 `awaiting_user` 가 되고 다음 명령이 `design-review` 다. `status` 는 awaiting_user 태스크마다 `next`(stale 이면 `fix --round`, 묻지 않았고 막는 승인 태스크가 없으면 `design-review`) 또는 `hint`(어느 질문의 답을, 어느 승인 태스크를 기다리는지)를 준다. 1단계 `coord.py` 의 awaiting_user hint 가 없는 명령을 가리키던 것을 이것으로 바꾼다. `wait` 는 일괄 승인 질문의 답(`[main] reply out-NNNN`)에 `design_review` 를 붙이고, 한 Delivery 안의 같은 out-id 는 뒤의 것을 `duplicate: true` 로 표시한다. 코디네이터가 답을 해석한다(사용자 결정): 승인이면 accept, 아니면 해당 태스크 `fix --note`, 수정 요청이 가리키지 않은 태스크는 승인, 그 태스크에 의존하는 승인 태스크도 이어서 fix. awaiting_user 에서 연 수정 라운드는 사양의 수정 블록이 "사용자 요청"으로 적는다.
 
-정한 것: `approve_all` 은 답이 정확히 `모두 승인 (추천)` 일 때만 참이다. `pending` 은 그 태스크가 아직 그 라운드의 awaiting_user 일 때만 참이라, 적용 기록(`applied`)을 쓰기 전에 코디네이터가 죽어 답이 다시 와도 두 번 fix 하지 않는다. 수정 요청 답이 고치라고 하지 않은 태스크는 승인으로 본다(모호하면 다시 묻는다). 의존하는 승인 태스크는 선행 수정과 함께 바로 고친다(같은 묶음의 수정을 다음 묶음에 함께 묻는다). 메인은 사용자가 `수정 요청` 을 고르면 무엇을 고칠지 대화로 물은 뒤 `수정 요청: <내용>` 한 줄로 답한다.
+다시 온 답이 일을 두 번 하지 않게(Codex 계획 리뷰 r1 P1): accept·fix 에 `--round N` 을 더한다(지금 라운드가 N 일 때만 한다, 아니면 exit 3 `round_changed`). 고칠 대상은 답과 묶음 전체(pending 이 아닌 태스크 포함)로 먼저 정하고 의존 승인 태스크는 프로젝트 전체 그래프에서 찾는다(`dependents`, 다른 묶음 포함). 실행할 때만 지금 awaiting_user 인지로 거른다. 선행만 고치고 죽었어도 의존 태스크는 stale(Task 3)이라 accept 가 거부하고 status 가 fix 를 준다. 상태 파일을 읽지 못한 태스크가 있으면 처리한 것으로 보지 않는다(`unknown`, applied 하지 않는다). 이 커밋에서 설계 6.4·7.4·11.4 를 맞춘다.
+
+정한 것: `approve_all` 은 답이 정확히 `모두 승인 (추천)` 일 때만 참이다. 메인은 사용자가 `수정 요청` 을 고르면 무엇을 고칠지 대화로 물은 뒤 `수정 요청: <내용>` 한 줄로 답한다.
 
 **Files:**
-- Modify: `herdr-team/lib/hteam/tasks.py`(`accept`, `fix`), `herdr-team/lib/hteam/compose.py`(수정 블록), `herdr-team/lib/hteam/approval.py`(`reply_view`, `reply_hint`), `herdr-team/lib/hteam/coord.py`(`_annotate_main`, `annotate`, `next_step`, `status`)
-- Modify: `herdr-team/templates/coordinator.md`, `herdr-team/templates/CLAUDE.section.md`
-- Test: `herdr-team/tests/test_approval.py`(`ApprovalFlowTest`, `ApprovalDocsTest`)
+- Modify: `herdr-team/lib/hteam/tasks.py`(`_expect_round`, `accept`, `fix`, CLI `--round`), `herdr-team/lib/hteam/compose.py`(수정 블록), `herdr-team/lib/hteam/approval.py`(`reply_view`, `reply_hint`), `herdr-team/lib/hteam/coord.py`(`_once`, `_annotate_main`, `_design_review`, `annotate`, `wait`, `next_step`, `_awaiting`, `status`)
+- Modify: `herdr-team/templates/coordinator.md`, `herdr-team/templates/CLAUDE.section.md`, `docs/superpowers/specs/2026-11-05-herdr-team-design.md`(6.4, 7.4, 11.4)
+- Test: `herdr-team/tests/test_approval.py`(`ApprovalFlowTest`, `ApprovalReplyTest`, `ApprovalDocsTest`)
 
 **Interfaces:**
-- Consumes: Task 3 의 `approval.load(p)`, `approval.view(p, cfg, states)`, `approval.APPROVE`, `tests.test_approval.ApprovalCase`. 기존 `specs.load(p, tid).depends_on`, `state.all_states(p)`.
+- Consumes: Task 3 의 `approval.load(p)`, `approval.view(p, cfg, states)`, `approval.stale(p, cfg, states, graph)`, `approval.Graph(p)`, `approval.APPROVE`, `tests.test_approval.ApprovalCase`. 기존 `specs.list_ids(p)`, `state.load(p, tid)`, `state.all_states(p)`, `state.id_number`.
 - Produces:
+  - `hteam accept T [--round N]`, `hteam fix T … [--round N]`: 지금 라운드가 N 이 아니면 exit 3 `round_changed`(data `round`). `tasks.accept(p, tid, expect_round=None)`, `tasks.fix(..., expect_round=None)`. `accept` 는 awaiting_user 인 승인 태스크가 stale 이면 exit 3 `approval_stale`(data `because`).
   - `accept` 결과: awaiting_user 로 갔으면 `"next": [".herdr-team/bin/hteam", "design-review"]` 와 `hint`.
   - 라운드 기록 `from_user: true`(awaiting_user 에서 연 fix). 사양 수정 블록 문장 `사용자가 일괄 승인에서 수정을 요청했다(이전 리뷰는 승인이었다).` 와 `사용자 요청: <note>`(아니면 `코디네이터 메모: <note>`).
-  - `approval.reply_view(p, oid, answer, states=None) -> {"batch", "approve_all", "tasks": [{"task", "round", "status", "round_now", "pending", "depends_on"}]} | None`, `approval.reply_hint(view, oid) -> str`.
-  - `coord.next_step(..., appr=None)`: awaiting_user 는 `appr`(approval.view 결과)로 정한다. `coord.annotate` 의 `[main] reply` 주석에 `design_review`(일괄 승인 질문의 답일 때). 기록을 읽지 못하면 `warning`.
+  - `approval.reply_view(p, cfg, oid, answer, states=None) -> {"batch", "approve_all", "unknown": [태스크], "tasks": [{"task", "round", "status", "round_now", "pending", "stale", "depends_on", "dependents": [{"task", "status", "round", "stale"}]}]} | None`, `approval.reply_hint(view, oid) -> str`.
+  - `coord.next_step(..., appr=None)`: awaiting_user 는 `appr`(approval.view 결과)로 정한다. `coord.annotate(..., cfg=, states=)` 의 `[main] reply` 주석에 `design_review`(일괄 승인 질문의 답일 때). 기록·설정을 읽지 못하면 `warning`. `wait` 는 한 Delivery 안의 같은 `reply_to` 뒤 메시지를 `duplicate: true` 로.
   - `status` 의 `warnings` 에 일괄 승인 기록 오류.
 
 - [ ] **Step 1: 실패하는 테스트 작성**
@@ -1096,10 +1357,17 @@ Expected: `git grep` 출력 없음, 커밋 성공. 컨트롤러가 `scripts/code
 **Edit** `herdr-team/tests/test_approval.py`
 
 ```python
+import json
+import unittest
+
 from tests.helpers import BASE_CONFIG, TeamCase
 ```
 
 ```python
+import json
+import time
+import unittest
+
 from tests.helpers import BASE_CONFIG, ROOT, TeamCase
 ```
 
@@ -1119,6 +1387,38 @@ if __name__ == "__main__":
 H = ".herdr-team/bin/hteam"
 
 
+class ApprovalReplyTest(ApprovalCase):
+    """답 주석(reply_view)이 처리 대상을 바르게 알려 준다: 다른 묶음의 의존 태스크, 읽지 못한 상태."""
+
+    def test_dependents_come_from_the_whole_project(self):
+        # T-001 의 답을 기다리는 동안 T-001 에 의존하는 T-002 가 따로 둘째 묶음에 들어갔다
+        self.task("T-001", "awaiting_user")
+        self.assertEqual(self.review()[1].get("id"), "out-0001")
+        self.task("T-002", "awaiting_user", depends="T-001")
+        self.assertEqual(self.review()[1].get("id"), "out-0002")
+        cfg = config.load(self.p)
+        view = approval.reply_view(self.p, cfg, "out-0001", "수정 요청: T-001 색을 바꿔")
+        [first] = view["tasks"]
+        self.assertEqual(first["dependents"], [{"task": "T-002", "status": "awaiting_user", "round": 1, "stale": False}])
+        self.assertFalse(view["approve_all"])
+        self.assertIn("dependents", approval.reply_hint(view, "out-0001"))
+        self.assertEqual(approval.reply_view(self.p, cfg, "out-0002", "모두 승인 (추천)")["tasks"][0]["depends_on"],
+                         ["T-001"])
+        self.assertIsNone(approval.reply_view(self.p, cfg, "out-0009", "x"))  # 일괄 승인 질문이 아니다
+
+    def test_unreadable_task_state_is_not_treated_as_done(self):
+        self.task("T-001", "awaiting_user")
+        self.assertEqual(self.review()[0], 0)
+        (self.state_dir / "tasks" / "T-001.json").write_text("{", encoding="utf-8")
+        view = approval.reply_view(self.p, config.load(self.p), "out-0001", "모두 승인 (추천)")
+        self.assertEqual(view["unknown"], ["T-001"])
+        self.assertFalse(view["tasks"][0]["pending"])
+        hint = approval.reply_hint(view, "out-0001")
+        self.assertIn("applied", hint)
+        self.assertIn("하지 않는다", hint)
+        self.assertNotIn("이미 모두 처리됐다", hint)
+
+
 class ApprovalFlowTest(ApprovalCase):
     """accept → awaiting_user → design-review → 메인 답 → wait 주석 → accept·fix(설계 11.4)."""
 
@@ -1126,8 +1426,9 @@ class ApprovalFlowTest(ApprovalCase):
         super().setUp()
         self.env.update({"HTEAM_WAIT_CHUNK": "0.3", "HTEAM_NO_STATUS_GRACE": "60"})
 
-    def start_design(self, tid, screen):
-        self.write_spec(tid, "designer", title=f"{screen} 화면", owns=f"docs/design/screens/{screen}/**")
+    def start_design(self, tid, screen, depends=None):
+        self.write_spec(tid, "designer", title=f"{screen} 화면", owns=f"docs/design/screens/{screen}/**",
+                        depends=depends)
         state.create(self.p, tid, "designer")
         code, out = self.hteam("start", tid)
         self.assertEqual(code, 0, out)
@@ -1150,8 +1451,8 @@ class ApprovalFlowTest(ApprovalCase):
         self.assertEqual(code, 0, out)
         return {t["id"]: t for t in out["tasks"]}
 
-    def wait_main(self):
-        """메인 답이 올 때까지 wait 하고 묶음마다 ack 한다. 메인 메시지의 hteam 주석을 돌려준다."""
+    def wait_mains(self):
+        """메인 답이 올 때까지 wait 하고 묶음마다 ack 한다. 메인 답이 든 묶음의 메인 메시지 hteam 주석들을 돌려준다."""
         for _ in range(10):
             code, out = self.hteam("wait", "--timeout", "5")
             self.assertEqual(code, 0, out)
@@ -1159,7 +1460,7 @@ class ApprovalFlowTest(ApprovalCase):
                 self.assertEqual(self.hteam("wait", "--ack", str(out["delivery"]), "--timeout", "0")[0], 0)
             found = [m["hteam"] for m in out["messages"] if m["hteam"].get("kind") == "main"]
             if found:
-                return found[-1]
+                return found
         self.fail("메인 답이 오지 않았다")
 
     def test_approve_all_then_dependent_development_starts(self):
@@ -1177,21 +1478,35 @@ class ApprovalFlowTest(ApprovalCase):
         self.assertIn("out-0001", task["hint"])
         self.assertIn("https://claude.ai/artifact/login-r1", self.outbox_items()[0]["render"]["context"])
         self.assertEqual(self.hteam("answer", "out-0001", "모두 승인 (추천)", as_="main")[0], 0)
-        info = self.wait_main()
+        [info] = self.wait_mains()
         self.assertEqual((info["reply_to"], info["duplicate"]), ("out-0001", False))
-        self.assertEqual(info["design_review"], {"batch": "dr-0001", "approve_all": True, "tasks": [
-            {"task": "T-001", "round": 1, "status": "awaiting_user", "round_now": 1, "pending": True,
-             "depends_on": []}]})
+        self.assertEqual(info["design_review"], {"batch": "dr-0001", "approve_all": True, "unknown": [], "tasks": [
+            {"task": "T-001", "round": 1, "status": "awaiting_user", "round_now": 1, "pending": True, "stale": False,
+             "depends_on": [], "dependents": []}]})
         self.assertIn("accept", info["hint"])
-        self.assertEqual(self.hteam("accept", "T-001")[1].get("status"), "done")
+        self.assertEqual(self.hteam("accept", "T-001", "--round", "1")[1].get("status"), "done")
         code, out = self.hteam("start-ready")
         self.assertEqual([s["task"] for s in out.get("started", [])], ["T-002"], out)
         self.assertEqual(self.hteam("applied", "out-0001")[0], 0)
 
-    def test_revise_answer_and_user_fix_round(self):
+    def test_same_answer_twice_in_one_delivery_is_handled_once(self):
         self.start_design("T-001", "login")
         self.finish_design("T-001", "login")
-        self.start_design("T-002", "list")
+        self.assertEqual(self.hteam("design-review")[0], 0)
+        for _ in range(2):  # 메인이 답을 다시 보냈다(보내기가 끊긴 줄 알았다)
+            self.assertEqual(self.hteam("answer", "out-0001", "수정 요청: 버튼을 크게", as_="main")[0], 0)
+        first, second = self.wait_mains()
+        self.assertEqual((first["duplicate"], second["duplicate"]), (False, True))
+        self.assertIn("design_review", first)
+        self.assertNotIn("design_review", second)
+        self.assertEqual(self.hteam("fix", "T-001", "--round", "1", "--note=버튼을 크게")[1].get("round"), 2)
+        code, out = self.hteam("fix", "T-001", "--round", "1", "--note=버튼을 크게")  # 같은 지시를 또 해도
+        self.assertEqual((code, out["error"]["code"], out.get("round")), (3, "round_changed", 2), out)
+
+    def test_revise_fixes_dependents_and_stale_guards(self):
+        self.start_design("T-001", "login")
+        self.finish_design("T-001", "login")
+        self.start_design("T-002", "list", depends="T-001")
         self.assertIn("T-002", self.statuses()["T-001"]["hint"])  # 진행 중인 승인 태스크가 끝나면 함께 묻는다
         code, out = self.hteam("design-review")
         self.assertEqual((code, out["error"]["code"]), (3, "approval_not_ready"), out)
@@ -1200,23 +1515,37 @@ class ApprovalFlowTest(ApprovalCase):
         self.assertEqual((code, out.get("tasks")), (0, [{"task": "T-001", "round": 1}, {"task": "T-002", "round": 1}]),
                          out)
         self.assertEqual(self.hteam("answer", "out-0001", "수정 요청: T-001 버튼을 더 크게", as_="main")[0], 0)
-        info = self.wait_main()
-        self.assertFalse(info["design_review"]["approve_all"])
+        [info] = self.wait_mains()
+        dr = info["design_review"]
+        self.assertFalse(dr["approve_all"])
+        self.assertEqual(dr["tasks"][0]["dependents"],
+                         [{"task": "T-002", "status": "awaiting_user", "round": 1, "stale": False}])
         self.assertIn("fix", info["hint"])
-        code, out = self.hteam("fix", "T-001", "--note=T-001 버튼을 더 크게")
+        time.sleep(1.1)  # 라운드를 연 시각(초)이 T-002 r1 보다 늦게
+        code, out = self.hteam("fix", "T-001", "--round", "1", "--note=T-001 버튼을 더 크게")
         self.assertEqual((code, out.get("round")), (0, 2), out)
         self.assertTrue(self.task_state("T-001")["rounds"][1]["from_user"])
         work = (self.state_dir / "tasks/T-001/r2-work.md").read_text(encoding="utf-8")
         self.assertIn("사용자가 일괄 승인에서 수정을 요청했다", work)
         self.assertIn("사용자 요청: T-001 버튼을 더 크게", work)
         self.assertNotIn("의 지적을 모두 다룬다", work)
-        self.assertEqual(self.hteam("accept", "T-002")[1].get("status"), "done")
-        view = approval.reply_view(self.p, "out-0001", "수정 요청")  # 답이 다시 와도 다시 처리하지 않는다
-        self.assertEqual([t["pending"] for t in view["tasks"]], [False, False])
-        self.assertIn("이미 모두 처리됐다", approval.reply_hint(view, "out-0001"))
-        self.finish_design("T-001", "login")  # r2 가 다시 승인됐다: 새 라운드라 다시 묻는다
-        code, out = self.hteam("design-review")
-        self.assertEqual((code, out.get("tasks")), (0, [{"task": "T-001", "round": 2}]), out)
+        # 여기서 코디네이터가 죽고 같은 답이 다시 왔다: T-001 은 이미 고쳤고 T-002 는 stale 이라 고쳐야 한다
+        view = approval.reply_view(self.p, config.load(self.p), "out-0001", "수정 요청: T-001 버튼을 더 크게")
+        self.assertEqual([(t["task"], t["pending"], t["stale"]) for t in view["tasks"]],
+                         [("T-001", False, False), ("T-002", True, True)])
+        self.assertIn("stale", approval.reply_hint(view, "out-0001"))
+        code, out = self.hteam("accept", "T-002", "--round", "1")  # 답에 이름이 없어도 승인하지 않는다
+        self.assertEqual((code, out["error"]["code"], out.get("because")), (3, "approval_stale", ["T-001"]), out)
+        self.assertEqual(self.statuses()["T-002"]["next"][:5], [H, "fix", "T-002", "--round", "1"])
+        code, out = self.hteam("fix", "T-001", "--round", "1", "--note=T-001 버튼을 더 크게")
+        self.assertEqual((code, out["error"]["code"]), (3, "round_changed"), out)
+        code, out = self.hteam("fix", "T-002", "--round", "1", "--note=선행 T-001 의 사용자 요청을 반영한다")
+        self.assertEqual((code, out.get("round")), (0, 2), out)
+        self.finish_design("T-001", "login")
+        self.finish_design("T-002", "list")
+        code, out = self.hteam("design-review")  # 다시 승인된 r2 둘을 함께 묻는다
+        self.assertEqual((code, out.get("tasks")), (0, [{"task": "T-001", "round": 2}, {"task": "T-002", "round": 2}]),
+                         out)
 
     def test_unreadable_record_is_a_warning_not_a_crash(self):
         self.start_design("T-001", "login")
@@ -1233,7 +1562,8 @@ class ApprovalDocsTest(unittest.TestCase):
     def test_coordinator_and_main_docs(self):
         coord = (ROOT / "templates" / "coordinator.md").read_text(encoding="utf-8")
         for needle in ("`hteam design-review`", "exit 3 `approval_not_ready`", "`already_asked`", "## 일괄 승인 답",
-                       "`pending: true`", '--note="<사용자 요청 원문>"', "- designer:"):
+                       "`--round`", "`approval_stale`", "`dependents`", "같은 `reply_to` 가 둘 이상이면",
+                       '--note="<사용자 요청 원문>"', "- designer:"):
             self.assertIn(needle, coord)
         main = (ROOT / "templates" / "CLAUDE.section.md").read_text(encoding="utf-8")
         self.assertIn("`수정 요청: <태스크 ID 와 고칠 내용>`", main)
@@ -1245,10 +1575,65 @@ if __name__ == "__main__":
 
 - [ ] **Step 2: 실패 확인**
 
-Run: `bash herdr-team/tests/run.sh -k ApprovalFlow -k ApprovalDocs`
-Expected: FAIL — accept 결과에 `next` 가 없고(`KeyError`/`AssertionError`), 답 주석에 `design_review` 가 없고, 문서에 일괄 승인 절이 없다.
+Run: `bash herdr-team/tests/run.sh -k ApprovalFlow -k ApprovalReply -k ApprovalDocs`
+Expected: FAIL — `approval.reply_view` 가 없고, accept 결과에 `next` 가 없고, `--round` 를 모르고(exit 2 usage), 문서에 일괄 승인 절이 없다.
 
 - [ ] **Step 3: 구현**
+
+라운드 조건과 stale 거부.
+
+**Edit** `herdr-team/lib/hteam/tasks.py`
+
+```python
+def _live_error(tid: str, slot: dict, row: dict, horch_cmd: str) -> HteamError:
+```
+
+```python
+def _expect_round(tid: str, st: dict, want: int | None) -> None:
+    """--round N: 명령을 정한 때의 라운드와 지금 라운드가 같아야 한다. 다시 온 지시(일괄 승인 답)가 이미 처리한 라운드를
+    다음 라운드에 다시 적용하지 않게 한다(설계 6.4)."""
+    if want is not None and st["round"] != want:
+        raise HteamError("round_changed", f"{tid} 는 지금 r{st['round']} 다(--round {want}). 그 라운드는 이미 처리됐다",
+                         CONFLICT, "다시 하지 않는다. hteam status 로 지금 상태를 본다", data={"round": st["round"]})
+
+
+def _live_error(tid: str, slot: dict, row: dict, horch_cmd: str) -> HteamError:
+```
+
+**Edit** `herdr-team/lib/hteam/tasks.py`
+
+```python
+def accept(p, tid: str) -> dict:
+```
+
+```python
+def accept(p, tid: str, expect_round: int | None = None) -> dict:
+```
+
+**Edit** `herdr-team/lib/hteam/tasks.py`
+
+```python
+    if st["status"] not in ("approved", "awaiting_user"):
+        raise HteamError("bad_state", f"{tid} 는 {st['status']} 다(accept 는 approved·awaiting_user 에서)", CONFLICT,
+                         data={"status": st["status"]})
+    to = "awaiting_user" if st["status"] == "approved" and cfg.is_approval(st["role"]) else "done"
+```
+
+```python
+    if st["status"] not in ("approved", "awaiting_user"):
+        raise HteamError("bad_state", f"{tid} 는 {st['status']} 다(accept 는 approved·awaiting_user 에서)", CONFLICT,
+                         data={"status": st["status"]})
+    _expect_round(tid, st, expect_round)
+    if st["status"] == "awaiting_user":
+        from . import approval  # approval 이 tasks 를 쓴다. 불러오는 순서가 꼬이지 않게 여기서 가져온다
+        behind = approval.stale(p, cfg, state.all_states(p)).get(tid)
+        if behind:  # 선행이 그 뒤에 고쳐졌다(설계 11.4): 옛 선행을 보고 만든 결과를 승인하지 않는다
+            names = ", ".join(behind)
+            raise HteamError("approval_stale", f"{tid} 의 선행 {names} 가 이 라운드를 연 뒤에 고쳐졌다", CONFLICT,
+                             f"{SHIM} fix {tid} --round {st['round']} --note=\"선행 {names} 의 수정을 반영한다\"",
+                             data={"because": behind})
+    to = "awaiting_user" if st["status"] == "approved" and cfg.is_approval(st["role"]) else "done"
+```
 
 accept 가 awaiting_user 로 가면 다음 명령을 준다.
 
@@ -1271,6 +1656,34 @@ accept 가 awaiting_user 로 가면 다음 명령을 준다.
     return out
 ```
 
+**Edit** `herdr-team/lib/hteam/tasks.py`
+
+```python
+def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: bool, cli: dict) -> dict:
+```
+
+```python
+def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: bool, cli: dict,
+        expect_round: int | None = None) -> dict:
+```
+
+**Edit** `herdr-team/lib/hteam/tasks.py`
+
+```python
+    def allowed(st: dict) -> None:
+        if st["status"] in state.CLOSED:
+            raise state.closed_error(st)
+        if st["status"] not in FIX_FROM:
+```
+
+```python
+    def allowed(st: dict) -> None:
+        if st["status"] in state.CLOSED:
+            raise state.closed_error(st)
+        _expect_round(tid, st, expect_round)  # 미리 보고, 취소를 저장하는 잠금 안에서 다시 본다(_close_round 의 check)
+        if st["status"] not in FIX_FROM:
+```
+
 awaiting_user 에서 연 라운드에 표시를 남긴다(사양 조립 전에).
 
 **Edit** `herdr-team/lib/hteam/tasks.py`
@@ -1285,6 +1698,51 @@ awaiting_user 에서 연 라운드에 표시를 남긴다(사양 조립 전에).
         if old == "awaiting_user":  # 사용자 일괄 승인의 수정 요청(설계 11.4). 수정 블록이 사용자 요청으로 적는다
             rd["from_user"] = True
         text = compose.work_spec(p, cfg, spec, rd, owns)
+```
+
+**Edit** `herdr-team/lib/hteam/tasks.py`
+
+```python
+    return fix(p, args.task, note=args.note, supplement=args.supplement, force_round=args.force_round, cli=_cli(args))
+
+
+def _cmd_accept(args) -> dict:
+    p = find_project(args.root)
+    roles.require_coordinator(p)
+    return accept(p, args.task)
+```
+
+```python
+    return fix(p, args.task, note=args.note, supplement=args.supplement, force_round=args.force_round, cli=_cli(args),
+               expect_round=args.expect_round)
+
+
+def _cmd_accept(args) -> dict:
+    p = find_project(args.root)
+    roles.require_coordinator(p)
+    return accept(p, args.task, args.expect_round)
+```
+
+**Edit** `herdr-team/lib/hteam/tasks.py`
+
+```python
+    s.add_argument("--force-round", action="store_true")
+    _overrides(s)
+    s.set_defaults(func=_cmd_fix)
+    s = sub.add_parser("accept")
+    s.add_argument("task")
+    s.set_defaults(func=_cmd_accept)
+```
+
+```python
+    s.add_argument("--force-round", action="store_true")
+    s.add_argument("--round", type=int, dest="expect_round", help="지금 라운드가 이것일 때만(설계 6.4)")
+    _overrides(s)
+    s.set_defaults(func=_cmd_fix)
+    s = sub.add_parser("accept")
+    s.add_argument("task")
+    s.add_argument("--round", type=int, dest="expect_round", help="지금 라운드가 이것일 때만(설계 6.4)")
+    s.set_defaults(func=_cmd_accept)
 ```
 
 **Edit** `herdr-team/lib/hteam/compose.py`
@@ -1337,51 +1795,88 @@ def _cmd(args) -> dict:
     return design_review(p)
 ```
 
-```python
-def reply_view(p, oid: str, answer: str, states: list[dict] | None = None) -> dict | None:
+````python
+def reply_view(p, cfg, oid: str, answer: str, states: list[dict] | None = None) -> dict | None:
     """oid 가 design-review 묶음의 질문이면 그 답의 처리 정보, 아니면 None(설계 11.4).
 
-    {"batch", "approve_all": 답이 정확히 APPROVE 인가, "tasks": [{"task", "round", "status", "round_now", "pending",
-    "depends_on"}]}. pending: 그 태스크가 아직 그 라운드의 awaiting_user 다. 이미 accept·fix 했거나 버렸으면 거짓이라,
-    적용 기록 전에 코디네이터가 죽어 답이 다시 와도 두 번 처리하지 않는다. 기록을 읽지 못하면 bad_side_file."""
+    {"batch", "approve_all": 답이 정확히 APPROVE 인가, "unknown": [상태를 읽지 못한 태스크], "tasks": [{"task", "round"(물은
+    라운드), "status", "round_now", "pending", "stale", "depends_on", "dependents": [{"task", "status", "round", "stale"}]}]}.
+    pending: 아직 그 라운드의 awaiting_user 다. dependents: 프로젝트 전체에서 이 태스크에 직간접으로 의존하는 승인 태스크
+    (다른 묶음에 있어도). 고칠 대상은 답과 묶음 전체로 정하고 실행할 때만 지금 상태로 거른다(다시 온 답이 일을 두 번 하거나
+    빠뜨리지 않게). 묶음 태스크의 상태를 읽지 못하면 unknown 이다(처리한 것으로 보지 않는다). 기록을 읽지 못하면
+    bad_side_file, 설정이 없으면 bad_config."""
     b = next((x for x in load(p)["batches"] if x.get("id") == oid), None)
     if b is None:
         return None
-    by_id = {s["id"]: s for s in (state.all_states(p) if states is None else states)}
+    if cfg is None:
+        raise HteamError("bad_config", "설정을 읽지 못해 승인 직무를 모른다", USAGE, "`.herdr-team/config.toml` 을 고친다")
+    states = state.all_states(p) if states is None else states
+    by_id = {s["id"]: s for s in states}
+    graph = Graph(p)
+    behind = stale(p, cfg, states, graph)
+    unknown: list[str] = []
+
+    def current(tid: str, required: bool) -> dict:
+        """지금 상태. 읽지 못하면(손상·id 불일치, 묶음 태스크는 없어도) unknown 에 넣고 빈 값."""
+        if tid in by_id:
+            return by_id[tid]
+        try:
+            st = state.load(p, tid)
+        except HteamError:
+            st = False
+        if st is False or (st is None and required) or (st is not None and st.get("id") != tid):
+            unknown.append(tid)
+            return {}
+        return st or {}
+
+    ids = sorted(set(by_id) | set(specs.list_ids(p)), key=state.id_number)
     items = []
     for t in b["tasks"]:
-        st = by_id.get(t["task"]) or {}
-        try:
-            deps = specs.load(p, t["task"]).depends_on
-        except HteamError:
-            deps = []
+        st = current(t["task"], True)
+        dependents = []
+        for d in ids:
+            if d == t["task"] or t["task"] not in graph.ancestors(d):
+                continue
+            if not cfg.is_approval((by_id.get(d) or {}).get("role") or graph.role(d)):
+                continue
+            ds = current(d, False)
+            dependents.append({"task": d, "status": ds.get("status"), "round": ds.get("round"), "stale": d in behind})
         items.append({"task": t["task"], "round": t["round"], "status": st.get("status"), "round_now": st.get("round"),
                       "pending": st.get("status") == "awaiting_user" and st.get("round") == t["round"],
-                      "depends_on": deps})
-    return {"batch": b["batch"], "approve_all": answer.strip() == APPROVE, "tasks": items}
+                      "stale": t["task"] in behind, "depends_on": graph.deps(t["task"]), "dependents": dependents})
+    return {"batch": b["batch"], "approve_all": answer.strip() == APPROVE,
+            "unknown": sorted(set(unknown), key=state.id_number), "tasks": items}
 
 
 def reply_hint(view: dict, oid: str) -> str:
     """reply_view 결과로 코디네이터가 할 일(coordinator.md 의 "일괄 승인 답")."""
-    pending = [t["task"] for t in view["tasks"] if t["pending"]]
+    if view["unknown"]:
+        return (f"상태를 읽지 못한 태스크가 있다({', '.join(view['unknown'])}). 이 답으로 아무것도 하지 않고 "
+                f"`{SHIM} applied {oid}` 도 하지 않는다. 메인에 알려 상태 파일을 고친 뒤 다시 받는다")
+    pending = [t for t in view["tasks"] if t["pending"]]
     if not pending:
-        return f"이 묶음의 태스크는 이미 모두 처리됐다. 다시 accept·fix 하지 않는다. `{SHIM} applied {oid}` 만 한다"
-    names = ", ".join(pending)
+        return (f"이 묶음의 태스크는 이미 모두 처리됐다. 다시 accept·fix 하지 않는다(stale 인 dependents 는 status 의 next 가 "
+                f"fix 를 준다). `{SHIM} applied {oid}` 만 한다")
+    rows = ", ".join(f"{t['task']}(r{t['round']}{', stale' if t['stale'] else ''})" for t in pending)
     if view["approve_all"]:
-        return f"모두 승인이다. pending 태스크({names})마다 `{SHIM} accept <T>` 뒤 `{SHIM} start-ready`, `{SHIM} applied {oid}`"
-    return (f"수정 요청이다. pending 태스크({names}) 가운데 답이 고치라는 태스크마다 `{SHIM} fix <T> --note=\"<사용자 요청>\"`, "
-            "그 태스크에 직간접으로 의존하는(depends_on) 이 묶음의 pending 태스크도 fix 한다. 답이 고치라고 하지 않은 pending "
-            "태스크는 accept 한다. 어느 태스크인지 모호하면 notify --type question 으로 다시 묻는다. 끝나면 "
-            f"`{SHIM} start-ready`, `{SHIM} applied {oid}`")
+        return (f"모두 승인이다. pending 태스크 {rows} 마다 `{SHIM} accept <T> --round <round>`. stale 인 태스크는 accept 가 "
+                f"거부한다: 대신 `{SHIM} fix <T> --round <round> --note=\"선행 수정을 반영한다\"`. 끝나면 `{SHIM} start-ready`, "
+                f"`{SHIM} applied {oid}`")
+    return (f"수정 요청이다(pending: {rows}). ① 답이 고치라는 태스크를 이 묶음 전체(pending 이 아닌 것 포함)에서 정한다. "
+            "② 고칠 대상 = 그 태스크들 + 각 dependents(프로젝트 전체, 다른 묶음 포함). ③ 고칠 대상 가운데 지금 awaiting_user "
+            f"인 것만 선행부터 `{SHIM} fix <T> --round <지금 라운드> --note=\"<사용자 요청 원문>\"`(이미 고친 것은 건너뛴다. 진행 "
+            "중인 dependents 는 awaiting_user 가 된 뒤 status 의 next 가 fix 를 준다). ④ 고칠 대상이 아닌 pending 태스크는 "
+            f"`{SHIM} accept <T> --round <round>`(stale 이면 fix). 어느 태스크인지 모호하면 notify --type question 으로 다시 "
+            f"묻는다. 끝나면 `{SHIM} start-ready`, `{SHIM} applied {oid}`")
 
 
 def _cmd(args) -> dict:
     p = find_project(args.root)
     roles.require_coordinator(p)
     return design_review(p)
-```
+````
 
-coord: 답 주석과 awaiting_user 의 next.
+coord: 답 주석, 한 Delivery 안의 중복, awaiting_user 의 next.
 
 **Edit** `herdr-team/lib/hteam/coord.py`
 
@@ -1400,7 +1895,7 @@ def _annotate_main(p, m: dict, rows: list[dict] | None) -> dict:
 ```
 
 ```python
-def _annotate_main(p, m: dict, rows: list[dict] | None, states: list[dict] | None = None) -> dict:
+def _annotate_main(p, m: dict, rows: list[dict] | None, states: list[dict] | None = None, cfg=_LOAD) -> dict:
 ```
 
 **Edit** `herdr-team/lib/hteam/coord.py`
@@ -1415,20 +1910,38 @@ def _annotate_main(p, m: dict, rows: list[dict] | None, states: list[dict] | Non
         info["hint"] = ("이미 적용한 답이다. ack 만 한다" if info["duplicate"]
                         else f"{oid} 의 답이다. 처리한 뒤 `{SHIM} applied {oid}`")
         if not info["duplicate"]:
-            _design_review(p, info, oid, m, states)
+            _design_review(p, info, oid, m, states, cfg)
     return info
 
 
-def _design_review(p, info: dict, oid: str, m: dict, states: list[dict] | None) -> None:
+def _design_review(p, info: dict, oid: str, m: dict, states: list[dict] | None, cfg) -> None:
     """design-review 묶음의 답이면 처리 정보(design_review)와 할 일(hint)을 붙인다(설계 11.4)."""
+    if cfg is _LOAD:
+        cfg = _config(p)
     try:
-        view = approval.reply_view(p, oid, m.get("body") or "", states)
+        view = approval.reply_view(p, cfg, oid, m.get("body") or "", states)
     except HteamError as exc:
-        info["warning"] = f"일괄 승인 기록을 읽지 못해 이 답이 일괄 승인인지 모른다: {exc.message}"
+        info["warning"] = f"이 답이 일괄 승인 답인지 보지 못했다: {exc.message}. 고친 뒤 다시 받는다(applied 하지 않는다)"
         return
     if view is not None:
         info["design_review"] = view
         info["hint"] = approval.reply_hint(view, oid)
+
+
+def _once(messages: list[dict]) -> list[dict]:
+    """한 Delivery 안에 같은 out-id 의 답이 둘 이상이면(메인이 답을 다시 보냄) 뒤의 것을 duplicate 로 표시한다(설계 7.4:
+    같은 out-id 는 한 번만 처리한다). 같은 상태 스냅숏으로 주석을 달아 둘 다 처리할 일로 보이기 때문이다."""
+    seen: set[str] = set()
+    for m in messages:
+        info = m.get("hteam") or {}
+        oid = info.get("reply_to")
+        if info.get("kind") != "main" or not oid:
+            continue
+        if oid in seen:
+            info.pop("design_review", None)
+            info.update(duplicate=True, hint="이 묶음에 같은 답이 앞에 있다(다시 보낸 답). 앞의 것만 처리하고 이것은 ack 만 한다")
+        seen.add(oid)
+    return messages
 ```
 
 **Edit** `herdr-team/lib/hteam/coord.py`
@@ -1438,7 +1951,17 @@ def _design_review(p, info: dict, oid: str, m: dict, states: list[dict] | None) 
 ```
 
 ```python
-        return {**m, "hteam": _annotate_main(p, m, rows, states)}
+        return {**m, "hteam": _annotate_main(p, m, rows, states, cfg)}
+```
+
+**Edit** `herdr-team/lib/hteam/coord.py`
+
+```python
+                   "messages": [annotate(p, m, rows, cmd, cfg=cfg, states=states) for m in data["messages"]],
+```
+
+```python
+                   "messages": _once([annotate(p, m, rows, cmd, cfg=cfg, states=states) for m in data["messages"]]),
 ```
 
 **Edit** `herdr-team/lib/hteam/coord.py`
@@ -1478,10 +2001,15 @@ def next_step(cfg, st: dict, by_task: dict[str, dict], have_rows: bool,
 
 
 def _awaiting(st: dict, appr: dict | None) -> tuple[list[str] | None, str | None]:
-    """awaiting_user 의 다음(설계 11.4): 이미 물었으면 그 답을 기다리고, 진행 중이거나 시작할 수 있는 승인 태스크가 있으면
-    그것을 기다리고, 아니면 design-review."""
+    """awaiting_user 의 다음(설계 11.4): 선행이 그 뒤에 고쳐졌으면(stale) fix, 이미 물었으면 그 답을 기다리고, 진행
+    중이거나 시작할 수 있는 승인 태스크가 있으면 그것을 기다리고, 아니면 design-review."""
     if appr is None:
         return None, "사용자 일괄 승인을 기다린다(일괄 승인 기록을 읽지 못했다. status 의 warnings 를 본다)"
+    late = next((s for s in appr["stale"] if s["task"] == st["id"]), None)
+    if late:
+        names = ", ".join(late["because"])
+        return (H("fix", st["id"], "--round", str(st["round"]), f"--note=선행 {names} 의 수정을 반영한다"),
+                f"선행 {names} 가 이 라운드를 연 뒤에 고쳐졌다. 이 결과는 accept·design-review 가 받지 않는다")
     key = (st["id"], st["round"])
     if key in appr["asked"]:
         oid = appr["asked"][key]
@@ -1557,7 +2085,7 @@ def _awaiting(st: dict, appr: dict | None) -> tuple[list[str] | None, str | None
 
 ```markdown
 - `review-finish` 의 `status: approved` → `hteam accept T` → `hteam start-ready`. 기획 태스크면 accept 뒤 `hteam plan apply`(처음) 또는 `hteam plan apply --append`(추가) 를 먼저 한다.
-- 승인 직무(designer 등)는 `accept` 가 `status: awaiting_user` 와 `next` 를 준다. `hteam start-ready` 뒤 `hteam design-review` 를 부른다. exit 3 `approval_not_ready` 면 다른 승인 직무 태스크가 아직 진행 중이거나 지금 시작할 수 있다: 그 태스크를 accept 한 뒤 다시 부른다. `already_asked` 면 사용자 답을 기다린다. `nothing_to_approve` 면 할 일이 없다.
+- 승인 직무(designer 등)는 `accept` 가 `status: awaiting_user` 와 `next` 를 준다. `hteam start-ready` 뒤 `hteam design-review` 를 부른다. exit 3 `approval_not_ready` 면 다른 승인 직무 태스크가 아직 진행 중이거나 지금 시작할 수 있다: 그 태스크를 accept 한 뒤 다시 부른다. `already_asked` 면 사용자 답을 기다린다. `nothing_to_approve` 면 할 일이 없다. `approval_stale` 이면 선행이 그 뒤에 고쳐진 태스크다: hint 의 `hteam fix T --round N --note=…` 를 한다.
 ```
 
 **Edit** `herdr-team/templates/coordinator.md`
@@ -1568,9 +2096,12 @@ def _awaiting(st: dict, appr: dict | None) -> tuple[list[str] | None, str | None
 
 ```markdown
 ## 일괄 승인 답
-`hteam design-review` 가 올린 approval 질문의 답은 `kind: main`, `reply_to: out-NNNN` 에 `design_review` 필드(`batch`, `approve_all`, `tasks`)가 붙어 온다. `tasks` 가운데 `pending: true` 인 태스크만 처리한다(`false` 는 이미 처리했거나 상태가 바뀌었다. 다시 accept·fix 하지 않는다). hint 가 할 일을 요약한다.
-- `approve_all: true`(모두 승인): pending 태스크마다 `hteam accept T` → `hteam start-ready` → `hteam applied out-NNNN`.
-- 그 밖(수정 요청): 답이 고치라는 pending 태스크마다 `hteam fix T --note="<사용자 요청 원문>"`. 그 태스크에 직간접으로 의존하는(`depends_on`) 이 묶음의 pending 태스크도 `hteam fix T --note="선행 T-xxx 의 사용자 요청을 반영한다: <원문>"` 으로 이어서 고친다. 답이 고치라고 하지 않은 pending 태스크는 `hteam accept T`. 어느 태스크를 고치라는지 모호하면 `hteam notify --type question` 으로 다시 묻고, 그 답이 올 때까지 이 묶음의 태스크를 바꾸지 않는다. 끝나면 `hteam start-ready` → `hteam applied out-NNNN`.
+`hteam design-review` 가 올린 approval 질문의 답은 `kind: main`, `reply_to: out-NNNN` 에 `design_review` 필드(`batch`, `approve_all`, `unknown`, `tasks`)가 붙어 온다. `tasks` 의 행마다 `round`(물은 라운드), `status`·`round_now`(지금), `pending`(아직 그 라운드의 awaiting_user), `stale`(선행이 그 뒤에 고쳐졌다), `depends_on`, `dependents`(프로젝트 전체에서 이 태스크에 직간접으로 의존하는 승인 태스크와 그 상태·라운드, 다른 묶음 포함)가 있다. hint 가 할 일을 요약한다.
+- 같은 묶음(Delivery)에 같은 `reply_to` 가 둘 이상이면 앞의 것만 처리한다(뒤의 것은 `duplicate: true`). `unknown` 이 비어 있지 않으면 아무것도 하지 않고 `applied` 도 하지 않는다(메인에 알린다).
+- 모든 accept·fix 에는 `--round` 를 붙인다: 묶음 태스크는 그 `round`, dependents 는 지금 `round`. 그 라운드가 이미 지났으면 exit 3 `round_changed` 다(이미 처리했다. 넘어간다).
+- `approve_all: true`(모두 승인): pending 태스크마다 `hteam accept T --round N` → `hteam start-ready` → `hteam applied out-NNNN`. stale 인 태스크는 accept 가 exit 3 `approval_stale` 로 거부한다: 대신 `hteam fix T --round N --note="선행 T-xxx 의 수정을 반영한다"`.
+- 그 밖(수정 요청): ① 답이 고치라는 태스크를 이 묶음 전체(pending 이 아닌 것 포함)에서 정한다. ② 고칠 대상은 그 태스크들과 각 `dependents` 다(다른 묶음에 있어도). ③ 고칠 대상 가운데 지금 awaiting_user 인 것만 선행부터 `hteam fix T --round N --note="<사용자 요청 원문>"`(dependents 는 `--note="선행 T-xxx 의 사용자 요청을 반영한다: <원문>"`). 이미 고쳐 awaiting_user 가 아닌 것은 건너뛴다. 아직 진행 중인 dependents 는 두면 된다(awaiting_user 가 되면 status 의 next 가 fix 를 준다). ④ 고칠 대상이 아닌 pending 태스크는 `hteam accept T --round N`(사용자 결정: 수정 요청이 가리키지 않은 태스크는 승인). 어느 태스크를 고치라는지 모호하면 `hteam notify --type question` 으로 다시 묻고, 그 답이 올 때까지 이 묶음의 태스크를 바꾸지 않는다. 끝나면 `hteam start-ready` → `hteam applied out-NNNN`.
+- 같은 답이 다시 와도(재시작 뒤) 같은 순서로 다시 한다: `pending`·`--round`·stale 이 이미 한 일을 다시 하지 않고 빠뜨린 일만 하게 한다.
 - 고친 태스크가 다시 승인되면(accept 뒤 awaiting_user) 새 라운드라 `hteam design-review` 가 다시 묻는다.
 
 ## 요청 처리
@@ -1610,6 +2141,59 @@ def _awaiting(st: dict, appr: dict | None) -> tuple[list[str] | None, str | None
 - 설정 `.herdr-team/config.toml`, 태스크 사양 `.herdr-team/tasks/`, 기획 `docs/planning/`, 디자인 `docs/design/`, 워커 보고서 `docs/tasks/`, 리뷰 `docs/reviews/`.
 ```
 
+설계를 같은 커밋에서 맞춘다(6.4 의 `--round`, 7.4 의 한 Delivery 안의 중복, 11.4 의 답 해석).
+
+**Edit** `docs/superpowers/specs/2026-11-05-herdr-team-design.md`
+
+```markdown
+- `hteam accept T`: `approved` → `done`
+```
+
+```markdown
+- `hteam accept T [--round N]`: `approved` → `done`
+```
+
+**Edit** `docs/superpowers/specs/2026-11-05-herdr-team-design.md`
+
+```markdown
+`hteam fix T [--note "…"] [--supplement T-yyy] [--force-round] [--model …] [--effort …] [--worker …]`
+```
+
+```markdown
+`hteam fix T [--note "…"] [--supplement T-yyy] [--force-round] [--round N] [--model …] [--effort …] [--worker …]`
+```
+
+**Edit** `docs/superpowers/specs/2026-11-05-herdr-team-design.md`
+
+```markdown
+- `max_rounds` 에 닿으면 코디네이터가 메인에 묻는다(계속 / 버림). 계속이면 `--note` 와 함께 `fix --force-round`(상한을 한 번 넘긴다).
+```
+
+```markdown
+- `max_rounds` 에 닿으면 코디네이터가 메인에 묻는다(계속 / 버림). 계속이면 `--note` 와 함께 `fix --force-round`(상한을 한 번 넘긴다).
+- `--round N`(`accept`·`fix`): 지금 라운드가 N 일 때만 한다(아니면 아무것도 바꾸지 않고 exit 3 `round_changed`). 다시 올 수 있는 지시(일괄 승인 답)를 처리할 때 붙여, 이미 처리한 라운드의 지시를 다음 라운드에 적용하지 않게 한다. `accept` 는 awaiting_user 인 승인 태스크가 stale(11.4)이면 exit 3 `approval_stale` 로 거부한다.
+```
+
+**Edit** `docs/superpowers/specs/2026-11-05-herdr-team-design.md`
+
+```markdown
+같은 답이 두 번 와서 둘 다 적용 전이면 둘 다 `duplicate: false` 이므로, 코디네이터는 같은 `out-id` 를 한 번만 처리하고 `applied` 를 기록한 뒤 나머지를 무시한다.
+```
+
+```markdown
+같은 답이 두 번 와서 둘 다 적용 전이면: 한 Delivery 안이면 `hteam wait` 가 뒤 메시지를 `duplicate: true` 로 표시하고, Delivery 가 다르면 둘 다 `duplicate: false` 이므로 코디네이터는 같은 `out-id` 를 한 번만 처리하고 `applied` 를 기록한 뒤 나머지를 무시한다. 일괄 승인 답의 accept·fix 는 `--round`(6.4)로 이미 처리한 라운드를 다시 처리하지 않는다.
+```
+
+**Edit** `docs/superpowers/specs/2026-11-05-herdr-team-design.md`
+
+```markdown
+- 코디네이터가 답을 해석한다: 승인이면 `accept`(`awaiting_user` → `done`), 아니면 해당 태스크 `fix --note`, 그 태스크에 의존하는 승인 태스크도 이어서 `fix`.
+```
+
+```markdown
+- 코디네이터가 답을 해석한다: 승인이면 `accept`(`awaiting_user` → `done`), 아니면 해당 태스크 `fix --note`, 그 태스크에 의존하는 승인 태스크도 이어서 `fix`. 수정 요청이 가리키지 않은 태스크는 승인으로 본다(모호하면 다시 묻는다). `hteam wait` 가 그 답에 `design_review` 를 붙인다: 묶음의 태스크마다 `pending`(아직 그 라운드의 awaiting_user), `stale`, `depends_on`, `dependents`(프로젝트 전체에서 직간접으로 의존하는 승인 태스크, 다른 묶음 포함). 고칠 대상은 답이 가리키는 태스크(pending 이 아니어도)와 그 dependents 이고, 그 가운데 지금 awaiting_user 인 것만 고친다. 모든 accept·fix 는 `--round` 를 붙인다. 선행만 고치고 멈췄어도 의존 태스크는 stale 이라 accept 가 거부하고 `status` 의 next 가 fix 다. 묶음 태스크의 상태 파일을 읽지 못하면 그 답을 처리하지 않고 `applied` 하지 않는다. 메인은 사용자가 `수정 요청` 을 고르면 무엇을 고칠지 물은 뒤 `수정 요청: <내용>` 한 줄로 답한다. awaiting_user 에서 연 라운드의 사양은 수정 블록에 "사용자 요청"으로 적는다.
+```
+
 - [ ] **Step 4: 통과 확인**
 
 Run: `bash herdr-team/tests/run.sh -k test_approval -k test_coord -k test_lifecycle -k test_setup`
@@ -1621,11 +2205,11 @@ Expected: OK(실패 없음). `test_lifecycle` 의 수정 블록 문구 검사(`�
 git grep -n -I -P '/[U]sers/|/private/[t]mp|~[/]Workspace' -- . ':!.codex-reviews' || true
 git add -- herdr-team/lib/hteam/tasks.py herdr-team/lib/hteam/compose.py herdr-team/lib/hteam/approval.py \
   herdr-team/lib/hteam/coord.py herdr-team/templates/coordinator.md herdr-team/templates/CLAUDE.section.md \
-  herdr-team/tests/test_approval.py
-git commit -m "feat(herdr-team): 승인 흐름 연결 — accept·status 의 design-review, 일괄 승인 답 주석, 사용자 수정 라운드
+  herdr-team/tests/test_approval.py docs/superpowers/specs/2026-11-05-herdr-team-design.md
+git commit -m "feat(herdr-team): 승인 흐름 연결 — design-review next, 답 주석(dependents·stale), --round, 사용자 수정 라운드
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam herdr-team/templates \
-  herdr-team/tests/test_approval.py
+  herdr-team/tests/test_approval.py docs/superpowers/specs/2026-11-05-herdr-team-design.md
 ```
 
 Expected: `git grep` 출력 없음, 커밋 성공. 컨트롤러가 `scripts/codex-review.sh commit HEAD` 를 돌리고 Global Constraints 의 Codex 규칙대로 처리한다.
@@ -1638,17 +2222,18 @@ Expected: `git grep` 출력 없음, 커밋 성공. 컨트롤러가 `scripts/code
 - 파일 모드: 실행 비트 변경을 보지 않았다. 리뷰어가 `core.fileMode` 를 바꿔 숨길 수도 있었다.
 - 경로: `tracked_changes` 등이 text 모드로 읽어 `\r` 이 든 경로를 바꿔 읽었고(그 파일의 변경을 놓친다), 바뀐 경로가 UTF-8 이 아니면 디코딩 오류로 리뷰가 internal 로 멈췄다. 그런 경로를 상태 파일에 쓸 때도 실패했다.
 
-고친 뒤: 기준점과 변조 검사는 git 이 보는 항목 `모드:객체 ID` 로 견준다(작업 트리·인덱스·트리 모두). 링크는 따라가지 않고(120000, 링크 글자의 blob) 상위 폴더가 링크면 git 처럼 없는 파일이다. 실행 비트는 기준점 때의 `core.fileMode` 로 고정해 본다. git 출력의 경로는 모두 바이트로 읽어 `os.fsdecode` 로 풀고, JSON 은 `util.dumps`(짝 없는 서로게이트를 `\udcXX` 로), 사람이 읽는 글은 `util.show` 로 쓴다. 이 커밋 전에 만든 기준점은 값이 객체 ID 뿐이라 진행 중이던 그 리뷰 시도는 변조로 멈춘다(배포 전 중간 형식이라 옮기지 않는다. 사용자가 확인한 뒤 `review --retry`).
+고친 뒤: 기준점과 변조 검사는 git 이 보는 항목 `모드:객체 ID` 로 견준다(작업 트리·인덱스·트리 모두). 링크는 따라가지 않고(120000, 링크 글자의 blob) 상위 폴더가 링크면 git 처럼 없는 파일이다. 트리·인덱스의 모드는 늘 그대로 견준다(`git update-index --chmod` 로 스테이징한 실행 비트 변경도 변조다). `core.fileMode=false` 는 작업 트리의 실행 비트를 믿지 않는다는 뜻이라 그때 작업 트리 파일의 모드는 git 처럼 인덱스의 모드로 본다. 이 설정은 기준점 때의 값으로 고정한다. git 이 한 줄로 내는 경로(`--show-prefix`·`--show-toplevel`·`--git-path`)도 바이트로 읽고 마지막 LF 하나만 지운다(하위 프로젝트 폴더 이름의 `\r` 이 text 모드에서 바뀌면 프로젝트 안 변경을 밖으로 잘못 나눈다). git 출력의 경로는 모두 바이트로 읽어 `os.fsdecode` 로 풀고, JSON 은 `util.dumps`(짝 없는 서로게이트를 `\udcXX` 로), 사람이 읽는 글은 `util.show` 로 쓴다. 이 커밋 전에 만든 기준점은 값이 객체 ID 뿐이라 진행 중이던 그 리뷰 시도는 변조로 멈춘다(배포 전 중간 형식이라 옮기지 않는다. 사용자가 확인한 뒤 `review --retry`).
 
 **Files:**
-- Modify: `herdr-team/lib/hteam/gitio.py`(`run`, `_zb`, `log_since`, `commit_files`, `diff_names`, `dirty`, `file_mode`, `tracked_changes`, `index_entries`, `untracked`, `tree_entry`, `blob`, `toplevel`, `worktree_entries`)
+- Modify: `herdr-team/lib/hteam/gitio.py`(`run`, `_zb`, `log_since`, `commit_files`, `diff_names`, `dirty`, `file_mode`, `tracked_changes`, `index_entries`, `untracked`, `tree_entry`, `blob`, `_ref_present`, `_out_line`, `top_prefix`, `toplevel`, `worktree_entries`)
+- Modify: `docs/superpowers/specs/2026-11-05-herdr-team-design.md`(6.3 3)
 - Modify: `herdr-team/lib/hteam/review.py`(`_precheck_fail`, `_index`, `baseline`, `tamper_check`, `_warning_body`), `herdr-team/lib/hteam/util.py`(`dumps`, `show`, `write_json`), `herdr-team/lib/hteam/state.py`(`save`), `herdr-team/lib/hteam/cli.py`(출력), `herdr-team/lib/hteam/compose.py`(리뷰 프롬프트 경로)
 - Test: `herdr-team/tests/test_review.py`(`TamperEntryTest`, `LosslessJsonTest`), `herdr-team/tests/test_plan.py`(`GitioTest`)
 
 **Interfaces:**
 - Consumes: 기존 `gitio.run`, `gitio.top_prefix`, `gitio.to_top`, `gitio.literal`, `state.save`, `review.tamper_check`
 - Produces:
-  - `gitio.file_mode(root) -> bool`(core.fileMode, 없으면 True), `gitio.tracked_changes(root, exec_bit=None)`(주면 `-c core.fileMode=…` 로 고정), `gitio.index_entries(root, paths, exec_bit=True) -> {경로: "모드:ID" | "단계:모드:ID,…" | None}`(옛 `index_blobs` 를 바꾼다), `gitio.tree_entry(root, commit, path, exec_bit=True) -> "모드:ID" | None`, `gitio.blob(root, commit, path) -> ID | None`(그대로), `gitio.toplevel(root) -> str`, `gitio.worktree_entries(root, paths, exec_bit=True) -> {경로: "모드:ID" | "dir" | "other" | None}`(옛 `hash_files` 를 바꾼다).
+  - `gitio.file_mode(root) -> bool`(core.fileMode, 없으면 True), `gitio.tracked_changes(root, exec_bit=None)`(주면 `-c core.fileMode=…` 로 고정), `gitio.index_entries(root, paths) -> {경로: "모드:ID" | "단계:모드:ID,…" | None}`(옛 `index_blobs` 를 바꾼다, 모드는 그대로), `gitio.tree_entry(root, commit, path) -> "모드:ID" | None`, `gitio.blob(root, commit, path) -> ID | None`(그대로), `gitio.top_prefix(root)`(바이트로 읽는다), `gitio.toplevel(root) -> str`, `gitio.worktree_entries(root, paths, exec_bit=True, index=None) -> {경로: "모드:ID" | "dir" | "other" | None}`(옛 `hash_files` 를 바꾼다. exec_bit 가 거짓이면 일반 파일 모드는 `index`(root 기준 경로 → 인덱스 항목)의 모드).
   - `util.dumps(obj, indent=None) -> str`, `util.show(text) -> str`. `write_json`·`state.save`·cli 출력이 `dumps` 를 쓴다.
   - 기준점 `baseline.exec_bit`, `dirty`·`index` 값은 `모드:ID`.
 
@@ -1703,6 +2288,13 @@ class TamperEntryTest(ReviewCase):
         self.act_review("T-001", "APPROVE")
         code, out = self.finish()
         self.assertEqual((code, out.get("status")), (0, "approved"), out)
+
+    def test_staged_exec_bit_is_tamper_even_when_git_ignores_modes(self):
+        # core.fileMode=false 는 작업 트리의 실행 비트만 믿지 않는다. 인덱스에 올린 모드 변경은 실제 변경이다
+        self.git("config", "core.fileMode", "false")
+        self.reviewing()
+        self.git("update-index", "--chmod=+x", "README.md")
+        self.assertEqual(self.assert_tamper("README.md")["tamper"]["paths"], ["README.md"])
 
     def test_file_mode_flipped_during_review_does_not_hide_chmod(self):
         self.reviewing()
@@ -1807,17 +2399,32 @@ class AttemptTest(ReviewCase):
         self.assertTrue(got["link.txt"].startswith("120000:"))
         self.assertNotEqual(got["link.txt"], f"120000:{blob}")  # 링크 대상의 내용이 아니라 링크 글자다
         self.assertIsNone(got["nope.txt"])
+        # 실행 비트를 믿지 않으면(core.fileMode=false) git 처럼 인덱스의 모드를 쓴다
         self.assertEqual(gitio.worktree_entries(self.proj, ["x.txt"], exec_bit=False)["x.txt"], f"100644:{blob}")
+        self.assertEqual(gitio.worktree_entries(self.proj, ["x.txt"], exec_bit=False,
+                                                index={"x.txt": f"100755:{blob}"})["x.txt"], f"100755:{blob}")
         self.assertEqual(gitio.tree_entry(self.proj, "HEAD", "x.txt"), f"100644:{blob}")
         self.assertEqual(gitio.blob(self.proj, "HEAD", "x.txt"), blob)
+
+    def test_top_prefix_keeps_carriage_return_in_folder_name(self):
+        # 하위 프로젝트 폴더 이름의 \r 이 text 모드로 \n 이 되면 그 안 변경을 프로젝트 밖(`../`)으로 잘못 나눈다
+        sub = self.proj / "app\r"
+        try:
+            sub.mkdir()
+        except OSError as exc:
+            self.skipTest(f"이 파일 시스템은 \\r 이 든 이름을 만들지 못한다: {exc}")
+        prefix = gitio.top_prefix(sub)
+        self.assertEqual(prefix, "app\r/")
+        self.assertEqual(gitio.from_top(prefix, "app\r/README.md"), "README.md")
+        self.assertEqual(gitio.toplevel(sub), os.path.realpath(self.proj))
 
     def test_git_errors_are_not_answers(self):
 ```
 
 - [ ] **Step 2: 실패 확인**
 
-Run: `bash herdr-team/tests/run.sh -k TamperEntry -k LosslessJson -k test_index_entries -k test_worktree_entries`
-Expected: FAIL — 링크·링크 폴더·실행 비트·`\r` 경로의 변경이 승인으로 지나가고(`review_tampered` 가 아니다), 비 UTF-8 경로에서 `internal`(UnicodeDecodeError), `util.dumps`·`gitio.index_entries`·`gitio.worktree_entries` 가 없다.
+Run: `bash herdr-team/tests/run.sh -k TamperEntry -k LosslessJson -k test_index_entries -k test_worktree_entries -k test_top_prefix`
+Expected: FAIL — 링크·링크 폴더·실행 비트(작업 트리·인덱스)·`\r` 경로의 변경이 승인으로 지나가고(`review_tampered` 가 아니다), 비 UTF-8 경로에서 `internal`(UnicodeDecodeError), `util.dumps`·`gitio.index_entries`·`gitio.worktree_entries` 가 없고, `top_prefix` 가 `app\n/` 을 낸다.
 
 - [ ] **Step 3: 구현**
 
@@ -1974,12 +2581,12 @@ def tracked_changes(root, exec_bit: bool | None = None) -> list[str]:
     return sorted(set(work) | set(staged))
 
 
-def _entry(mode: str, oid: str, exec_bit: bool) -> str:
-    """git 항목 `모드:객체 ID`. 실행 비트를 보지 않으면(exec_bit 거짓, core.fileMode=false) 일반 파일을 100644 로 적는다."""
-    return f"{'100644' if mode == '100755' and not exec_bit else mode}:{oid}"
+def _entry(mode: str, oid: str) -> str:
+    """git 항목 `모드:객체 ID`. 트리·인덱스의 모드는 core.fileMode 와 상관없이 그대로다(설정은 작업 트리만 본다)."""
+    return f"{mode}:{oid}"
 
 
-def index_entries(root, paths: list[str], exec_bit: bool = True) -> dict[str, str | None]:
+def index_entries(root, paths: list[str]) -> dict[str, str | None]:
     """최상위 기준 경로(글자 그대로)의 인덱스 항목 `모드:객체 ID`(tree_entry·worktree_entries 와 견줄 수 있다). 인덱스에
     없으면 None. 충돌 중이라 단계가 여럿이면 `단계:모드:ID` 를 쉼표로 잇는다(어느 항목과도 같지 않다). 경로를 argv 로
     넘기면 대량 변경에서 ARG_MAX 를 넘으므로 인덱스 전체(`:(top)`, root 가 하위 폴더여도 저장소 전체)를 한 번 읽어
@@ -1992,7 +2599,7 @@ def index_entries(root, paths: list[str], exec_bit: bool = True) -> dict[str, st
     for entry in (x for x in out.split(b"\0") if x):
         meta, _, name = entry.partition(b"\t")
         mode, sha, stage = meta.decode("ascii").split()
-        item = _entry(mode, sha, exec_bit)
+        item = _entry(mode, sha)
         found.setdefault(os.fsdecode(name), []).append(item if stage == "0" else f"{stage}:{item}")
     result.update({name: ",".join(items) for name, items in found.items() if name in result})
     return result
@@ -2003,7 +2610,7 @@ def untracked(root) -> list[str]:
     return sorted(_zb(run(root, "ls-files", "--others", "--exclude-standard", "-z", raw=True).stdout))
 
 
-def tree_entry(root, commit: str, path: str, exec_bit: bool = True) -> str | None:
+def tree_entry(root, commit: str, path: str) -> str | None:
     """commit 의 path(git 최상위 기준, 글자 그대로) 항목 `모드:객체 ID`. 없다고 확인되면 None. git 이 읽지 못하면(잘못된
     리비전, 손상·권한) git_failed 다. `rev-parse commit:path` 는 둘을 같은 exit 1 로 내서 ls-tree 를 쓴다."""
     out = run(root, "ls-tree", "-z", "--full-tree", commit, "--", literal(path), raw=True).stdout
@@ -2011,7 +2618,7 @@ def tree_entry(root, commit: str, path: str, exec_bit: bool = True) -> str | Non
         meta, _, name = entry.partition("\t")
         if name == path:
             mode, _, oid = meta.split()
-            return _entry(mode, oid, exec_bit)
+            return _entry(mode, oid)
     return None
 
 
@@ -2042,7 +2649,7 @@ def hash_files(root, paths: list[str]) -> dict[str, str | None]:
 ```python
 def toplevel(root) -> str:
     """git 최상위 폴더(git 이 낸 실제 경로)."""
-    return os.fsdecode(run(root, "rev-parse", "--show-toplevel", raw=True).stdout.rstrip(b"\n"))
+    return _out_line(run(root, "rev-parse", "--show-toplevel", raw=True).stdout)
 
 
 def _through_link(top: str, full: str) -> bool:
@@ -2057,12 +2664,14 @@ def _through_link(top: str, full: str) -> bool:
     return False
 
 
-def worktree_entries(root, paths: list[str], exec_bit: bool = True) -> dict[str, str | None]:
+def worktree_entries(root, paths: list[str], exec_bit: bool = True,
+                     index: dict[str, str | None] | None = None) -> dict[str, str | None]:
     """root 기준 경로(`../` 포함)의 작업 트리 항목 `모드:객체 ID`(tree_entry·index_entries 와 견줄 수 있다). 없으면 None.
 
     git 이 보는 대로 본다. 심볼릭 링크는 따라가지 않는다: 120000 과 링크 글자의 blob 이다. 상위 폴더가 링크면 git 처럼
-    그 파일은 없다. 일반 파일은 실행 비트로 100755·100644(exec_bit 가 거짓이면 늘 100644)와 git 필터를 적용한
-    hash-object 다. 폴더는 그 자리가 서브모듈 작업 트리면 160000 과 그 HEAD, 아니면 `dir`. 그 밖(FIFO 등)은 `other`.
+    그 파일은 없다. 일반 파일은 실행 비트로 100755·100644 와 git 필터를 적용한 hash-object 다. exec_bit 가 거짓이면
+    (core.fileMode=false) git 처럼 실행 비트를 믿지 않고 index(root 기준 경로 → 인덱스 항목)의 모드를 쓴다(없거나
+    충돌 중이면 100644). 폴더는 그 자리가 서브모듈 작업 트리면 160000 과 그 HEAD, 아니면 `dir`. 그 밖(FIFO 등)은 `other`.
     lstat 할 수 없는 경로(권한, 파일 시스템이 거부하는 이름)는 없는 것이다.
     hash-object 는 최상위에서 최상위 기준 경로를 argv 로 넘겨 부른다(`--stdin-paths` 는 줄 끝 \\r 을 지우고 `"` 로
     시작하면 따옴표를 풀며, 절대 경로는 .gitattributes 의 필터가 맞지 않는다). ARG_MAX 를 넘지 않게 나눠 부른다."""
@@ -2085,7 +2694,11 @@ def worktree_entries(root, paths: list[str], exec_bit: bool = True) -> dict[str,
             oid = run(top, "hash-object", "--stdin", input=os.readlink(os.fsencode(full)), raw=True).stdout
             result[rel] = f"120000:{oid.decode('ascii').strip()}"
         elif stat.S_ISREG(info.st_mode):
-            regular.append((rel, name, "100755" if exec_bit and info.st_mode & stat.S_IXUSR else "100644"))
+            if exec_bit:
+                mode = "100755" if info.st_mode & stat.S_IXUSR else "100644"
+            else:
+                mode = "100755" if ((index or {}).get(rel) or "").startswith("100755:") else "100644"
+            regular.append((rel, name, mode))
         elif stat.S_ISDIR(info.st_mode):
             sub = run(full, "rev-parse", "--show-toplevel", "HEAD", check=False, raw=True)
             lines = sub.stdout.split(b"\n")
@@ -2099,6 +2712,39 @@ def worktree_entries(root, paths: list[str], exec_bit: bool = True) -> dict[str,
         for (rel, _, mode), oid in zip(chunk, oids):
             result[rel] = f"{mode}:{oid}"
     return result
+```
+
+git 이 한 줄로 내는 경로도 바이트로 읽는다(마지막 LF 하나만 지운다).
+
+**Edit** `herdr-team/lib/hteam/gitio.py`
+
+```python
+def top_prefix(root) -> str:
+    """root 의 git 최상위 기준 경로(`sub/` 꼴, 최상위면 빈 문자열). root 기준 경로를 blob 에 넘길 때 앞에 붙인다."""
+    return run(root, "rev-parse", "--show-prefix").stdout.rstrip("\n")
+```
+
+```python
+def _out_line(data: bytes) -> str:
+    """git 이 한 줄로 내는 경로(바이트) → 글자. 출력 구분자인 마지막 LF 하나만 지우고 os.fsdecode 로 푼다(이름의 \\r·끝
+    공백·UTF-8 이 아닌 바이트는 그대로)."""
+    return os.fsdecode(data[:-1] if data.endswith(b"\n") else data)
+
+
+def top_prefix(root) -> str:
+    """root 의 git 최상위 기준 경로(`sub/` 꼴, 최상위면 빈 문자열). root 기준 경로를 blob 에 넘길 때 앞에 붙인다.
+    바이트로 읽는다(text 모드는 폴더 이름의 \\r 을 \\n 으로 바꿔 프로젝트 안 경로를 밖으로 잘못 나눈다)."""
+    return _out_line(run(root, "rev-parse", "--show-prefix", raw=True).stdout)
+```
+
+**Edit** `herdr-team/lib/hteam/gitio.py`
+
+```python
+    loose = run(root, "rev-parse", "--git-path", ref).stdout.strip()
+```
+
+```python
+    loose = _out_line(run(root, "rev-parse", "--git-path", ref, raw=True).stdout)
 ```
 
 JSON 은 서로게이트를 이스케이프하고, 사람이 읽는 글에는 `show` 로 넣는다.
@@ -2260,24 +2906,26 @@ def baseline(p, tid: str) -> dict:
 ```
 
 ```python
-def _index(p, prefix: str, paths: list[str], exec_bit: bool = True) -> dict[str, str | None]:
+def _index(p, prefix: str, paths: list[str]) -> dict[str, str | None]:
     """프로젝트 기준 경로의 인덱스 항목 `모드:객체 ID`(gitio.index_entries 는 최상위 기준 경로를 받는다)."""
     tops = {x: gitio.to_top(prefix, x) for x in paths}
-    entries = gitio.index_entries(p.root, list(tops.values()), exec_bit)
+    entries = gitio.index_entries(p.root, list(tops.values()))
     return {x: entries[t] for x, t in tops.items()}
 
 
 def baseline(p, tid: str) -> dict:
     """변조 기준점(설계 6.1 5): HEAD, HEAD 와 다른 추적 파일(작업 트리·인덱스)의 작업 트리 항목과 인덱스 항목
-    (`모드:객체 ID`), 추적 안 된 파일, 진행 중인 다른 태스크, git 이 실행 비트를 보는지(exec_bit, core.fileMode).
+    (`모드:객체 ID`), 추적 안 된 파일, 진행 중인 다른 태스크, git 이 작업 트리의 실행 비트를 보는지(exec_bit,
+    core.fileMode. 거짓이면 작업 트리 파일의 모드는 인덱스의 모드다).
     경로는 프로젝트 기준이다. 추적 파일은 저장소 전체를 본다(프로젝트 밖은 `../`, 리뷰 동안 바뀌면 경고를 내려고).
     추적 안 된 파일은 프로젝트 안만 본다."""
     others = [s["id"] for s in state.all_states(p) if s["id"] != tid and s["status"] in ("working", "launch_failed")]
     prefix = gitio.top_prefix(p.root)
     exec_bit = gitio.file_mode(p.root)
     changed = _rel(prefix, gitio.tracked_changes(p.root, exec_bit))
+    index = _index(p, prefix, changed)
     return {"at": now(), "head": gitio.head(p.root), "exec_bit": exec_bit,
-            "dirty": gitio.worktree_entries(p.root, changed, exec_bit), "index": _index(p, prefix, changed, exec_bit),
+            "dirty": gitio.worktree_entries(p.root, changed, exec_bit, index), "index": index,
             "untracked": gitio.untracked(p.root), "in_progress": others}
 ```
 
@@ -2291,8 +2939,9 @@ def baseline(p, tid: str) -> dict:
 ```python
     변조: fast-forward 가 아닌 HEAD 이동, 프로젝트 안 제외 경로 밖의 추적 파일 변경과 커밋. 경고: 프로젝트 안의 추적 안 된
     새 파일, 프로젝트 밖(`../`)에서 바뀐 추적 파일과 커밋(hteam 작업은 owns 밖을 건드리지 않으므로 모노레포의 다른 일이다).
-    견주는 값은 git 항목 `모드:객체 ID` 다: 내용이 같아도 심볼릭 링크로 바꾸거나 실행 비트를 바꾸면 변조다. 실행 비트는
-    기준점 때의 core.fileMode 로 본다. 값이 객체 ID 뿐인 옛 기준점(이 형식 전)은 모두 달라 보여 변조로 멈춘다."""
+    견주는 값은 git 항목 `모드:객체 ID` 다: 내용이 같아도 심볼릭 링크로 바꾸거나 실행 비트를 바꾸면 변조다. 트리·인덱스의
+    모드는 그대로 견주고, 작업 트리의 실행 비트는 기준점 때의 core.fileMode 로 본다(false 면 인덱스의 모드). 값이 객체
+    ID 뿐인 옛 기준점(이 형식 전)은 모두 달라 보여 변조로 멈춘다."""
 ```
 
 **Edit** `herdr-team/lib/hteam/review.py`
@@ -2320,8 +2969,8 @@ def baseline(p, tid: str) -> dict:
 
 ```python
     changed = _rel(prefix, gitio.tracked_changes(p.root, exec_bit))
-    now_dirty = gitio.worktree_entries(p.root, changed, exec_bit)
-    now_index = _index(p, prefix, changed, exec_bit)
+    now_index = _index(p, prefix, changed)
+    now_dirty = gitio.worktree_entries(p.root, changed, exec_bit, now_index)
 ```
 
 **Edit** `herdr-team/lib/hteam/review.py`
@@ -2341,7 +2990,7 @@ def baseline(p, tid: str) -> dict:
         top = gitio.to_top(prefix, path)  # ls-tree --full-tree 는 최상위 기준 경로를 받는다
 
         def tree(commit: str, top: str = top) -> str | None:
-            return gitio.tree_entry(p.root, commit, top, exec_bit)
+            return gitio.tree_entry(p.root, commit, top)
         before = base["dirty"][path] if path in base["dirty"] else tree(base["head"])
         after = now_dirty[path] if path in now_dirty else tree(head)
         moved = before != after
@@ -2367,6 +3016,18 @@ def baseline(p, tid: str) -> dict:
         parts.append("리뷰 동안 프로젝트 밖에서 바뀐 추적 파일:\n" + "\n".join(f"- {show(w)}" for w in outside))
 ```
 
+설계 6.3 3 의 변조 판정에 비교 대상을 적는다(같은 커밋).
+
+**Edit** `docs/superpowers/specs/2026-11-05-herdr-team-design.md`
+
+```markdown
+기준점 이후 새 커밋이 제외 경로 밖을 바꿨거나, 추적 파일 내용이 바뀌었으면 변조다.
+```
+
+```markdown
+기준점 이후 새 커밋이 제외 경로 밖을 바꿨거나, 추적 파일 내용이 바뀌었으면 변조다. 내용은 git 항목(모드와 객체 ID)으로 견준다: 같은 내용이라도 심볼릭 링크로 바꾸거나 실행 비트를 바꾸면 변조다. 트리·인덱스의 모드는 그대로 견주고, 작업 트리의 실행 비트는 기준점 때의 `core.fileMode` 로 본다(false 면 git 처럼 인덱스의 모드). 상위 폴더가 링크면 git 처럼 그 파일은 없는 것이다. git 이 내는 경로는 바이트로 읽어 손실 없이 푼다.
+```
+
 - [ ] **Step 4: 통과 확인**
 
 Run: `bash herdr-team/tests/run.sh -k test_review -k test_plan -k test_cli -k test_state_specs`
@@ -2378,11 +3039,11 @@ Expected: OK(실패 없음). macOS 에서는 `test_non_utf8_changed_path_is_kept
 git grep -n -I -P '/[U]sers/|/private/[t]mp|~[/]Workspace' -- . ':!.codex-reviews' || true
 git add -- herdr-team/lib/hteam/gitio.py herdr-team/lib/hteam/review.py herdr-team/lib/hteam/util.py \
   herdr-team/lib/hteam/state.py herdr-team/lib/hteam/cli.py herdr-team/lib/hteam/compose.py \
-  herdr-team/tests/test_review.py herdr-team/tests/test_plan.py
+  herdr-team/tests/test_review.py herdr-team/tests/test_plan.py docs/superpowers/specs/2026-11-05-herdr-team-design.md
 git commit -m "fix(herdr-team): 변조 검사는 git 항목(모드·링크)으로 견주고 경로는 손실 없이 다룬다
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam herdr-team/tests/test_review.py \
-  herdr-team/tests/test_plan.py
+  herdr-team/tests/test_plan.py docs/superpowers/specs/2026-11-05-herdr-team-design.md
 ```
 
 Expected: `git grep` 출력 없음, 커밋 성공. 컨트롤러가 `scripts/codex-review.sh commit HEAD` 를 돌리고 Global Constraints 의 Codex 규칙대로 처리한다.
@@ -2392,7 +3053,7 @@ Expected: `git grep` 출력 없음, 커밋 성공. 컨트롤러가 `scripts/code
 
 1단계 최종 리뷰가 2단계로 넘긴 것(진행 기록 "Final(2단계로)") 가운데 동작이 틀리거나 멈추는 것을 고친다. 하나하나는 작고 서로 다른 함수다.
 
-1. **이어 붙인 워커가 이미 끝났으면 `next`**: 실행자가 horch 를 띄운 뒤 기록 전에 죽고 그 사이 워커가 done 했으면, 그 `worker_done` 은 태스크가 `launch_failed` 일 때 와서(`next` 는 `start`) 다시 오지 않는다. `start` 가 끝난 Dispatch 를 이어 붙여도 `next` 가 없어 코디네이터가 `wait` 시간 초과(최대 1시간)까지 기다렸다. 이제 `start`(와 `start-ready` 의 `started` 행)가 `review` 또는 `fix --note`(라운드 상한이면 hint)를 준다(review 의 이어 붙이기는 1단계에 이미 있다).
+1. **이어 붙인 워커가 이미 끝났으면 `next`**: 실행자가 horch 를 띄운 뒤 기록 전에 죽고 그 사이 워커가 done 했으면, 그 `worker_done` 은 태스크가 `launch_failed` 일 때 와서(`next` 는 `start`) 다시 오지 않는다. `start` 가 끝난 Dispatch 를 이어 붙여도 `next` 가 없어 코디네이터가 `wait` 시간 초과(최대 1시간)까지 기다렸다. 이제 `start`(와 `start-ready` 의 `started` 행)가 `review` 또는 `fix --note` 를 주고, 라운드 상한이면 `next` 없이 메인에 물으라는 `hint` 를 준다(`started` 행도 hint 를 버리지 않는다). review 의 이어 붙이기는 1단계에 이미 있다.
 2. **Herdr 터미널 밖 메인의 Stop 훅**: `$HC_TERMINAL_ID` 가 없는 세션은 메인으로 판별되는데 `hteam watch` 는 exit 5 라 띄울 수 없다. Stop 훅이 매 턴 막았다. 이제 막지 않고 SessionStart 가 이유를 알린다.
 3. **`commit_paths` 의 index.lock**: 같은 폴더의 워커가 커밋하는 순간 hteam 의 경로 지정 커밋(review-finish 판정, 사전 검사, plan apply)이 `index.lock` 으로 실패했다(힌트도 비었다). 이제 최대 `HTEAM_GIT_LOCK_WAIT`(10초) 동안 다시 하고, 그래도 안 되면 할 일을 알린다. 오류 문구를 300자로 자르기 전에 표시한다(git 의 긴 안내문 뒤로 `index.lock` 이 잘릴 수 있다).
 4. **손상된 `applied.json`**: 빈 기록으로 읽어 적용한 답을 다시 처리할 수 있었고(같은 fix 를 두 번), `applied` 가 빈 기록으로 덮어써 기록을 잃었다. 이제 엄격히 읽는다: `applied` 는 exit 1 `bad_side_file` 로 덮어쓰지 않고, `wait` 의 답 주석은 `duplicate: null` 과 확인하라는 hint 를 준다.
@@ -2401,13 +3062,13 @@ Expected: `git grep` 출력 없음, 커밋 성공. 컨트롤러가 `scripts/code
 
 **Files:**
 - Modify: `herdr-team/lib/hteam/dispatch.py`(`launch` 의 adopt 결과), `herdr-team/lib/hteam/tasks.py`(`run_work`, `_adopted_next`, `start_ready`), `herdr-team/hooks/hteam_hook.py`(`stop`, `session_start`), `herdr-team/lib/hteam/gitio.py`(import, `run`, `_wait_index`, `commit_paths`, `unstage`), `herdr-team/lib/hteam/outbox.py`(`applied_ids`), `herdr-team/lib/hteam/coord.py`(`_annotate_main`, `coordinator_view`, `status`), `herdr-team/lib/hteam/review.py`(`prechecks`)
-- Modify: `herdr-team/templates/coordinator.md`, `herdr-team/skills/up/SKILL.md`
+- Modify: `herdr-team/templates/coordinator.md`, `herdr-team/skills/up/SKILL.md`, `docs/superpowers/specs/2026-11-05-herdr-team-design.md`(13장 표)
 - Test: `herdr-team/tests/test_start.py`, `herdr-team/tests/test_hooks.py`, `herdr-team/tests/test_plan.py`, `herdr-team/tests/test_mainlink.py`, `herdr-team/tests/test_review.py`, `herdr-team/tests/test_coord.py`, `herdr-team/tests/test_setup.py`
 
 **Interfaces:**
 - Consumes: Task 3 의 `util.read_json_strict`, `util.bad_side_file`. Task 4 의 `coord._annotate_main`(design_review 주석을 붙이는 판). 기존 `dispatch.launch`, `outbox._run`.
 - Produces:
-  - `dispatch.launch` 의 adopt 결과에 `outcome`·`summary`. `tasks.run_work`·`start` 결과의 `next`(이어 붙인 Dispatch 가 `settled`·`retained`·`released` 면 `[".herdr-team/bin/hteam", "review", T]` 또는 `[..., "fix", T, "--note", "작업 실패: …"]`)와 `hint`, `start-ready` 의 `started[i].next`.
+  - `dispatch.launch` 의 adopt 결과에 `outcome`·`summary`. `tasks.run_work`·`start` 결과의 `next`(이어 붙인 Dispatch 가 `settled`·`retained`·`released` 면 `[".herdr-team/bin/hteam", "review", T]` 또는 `[..., "fix", T, "--note", "작업 실패: …"]`)와 `hint`, `start-ready` 의 `started[i].next`·`started[i].hint`.
   - `gitio.run` 의 git_failed 오류 `data.index_lock: true`(stderr 에 index.lock), `gitio._wait_index(root, *args)`(환경 변수 `HTEAM_GIT_LOCK_WAIT`).
   - `outbox.applied_ids(p)` 는 손상이면 `bad_side_file`. 답 주석 `duplicate: None`.
   - `review` 의 exit 3 `plan_incomplete`(상태·리뷰 파일을 바꾸지 않는다).
@@ -2442,6 +3103,19 @@ Expected: `git grep` 출력 없음, 커밋 성공. 컨트롤러가 `scripts/code
         out = self.adopt_finished("T-001", "failed")
         self.assertEqual(out["next"][:4], [".herdr-team/bin/hteam", "fix", "T-001", "--note"])
         self.assertIn("워커가 끝냈다", out["next"][4])
+
+    def test_start_ready_keeps_hint_for_failed_worker_at_round_limit(self):
+        # 라운드 상한이면 fix 를 권하지 않고 메인에 물으라는 hint 만 준다. start-ready 의 started 행도 그것을 버리지 않는다
+        (self.team / "config.toml").write_text(BASE_CONFIG.replace("max_rounds = 3", "max_rounds = 1"))
+        self.make_task("T-001")
+        self.assertEqual(self.hteam("start", "T-001", env={"HTEAM_TEST_DIE_AT": "after_launch"})[0], 137)
+        [row] = self.horch_tasks()
+        self.assertEqual(self.act(row["id"], {"done": {"outcome": "failed", "summary": "실패"}})[0], 0)
+        code, out = self.hteam("start-ready")
+        self.assertEqual(code, 0, out)
+        [started] = out["started"]
+        self.assertNotIn("next", started)
+        self.assertIn("max_rounds", started["hint"])
 
     def test_adopting_live_worker_has_no_next(self):
         self.make_task("T-001")
@@ -2585,7 +3259,7 @@ class AskUserTest(LinkCase):
 ```python
     def test_cleanup_rules_in_docs(self):
         coord = (ROOT / "templates/coordinator.md").read_text(encoding="utf-8")
-        self.assertIn("`start-ready` 의 `started` 행에도 `next` 가 붙을 수 있다", coord)
+        self.assertIn("`start-ready` 의 `started` 행에도 `next`·`hint` 가 붙을 수 있다", coord)
         self.assertIn("exit 3 `plan_incomplete`", coord)
         up = (ROOT / "skills/up/SKILL.md").read_text(encoding="utf-8")
         self.assertIn("`run_error`", up)
@@ -2595,7 +3269,7 @@ class AskUserTest(LinkCase):
 
 - [ ] **Step 2: 실패 확인**
 
-Run: `bash herdr-team/tests/run.sh -k test_adopting -k test_main_outside_herdr -k index_lock -k AppliedRecord -k test_partial_plan_apply -k test_status_reports_corrupt_run_file -k test_cleanup_rules_in_docs`
+Run: `bash herdr-team/tests/run.sh -k test_adopting -k test_start_ready_keeps_hint -k test_main_outside_herdr -k index_lock -k AppliedRecord -k test_partial_plan_apply -k test_status_reports_corrupt_run_file -k test_cleanup_rules_in_docs`
 Expected: FAIL — `next` 가 없다(`KeyError`), Stop 이 막는다, index.lock 에서 바로 git_failed, `applied` 가 손상 기록을 덮어쓴다, review 가 기획자 수정 라운드(`status: changes`)로 간다, `run_error` 가 없다, 문서 문장이 없다.
 
 - [ ] **Step 3: 구현**
@@ -2658,7 +3332,7 @@ def _adopted_next(cfg, tid: str, rnd: int, res: dict) -> tuple[list[str] | None,
 
 ```python
             started.append({"task": tid, "round": res["round"], "dispatch": res["dispatch"],
-                            "warnings": res["warnings"], **({"next": res["next"]} if res.get("next") else {})})
+                            "warnings": res["warnings"], **{k: res[k] for k in ("next", "hint") if res.get(k)}})
 ```
 
 2) Herdr 터미널 밖 메인.
@@ -2904,7 +3578,7 @@ def coordinator_view(p, run: dict | None = None) -> dict:
 
 ```markdown
 - `next` 는 argv 목록이고 늘 `.herdr-team/bin/hteam` 으로 시작한다. 그대로(셸 인용만 해서) 실행한다. `.herdr-team/bin/hteam` 으로 시작하지 않는 것은 `next` 로 실행하지 않는다.
-- `start`·`review` 결과와 `start-ready` 의 `started` 행에도 `next` 가 붙을 수 있다(이어 붙인 워커가 이미 끝났다. 그 `worker_done` 은 다시 오지 않는다). 있으면 그대로 실행한다.
+- `start`·`review` 결과와 `start-ready` 의 `started` 행에도 `next`·`hint` 가 붙을 수 있다(이어 붙인 워커가 이미 끝났다. 그 `worker_done` 은 다시 오지 않는다). `next` 가 있으면 그대로 실행한다. `next` 없이 `hint` 만 있으면 hint 대로 한다(라운드 상한이면 메인에 묻는다).
 ```
 
 **Edit** `herdr-team/templates/coordinator.md`
@@ -2928,6 +3602,20 @@ def coordinator_view(p, run: dict | None = None) -> dict:
 1. `hteam status` 를 실행한다. `run_error` 가 있으면 `.herdr-team/state/run.json` 이 손상됐다. 고치지 말고 그 내용을 사용자에게 알리고 멈춘다(`hteam up` 도 exit 1 `bad_run_file` 로 거부한다).
 ```
 
+설계 13장 표에 두 경우를 더한다(같은 커밋).
+
+**Edit** `docs/superpowers/specs/2026-11-05-herdr-team-design.md`
+
+```markdown
+| `launch_failed` | `hteam start T`(같은 라운드, 같은 horch Task 를 `--retry` 로) |
+```
+
+```markdown
+| `launch_failed` | `hteam start T`(같은 라운드, 같은 horch Task 를 `--retry` 로) |
+| 이어 붙인 작업 워커가 이미 끝남(기록 전 실행자 사망 뒤 done) | 그 `worker_done` 은 다시 오지 않는다. `start`(`start-ready` 의 `started` 행) 결과의 `next`(`review` 또는 `fix --note`)를 따르고, 라운드 상한이면 `hint` 대로 메인에 묻는다 |
+| hteam 커밋이 워커 커밋의 `index.lock` 과 겹침 | 경로 지정 커밋이 10초까지 기다렸다 다시 한다. 그래도 남으면 메인에 알린다(지우지 않는다) |
+```
+
 - [ ] **Step 4: 통과 확인**
 
 Run: `bash herdr-team/tests/run.sh -k test_start -k test_hooks -k test_plan -k test_mainlink -k test_review -k test_coord -k test_setup`
@@ -2939,11 +3627,13 @@ Expected: OK(실패 없음).
 git grep -n -I -P '/[U]sers/|/private/[t]mp|~[/]Workspace' -- . ':!.codex-reviews' || true
 git add -- herdr-team/lib/hteam/dispatch.py herdr-team/lib/hteam/tasks.py herdr-team/hooks/hteam_hook.py \
   herdr-team/lib/hteam/gitio.py herdr-team/lib/hteam/outbox.py herdr-team/lib/hteam/coord.py herdr-team/lib/hteam/review.py \
-  herdr-team/templates/coordinator.md herdr-team/skills/up/SKILL.md herdr-team/tests
+  herdr-team/templates/coordinator.md herdr-team/skills/up/SKILL.md herdr-team/tests \
+  docs/superpowers/specs/2026-11-05-herdr-team-design.md
 git commit -m "fix(herdr-team): 이어 붙인 워커의 next, 터미널 밖 Stop, index.lock 대기, applied 손상, plan_incomplete, run_error
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam herdr-team/hooks/hteam_hook.py \
-  herdr-team/templates/coordinator.md herdr-team/skills/up/SKILL.md herdr-team/tests
+  herdr-team/templates/coordinator.md herdr-team/skills/up/SKILL.md herdr-team/tests \
+  docs/superpowers/specs/2026-11-05-herdr-team-design.md
 ```
 
 Expected: `git grep` 출력 없음, 커밋 성공. 컨트롤러가 `scripts/codex-review.sh commit HEAD` 를 돌리고 Global Constraints 의 Codex 규칙대로 처리한다.
@@ -2951,15 +3641,15 @@ Expected: `git grep` 출력 없음, 커밋 성공. 컨트롤러가 `scripts/code
 ---
 ### Task 7: 실환경 확인 — 사용자가 인터뷰에 답하고 일괄 승인
 
-설계 15.2·15.3 2단계 실환경: 사용자가 기획 인터뷰(체크리스트 질문과 확정 질문)에 답하고, 디자인 태스크들을 `design-review` 로 한 번에 승인한다. 버리는 시험 프로젝트에서 실제 Herdr·Claude·Codex 로 한 바퀴 돌리고 설계 15.4 에 기록한다. 설계 문서를 이 단계의 결정에 맞춘다. 마지막에 2단계 커밋 전체를 Codex 가 검토한다. 코드는 결함을 고칠 때만 바꾼다(고치면 그 결함을 재현하는 테스트를 먼저 더한다). main 병합은 하지 않는다(설계 15.3: 세 단계 뒤 0.1.0 으로 병합).
+설계 15.2·15.3 2단계 실환경: 사용자가 기획 인터뷰(체크리스트 질문과 확정 질문)에 답하고, 디자인 태스크들을 `design-review` 로 한 번에 승인한다. 버리는 시험 프로젝트에서 실제 Herdr·Claude·Codex 로 한 바퀴 돌리고 설계 15.4 에 기록한다. 마지막에 2단계 커밋 전체를 Codex 가 검토한다. 코드는 결함을 고칠 때만 바꾼다(고치면 그 결함을 재현하는 테스트를 먼저 더한다). main 병합은 하지 않는다(설계 15.3: 세 단계 뒤 0.1.0 으로 병합).
 
 **Files:**
-- Modify: `docs/superpowers/specs/2026-11-05-herdr-team-design.md`(6.3, 11.2, 11.4, 13장 동기화, 15.4 에 2단계 결과)
+- Modify: `docs/superpowers/specs/2026-11-05-herdr-team-design.md`(15.4 에 2단계 결과)
 - Modify: 결함이 나온 파일과 그 테스트
 
 **Interfaces:**
 - Consumes: Task 1–6 의 hteam(`design-review`, 승인 흐름, planner·designer 문서), 실제 `hc`·`herdr-app`·`claude`·`codex`
-- Produces: 실환경 확인 기록, 설계 동기화, 2단계 브랜치 리뷰 반영
+- Produces: 실환경 확인 기록, 2단계 브랜치 리뷰 반영
 
 안전 규칙(1단계 Task 13 의 사용자 결정 그대로, 이 태스크 내내):
 - 시험 프로젝트는 세션 스크래치패드 안에 만든다. 이 저장소와 사용자의 다른 프로젝트는 건드리지 않는다.
@@ -2968,7 +3658,7 @@ Expected: `git grep` 출력 없음, 커밋 성공. 컨트롤러가 `scripts/code
 - 사용자의 hc core 를 멈추거나 다시 띄우지 않는다(`hc server stop` 금지). 시험이 만든 터미널만 kill·rm 한다.
 - 시험용 `hc run` 은 늘 `--no-notify` 를 붙인다(끝날 때 종료 알림이 띄운 쪽 입력란에 들어가지 않게).
 - Claude 의 처음 보는 폴더 신뢰 창(기본 "No, exit")은 `hc read` 로 커서를 본 뒤 `hc keys <터미널> down enter` 로 "Yes, I trust this folder" 를 고른다. Codex 폴더 신뢰 창은 "Trust and continue"(이 폴더만)를 고른다. **"Trust all" 류는 절대 고르지 않는다.** 키는 운영자(이 태스크를 하는 에이전트)만 누른다. 코디네이터는 누르지 않는다.
-- 질문의 답: 사용자가 직접 답하겠다고 하지 않았으면 운영자가 사용자 역할로 메인 pane 의 AskUserQuestion 에 `hc keys` 로 답한다(1단계와 같다). 답은 아래 단계에 적힌 대로 고른다.
+- 질문의 답: 운영자(이 태스크를 하는 에이전트)가 사용자 역할로 메인 pane 의 AskUserQuestion 에 `hc keys` 로 답한다(사용자 결정, 1단계와 같다). 답은 아래 단계에 적힌 대로 고른다.
 - 매 단계 뒤 작업 폴더를 저장소 루트로 돌린다(`cd "$REPO_ROOT"`). 시험 산출물은 이 저장소에 커밋하지 않는다.
 
 - [ ] **Step 1: 시험 프로젝트·space 준비, 전역 파일 스냅숏**
@@ -3024,7 +3714,7 @@ Expected(설계 10장): 메인이 `hteam tell` → 코디네이터가 planner �
 - designer 워커가 `docs/design/screens/<화면>/index.html`·`notes.md` 와 보고서(`- 아티팩트: …` 줄)를 커밋하고, Codex 리뷰어 pane 이 APPROVE 하면 코디네이터가 accept → `awaiting_user`(출력 `next` 가 `design-review`).
 - 하나가 먼저 awaiting_user 가 되면 `design-review` 는 exit 3 `approval_not_ready`(다른 하나가 진행 중). 둘 다 awaiting_user 가 된 뒤 `design-review` 가 approval 질문 하나를 쓴다(`state/design-review.json` 의 `dr-0001`).
 - 메인이 `context`(태스크마다 한 줄과 링크: 아티팩트 URL 또는 보고서 경로)를 그대로 보여 준 뒤 AskUserQuestion(`모두 승인 (추천)` / `수정 요청`).
-- 첫 일괄 승인에서는 `수정 요청` 을 고른다. 메인이 무엇을 고칠지 대화로 묻는다 → 운영자가 "통계 화면의 완료율 숫자를 더 크게" 라고 답한다 → 메인이 `hteam answer <id> "수정 요청: <통계 화면 태스크 ID> 완료율 숫자를 더 크게"`. 코디네이터의 `wait` 결과에 `design_review`(두 태스크 `pending: true`)가 붙는다 → 통계 화면은 `fix --note=…`(r2, 사양 수정 블록에 "사용자 요청"), 목록 화면은 accept → `done`. developer 태스크는 통계 화면이 done 이 아니라 아직 기다린다.
+- 첫 일괄 승인에서는 `수정 요청` 을 고른다. 메인이 무엇을 고칠지 대화로 묻는다 → 운영자가 "통계 화면의 완료율 숫자를 더 크게" 라고 답한다 → 메인이 `hteam answer <id> "수정 요청: <통계 화면 태스크 ID> 완료율 숫자를 더 크게"`. 코디네이터의 `wait` 결과에 `design_review`(두 태스크 `pending: true`, `dependents`)가 붙는다 → 통계 화면은 `fix --round 1 --note=…`(r2, 사양 수정 블록에 "사용자 요청"), 목록 화면은 `accept --round 1` → `done`(둘 사이에 의존이 있으면 의존하는 쪽도 fix 되고, 빠뜨려도 accept 가 `approval_stale` 로 거부한다). developer 태스크는 통계 화면이 done 이 아니라 아직 기다린다.
 - r2 리뷰 승인 → accept → `design-review` 가 새 묶음(통계 화면 r2 하나)을 묻는다 → `모두 승인 (추천)` → accept → `done` → `start-ready` 가 developer 를 띄운다 → tester → 모두 `done`.
 - 끝난 워커·리뷰어 pane 은 release 로 닫힌다.
 
@@ -3062,65 +3752,11 @@ hc ls --all --json
 
 Expected: 시험이 만든 터미널이 남지 않는다. 사용자의 다른 터미널은 그대로다. 전역 플러그인 기록의 herdr 항목이 사라진다(다른 마켓플레이스의 `lastUpdated` 차이만 남을 수 있다). 사용자에게 보고할 남은 것을 적는다: `~/.claude/plugins/cache/herdr-team/` 복사본(uninstall 뒤에도 남는다), `$E2E` 폴더, 그 밖에 찾은 것.
 
-- [ ] **Step 8: 설계 동기화와 15.4 기록**
+- [ ] **Step 8: 15.4 에 결과 기록**
 
-설계가 정하지 않아 2단계가 정한 것을 설계에 옮긴다.
+설계 동기화(6.3·6.4·7.4·11.2·11.4·13장)는 그 동작을 바꾼 Task 1·3·4·5·6 의 커밋에 이미 들어 있다. 실환경에서 설계와 다른 것을 찾았으면 고친 커밋에서 함께 고친다.
 
-**Edit** `docs/superpowers/specs/2026-11-05-herdr-team-design.md`
-
-```markdown
-같은 태스크·라운드 묶음을 이미 물었으면 exit 3. 기록은 `state/design-review.json`.
-```
-
-```markdown
-같은 태스크·라운드 묶음을 이미 물었으면 exit 3. 기록은 `state/design-review.json`. 한 (태스크, 라운드)는 한 번만 묻는다: 이미 물은 태스크가 답을 기다리는 동안 새로 awaiting_user 가 된 태스크는 다음 묶음이 되고, 수정 라운드는 라운드가 달라 다시 묻는다. 링크가 없으면 보고서 경로를 보인다. 선택지 label 은 render 규칙(7.4)대로 `모두 승인 (추천)` / `수정 요청` 이다. 묶음 기록을 먼저 쓰고 outbox 항목에 묶음 id 를 붙인다. 그 사이 죽으면 다음 호출이 그 묶음을 마저 쓴다(두 번 묻지 않는다).
-```
-
-**Edit** `docs/superpowers/specs/2026-11-05-herdr-team-design.md`
-
-```markdown
-- 코디네이터가 답을 해석한다: 승인이면 `accept`(`awaiting_user` → `done`), 아니면 해당 태스크 `fix --note`, 그 태스크에 의존하는 승인 태스크도 이어서 `fix`.
-```
-
-```markdown
-- 코디네이터가 답을 해석한다: 승인이면 `accept`(`awaiting_user` → `done`), 아니면 해당 태스크 `fix --note`, 그 태스크에 의존하는 승인 태스크도 이어서 `fix`. `hteam wait` 가 그 답에 `design_review`(태스크마다 아직 그 라운드의 awaiting_user 인지 `pending`)를 붙인다. `pending` 이 아닌 태스크는 다시 처리하지 않는다. 수정 요청이 가리키지 않은 태스크는 승인으로 본다(모호하면 다시 묻는다). 메인은 사용자가 `수정 요청` 을 고르면 무엇을 고칠지 물은 뒤 `수정 요청: <내용>` 한 줄로 답한다. awaiting_user 에서 연 라운드의 사양은 수정 블록에 "사용자 요청"으로 적는다.
-```
-
-**Edit** `docs/superpowers/specs/2026-11-05-herdr-team-design.md`
-
-```markdown
-- 계정 기본이 아니라 프로젝트 디자인 시스템으로 Claude Design 화면을 만든다. 화면 원본을 `docs/design/screens/<화면>/` 에 둔다(Codex 리뷰가 읽는다).
-```
-
-```markdown
-- 계정 기본이 아니라 프로젝트 디자인 시스템으로 Claude Design 화면을 만든다. 화면 원본을 `docs/design/screens/<화면>/` 에 둔다(Codex 리뷰가 읽는다). 2단계 기본형은 원본(`index.html`·`notes.md`)을 만들고, Artifact 도구를 쓸 수 있으면 같은 화면을 claude.ai 아티팩트로 올려 보고서에 URL 을 적는다. 디자인 시스템·이미지·금지 목록 검사는 3단계다.
-```
-
-**Edit** `docs/superpowers/specs/2026-11-05-herdr-team-design.md`
-
-```markdown
-| `launch_failed` | `hteam start T`(같은 라운드, 같은 horch Task 를 `--retry` 로) |
-```
-
-```markdown
-| `launch_failed` | `hteam start T`(같은 라운드, 같은 horch Task 를 `--retry` 로) |
-| 이어 붙인 작업 워커가 이미 끝남(기록 전 실행자 사망 뒤 done) | 그 `worker_done` 은 다시 오지 않는다. `start` 결과의 `next`(`review` 또는 `fix --note`)를 따른다 |
-| hteam 커밋이 워커 커밋의 `index.lock` 과 겹침 | 경로 지정 커밋이 10초까지 기다렸다 다시 한다. 그래도 남으면 메인에 알린다(지우지 않는다) |
-```
-
-6.3 3 의 변조 판정 문장에 비교 대상을 적는다.
-
-**Edit** `docs/superpowers/specs/2026-11-05-herdr-team-design.md`
-
-```markdown
-기준점 이후 새 커밋이 제외 경로 밖을 바꿨거나, 추적 파일 내용이 바뀌었으면 변조다.
-```
-
-```markdown
-기준점 이후 새 커밋이 제외 경로 밖을 바꿨거나, 추적 파일 내용이 바뀌었으면 변조다. 내용은 git 항목(모드와 객체 ID)으로 견준다: 같은 내용이라도 심볼릭 링크로 바꾸거나 실행 비트를 바꾸면 변조다(실행 비트는 기준점 때의 `core.fileMode` 로 본다). 상위 폴더가 링크면 git 처럼 그 파일은 없는 것이다.
-```
-
-그다음 15.4 의 1단계 기록 뒤(16장 앞)에 결과를 더한다. 아래 틀의 `<…>` 를 실제 관찰로 채운다(채우지 않은 칸을 남기지 않는다):
+15.4 의 1단계 기록 뒤(16장 앞)에 결과를 더한다. 아래 틀의 `<…>` 를 실제 관찰로 채운다(채우지 않은 칸을 남기지 않는다):
 
 ```markdown
 #### 2단계 (YYYY-MM-DD)
@@ -3144,7 +3780,7 @@ cd "$REPO_ROOT"
 bash herdr-team/tests/run.sh && bash herdr-orch/tests/run.sh
 git grep -n -I -P '/[U]sers/|/private/[t]mp|~[/]Workspace' -- . ':!.codex-reviews' || true
 git add -- docs/superpowers/specs/2026-11-05-herdr-team-design.md
-git commit -m "docs: herdr-team 2단계 실환경 확인 결과와 설계 동기화
+git commit -m "docs: herdr-team 2단계 실환경 확인 결과
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- docs/superpowers/specs/2026-11-05-herdr-team-design.md
 P2_BASE="$(git log --diff-filter=A --format=%H -- docs/superpowers/plans/2026-11-06-herdr-team-p2.md | tail -1)"
@@ -3160,43 +3796,63 @@ main 에 병합하지 않는다(3단계 뒤). 사용자에게 실환경 결과, 
 ---
 ## 자체 검토: 설계 대응표(15.3 2번)
 
-계획의 코드는 이 저장소(1f35fb7)를 복사한 작업 트리에 Task 1–7 의 편집을 차례로 적용해 확인했다. 태스크마다 그 태스크의 Step 4 테스트를 돌렸고, Task 2·5·6 은 구현 전에 새 테스트가 실패하는 것도 확인했다. 마지막에 두 테스트 모음 전체를 돌렸다(herdr-team 450, herdr-orch 202, 모두 OK. 1단계 끝은 412·202). 새로 복사한 트리에 이 문서의 편집을 처음부터 다시 적용해도 같은 결과가 나오는 것을 확인했다.
+계획의 코드는 이 저장소(1f35fb7)를 새로 복사한 작업 트리에 Task 1–7 의 편집을 처음부터 차례로 적용해 확인했다(Codex 계획 리뷰 r1 반영 뒤 다시). 편집 지시는 모두 정확히 한 번씩 맞았다. 태스크 커밋마다 그 태스크의 Step 4 테스트와 Python 3.11 문법 검사(`ast.parse(..., feature_version=(3, 11))`, 모든 .py 와 진입점)를 돌렸다. Task 2·5·6 은 구현 전에 새 테스트가 실패하는 것도, r1 의 지적 7건(P1 중복 답·LF, P2 기록 검사·인덱스 모드·top_prefix·이력 render·started hint)은 옛 계획 코드에서 새 테스트가 실패하는 것도 확인했다. 마지막에 두 테스트 모음 전체: herdr-team 458, herdr-orch 202, 모두 OK(1단계 끝은 412·202).
 
 | 설계 | 내용 | 태스크 |
 |---|---|---|
 | 10 | 짧은 질문을 하나씩 `ask-user` 로, 선택 질문에 예시·추천안·추천 사유, 모순은 따로 묻기 | 1단계 planner.md(그대로) |
 | 10 | 체크리스트 12항목, "결정"·"범위 밖"이 될 때까지(질문 수 제한 없음), 뻔한 항목은 "자동 결정" | 2(`## 인터뷰 체크리스트`, `interview.md` 표) |
-| 10 | 마지막 질문은 확정: `context` 에 계획 핵심·자동 결정·태스크 그래프 표, 선택지 "확정 (추천)" / "수정할 부분 있음" | 2(`## 확정 질문`, 예시가 render 검사를 통과하는 테스트) |
+| 10 | 마지막 질문은 확정: `context` 에 계획 핵심·자동 결정·태스크 그래프 표, 선택지 "확정 (추천)" / "수정할 부분 있음" | 2(`## 확정 질문`, 예시가 render 검사를 통과하는 테스트, 리뷰어가 `--history` 의 `render` 로 확인) |
 | 10 | 결과물 spec·contracts·tasks.toml·interview.md, 끝내기 전 `plan check` 통과 | 2(산출물 절), 1단계(planner 사전 검사) |
 | 10 | 수정 라운드의 기획자는 `--pending` 과 열린 질문의 `--wait` 를 먼저 확인 | 2(planner.md, 수정 블록 문구, 라운드를 넘는 열린 질문 테스트) |
 | 10 | 인터뷰는 프로젝트마다 하나 | 1단계(`planner_busy`) |
 | 4, 4.2 | `user_approval_roles = ["designer"]`, designer owns, director·designer 는 claude 만 | 1(템플릿), 1단계(검사) |
 | 5.2 | 승인 직무 사이 의존 + owns 겹침 거부 | 1단계(plan check), 1(템플릿 설정으로 다시 확인), 2(planner.md 안내) |
 | 5.3 | awaiting_user 는 잠금을 쥔다, 의존 끝 조건(승인 → 승인은 awaiting_user 도 끝) | 1단계(`state.LOCKING`, `deps_met`), 3(`view` 가 같은 조건을 쓴다) |
-| 6.4 | accept: approved → awaiting_user(승인 직무) → done. fix: awaiting_user 에서 상한을 보지 않는다 | 1단계 + 4(accept 의 `next`, 수정 블록의 사용자 요청) |
-| 7.2, 7.4 | approval 항목, render 검사, answer(파일 먼저 → send), applied, duplicate | 3(approval 항목을 쓴다), 1단계(answer·applied), 4(`design_review` 주석), 6(applied 손상) |
+| 6.4 | accept: approved → awaiting_user(승인 직무) → done. fix: awaiting_user 에서 상한을 보지 않는다 | 1단계 + 4(accept 의 `next`, 수정 블록의 사용자 요청, `--round`, stale 거부) |
+| 7.2, 7.4 | approval 항목, render 검사, answer(파일 먼저 → send), applied, duplicate(같은 out-id 는 한 번) | 3(approval 항목을 쓴다), 1단계(answer·applied), 4(`design_review` 주석, 한 Delivery 안의 중복), 6(applied 손상) |
 | 7.6 | 답이 없는 approval 은 열린 질문, `reask` | 1단계(`open_questions`), 3(테스트가 열린 질문을 확인) |
 | 11.2 | designer 기본: 화면마다 태스크, owns, 화면 원본, 보고서 항목, 승인 직무 | 1(designer.md), 2(tasks.toml 안내) |
 | 11.4 | `design-review` 조건(진행 중·지금 시작할 수 있는 승인 태스크 없음), 그 순간의 awaiting_user 전부, 승인 → 비승인 → 승인은 다음 묶음, context 한 줄과 링크(design_system_url 제외), 선택지, 이미 물었으면 exit 3, `state/design-review.json` | 3 |
-| 11.4 | 답 해석: 승인 → accept, 아니면 그 태스크 fix --note, 의존하는 승인 태스크도 fix | 4(주석·hint·coordinator.md), 7(설계 동기화) |
+| 11.4 | 답 해석: 승인 → accept, 아니면 그 태스크 fix --note, 의존하는 승인 태스크도 fix | 4(주석·hint·coordinator.md·설계), 3(stale: 의존 태스크를 빠뜨려도 묻지 않는다) |
 | 8.3 | 명령 표의 `design-review`(코디네이터) | 3 |
-| 13 | status 의 next(awaiting_user), 오류·복구 | 4(next), 6(이어 붙인 워커의 next, index.lock, run_error), 7(13장 표 동기화) |
+| 13 | status 의 next(awaiting_user), 오류·복구 | 4(next), 6(이어 붙인 워커의 next·hint, index.lock, run_error, 13장 표) |
 | 15.2 | 실환경: 사용자가 인터뷰에 답하고 일괄 승인 | 7 |
 
 ### 설계에서 정하지 않아 계획이 정한 것
 
 - 인터뷰 장치는 코드가 아니라 직무 문서와 리뷰 기준이다(설계 10장 "직무 문서가 규칙을 담는다"). 확정 답을 받았는지 hteam 이 기계적으로 검사하지 않는다(설계 6.1 의 사전 검사 목록에 없다). 대신 리뷰어가 `hteam ask-user --task T --history` 로 실제 질문과 답을 확인한다. 이 명령은 읽기 전용이라 리뷰어 규칙 안이다.
 - `interview.md` 형식: 맨 위에 체크리스트 표(`#`·항목·상태·근거), 상태는 `미정`·`결정`·`자동 결정`·`범위 밖`. 확정 답 뒤에 문서를 바꾸면 확정을 다시 묻는다.
-- 일괄 승인 선택지 label 은 `모두 승인 (추천)` / `수정 요청` 이다(render 규칙이 추천안 label 끝에 `(추천)` 을 요구한다).
+- 일괄 승인 선택지 label 은 `모두 승인 (추천)` / `수정 요청` 이다(사용자 결정. render 규칙이 추천안 label 끝에 `(추천)` 을 요구한다).
 - 한 (태스크, 라운드)는 한 번만 묻는다. 이미 물은 태스크가 답을 기다리는 동안 새로 awaiting_user 가 된 태스크는 새 묶음에 그것만 넣는다(같은 태스크를 두 질문에 넣지 않는다). 수정 라운드는 다시 묻는다.
 - 링크: 보고서의 마지막 `https://claude.ai/…` URL. `design_system_url` 이 든 줄과 `docs/design/direction.md` 의 `design_system_url` 값은 뺀다. 없으면 보고서 경로를 보인다. context 가 4000자를 넘으면 뒤 태스크는 ID 만 적는다.
-- `design-review` 오류: exit 2 `no_approval_roles`, exit 3 `nothing_to_approve`·`already_asked`·`approval_not_ready`, exit 1 `bad_side_file`(기록 손상, 덮어쓰지 않는다)·`bad_state_file`(읽지 못하는 상태 파일이 하나라도 있으면 묶음을 나누지 않는다). 코디네이터만 부른다. 프로젝트 잠금 안에서 기록 → outbox → id 순서로 쓴다.
-- 답 해석 보조: `wait` 가 답에 `design_review` 를 붙이고 `pending`(아직 그 라운드의 awaiting_user)인 태스크만 처리하게 한다. `approve_all` 은 답이 정확히 `모두 승인 (추천)` 일 때만이다. 수정 요청이 가리키지 않은 태스크는 승인으로 본다. 의존하는 승인 태스크는 선행 수정과 함께 바로 fix 한다(둘이 다시 승인되면 다음 묶음으로 함께 묻는다). 메인은 `수정 요청` 을 고르면 무엇을 고칠지 대화로 물은 뒤 `수정 요청: <내용>` 한 줄로 답한다.
+- `design-review` 오류: exit 2 `no_approval_roles`, exit 3 `nothing_to_approve`·`approval_stale`·`already_asked`·`approval_not_ready`, exit 1 `bad_side_file`(기록 손상·모양 오류·중복, 덮어쓰지 않는다)·`bad_state_file`(읽지 못하는 상태 파일이 하나라도 있으면 묶음을 나누지 않는다). 코디네이터만 부른다. 프로젝트 잠금 안에서 기록 → outbox → id 순서로 쓴다. 같은 묶음 항목 찾기는 `outbox.append` 의 잠금 안에서(LF 만 빠진 마지막 줄을 완결한 뒤) 한다.
+- 답 해석 보조: `wait` 가 답에 `design_review` 를 붙인다(태스크마다 `pending`·`stale`·`depends_on`·`dependents`, 읽지 못한 상태 `unknown`). 고칠 대상은 답과 묶음 전체(pending 이 아닌 태스크 포함)로 먼저 정하고, 의존 승인 태스크는 프로젝트 전체 그래프에서 찾는다(다른 묶음 포함). 실행할 때만 지금 awaiting_user 인지로 거른다. `approve_all` 은 답이 정확히 `모두 승인 (추천)` 일 때만이다. 수정 요청이 가리키지 않은 태스크는 승인으로 보고, 의존하는 승인 태스크도 fix 한다(사용자 결정). 메인은 `수정 요청` 을 고르면 무엇을 고칠지 대화로 물은 뒤 `수정 요청: <내용>` 한 줄로 답한다.
+- 다시 온 답이 일을 두 번 하지 않게: accept·fix 에 `--round N`(지금 라운드가 N 일 때만, 아니면 exit 3 `round_changed`). 한 Delivery 안의 같은 out-id 는 `wait` 가 뒤 메시지를 `duplicate: true` 로 표시한다(설계 7.4 의 "한 번만 처리"). 상태를 읽지 못한 태스크가 있으면 처리하지 않고 applied 하지 않는다.
+- stale: 승인 태스크의 선행(직간접)이 이 태스크의 현재 라운드를 연 뒤에 새 라운드를 열었으면 옛 선행을 보고 만든 것이다. 라운드를 연 시각은 history 의 그 라운드 `start`·`fix` 기록(초 단위, 같은 초면 함께 고친 것). stale 인 awaiting_user 태스크는 design-review 가 묻지 않고(exit 3 `approval_stale`), accept 가 거부하고, status 의 next 가 `fix --round`. 그래서 선행만 고치고 죽거나 의존 태스크가 다른 묶음에 있어도 옛 결과를 승인하지 않는다.
 - accept 가 awaiting_user 로 가면 `next` 가 `design-review` 다(그 전에 `start-ready` 를 하라는 hint). status 는 awaiting_user 에 묻지 않았고 막는 승인 태스크가 없을 때만 `next` 를 준다.
 - designer 기본형: 화면 원본은 `docs/design/screens/<화면>/index.html`(외부 리소스 없이)·`notes.md`. claude.ai 아티팩트는 쓸 수 있을 때만(워커 pane 에서 Artifact 도구를 쓸 수 있는지 보장되지 않는다).
-- 설정 템플릿은 designer 를 기본으로 담고 `user_approval_roles = ["designer"]` 다(설계 4장 예시와 같다). 화면이 없는 프로젝트면 init 이 빼자고 제안한다.
+- 설정 템플릿은 designer 를 기본으로 담고 `user_approval_roles = ["designer"]` 다(사용자 결정, 설계 4장 예시와 같다). 화면이 없는 프로젝트면 init 이 빼자고 제안한다.
+- developer 직무 문서: 패키지는 임시 venv(또는 프로젝트의 격리 환경)에서만 설치한다. 전역·시스템 Python 과 `--user` 는 쓰지 않는다(사용자 결정).
+- `ask-user --history` 항목에 원래 질문 `render` 를 더한다(리뷰어가 확정 질문의 context 를 tasks.toml 과 견준다).
+- 변조 검사의 실행 비트: 트리·인덱스 모드는 늘 그대로 견준다. `core.fileMode=false` 면 작업 트리 파일의 모드는 git 처럼 인덱스의 모드다.
 - 변조 검사의 옛 기준점(값이 객체 ID 뿐): 옮기지 않는다. 업그레이드 때 진행 중이던 리뷰 시도는 변조로 멈추고 사용자가 확인한 뒤 `review --retry` 한다(배포 전 중간 형식, 1단계의 옛 pending·attention 형식과 같은 판단).
 - `index.lock` 대기는 10초(`HTEAM_GIT_LOCK_WAIT`). 잠금 파일은 지우지 않는다.
+
+### Codex 계획 리뷰 r1(P1×4, P2×6) 반영
+
+| 지적 | 판단 | 반영 |
+|---|---|---|
+| P1 같은 Delivery 의 중복 답이 fix 를 두 번 한다 | 맞다(같은 스냅숏으로 둘 다 pending) | Task 4: `wait` 가 뒤 메시지를 duplicate 로, accept·fix `--round`, 테스트 |
+| P1 선행만 고치고 죽으면 의존 태스크를 승인한다 | 맞다(재전달 시 선행이 pending 이 아님) | Task 3 stale + Task 4 accept 거부·status next·hint 순서(묶음 전체로 대상 확정), 테스트 |
+| P1 다른 묶음의 의존 태스크가 수정에서 빠진다 | 맞다 | Task 4 `dependents` 를 프로젝트 전체에서, stale 이 그 묶음의 옛 답 적용을 막는다, 테스트 |
+| P1 LF 만 빠진 outbox 끝이면 같은 질문을 두 번 쓴다 | 맞다(잠금 밖에서 찾음) | Task 3 `outbox.append(reuse=)` 로 같은 잠금 안에서 찾기, 테스트 |
+| P2 읽지 못한 상태를 처리한 것으로 본다 | 맞다 | Task 4 reply_view 의 엄격 읽기·`unknown`, hint 가 applied 를 막는다, 테스트 |
+| P2 승인 기록의 필수 필드를 검사하지 않는다 | 맞다 | Task 3 `load` 가 필드·타입·render·중복을 검사, 테스트 |
+| P2 core.fileMode=false 가 인덱스의 모드 변경을 숨긴다 | 맞다 | Task 5 트리·인덱스 모드는 그대로, 작업 트리만 인덱스 모드로, `update-index --chmod` 테스트 |
+| P2 top_prefix 가 text 모드다 | 맞다(`--git-path`·`--show-toplevel` 도 같은 결함) | Task 5 `_out_line` 으로 셋 다 바이트로, 테스트 |
+| P2 이력에 확정 질문의 context 가 없다 | 맞다 | Task 2 `--history` 에 `render`, planner 리뷰 기준, 테스트 |
+| P2 start-ready 가 상한 hint 를 버린다 | 맞다 | Task 6 `started` 행에 hint, coordinator.md, 테스트 |
 
 ### 1단계가 넘긴 것의 처리
 
