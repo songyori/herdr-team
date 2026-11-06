@@ -68,11 +68,20 @@ def _spec_file(p, tid: str, n: int):
     return p.task_dir(tid) / f"r{n}-work.md"
 
 
+def _finished_round(st: dict) -> int:
+    """이 선행에서 지금 볼 수 있는 마지막 끝난 라운드. done·awaiting_user 면 지금 라운드, 아니면(일하는 중·리뷰 중·고치는
+    중·띄우지 않은 라운드) 그 앞 라운드다(0 은 끝난 결과가 없다)."""
+    return st["round"] if st["status"] in ("done", "awaiting_user") else max(st["round"] - 1, 0)
+
+
 def _basis(p, tid: str) -> dict[str, int]:
-    """지금 선행(직간접)의 라운드. 승인 태스크의 stale 판단 기준이다(설계 11.4, approval.stale)."""
+    """선행(직간접)마다 끝난 라운드(_finished_round). 승인 태스크의 stale 판단 기준이다(설계 11.4, approval.stale).
+    지금 라운드가 끝나지 않은 선행이면 이 태스크는 그 앞 결과를 보고 만든다. 그 라운드를 적으면 선행이 끝난 뒤에도
+    stale 로 잡지 못한다."""
     from . import approval  # approval 이 tasks 를 쓴다. 불러오는 순서가 꼬이지 않게 여기서 가져온다
     by_id = {s["id"]: s for s in state.all_states(p)}
-    return {a: by_id[a]["round"] for a in sorted(approval.Graph(p).ancestors(tid), key=state.id_number) if a in by_id}
+    return {a: _finished_round(by_id[a]) for a in sorted(approval.Graph(p).ancestors(tid), key=state.id_number)
+            if a in by_id}
 
 
 def _launch_basis(st: dict) -> None:
@@ -86,9 +95,11 @@ def _launch_basis(st: dict) -> None:
 
 
 def _begin(p, st: dict, rd: dict, text: str, event: str, **info) -> None:
-    """실행 키·실행자·라운드를 launch_failed 와 함께 먼저 쓴다(설계 5.4 3). 사양 파일도 쓴다. 지금 선행의 라운드를
-    실행 기록 pred_rounds 에 둔다(프로젝트 잠금 안에서 부른다. start-ready 는 의존 검사와 같은 잠금). 라운드의 basis 는
-    워커를 새로 띄울 때만 그것으로 정한다(_launch_basis). 같은 라운드 복구는 여기를 다시 지나도 basis 를 바꾸지 않는다."""
+    """실행 키·실행자·라운드를 launch_failed 와 함께 먼저 쓴다(설계 5.4 3). 사양 파일도 쓴다. 선행의 끝난 라운드를
+    실행 기록 pred_rounds 에 둔다(start·fix 모두 프로젝트 잠금 안에서 부른다. 손으로 한 start·같은 라운드 복구·결정 밖
+    fix 는 의존을 보지 않으므로 선행 라운드가 아직 끝나지 않았을 수 있다. 그래서 끝난 라운드만 적는다, _basis). 라운드의
+    basis 는 워커를 새로 띄울 때만 그것으로 정한다(_launch_basis). 같은 라운드 복구는 여기를 다시 지나도 basis 를
+    바꾸지 않는다."""
     rd["work"]["pred_rounds"] = _basis(p, st["id"])
     st["launcher"] = {"key": rd["work"]["title"], **procs.me()}
     state.move(st, "launch_failed", event, key=rd["work"]["title"], round=rd["round"], **info)

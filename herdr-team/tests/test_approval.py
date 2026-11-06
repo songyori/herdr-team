@@ -1,6 +1,5 @@
 """사용자 일괄 승인(설계 11.4): design-review 의 묶음·조건·stale·기록·링크·복구."""
 import json
-import time
 import unittest
 
 from tests.helpers import BASE_CONFIG, TeamCase
@@ -52,6 +51,7 @@ class ApprovalCase(TeamCase):
     def wait_gone(self, rec, limit=10.0):
         """시작 장벽 자식이 끝날 때까지 기다린다. 실행자가 시작 바이트 전에 죽으면 자식은 stdin 의 EOF 를 보고 스스로
         끝나지만 그 시점은 정해져 있지 않다. 살아 있는 동안의 복구는 launching(exit 3)이라 기다린 뒤에 복구한다."""
+        import time  # 머리 import 는 뒤 태스크의 찾을 내용이라 그대로 둔다
         deadline = time.monotonic() + limit
         while procs.record_alive(rec):
             if time.monotonic() >= deadline:
@@ -261,6 +261,78 @@ class DesignReviewTest(ApprovalCase):
         code, out = self.review()
         self.assertEqual((code, out["error"]["code"]), (1, "bad_state_file"), out)
         self.assertEqual(self.outbox_items(), [])
+
+    def test_removed_record_does_not_reuse_an_old_batch(self):
+        # bad_side_file 힌트대로 기록을 치웠다. 묶음 번호가 dr-0001 로 돌아가 옛 outbox 항목을 다시 쓰면 묻지 않게 된다
+        self.task("T-001", "awaiting_user")
+        self.assertEqual(self.review()[0], 0)
+        (self.state_dir / "design-review.json").unlink()
+        self.task("T-002", "awaiting_user")
+        code, out = self.review()
+        self.assertEqual((code, out.get("id"), out.get("batch"), out.get("resumed")), (0, "out-0002", "dr-0002", False),
+                         out)
+        self.assertEqual([(e["id"], e["batch"]) for e in self.outbox_items()],
+                         [("out-0001", "dr-0001"), ("out-0002", "dr-0002")])
+
+    def test_resume_reuses_only_the_same_question(self):
+        # 손으로 고친 기록: 쓰다 멈춘 dr-0001 이 이미 outbox 에 있는 dr-0001 과 다른 질문이다. 옛 항목을 쓰지 않는다
+        self.task("T-001", "awaiting_user")
+        self.assertEqual(self.review()[0], 0)
+        self.task("T-002", "awaiting_user")
+        cfg = config.load(self.p)
+        other = approval.render(self.p, cfg, [state.load(self.p, "T-002")])
+        (self.state_dir / "design-review.json").write_text(json.dumps({"batches": [
+            {"batch": "dr-0001", "at": "2026-11-06T10:00:00Z", "id": None, "tasks": [{"task": "T-002", "round": 1}],
+             "render": other}]}, ensure_ascii=False), encoding="utf-8")
+        code, out = self.review()
+        self.assertEqual((code, out.get("id"), out.get("resumed")), (0, "out-0002", True), out)
+        self.assertEqual(self.outbox_items()[-1]["render"], other)
+
+    def test_basis_counts_only_finished_predecessor_rounds(self):
+        # T-001 r4 가 아직 일하는 중에 T-002 를 고쳤다. T-002 r2 는 T-001 r3 의 결과를 보고 만들었다
+        self.task("T-001", "awaiting_user", rnd=3)
+        self.write_spec("T-002", "designer", owns="docs/design/screens/t-002/**", depends="T-001", commit=False)
+        state.create(self.p, "T-002", "designer")
+        self.assertEqual(self.hteam("start", "T-002")[0], 0)
+        self.move("T-001", "working", rnd=4)
+        code, out = self.hteam("fix", "T-002", "--note=선행이 바뀌었다")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.task_state("T-002")["rounds"][-1]["basis"], {"T-001": 3})  # 끝난 선행 라운드
+        self.move("T-001", "awaiting_user")  # T-001 r4 가 끝났다
+        self.move("T-002", "awaiting_user")
+        self.assertEqual(approval.stale(self.p, config.load(self.p), state.all_states(self.p)), {"T-002": ["T-001"]})
+
+    def test_predecessor_missing_from_basis_counts_as_round_zero(self):
+        # 예약 때 상태가 없었거나 사양을 읽지 못해 basis 에 없는 선행은 아무것도 보지 않은 것이다
+        self.task("T-001", "awaiting_user")
+        self.task("T-002", "awaiting_user", depends="T-001")
+        with state.edit(self.p, "T-002") as st:
+            st["rounds"][-1]["basis"] = {}
+        self.assertEqual(approval.stale(self.p, config.load(self.p), state.all_states(self.p)), {"T-002": ["T-001"]})
+
+    def test_planner_held_by_the_single_planner_rule_does_not_block(self):
+        # 승인 직무가 기획이다. 기획은 한 번에 하나라 T-001 이 끝나기 전에는 T-002 를 시작할 수 없다(planner_busy)
+        (self.team / "config.toml").write_text(
+            APPROVAL.replace('user_approval_roles = ["designer"]', 'user_approval_roles = ["planner"]'), encoding="utf-8")
+        for tid, owns in (("T-001", "docs/planning/a/**"), ("T-002", "docs/planning/b/**")):
+            self.write_spec(tid, "planner", owns=owns, commit=False)
+            state.create(self.p, tid, "planner")
+        self.move("T-001", "awaiting_user", rnd=1)
+        code, out = self.hteam("start-ready")
+        self.assertEqual([w["reason"] for w in out.get("waiting", []) if w["task"] == "T-002"], ["lock"], out)
+        code, out = self.review()
+        self.assertEqual((code, out.get("tasks")), (0, [{"task": "T-001", "round": 1}]), out)
+
+    def test_pending_role_comes_from_the_current_spec(self):
+        # 첫 시작 전에 사양의 직무를 바꿨다. 첫 시작이 저장된 직무를 사양에 맞추므로 pending 은 사양의 직무로 본다
+        self.task("T-001", "awaiting_user")
+        self.task("T-002", "pending", role="developer")
+        self.write_spec("T-002", "designer", owns="docs/design/screens/t-002/**", commit=False)  # 개발 → 디자인
+        self.task("T-003", "pending")
+        self.write_spec("T-003", "developer", owns="src/t-003/**", commit=False)  # 디자인 → 개발
+        code, out = self.review()
+        self.assertEqual((code, out["error"]["code"]), (3, "approval_not_ready"), out)
+        self.assertEqual(out["blockers"], [{"task": "T-002", "status": "pending", "why": "지금 시작할 수 있다"}])
 
 
 class LinkTest(ApprovalCase):

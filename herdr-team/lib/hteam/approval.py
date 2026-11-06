@@ -134,6 +134,12 @@ def opened(st: dict) -> str | None:
     return min(times) if times else None
 
 
+def _seen(basis: dict, tid: str) -> int:
+    """basis 에 적힌 선행 라운드. 없으면(예약 때 상태가 없었거나 사양을 읽지 못한 선행) 0: 아무것도 보지 않은 것으로 본다."""
+    n = basis.get(tid)
+    return n if isinstance(n, int) and not isinstance(n, bool) else 0
+
+
 def stale(p, cfg, states: list[dict], graph: Graph | None = None) -> dict[str, list[str]]:
     """{승인 태스크: [이 태스크의 현재 라운드를 띄운 뒤에 새 라운드를 연 선행]}. 끝난 태스크는 보지 않는다.
 
@@ -150,8 +156,7 @@ def stale(p, cfg, states: list[dict], graph: Graph | None = None) -> dict[str, l
             continue
         basis = (state.current_round(st) or {}).get("basis")
         if isinstance(basis, dict):
-            newer = sorted(a for a in graph.ancestors(st["id"])
-                           if a in by_id and isinstance(basis.get(a), int) and by_id[a]["round"] > basis[a])
+            newer = sorted(a for a in graph.ancestors(st["id"]) if a in by_id and by_id[a]["round"] > _seen(basis, a))
         else:
             mine = opened(st)
             if mine is None:
@@ -164,11 +169,16 @@ def stale(p, cfg, states: list[dict], graph: Graph | None = None) -> dict[str, l
 
 
 def _startable(p, cfg, st: dict) -> bool:
-    """pending 승인 태스크를 지금 바로 시작할 수 있나: 사양 검사·의존 충족·잠금 비어 있음(설계 11.4). 사양이 틀렸거나
-    owns 를 판단할 수 없으면 시작할 수 없다(start-ready 도 띄우지 않는다)."""
+    """pending 태스크가 승인 직무이고 지금 바로 시작할 수 있나: 사양 검사·의존 충족·잠금 비어 있음(설계 11.4). 직무는
+    저장된 직무가 아니라 지금 사양의 직무다(첫 시작이 저장된 직무를 사양에 맞춘다). 잠금은 시작 경로와 같은 검사
+    (tasks._check_locks: owns 잠금과 기획 하나 규칙)다. 사양이 틀렸거나 owns 를 판단할 수 없으면 시작할 수 없다
+    (start-ready 도 띄우지 않는다)."""
     try:
         spec = specs.check(p, cfg, st["id"])
-        return tasks.deps_met(p, cfg, spec) and not tasks.lock_conflicts(p, spec.id, tasks.checked_owns(cfg, spec))
+        if not cfg.is_approval(spec.role) or not tasks.deps_met(p, cfg, spec):
+            return False
+        tasks._check_locks(p, cfg, spec, tasks.checked_owns(cfg, spec))
+        return True
     except HteamError:
         return False
 
@@ -183,14 +193,16 @@ def view(p, cfg, states: list[dict] | None = None, data: dict | None = None) -> 
     behind = stale(p, cfg, states)
     waiting, blockers = [], []
     for st in states:
+        if st["status"] == "pending":  # 직무는 지금 사양으로 본다(_startable)
+            if _startable(p, cfg, st):
+                blockers.append({"task": st["id"], "status": "pending", "why": "지금 시작할 수 있다"})
+            continue
         if not cfg.is_approval(st.get("role")):
             continue
         if st["status"] == "awaiting_user":
             waiting.append(st)
         elif st["status"] in PROGRESS:
             blockers.append({"task": st["id"], "status": st["status"], "why": "진행 중"})
-        elif st["status"] == "pending" and _startable(p, cfg, st):
-            blockers.append({"task": st["id"], "status": "pending", "why": "지금 시작할 수 있다"})
     late = [{"task": st["id"], "round": st["round"], "because": behind[st["id"]]} for st in waiting if st["id"] in behind]
     fresh = [st for st in waiting if st["id"] not in behind and (st["id"], st["round"]) not in done]
     return {"waiting": waiting, "blockers": blockers, "stale": late, "fresh": fresh, "asked": done}
@@ -259,15 +271,24 @@ def render(p, cfg, sts: list[dict]) -> dict:
 
 def _write(p, data: dict, b: dict) -> None:
     """기록한 묶음 b 를 outbox 에 쓰고 기록에 id 를 적는다. 같은 batch 항목이 이미 있으면(앞 호출이 쓰고 죽음) 그것을
-    쓴다. 찾기와 쓰기는 outbox 잠금 안에서 한다(append 의 reuse)."""
+    쓴다. 찾기와 쓰기는 outbox 잠금 안에서 한다(append 의 reuse). 묶음 id 와 질문(render)이 모두 같아야 같은 항목이다."""
     def mine(entries: list[dict]) -> dict | None:
-        return next((e for e in entries if e.get("type") == "approval" and e.get("batch") == b["batch"]), None)
+        return next((e for e in entries if e.get("type") == "approval" and e.get("batch") == b["batch"]
+                     and e.get("render") == b["render"]), None)
 
     entry = outbox.append(p, {"type": "approval", "render": b["render"], "from": "coordinator", "batch": b["batch"]},
                           reuse=mine)
     die_at("design_review_appended")
     b["id"] = entry["id"]
     write_json(p.design_review, data)
+
+
+def _next_batch(p, data: dict) -> str:
+    """다음 묶음 id: 기록과 outbox approval 항목의 묶음 번호 가운데 가장 큰 것 다음. 기록을 치운 뒤에도 옛 묶음 id 를
+    다시 쓰지 않는다(approval 항목은 design-review 만 프로젝트 잠금 안에서 쓴다)."""
+    names = [b["batch"] for b in data["batches"]]
+    names += [e["batch"] for e in outbox.read_outbox(p) if e.get("type") == "approval" and isinstance(e.get("batch"), str)]
+    return f"dr-{max([int(n[3:]) for n in names if BATCH_RE.fullmatch(n)], default=0) + 1:04d}"
 
 
 def _result(b: dict, resumed: bool) -> dict:
@@ -306,7 +327,7 @@ def design_review(p) -> dict:
             raise HteamError("approval_not_ready", f"진행 중이거나 지금 시작할 수 있는 승인 직무 태스크가 있다: {names}",
                              CONFLICT, "시작할 수 있으면 start-ready 를 먼저 한다. 그 태스크들이 accept 로 awaiting_user 가 "
                              "된 뒤 다시 부른다", data={"blockers": v["blockers"]})
-        b = {"batch": f"dr-{len(data['batches']) + 1:04d}", "at": now(), "id": None,
+        b = {"batch": _next_batch(p, data), "at": now(), "id": None,
              "tasks": [{"task": s["id"], "round": s["round"]} for s in v["fresh"]], "render": render(p, cfg, v["fresh"])}
         data["batches"].append(b)
         write_json(p.design_review, data)
