@@ -3,8 +3,9 @@
 승인 직무(user_approval_roles) 태스크는 리뷰 승인 뒤 accept 로 awaiting_user 가 된다. 진행 중(working·reviewing·
 approved·changes·launch_failed)이거나 지금 바로 시작할 수 있는(사양 통과·의존 충족·잠금 비어 있음) 승인 직무 태스크가
 없을 때, 그 순간 awaiting_user 인 승인 태스크 가운데 아직 묻지 않은 (태스크, 라운드) 전부를 outbox 의 approval 항목
-하나로 묻는다. 승인 → 비승인 → 승인 사슬의 뒤 태스크는 비승인 태스크가 done 이어야 시작할 수 있으므로 앞 묶음을 막지
-않고 다음 묶음이 된다.
+하나로 묻는다. 결정이 만들고 띄운 적 없는 queued 수정 라운드(launch_failed)는 pending 처럼 지금 시작할 수 있을 때만
+막는다(선행이 dropped 면 영영 시작하지 못하므로 다른 승인 태스크를 막지 않는다). 승인 → 비승인 → 승인 사슬의 뒤
+태스크는 비승인 태스크가 done 이어야 시작할 수 있으므로 앞 묶음을 막지 않고 다음 묶음이 된다.
 
 stale: 승인 태스크의 선행(직간접)이 이 태스크의 현재 라운드를 연 뒤에 새 라운드를 열었으면 이 태스크는 옛 선행을 보고
 만든 것이다. 일괄 승인 결정(decide)은 의존 승인 태스크를 선행과 함께 고치므로 stale 은 결정 밖에서 선행을 고친 경우뿐이다.
@@ -25,7 +26,7 @@ import json
 import re
 import sys
 
-from . import config, outbox, roles, specs, state, tasks
+from . import config, dispatch, outbox, roles, specs, state, tasks
 from .errors import CONFLICT, FAIL, USAGE, HteamError
 from .paths import SHIM, find_project, report_rel
 from .util import bad_side_file, die_at, now, read_json_strict, write_json
@@ -222,16 +223,28 @@ def stale(p, cfg, states: list[dict], graph: Graph | None = None) -> dict[str, l
     return found
 
 
+def unlaunched(st: dict) -> bool:
+    """일괄 승인 결정이 만들고 아직 띄운 적 없는 queued 수정 라운드다(launch_failed, 시작 장벽 자식·horch Task 기록 없음).
+    start T 는 의존을 보지 않으므로 start-ready 가 선행이 다시 승인된 뒤 띄운다."""
+    rd = state.current_round(st) or {}
+    slot = rd.get("work") or {}
+    return (st["status"] == "launch_failed" and bool(rd.get("queued")) and not slot.get("launched")
+            and not slot.get("horch_task"))
+
+
 def _startable(p, cfg, st: dict) -> bool:
-    """pending 태스크가 승인 직무이고 지금 바로 시작할 수 있나: 사양 검사·의존 충족·잠금 비어 있음(설계 11.4). 직무는
-    저장된 직무가 아니라 지금 사양의 직무다(첫 시작이 저장된 직무를 사양에 맞춘다). 잠금은 시작 경로와 같은 검사
+    """승인 직무 태스크를 지금 바로 시작할 수 있나: 사양 검사·의존 충족·잠금 비어 있음(설계 11.4). pending 의 직무는
+    저장된 직무가 아니라 지금 사양의 직무다(첫 시작이 저장된 직무를 사양에 맞춘다). 띄운 적 없는 queued 라운드
+    (launch_failed)는 같은 라운드 복구로 띄우므로 시작 경로처럼 저장된 직무·owns 로 본다. 잠금은 시작 경로와 같은 검사
     (tasks._check_locks: owns 잠금과 기획 하나 규칙)다. 사양이 틀렸거나 owns 를 판단할 수 없으면 시작할 수 없다
     (start-ready 도 띄우지 않는다)."""
     try:
         spec = specs.check(p, cfg, st["id"])
-        if not cfg.is_approval(spec.role) or not tasks.deps_met(p, cfg, spec):
+        stored = st["status"] == "launch_failed"
+        if not cfg.is_approval(st.get("role") if stored else spec.role) or not tasks.deps_met(p, cfg, spec):
             return False
-        tasks._check_locks(p, cfg, spec, tasks.checked_owns(cfg, spec))
+        owns = (list(st.get("owns") or []) if stored else []) or tasks.checked_owns(cfg, spec)
+        tasks._check_locks(p, cfg, spec, owns)
         return True
     except HteamError:
         return False
@@ -240,7 +253,9 @@ def _startable(p, cfg, st: dict) -> bool:
 def view(p, cfg, states: list[dict] | None = None, data: dict | None = None) -> dict:
     """지금의 승인 상황. waiting: awaiting_user 승인 태스크, blockers: 진행 중이거나 지금 시작할 수 있는 승인 태스크,
     stale: waiting 가운데 선행이 그 뒤에 고쳐진 것({task, round, because}), fresh: waiting 가운데 stale 이 아니고 아직 묻지
-    않은 것, asked: 물은 (태스크, 라운드) → out-id. 상태는 읽기만 한다."""
+    않은 것, asked: 물은 (태스크, 라운드) → out-id, answered: waiting 의 지금 라운드를 물은 out-id 가운데 답이 온 것.
+    띄운 적 없는 queued 라운드는 pending 처럼 지금 시작할 수 있을 때만 blocker 다(띄우는 중이면 진행 중). 상태는 읽기만
+    한다."""
     states = state.all_states(p) if states is None else states
     data = load(p) if data is None else data
     done = asked(data)
@@ -256,11 +271,17 @@ def view(p, cfg, states: list[dict] | None = None, data: dict | None = None) -> 
             continue
         if st["status"] == "awaiting_user":
             waiting.append(st)
+        elif unlaunched(st) and not dispatch.busy(st, st["rounds"][-1]["work"]):
+            if _startable(p, cfg, st):
+                blockers.append({"task": st["id"], "status": st["status"], "why": "지금 시작할 수 있다"})
         elif st["status"] in PROGRESS:
             blockers.append({"task": st["id"], "status": st["status"], "why": "진행 중"})
     late = [{"task": st["id"], "round": st["round"], "because": behind[st["id"]]} for st in waiting if st["id"] in behind]
     fresh = [st for st in waiting if st["id"] not in behind and (st["id"], st["round"]) not in done]
-    return {"waiting": waiting, "blockers": blockers, "stale": late, "fresh": fresh, "asked": done, "replay": replay}
+    answered = {oid for st in waiting if (oid := done.get((st["id"], st["round"])))
+                and outbox.answer_of(p, oid) is not None}
+    return {"waiting": waiting, "blockers": blockers, "stale": late, "fresh": fresh, "asked": done, "replay": replay,
+            "answered": answered}
 
 
 def _urls(text: str) -> list[str]:
@@ -514,7 +535,7 @@ def _compute(p, cfg, b: dict, wanted: dict[str, str]) -> dict:
                                                 state.id_number(e["task"])))
     accept = [{"task": t["task"], "round": t["round"]} for t in b["tasks"] if t["task"] in live and t["task"] not in fix]
     skipped += [{"task": t["task"], "why": "이미 처리됐다"} for t in b["tasks"]
-                if t["task"] not in live and t["task"] not in wanted]
+                if t["task"] not in live and t["task"] not in wanted and t["task"] not in fix]  # 의존으로 고치면 fix 에만
     behind = stale(p, cfg, states, graph)
     late = [a["task"] for a in accept if a["task"] in behind]
     if late:
@@ -565,7 +586,8 @@ def _apply(p, oid: str, d: dict) -> dict:
 
 def decide(p, oid: str, text: str | None) -> dict:
     """일괄 승인 답의 결정(설계 11.4). 결정이 없으면 계산해 묶음 기록에 먼저 쓰고, 있으면 그대로 쓴다. 그다음 기록대로
-    fix(queued)·accept 를 한다. 다른 묶음의 결정이 끝나지 않았으면 exit 3 decision_pending."""
+    fix(queued)·accept 를 한다. 다른 묶음의 결정이 끝나지 않았으면 exit 3 decision_pending. 결정은 답이 온 질문만 새로
+    계산한다(답 전에 계산하면 나중에 온 실제 답이 duplicate 로 버려진다). 기록한 결정의 재실행은 답을 보지 않는다."""
     cfg = config.load(p)
     warnings: list[str] = []
     with state.project_lock(p):
@@ -581,6 +603,9 @@ def decide(p, oid: str, text: str | None) -> dict:
         outbox.applied_ids(p)
         replayed = b.get("decision") is not None
         if not replayed:
+            if outbox.answer_of(p, oid) is None:
+                raise HteamError("no_answer", f"{oid} 에 아직 사용자 답이 없다. 결정하지 않았다", CONFLICT,
+                                 f"답이 온 뒤(wait 의 `[main] reply {oid}` 메시지) 부른다")
             b["decision"] = _compute(p, cfg, b, _decision_input(text, b))
             write_json(p.design_review, data)
         elif text is not None:

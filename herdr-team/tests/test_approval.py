@@ -402,8 +402,19 @@ H = ".herdr-team/bin/hteam"
 
 
 class DecisionCase(ApprovalCase):
-    def decide(self, oid, fix=None, **kw):
-        """design-review --decide. fix 가 None 이면 입력 없이(기록대로 다시 한다)."""
+    def answered(self, oid, text="모두 승인 (추천)"):
+        """그 질문에 메인의 답이 온 것으로 둔다(답 파일과 보낸 기록). 이미 있으면 그대로 둔다."""
+        path = self.state_dir / "answers" / f"{oid}.json"
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"id": oid, "answer": text, "at": "2026-11-06T10:00:00Z",
+                                        "sent_at": "2026-11-06T10:00:00Z"}, ensure_ascii=False), encoding="utf-8")
+
+    def decide(self, oid, fix=None, answer=True, **kw):
+        """design-review --decide. fix 가 None 이면 입력 없이(기록대로 다시 한다). 입력을 주면 먼저 답이 온 것으로 둔다
+        (answer=False 면 두지 않는다. 결정은 답이 온 질문만 새로 계산한다)."""
+        if fix is not None and answer:
+            self.answered(oid, "모두 승인 (추천)" if not fix else "수정 요청")
         args = ["design-review", "--decide", oid] + ([] if fix is None else ["--json", "-"])
         stdin = None if fix is None else json.dumps({"fix": fix}, ensure_ascii=False)
         return self.hteam(*args, stdin=stdin, **kw)
@@ -856,6 +867,139 @@ class ApprovalFollowupTest(DecisionCase):
         self.assertIn("이전 워커가 done 없이 끝남", work)
 
 
+class ApprovalCloseTest(DecisionCase):
+    """2단계 마감 리뷰: 띄운 적 없는 queued 라운드와 dropped 선행, 답이 온 질문의 안내, 답 없는 결정, skipped 겹침."""
+
+    def statuses(self):
+        return {t["id"]: t for t in self.hteam("status")[1]["tasks"]}
+
+    def queued_pair(self):
+        """T-002 → T-001(둘 다 designer). 결정이 T-001 을 고쳐 두 태스크가 띄운 적 없는 queued r2 가 된다."""
+        self.task("T-001", "awaiting_user")
+        self.task("T-002", "awaiting_user", depends="T-001")
+        self.assertEqual(self.review()[1].get("id"), "out-0001")
+        self.assertEqual(self.decide("out-0001", {"T-001": "버튼을 크게"})[0], 0)
+        self.assertEqual(self.rounds("T-001", "T-002"), [("T-001", "launch_failed", 2), ("T-002", "launch_failed", 2)])
+
+    def test_queued_round_behind_a_dropped_predecessor_does_not_block(self):
+        # 최종 리뷰 I1: 선행을 버리면 queued T-002 는 영영 시작하지 못한다. 그것이 다른 승인 태스크를 막으면 안 된다
+        self.queued_pair()
+        self.assertEqual(self.hteam("drop", "T-001", "--force")[0], 0)
+        self.task("T-003", "awaiting_user")  # 독립 designer
+        code, out = self.review()
+        self.assertEqual((code, out.get("tasks")), (0, [{"task": "T-003", "round": 1}]), out)
+        task = self.statuses()["T-002"]
+        self.assertIsNone(task["next"])  # start-ready 가 띄우지 않으므로 권하지 않는다
+        for needle in ("선행 T-001 가 dropped 다", f"{H} drop T-002", "depends_on"):
+            self.assertIn(needle, task["hint"])
+        code, out = self.hteam("start-ready")
+        self.assertEqual((code, out.get("started")), (0, []), out)
+        [w] = [w for w in out["waiting"] if w["task"] == "T-002"]
+        self.assertEqual((w["reason"], w["detail"], w.get("dropped")), ("deps", "T-001(dropped)", ["T-001"]), w)
+        self.assertIn(f"{H} drop T-002", w["hint"])
+
+    def test_pending_task_behind_a_dropped_predecessor_says_so(self):
+        self.task("T-001", "working", role="developer")
+        self.task("T-002", "pending", role="developer", depends="T-001")
+        self.task("T-004", "done", role="developer")
+        self.task("T-003", "pending", role="developer", depends="T-004, T-001")
+        self.assertEqual(self.statuses()["T-002"]["next"], [H, "start-ready"])  # 선행이 아직 일한다
+        code, out = self.hteam("start-ready")
+        [w] = [w for w in out["waiting"] if w["task"] == "T-003"]
+        self.assertEqual((w["detail"], w.get("dropped"), w.get("hint")), ("T-001(working)", None, None), w)  # 끝난 T-004 는 빼고
+        self.move("T-001", "dropped")
+        task = self.statuses()["T-002"]
+        self.assertIsNone(task["next"])
+        self.assertIn("선행 T-001 가 dropped 다", task["hint"])
+        code, out = self.hteam("start-ready")
+        [w] = [w for w in out["waiting"] if w["task"] == "T-003"]
+        self.assertEqual((w["detail"], w.get("dropped")), ("T-001(dropped)", ["T-001"]), w)
+
+    def test_queued_round_behind_a_predecessor_in_revision_leaves_the_blocker_on_the_predecessor(self):
+        self.queued_pair()
+        self.task("T-003", "awaiting_user")
+        code, out = self.review()
+        self.assertEqual((code, out["error"]["code"]), (3, "approval_not_ready"), out)
+        # T-001 r2 는 지금 시작할 수 있다. T-002 는 T-001 을 기다리므로 막지 않는다(pending 과 같다)
+        self.assertEqual(out["blockers"], [{"task": "T-001", "status": "launch_failed", "why": "지금 시작할 수 있다"}])
+        self.assertEqual(self.statuses()["T-002"]["next"], [H, "start-ready"])
+        code, out = self.hteam("start-ready")
+        self.assertEqual([s["task"] for s in out["started"]], ["T-001"], out)
+        [w] = [w for w in out["waiting"] if w["task"] == "T-002"]
+        self.assertEqual((w["reason"], w["detail"]), ("deps", "T-001(working)"), w)
+        code, out = self.review()
+        self.assertEqual((code, out["blockers"]), (3, [{"task": "T-001", "status": "working", "why": "진행 중"}]), out)
+
+    def test_launched_queued_round_still_blocks(self):
+        # 한 번이라도 띄운(horch Task 가 있는) launch_failed 는 진행 중이다
+        self.queued_pair()
+        with state.edit(self.p, "T-002") as st:
+            st["rounds"][-1]["work"]["horch_task"] = "tsk-x"
+        self.task("T-003", "awaiting_user")
+        code, out = self.review()
+        self.assertEqual((code, [b["task"] for b in out["blockers"]]), (3, ["T-001", "T-002"]), out)
+
+    def test_awaiting_hint_says_the_answer_is_in(self):
+        # 최종 리뷰 M1: --decide 가 아무것도 기록하지 못한 채 답 메시지를 ack 했다. 답이 와 있다고 알린다
+        self.task("T-001", "awaiting_user")
+        self.assertEqual(self.review()[1].get("id"), "out-0001")
+        hint = self.statuses()["T-001"]["hint"]
+        self.assertIn("out-0001 의 사용자 답을 기다린다", hint)
+        self.answered("out-0001", "수정 요청")
+        task = self.statuses()["T-001"]
+        self.assertIsNone(task["next"])  # 답 해석은 코디네이터가 한다
+        self.assertIn("out-0001 의 답이 와 있다", task["hint"])
+        self.assertIn("design-review --decide out-0001 --json -", task["hint"])
+
+    def test_awaiting_hint_without_approval_role(self):
+        # 최종 리뷰 M2: 승인 직무가 아니면 일괄 승인 기록을 탓하지 않는다
+        self.task("T-001", "awaiting_user")
+        cfg = self.team / "config.toml"
+        cfg.write_text(cfg.read_text().replace('user_approval_roles = ["designer"]', "user_approval_roles = []"))
+        task = self.statuses()["T-001"]
+        self.assertIsNone(task["next"])
+        self.assertIn(f"{H} accept T-001", task["hint"])
+        self.assertNotIn("일괄 승인 기록을 읽지 못했다", task["hint"])
+        cfg.write_text("[broken")  # 설정을 읽지 못하면 config_error 를 가리킨다
+        code, out = self.hteam("status")
+        self.assertTrue(out["config_error"], out)
+        task = {t["id"]: t for t in out["tasks"]}["T-001"]
+        self.assertIn("config_error", task["hint"])
+
+    def test_decision_needs_the_answer(self):
+        # 최종 리뷰 M3: 답이 오기 전의 결정은 사용자의 실제 답을 버린다
+        self.task("T-001", "awaiting_user")
+        self.review()
+        code, out = self.decide("out-0001", {}, answer=False)
+        self.assertEqual((code, out["error"]["code"]), (3, "no_answer"), out)
+        self.assertIn("답이 온 뒤", out["error"]["hint"])
+        self.assertNotIn("decision", self.record()["batches"][0])
+        self.assertEqual(self.task_state("T-001")["status"], "awaiting_user")
+        self.assertFalse((self.state_dir / "applied.json").exists())
+        code, _ = self.decide("out-0001", {"T-001": "x"}, env={"HTEAM_TEST_DIE_AT": "decision_recorded"})
+        self.assertEqual(code, 137)
+        (self.state_dir / "answers" / "out-0001.json").unlink()  # 기록한 결정의 재실행은 답을 보지 않는다
+        code, out = self.decide("out-0001")
+        self.assertEqual((code, out["replayed"]), (0, True), out)
+
+    def test_skipped_does_not_repeat_a_fixed_task(self):
+        # 최종 리뷰 M4: T-002 는 다른 결정이 이미 고친 묶음 태스크이고 이번 지목 태스크 T-001 의 의존이다
+        self.task("T-001", "awaiting_user")
+        self.task("T-002", "awaiting_user", depends="T-001")
+        self.review()  # out-0001: T-001, T-002
+        self.task("T-005", "awaiting_user")
+        self.review()  # out-0002: T-005
+        with state.edit(self.p, "T-002") as st:  # 다른 결정(또는 fix)이 T-002 를 이미 r2 로 고쳤다
+            st["round"] = 2
+            st["rounds"].append({**st["rounds"][-1], "round": 2})
+            state.move(st, "launch_failed", "test")
+        code, out = self.decide("out-0001", {"T-001": "버튼을 크게"})
+        self.assertEqual(code, 0, out)
+        d = out["decision"]
+        self.assertEqual([e["task"] for e in d["fix"]], ["T-001", "T-002"])
+        self.assertNotIn("T-002", [s["task"] for s in d["skipped"]])
+
+
 class ApprovalFlowTest(DecisionCase):
     """실제 워커로: accept → awaiting_user → design-review → 메인 답 → wait 주석 → 결정 → start-ready(설계 11.4)."""
 
@@ -969,7 +1113,7 @@ class ApprovalFlowTest(DecisionCase):
         self.assertIn("선행 T-001 의 사용자 요청을 반영한다: 버튼을 더 크게", second)
         code, out = self.hteam("start-ready")  # 선행의 수정 라운드가 다시 승인되기 전에는 의존 태스크를 띄우지 않는다
         self.assertEqual([s["task"] for s in out["started"]], ["T-001"], out)
-        self.assertIn({"task": "T-002", "reason": "deps", "detail": "T-001"}, out["waiting"])
+        self.assertIn({"task": "T-002", "reason": "deps", "detail": "T-001(working)"}, out["waiting"])  # 남은 선행과 상태
         self.assertEqual(self.task_state("T-002")["status"], "launch_failed")
         self.finish_design("T-001", "login")
         self.assertEqual(self.task_state("T-001")["status"], "awaiting_user")  # 이제 의존이 풀렸다

@@ -263,18 +263,46 @@ def start(p, tid: str, cli: dict, cfg=None, h=None, cap: Capacity | None = None)
     return run_work(p, cfg, h, tid)
 
 
+def _dep_done(cfg, spec, ds: dict) -> bool:
+    return ds["status"] == "done" or (ds["status"] == "awaiting_user" and cfg.is_approval(spec.role)
+                                      and cfg.is_approval(ds.get("role")))
+
+
 def deps_met(p, cfg, spec) -> bool:
     """선행이 done 이거나, 선행·후행이 모두 승인 직무이고 선행이 awaiting_user(설계 5.3)."""
     for dep in spec.depends_on:
         ds = state.load(p, dep)
-        if ds is None:
+        if ds is None or not _dep_done(cfg, spec, ds):
             return False
-        if ds["status"] == "done":
-            continue
-        if ds["status"] == "awaiting_user" and cfg.is_approval(spec.role) and cfg.is_approval(ds.get("role")):
-            continue
-        return False
     return True
+
+
+def unmet_deps(p, cfg, spec) -> list[tuple[str, str]]:
+    """끝나지 않은 선행과 그 상태(대기 사유에 적는다). 상태가 없으면 "상태 없음", 읽지 못하면 "읽지 못함"."""
+    found = []
+    for dep in spec.depends_on:
+        try:
+            ds = state.load(p, dep)
+        except HteamError:
+            found.append((dep, "읽지 못함"))
+            continue
+        if ds is None:
+            found.append((dep, "상태 없음"))
+        elif not _dep_done(cfg, spec, ds):
+            found.append((dep, ds["status"]))
+    return found
+
+
+def _unmet_text(unmet: list[tuple[str, str]], spec) -> str:
+    return ", ".join(f"{d}({s})" for d, s in unmet) or ", ".join(spec.depends_on)
+
+
+def dropped_hint(tid: str, gone: list[str]) -> str:
+    """선행이 dropped 라 영영 시작하지 못하는 태스크(start-ready 가 띄우지 않는다)의 할 일. 버린 태스크는 다시 시작하지
+    않으므로(설계 6.4) 사람이 정한다."""
+    return (f"선행 {', '.join(gone)} 가 dropped 다. 이 태스크는 시작할 수 없다(start-ready 가 띄우지 않는다). 메인에 알려 "
+            f"사용자가 정한다: 버리려면 {SHIM} drop {tid}, 계속하려면 사양 `.herdr-team/tasks/{tid}.md` 의 depends_on 에서 "
+            "그 선행을 빼거나 바꾼다")
 
 
 WAIT_CODES = {"owns_locked": "lock", "planner_busy": "lock", "launching": "launching", "parallel_limit": "limit",
@@ -305,7 +333,12 @@ def start_ready(p) -> dict:
                 waiting.append({"task": tid, "reason": "spec", "detail": exc.message})
                 continue
             if not deps_met(p, cfg, spec):
-                waiting.append({"task": tid, "reason": "deps", "detail": ", ".join(spec.depends_on)})
+                unmet = unmet_deps(p, cfg, spec)  # 끝나지 않은 선행만 상태와 함께 적는다
+                item = {"task": tid, "reason": "deps", "detail": _unmet_text(unmet, spec)}
+                gone = [d for d, s in unmet if s == "dropped"]
+                if gone:
+                    item.update(dropped=gone, hint=dropped_hint(tid, gone))
+                waiting.append(item)
                 continue
             die_at("start_ready_checked")  # 테스트: 의존을 본 뒤 시작 전에 결정이 끼는 순서를 재현한다
             res = start(p, tid, {}, cfg=cfg, h=h, cap=cap)
@@ -590,7 +623,8 @@ def _start_gate(p, cfg, spec, check_deps: bool) -> None:
                          "의존 태스크다", CONFLICT, f"`{SHIM} design-review --decide {held}` 로 결정을 마저 한 뒤 start-ready",
                          data={"pending": held})
     if check_deps and not deps_met(p, cfg, spec):
-        raise HteamError("deps_unmet", f"{spec.id} 의 선행이 아직 끝나지 않았다: {', '.join(spec.depends_on)}", CONFLICT)
+        raise HteamError("deps_unmet", f"{spec.id} 의 선행이 아직 끝나지 않았다: "
+                         f"{_unmet_text(unmet_deps(p, cfg, spec), spec)}", CONFLICT)
 
 
 def _refuse_stale(p, cfg, tid: str) -> None:

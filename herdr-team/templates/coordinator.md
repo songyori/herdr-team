@@ -65,7 +65,7 @@ hteam 명령이 exit 5 `not_coordinator` 를 주면 `hteam up` 이 새 코디네
 ## 일괄 승인 답
 `hteam design-review` 가 올린 approval 질문의 답은 `kind: main`, `reply_to: out-NNNN` 에 `design_review` 필드(`batch`, `approve_all`, `decision`, `unknown`, `tasks`)가 붙어 온다. hint 가 할 일을 알려 준다.
 - 같은 묶음(Delivery)에 같은 `reply_to` 가 둘 이상이면 앞의 것만 처리한다(뒤의 것은 `duplicate: true`). `unknown` 이 비어 있지 않으면 결정하지 않는다(메인에 알린다).
-- 답을 읽어 고칠 태스크와 사용자 요청을 정하고 결정을 한 번에 넘긴다: `hteam design-review --decide out-NNNN --json -` 의 표준 입력에 `{"fix": {"T-xxx": "<사용자 요청 원문>"}}`(여럿이면 태스크마다). 모두 승인이면 `{"fix": {}}`. 이름이 나오지 않은 태스크는 승인된다(사용자 결정). 고칠 태스크에 직간접으로 의존하는 승인 태스크는 다른 묶음에 있어도 hteam 이 더해 같은 요청과 함께 고친다. 어느 태스크를 고치라는지 모호하면 `hteam notify --type question` 으로 다시 묻고 그 답이 올 때까지 결정하지 않는다.
+- 답을 읽어 고칠 태스크와 사용자 요청을 정하고 결정을 한 번에 넘긴다: `hteam design-review --decide out-NNNN --json -` 의 표준 입력에 `{"fix": {"T-xxx": "<사용자 요청 원문>"}}`(여럿이면 태스크마다). 모두 승인이면 `{"fix": {}}`. 이름이 나오지 않은 태스크는 승인된다(사용자 결정). 고칠 태스크에 직간접으로 의존하는 승인 태스크는 다른 묶음에 있어도 hteam 이 더해 같은 요청과 함께 고친다. 어느 태스크를 고치라는지 모호하면 `hteam notify --type question` 으로 다시 묻고 그 답이 올 때까지 결정하지 않는다. 결정은 답이 온 질문만 한다: 답 전에 부르면 exit 3 `no_answer` 다.
 - hteam 은 결정(태스크마다 그때의 라운드와 요청)을 먼저 기록한 뒤 accept 와 수정 라운드를 만든다. 수정 라운드는 바로 띄우지 않는다(`launch_failed`, `queued`): `hteam start-ready` 가 선행의 수정 라운드가 다시 승인된 뒤에 띄운다. 결정을 다 하면 `applied` 도 hteam 이 적는다. 다음은 `hteam start-ready`.
 - 결정이 이미 있으면(재시작, 다시 온 답) 같은 `hteam design-review --decide out-NNNN` 을 입력 없이 다시 부른다. 기록대로 이어 하고, 기록한 라운드가 지난 항목은 다시 하지 않는다. `status` 의 next 도 그 명령을 준다(그 태스크에 일반 fix·accept 를 하지 않는다). 다른 묶음의 결정이 끝나지 않았으면 exit 3 `decision_pending`: 그 결정을 먼저 마저 한다.
 - `skipped` 에 끝난(done·dropped) 의존 태스크가 있으면 고치지 못한 것이다. 메인에 알린다(새 태스크로 고칠지 사용자가 정한다). 지목한 태스크가 끝났으면 exit 3 `decision_conflict` 로 아무것도 하지 않는다: 메인에 알리고 사용자가 정한 대로 그 태스크를 뺀 결정을 다시 준다.
@@ -99,7 +99,7 @@ EOF
 답은 `[main] reply out-NNNN` 메시지(`kind: main`, `reply_to`)로 온다. 반영한 뒤 `hteam applied out-NNNN`.
 
 ## 중단
-`hteam drop T [--force]` 는 태스크를 `dropped` 로 바꾸고 잠금을 푼다. 사용자가 버리기로 했을 때, 복구할 수 없는 `launch_failed` 일 때만 쓴다. 일하는 워커가 있으면 `--force` 가 필요하다(워커를 끝낸다). 버린 태스크는 다시 시작하지 않는다(새 태스크로 만든다).
+`hteam drop T [--force]` 는 태스크를 `dropped` 로 바꾸고 잠금을 푼다. 사용자가 버리기로 했을 때, 복구할 수 없는 `launch_failed` 일 때만 쓴다. 일하는 워커가 있으면 `--force` 가 필요하다(워커를 끝낸다). 버린 태스크는 다시 시작하지 않는다(새 태스크로 만든다). 버린 태스크에 의존하는 태스크는 `start-ready` 가 띄우지 않는다(대기 사유 `deps` 의 `dropped`·hint, `status` 의 hint): 메인에 알려 그 태스크도 버릴지 사양의 `depends_on` 을 고칠지 사용자가 정한다.
 
 ## 직무
 - planner: 사용자 인터뷰(`hteam ask-user`, 메인을 거쳐 사용자에게 바로 간다), `docs/planning/`(spec.md, contracts.md, tasks.toml, interview.md). 기획자의 질문에 끼어들지 않는다.

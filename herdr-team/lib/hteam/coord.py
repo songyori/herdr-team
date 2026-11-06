@@ -5,7 +5,7 @@ import json
 import re
 import time
 
-from . import approval, config, dispatch, herdr, outbox, roles, specs, state
+from . import approval, config, dispatch, herdr, outbox, roles, specs, state, tasks
 from .errors import USAGE, HteamError
 from .horch import Horch
 from .paths import SHIM, find_project
@@ -415,16 +415,20 @@ def _live_hint(st: dict, rows: list[dict], horch_cmd: str = "horch") -> str | No
 
 def next_step(cfg, st: dict, by_task: dict[str, dict], have_rows: bool,
               rows: list[dict] | None = None, horch_cmd: str | None = None,
-              appr: dict | None = None) -> tuple[list[str] | None, str | None]:
+              appr: dict | None = None, gone: list[str] | None = None) -> tuple[list[str] | None, str | None]:
     """태스크마다 다음 명령(설계 13장). 끝났다는 확실한 증거가 있을 때만 바꾸라고 하고, 모르면 기다린다.
 
     by_task: horch Task → 최신 시도 행. rows 를 주면(worker-list 전체) 지난 시도·제목으로 찾은 Dispatch 까지 본다.
     horch_cmd: 힌트에 넣을 horch 명령(--home 포함, Horch.cmd). 없으면 `horch`.
-    appr: approval.view 결과(끝나지 않은 일괄 승인 결정, awaiting_user 의 next). 읽지 못했으면 None."""
+    appr: approval.view 결과(끝나지 않은 일괄 승인 결정, awaiting_user 의 next). 읽지 못했으면 None.
+    gone: 사양의 선행 가운데 dropped 인 것. start-ready 로 띄울 태스크(pending, 띄운 적 없는 queued 라운드)는 영영
+    시작하지 못하므로 start-ready 를 권하지 않고 사람이 정할 일을 알린다."""
     tid, s = st["id"], st["status"]
     hc = horch_cmd or "horch"
     rd = state.current_round(st)
     if s == "pending":
+        if gone:
+            return None, tasks.dropped_hint(tid, gone)
         return H("start-ready"), None
     if s in state.CLOSED or not rd:
         return None, None
@@ -442,8 +446,10 @@ def next_step(cfg, st: dict, by_task: dict[str, dict], have_rows: bool,
     if s == "launch_failed":
         if dispatch.busy(st, slot):
             return None, "띄우는 중이다(launching)"
-        if rd.get("queued") and not slot.get("launched") and not slot.get("horch_task"):
+        if approval.unlaunched(st):
             # start T 는 의존을 보지 않는다. start-ready 가 선행이 다시 승인된 뒤에 띄운다(설계 11.4)
+            if gone:
+                return None, tasks.dropped_hint(tid, gone)
             return H("start-ready"), "일괄 승인 결정으로 연 수정 라운드다. 선행이 끝나면 start-ready 가 띄운다"
         return H("start", tid), None
     if s == "working":
@@ -491,13 +497,20 @@ def next_step(cfg, st: dict, by_task: dict[str, dict], have_rows: bool,
     if s == "changes":
         return _fix(cfg, tid, st["round"], "리뷰 지적을 반영한다")
     if s == "awaiting_user":
-        return _awaiting(st, appr)
+        return _awaiting(cfg, st, appr)
     return None, None
 
 
-def _awaiting(st: dict, appr: dict | None) -> tuple[list[str] | None, str | None]:
-    """awaiting_user 의 다음(설계 11.4): stale 이면 알리기만 하고, 이미 물었으면 그 답을 기다리고, 진행 중이거나 시작할 수
-    있는 승인 태스크가 있으면 그것을 기다리고, 아니면 design-review."""
+def _awaiting(cfg, st: dict, appr: dict | None) -> tuple[list[str] | None, str | None]:
+    """awaiting_user 의 다음(설계 11.4): stale 이면 알리기만 하고, 이미 물었으면 그 답을 기다리고(답이 와 있으면 결정을
+    안내한다. 답 해석은 코디네이터가 하므로 next 는 주지 않는다), 진행 중이거나 시작할 수 있는 승인 태스크가 있으면 그것을
+    기다리고, 아니면 design-review. 설정을 읽지 못했거나 지금 설정의 승인 직무가 아니면 그 사실을 알린다."""
+    tid = st["id"]
+    if cfg is None:
+        return None, "사용자 일괄 승인을 기다린다(설정을 읽지 못했다. status 의 config_error 를 본다)"
+    if not cfg.is_approval(st.get("role")):  # design-review 는 승인 직무 태스크만 묻는다
+        return None, (f"{tid} 의 직무({st.get('role')})는 지금 설정의 승인 직무(user_approval_roles)가 아니다. 일괄 승인으로 "
+                      f"묻지 않는다. 사용자 승인 없이 끝내려면 {SHIM} accept {tid}")
     if appr is None:
         return None, "사용자 일괄 승인을 기다린다(일괄 승인 기록을 읽지 못했다. status 의 warnings 를 본다)"
     late = next((s for s in appr["stale"] if s["task"] == st["id"]), None)
@@ -509,6 +522,9 @@ def _awaiting(st: dict, appr: dict | None) -> tuple[list[str] | None, str | None
         oid = appr["asked"][key]
         if oid is None:
             return H("design-review"), "일괄 승인 질문을 쓰다 멈췄다. design-review 가 마저 쓴다"
+        if oid in appr.get("answered", ()):  # 결정이 아무것도 기록하지 못한 채 답 메시지를 ack 했을 수 있다
+            return None, (f"일괄 승인 질문 {oid} 의 답이 와 있다(`.herdr-team/state/answers/{oid}.json`). 결정이 없으면 답을 "
+                          f"해석해 {SHIM} design-review --decide {oid} --json - 로 결정한다")
         return None, f"일괄 승인 질문 {oid} 의 사용자 답을 기다린다(답이 오면 design-review --decide {oid})"
     if appr["blockers"]:
         names = ", ".join(b["task"] for b in appr["blockers"])
@@ -563,13 +579,16 @@ def status(p) -> dict:
             appr = approval.view(p, cfg, states)
         except HteamError as exc:  # 기록이 손상됐다. awaiting_user 는 next 없이 hint 만 준다
             warnings.append(f"일괄 승인 기록: {exc.message}")
+    status_of = {s["id"]: s["status"] for s in states}
     for st in states:
         try:
-            title = specs.load(p, st["id"]).title
+            spec = specs.load(p, st["id"])
+            title = spec.title
+            gone = [d for d in spec.depends_on if status_of.get(d) == "dropped"]  # 영영 시작하지 못하는 선행
         except HteamError:
-            title = None
+            title, gone = None, []
         nxt, hint = next_step(cfg, st, by_task, horch_error is None, rows if horch_error is None else None,
-                              horch_cmd=horch_cmd, appr=appr)
+                              horch_cmd=horch_cmd, appr=appr, gone=gone)
         rd = state.current_round(st)
         work = by_task.get(rd["work"].get("horch_task")) if rd and rd["work"].get("horch_task") else None
         items.append({"id": st["id"], "role": st.get("role"), "title": title, "status": st["status"],
