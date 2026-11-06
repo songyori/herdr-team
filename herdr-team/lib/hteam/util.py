@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
+from .errors import FAIL, HteamError
+
 
 def now() -> str:
     """UTC `%Y-%m-%dT%H:%M:%SZ`. 같은 길이라 문자열 비교가 시각 비교다."""
@@ -45,6 +47,28 @@ def read_json(path: Path, default):
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return default
+
+
+def bad_side_file(path: Path, why: str) -> HteamError:
+    return HteamError("bad_side_file", f"{path.name} 을 읽지 못했다: {why}", FAIL,
+                      f"`.herdr-team/state/{path.name}` 을 직접 고치거나 치운 뒤 다시 한다(덮어쓰지 않았다)")
+
+
+def read_json_strict(path: Path, default):
+    """없으면 default. 있는데 읽지 못하거나 JSON 이 아니면 bad_side_file(exit 1).
+
+    read_json 과 달리 손상을 없는 것으로 보지 않는다. 읽은 값을 고쳐 다시 쓰는 기록이 손상 때문에 빈 기록으로 덮어써져
+    지워지지 않게 한다. 모양(dict 인지 등)은 부르는 쪽이 보고 틀리면 bad_side_file 을 낸다."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return default
+    except (OSError, ValueError) as exc:  # 디렉터리·권한·UTF-8 아님
+        raise bad_side_file(path, str(exc)) from None
+    try:
+        return json.loads(text)
+    except ValueError as exc:
+        raise bad_side_file(path, f"JSON 이 아니다: {exc}") from None
 
 
 def write_json(path: Path, obj) -> None:

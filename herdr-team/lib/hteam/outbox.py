@@ -144,8 +144,9 @@ def read_outbox(p) -> list[dict]:
     return [e for _, e in _scan(p)[1]]
 
 
-def append(p, fields: dict, guard=None) -> dict:
-    """outbox 에 flock 으로 한 줄을 더한다. guard(entries) 는 같은 잠금 안에서 먼저 부른다.
+def append(p, fields: dict, guard=None, reuse=None) -> dict:
+    """outbox 에 flock 으로 한 줄을 더한다. guard(entries) 는 같은 잠금 안에서 먼저 부른다. reuse(entries) 가 항목을
+    돌려주면 쓰지 않고 그 항목을 돌려준다(이미 쓴 같은 항목. 끊긴 마지막 줄을 완결한 뒤에 보므로 LF 만 빠진 항목도 찾는다).
 
     ID 는 완결된 줄 수 + 1 이다. 앞 쓰기가 줄 중간에서 끊겼으면(쓰는 쪽은 늘 이 잠금을 쥐므로 잠금 안에서 본 LF 없는
     끝은 죽은 쓰기다) guard 보다 먼저 LF 를 써서 남긴다. 그래야 guard(중복 검사)와 잠금 없이 읽는 쪽이 같은 줄을 본다."""
@@ -159,8 +160,13 @@ def append(p, fields: dict, guard=None) -> dict:
             _write(p, b"\n")
             raw += b"\n"
         count, items, _ = _parse(raw)
+        entries = [e for _, e in items]
         if guard is not None:
-            guard([e for _, e in items])
+            guard(entries)
+        if reuse is not None:
+            found = reuse(entries)
+            if found is not None:
+                return found
         entry = {"id": f"out-{count + 1:04d}", "at": now(), **fields, "answered": False}
         _write(p, (json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8"))
     return entry

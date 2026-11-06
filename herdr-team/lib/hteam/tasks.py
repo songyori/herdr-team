@@ -68,8 +68,28 @@ def _spec_file(p, tid: str, n: int):
     return p.task_dir(tid) / f"r{n}-work.md"
 
 
+def _basis(p, tid: str) -> dict[str, int]:
+    """지금 선행(직간접)의 라운드. 승인 태스크의 stale 판단 기준이다(설계 11.4, approval.stale)."""
+    from . import approval  # approval 이 tasks 를 쓴다. 불러오는 순서가 꼬이지 않게 여기서 가져온다
+    by_id = {s["id"]: s for s in state.all_states(p)}
+    return {a: by_id[a]["round"] for a in sorted(approval.Graph(p).ancestors(tid), key=state.id_number) if a in by_id}
+
+
+def _launch_basis(st: dict) -> None:
+    """dispatch.launch 가 워커를 새로 띄울 때(fresh)만 launched 와 같은 저장에서 부른다(on_fresh). 시작 예약에서 본
+    선행 라운드가 이 라운드의 basis 다. 기존 Dispatch 를 이어 붙이거나(adopt) 같은 horch Task 를 다시 띄우면(retry)
+    부르지 않아 처음 띄울 때 것이 남는다(adopt 한 Dispatch 는 그 선행을 보고 만들었다. retry 는 그 사이 선행이
+    바뀌었으면 stale 로 보는 쪽이 안전하다: 놓치지 않고, 잘못 잡으면 fix 로 다시 만든다)."""
+    rd = st["rounds"][-1]
+    if isinstance(rd["work"].get("pred_rounds"), dict):
+        rd["basis"] = rd["work"]["pred_rounds"]
+
+
 def _begin(p, st: dict, rd: dict, text: str, event: str, **info) -> None:
-    """실행 키·실행자·라운드를 launch_failed 와 함께 먼저 쓴다(설계 5.4 3). 사양 파일도 쓴다."""
+    """실행 키·실행자·라운드를 launch_failed 와 함께 먼저 쓴다(설계 5.4 3). 사양 파일도 쓴다. 지금 선행의 라운드를
+    실행 기록 pred_rounds 에 둔다(프로젝트 잠금 안에서 부른다. start-ready 는 의존 검사와 같은 잠금). 라운드의 basis 는
+    워커를 새로 띄울 때만 그것으로 정한다(_launch_basis). 같은 라운드 복구는 여기를 다시 지나도 basis 를 바꾸지 않는다."""
+    rd["work"]["pred_rounds"] = _basis(p, st["id"])
     st["launcher"] = {"key": rd["work"]["title"], **procs.me()}
     state.move(st, "launch_failed", event, key=rd["work"]["title"], round=rd["round"], **info)
     write_atomic(_spec_file(p, st["id"], rd["round"]), text)
@@ -181,7 +201,7 @@ def run_work(p, cfg, h, tid: str) -> dict:
     rd = state.require(p, tid)["rounds"][-1]
     res = dispatch.launch(p, h, tid, work_slot, agent=rd["agent"], model=rd["model"], effort=rd["effort"],
                           args=cfg.args(rd["agent"]), spec_file=_spec_file(p, tid, rd["round"]),
-                          expect={"launch_failed"})
+                          expect={"launch_failed"}, on_fresh=_launch_basis)
     try:
         # fix·drop 의 취소·전이가 그 사이 끼었으면 working 으로 두지 않는다(정리는 그쪽이 horch 상태로 한다)
         with dispatch.owned(p, tid, work_slot, {"launch_failed"}) as st:

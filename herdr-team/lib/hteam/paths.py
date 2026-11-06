@@ -41,6 +41,7 @@ class Project:
         self.watch_pid = self.state / "watch.pid"
         self.attention = self.state / "attention.json"
         self.context_denied = self.state / "context-denied.json"
+        self.design_review = self.state / "design-review.json"
 
     def ensure_state(self) -> None:
         for folder in (self.state, self.task_states, self.answers, self.sessions):

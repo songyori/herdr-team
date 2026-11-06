@@ -21,6 +21,7 @@ COMMAND_MODULES: tuple[str, ...] = (
     "review",
     "outbox",
     "ask",
+    "approval",
     "coord",
     "setup",
 )

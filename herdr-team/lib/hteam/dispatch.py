@@ -131,13 +131,15 @@ def _send(barrier):
     return after_save
 
 
-def _run_barrier(p, tid: str, pick, argv: list[str], expect) -> tuple[int, dict]:
+def _run_barrier(p, tid: str, pick, argv: list[str], expect, on_fresh=None) -> tuple[int, dict]:
     barrier = Barrier(argv)
     try:
         # 기록을 저장한 직후 같은 태스크 잠금 안에서 시작 바이트를 보낸다. 그래서 fix·drop 의 취소는 기록 전(그러면
         # 위 검사가 막는다)이나 바이트 뒤(horch 가 떴다. 기록·working 전이가 막는다)에만 저장된다
         with owned(p, tid, pick, expect, after_save=_send(barrier)) as st:
             pick(st)["launched"] = barrier.record()
+            if on_fresh is not None:  # 새로 띄우는 실행이 본 것을 launched 와 같은 저장에 남긴다
+                on_fresh(st)
     except BaseException:
         if not barrier.sent:  # 바이트를 보내다 실패했으면 자식을 두고(이미 떴을 수 있다) 오류만 낸다
             barrier.abort()
@@ -153,10 +155,12 @@ def _run_barrier(p, tid: str, pick, argv: list[str], expect) -> tuple[int, dict]
 
 
 def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str | None, args: list[str],
-           spec_file, expect=None) -> dict:
+           spec_file, expect=None, on_fresh=None) -> dict:
     """pick(st) 가 가리키는 실행 기록으로 horch 워커를 띄우거나 이어 붙인다. 실패하면 HteamError(launch_failed).
 
-    기록을 쓸 때마다 owned 로 이전 상태(expect)·취소·실행자를 다시 확인한다. 어긋나면 exit 3(launch_canceled 등)."""
+    기록을 쓸 때마다 owned 로 이전 상태(expect)·취소·실행자를 다시 확인한다. 어긋나면 exit 3(launch_canceled 등).
+    on_fresh(st) 는 기존 horch Task 없이 새로 띄울 때(fresh)만 launched 와 같은 저장에서 부른다. 이어 붙이거나(adopt)
+    같은 horch Task 를 다시 띄우면(retry) 부르지 않는다."""
     slot = pick(state.require(p, tid))
     mode, row, warnings = existing(h, slot)
     if mode == "adopt":
@@ -181,7 +185,7 @@ def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str |
     else:
         argv = h.argv("worker-start", "--agent", agent, "--title", slot["title"], "--spec-file", str(spec_file),
                       "--cwd", str(p.root), *opts, *agent_args(args))
-    code, data = _run_barrier(p, tid, pick, argv, expect)
+    code, data = _run_barrier(p, tid, pick, argv, expect, on_fresh if mode == "fresh" else None)
     ok = code == 0 and data.get("ok")
     try:
         with owned(p, tid, pick, expect) as st:
