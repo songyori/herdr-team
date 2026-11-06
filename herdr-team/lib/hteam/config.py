@@ -11,6 +11,7 @@ from .globs import owns_problem
 AGENTS = ("claude", "codex")
 CLAUDE_ONLY = ("director", "designer")  # Claude Design 을 쓰는 직무(설계 4.2, 11장)
 ROLE_RE = re.compile(r"[a-z][a-z0-9-]*")
+MODEL_KEYS = tuple(f"{a}_{k}" for a in AGENTS for k in ("model", "effort"))  # [defaults]·[roles.*] 의 모델·effort
 
 
 def other(agent: str) -> str:
@@ -35,8 +36,14 @@ def _table(raw: dict, key: str, errors: list[str]) -> dict:
     return value
 
 
+def _names(table: dict, where: str, keys, errors: list[str]) -> None:
+    """모델·effort 값은 있으면 비지 않은 문자열이다(argv 에 그대로 들어간다). 무엇을 쓸 수 있는지는 에이전트가 판단한다."""
+    errors += [f"{where}.{k} 는 비지 않은 문자열이다" for k in keys
+               if k in table and not (isinstance(table[k], str) and table[k].strip())]
+
+
 def validate(raw: dict) -> list[str]:
-    """설계 4.2 검사. 모델·effort 값은 검사하지 않는다(에이전트가 판단)."""
+    """설계 4.2 검사. 모델·effort 값은 비지 않은 문자열인지만 본다(어떤 값인지는 에이전트가 판단)."""
     errors: list[str] = []
     if not _pos_int(raw.get("max_parallel", 4)):
         errors.append("max_parallel 은 1 이상의 정수다")
@@ -46,8 +53,9 @@ def validate(raw: dict) -> list[str]:
     dworker = defaults.get("worker", "claude")
     if dworker not in AGENTS:
         errors.append(f"defaults.worker 는 claude·codex 중 하나다: {dworker!r}")
-    for key in ("coordinator", "image"):
-        _table(raw, key, errors)
+    _names(defaults, "defaults", MODEL_KEYS, errors)
+    _names(_table(raw, "coordinator", errors), "coordinator", ("model", "effort"), errors)
+    _names(_table(raw, "image", errors), "image", ("codex_model", "codex_effort"), errors)
     roles = _table(raw, "roles", errors)
     if not roles:
         errors.append("[roles.<직무>] 가 하나 이상 있어야 한다")
@@ -62,6 +70,7 @@ def validate(raw: dict) -> list[str]:
             errors.append(f"roles.{name}.worker 는 claude·codex 중 하나다: {worker!r}")
         elif name in CLAUDE_ONLY and worker != "claude":
             errors.append(f"roles.{name} 는 worker = \"claude\" 만 된다(Claude Design 을 쓴다)")
+        _names(role, f"roles.{name}", MODEL_KEYS, errors)
         if not _str_list(role.get("owns"), nonempty=True):
             errors.append(f"roles.{name}.owns 는 비지 않은 문자열 목록이다")
         else:  # 태스크 owns 와 같은 규칙. 어기면 owns_too_wide 가 아니라 설정 오류로 알린다
@@ -136,7 +145,7 @@ def load(p) -> Config:
         raw = tomllib.loads(p.config.read_text(encoding="utf-8"))
     except FileNotFoundError:
         raise HteamError("no_config", f"{p.config} 가 없다", USAGE, "/herdr-team:init 으로 세팅한다") from None
-    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError, OSError) as exc:  # OSError: 디렉터리·권한 없음 등
         raise HteamError("bad_config", f"config.toml 을 읽지 못했다: {exc}", USAGE) from exc
     errors = validate(raw)
     if errors:
