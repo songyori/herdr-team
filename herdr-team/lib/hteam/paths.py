@@ -57,6 +57,10 @@ class Project:
         """라운드별로 조립한 워커 사양과 리뷰 프롬프트를 두는 곳."""
         return self.task_states / tid
 
+    def work_file(self, tid: str, n: int) -> Path:
+        """라운드 n 의 조립한 작업 사양(start·fix 가 쓰고 리뷰 프롬프트가 가리킨다)."""
+        return self.task_dir(tid) / f"r{n}-work.md"
+
     def role_doc(self, role: str) -> Path:
         return self.roles / f"{role}.md"
 

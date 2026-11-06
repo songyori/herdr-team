@@ -52,6 +52,15 @@ class GlobTest(unittest.TestCase):
         self.assertTrue(matches("a/b", "a/**/b"))
         self.assertFalse(matches("src/ab", "src/?"))
 
+    def test_matches_paths_with_newline(self):
+        # git pathspec 의 `**`·`*`·`?` 는 줄바꿈도 맞춘다. 사전 검사·변조 검사가 owns 안 경로를 밖으로 보지 않게 한다
+        self.assertTrue(matches("src/a\nb.py", "src/**"))
+        self.assertTrue(matches("x/a\nb/c.py", "**/c.py"))
+        self.assertTrue(matches("a/x\ny/b", "a/**/b"))
+        self.assertTrue(matches("src/a\nb.py", "src/*.py"))
+        self.assertTrue(matches("src/\n", "src/?"))
+        self.assertFalse(matches("src/a\nb/c.py", "src/*.py"))  # `*` 는 여전히 한 마디 안이다
+
     def test_conservative_overlap(self):
         self.assertTrue(overlaps("src/**", "src/auth/**"))
         self.assertTrue(overlaps("src/a*", "src/ab/**"))  # 접두사 src/a 와 src/ab/

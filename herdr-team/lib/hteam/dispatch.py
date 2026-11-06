@@ -212,6 +212,15 @@ def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str |
             "state": data.get("state"), "warnings": warnings}
 
 
+REVIEW_ENDED = ("settled", "retained", "abandoned", "released", "launch_failed")
+
+
+def review_ended(row: dict) -> bool:
+    """리뷰 Dispatch 가 끝났나: 끝난 상태이거나 터미널 판정이 exited·lost. 그러면 review-finish 로 마무리한다
+    (status 의 reviewing next 와 review 의 기록된 시도 복구가 같은 기준을 쓴다)."""
+    return row["state"] in REVIEW_ENDED or row.get("verdict") in ("exited", "lost")
+
+
 def row_by_id(rows: list[dict], did: str | None) -> dict | None:
     return next((r for r in rows if r["id"] == did), None) if did else None
 

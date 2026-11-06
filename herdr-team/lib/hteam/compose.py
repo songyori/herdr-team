@@ -67,14 +67,23 @@ def work_spec(p, cfg, spec, rd: dict, owns: list[str]) -> str:
 
 
 def review_prompt(p, cfg, spec, rd: dict, att: dict) -> str:
-    """리뷰 프롬프트(설계 6.2). 입력(대상 커밋, 바뀐 파일)은 시도 기록에 저장된 것을 쓴다."""
+    """리뷰 프롬프트(설계 6.2). 입력(대상 커밋, 바뀐 파일)은 시도 기록에 저장된 것을 쓴다. 이번 라운드에 요청(사용자
+    요청·코디네이터 메모)이 있으면 그 요청과 그 라운드 작업 사양을 보이고 기준에 한 줄을 더한다(없으면 그대로)."""
     tid, n = spec.id, rd["round"]
     prior = [review_rel(tid, r) for r in range(1, n) if (p.root / review_rel(tid, r)).is_file()]
     commits = att["inputs"]["commits"]
     files = att["inputs"]["files"]
+    request, request_rule = "", ""
+    if rd.get("note"):
+        label = "사용자 요청" if rd.get("from_user") else "코디네이터 메모"  # work_spec 과 같은 이름
+        work = p.work_file(tid, n).relative_to(p.root).as_posix()
+        request = f"\n- 이번 라운드 {label}: {rd['note']}\n- 이번 라운드 작업 사양: `{work}`"
+        request_rule = (f"\n5. 이번 라운드 요청(위 {label})을 반영했는가. 요청이 사양의 Acceptance 를 바꾸면 요청을 따른 쪽을 "
+                        "맞는 것으로 본다.")
     return fill(_template("review-prompt.md"), role=spec.role, role_title=cfg.role_title(spec.role), task_id=tid,
                 round=str(n), attempt=str(att["attempt"]), title=spec.title, review_file=att["file"],
                 spec_path=f".herdr-team/tasks/{tid}.md", role_doc=f".herdr-team/roles/{spec.role}.md",
-                report=report_rel(tid), prior=", ".join(f"`{x}`" for x in prior) or "없음",
+                report=report_rel(tid), prior=", ".join(f"`{x}`" for x in prior) or "없음", request=request,
+                request_rule=request_rule,
                 commits="\n".join(f"- {c['sha'][:10]} {c['subject']}" for c in commits) or "- 없음",
                 files="\n".join(f"- `{show(f)}`" for f in files) or "- 없음").rstrip() + "\n"

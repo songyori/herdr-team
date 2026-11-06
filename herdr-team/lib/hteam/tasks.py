@@ -65,7 +65,7 @@ def checked_owns(cfg, spec) -> list[str]:
 
 
 def _spec_file(p, tid: str, n: int):
-    return p.task_dir(tid) / f"r{n}-work.md"
+    return p.work_file(tid, n)
 
 
 FINISHED = frozenset({"done", "awaiting_user", "dropped"})

@@ -16,7 +16,7 @@ REVIEW_FILE: {{review_file}}
 - 사양: `{{spec_path}}`
 - 직무 문서: `{{role_doc}}`
 - 워커 보고서: `{{report}}`
-- 이전 리뷰: {{prior}}
+- 이전 리뷰: {{prior}}{{request}}
 
 ## 리뷰 대상 커밋
 {{commits}}
@@ -30,7 +30,7 @@ diff 는 `git show <sha>` 로 본다.
 1. 사양의 Acceptance 를 실제로 충족하는가. 보고서의 검증 출력을 그대로 믿지 말고 직접 실행해 본다.
 2. 직무 문서의 규칙과 품질 기준을 지키는가.
 3. 버그, 보안, 회귀 위험.
-4. 수정 라운드면 이전 리뷰의 지적을 모두 다뤘는가.
+4. 수정 라운드면 이전 리뷰의 지적을 모두 다뤘는가.{{request_rule}}
 
 ## REVIEW_FILE 형식
 # {{task_id}} r{{round}} 리뷰

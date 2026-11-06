@@ -94,6 +94,34 @@ class ReviewTest(ReviewCase):
         code, out = self.hteam("review-finish", "T-001")
         self.assertEqual((code, out["status"]), (0, "changes"), out)
 
+    def test_review_prompt_shows_the_round_request(self):
+        # 이번 라운드의 요청(코디네이터 메모·사용자 요청)은 작업 사양에만 있었다. 리뷰어도 보고 그 요청으로 판정한다
+        self.reviewing()
+        self.act_review("T-001", "REQUEST_CHANGES", text="## 지적 사항\n- [P1] src/app.py:1 — 틀림. 고친다.\n")
+        self.assertEqual(self.hteam("review-finish", "T-001")[0], 0)
+        first = (self.state_dir / "tasks/T-001/r1-review-a1.md").read_text()
+        self.assertNotIn("이번 라운드", first)  # 요청이 없는 라운드는 그대로다
+        self.assertIn("4. 수정 라운드면 이전 리뷰의 지적을 모두 다뤘는가.\n\n## REVIEW_FILE 형식", first)
+        code, out = self.hteam("fix", "T-001", "--note=버튼 색을 파랑으로")
+        self.assertEqual(code, 0, out)
+        self.act_work("T-001", {"src/app.py": "print('blue')\n"})
+        self.assertEqual(self.hteam("review", "T-001")[0], 0)
+        prompt = (self.state_dir / "tasks/T-001/r2-review-a1.md").read_text()
+        self.assertIn("- 이번 라운드 코디네이터 메모: 버튼 색을 파랑으로\n"
+                      "- 이번 라운드 작업 사양: `.herdr-team/state/tasks/T-001/r2-work.md`\n", prompt)
+        self.assertIn("5. 이번 라운드 요청(위 코디네이터 메모)을 반영했는가. 요청이 사양의 Acceptance 를 바꾸면 요청을 "
+                      "따른 쪽을 맞는 것으로 본다.", prompt)
+        self.assertNotIn("사용자 요청", prompt)
+        self.assertTrue((self.proj / ".herdr-team/state/tasks/T-001/r2-work.md").is_file())
+        from hteam import compose, config, specs
+        st = self.task_state("T-001")
+        rd = {**st["rounds"][-1], "from_user": True, "note": "글꼴을 키운다"}
+        text = compose.review_prompt(self.p, config.load(self.p), specs.load(self.p, "T-001"), rd,
+                                     st["rounds"][-1]["reviews"][0])
+        self.assertIn("- 이번 라운드 사용자 요청: 글꼴을 키운다\n", text)
+        self.assertIn("5. 이번 라운드 요청(위 사용자 요청)을 반영했는가.", text)
+        self.assertNotIn("코디네이터 메모", text)
+
     def test_codex_worker_gets_claude_reviewer(self):
         self.write_spec("T-001", front={"worker": "codex"})
         state.create(self.p, "T-001", "developer")
@@ -651,6 +679,38 @@ class RecoveryTest(ReviewCase):
         code, out = self.finish(proc)
         self.assertEqual((code, out.get("error", {}).get("code")), (3, "attempt_missing"), out)
         self.assertEqual(self.task_state("T-001")["status"], "working")
+
+    def test_recorded_recovery_of_a_finished_reviewer_gives_review_finish(self):
+        # 리뷰 Dispatch 를 기록한 뒤 reviewing 전이 전에 죽었고 리뷰어가 먼저 끝났다. 그 worker_done 의 next 는 review 라
+        # 코디네이터가 이미 ack 했다. 복구가 next 를 주지 않으면 새 메시지 없이 wait 시간 제한까지 멈춘다
+        self.reviewing()
+        with state.edit(self.p, "T-001") as st:
+            state.move(st, "working", "test")
+        self.act_review("T-001", "APPROVE")
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual((code, out.get("mode"), out.get("status")), (0, "recorded", "reviewing"), out)
+        self.assertEqual(out.get("next"), [".herdr-team/bin/hteam", "review-finish", "T-001"], out)
+        self.assertEqual(self.hteam("review-finish", "T-001")[1].get("status"), "approved")
+
+    def test_recorded_recovery_of_a_running_reviewer_gives_no_next(self):
+        self.reviewing()
+        with state.edit(self.p, "T-001") as st:
+            state.move(st, "working", "test")
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual((code, out.get("mode"), out.get("status")), (0, "recorded", "reviewing"), out)
+        self.assertNotIn("next", out)  # 리뷰어가 아직 active 다: 그 worker_done 이 review-finish 를 준다
+
+    def test_recorded_recovery_without_worker_list_warns(self):
+        self.reviewing()
+        with state.edit(self.p, "T-001") as st:
+            state.move(st, "working", "test")
+        fake = self.tmp / "horch-fails"
+        fake.write_text('import json\nprint(json.dumps({"ok": False, "error": {"code": "not_owner", "message": "x", '
+                        '"hint": ""}}))\nraise SystemExit(1)\n')
+        code, out = self.hteam("review", "T-001", env={"HERDR_ORCH_BIN": str(fake)})
+        self.assertEqual((code, out.get("status"), out.get("next")), (0, "reviewing", None), out)  # 멈추지 않는다
+        self.assertIn("상태를 읽지 못했다", out["warnings"][0])
+        self.assertEqual(self.task_state("T-001")["status"], "reviewing")
 
     def test_dead_after_launch_adopts(self):
         self.worked()

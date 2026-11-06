@@ -31,7 +31,8 @@ def _regex(pattern: str) -> re.Pattern:
         else:
             out.append(re.escape(pattern[i]))
             i += 1
-    return re.compile("".join(out) + r"\Z")
+    # DOTALL: `**` 의 `.` 이 경로 안 줄바꿈도 맞춘다(git pathspec 처럼. `[^/]` 는 이미 맞춘다)
+    return re.compile("".join(out) + r"\Z", re.DOTALL)
 
 
 def matches(path: str, pattern: str) -> bool:

@@ -475,8 +475,7 @@ def next_step(cfg, st: dict, by_task: dict[str, dict], have_rows: bool,
         row = latest(att.get("horch_task"))
         if row is None:
             return None, no_rows
-        if row["state"] in ("settled", "retained", "abandoned", "released", "launch_failed") \
-                or row.get("verdict") in ("exited", "lost"):
+        if dispatch.review_ended(row):
             return H("review-finish", tid), None
         if row.get("attention") == "idle":
             return None, f"리뷰어가 done 없이 턴을 마쳤다. {hc} send --to dispatch:{row['id']} 로 done 을 요구한다"
