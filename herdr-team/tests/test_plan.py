@@ -811,9 +811,52 @@ class GitioTest(TeamCase):
                 mock.patch("hteam.gitio.subprocess.run", side_effect=git):
             with self.assertRaises(HteamError) as cm:
                 gitio.commit_paths(self.proj, ["a.txt"], "a")
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len([c for c in calls if "add" in c]), 1)  # 잠금 파일 조회(rev-parse)도 실패해 영어 문구만 본다
         self.assertFalse((cm.exception.data or {}).get("index_lock"))
         self.assertNotIn("다른 git 명령", cm.exception.hint)
+
+    def test_translated_index_lock_message_is_retried_while_the_lock_file_exists(self):
+        # gettext 를 켠 git 은 로캘에 따라 `File exists` 를 번역한다. 실패 직후 잠금 파일이 있으면 그래도 기다린다
+        real, adds = subprocess.run, []
+        lock = self.proj / ".git" / "index.lock"
+
+        def german(argv, **kw):
+            if "add" in argv:
+                adds.append(argv)
+                if len(adds) == 3:  # 두 번 실패한 뒤 다른 git 이 잠금을 풀었다(확인 뒤라 경쟁이 없다)
+                    lock.unlink()
+            proc = real(argv, **kw)
+            if proc.returncode != 0 and "File exists" in (proc.stderr or ""):
+                proc.stderr = (f"fatal: Konnte '{lock}' nicht erstellen: Die Datei existiert bereits.\n\n"
+                               "Ein anderer Git-Prozess scheint in diesem Repository ausgeführt zu werden.\n")
+            return proc
+
+        (self.proj / "a.txt").write_text("a\n")
+        lock.write_text("")
+        with mock.patch.dict(os.environ, {**self.env, "HTEAM_GIT_LOCK_WAIT": "10"}, clear=True), \
+                mock.patch("hteam.gitio.subprocess.run", side_effect=german):
+            sha = gitio.commit_paths(self.proj, ["a.txt"], "a")
+        self.assertEqual(len(adds), 3)
+        self.assertEqual(gitio.commit_files(self.proj, sha), ["a.txt"])
+
+    def test_index_lock_error_without_the_lock_file_is_not_retried(self):
+        # 번역됐든 아니든 `File exists` 가 없고 실패 직후 잠금 파일도 없으면(권한 오류 등) 기다리지 않는다
+        real, adds = subprocess.run, []
+
+        def git(argv, **kw):
+            if "add" in argv:
+                adds.append(argv)
+                return subprocess.CompletedProcess(argv, 128, "", "fatal: Unable to create '/x/.git/index.lock': "
+                                                                 "Permission denied\n")
+            return real(argv, **kw)  # 잠금 파일 조회는 실제 git 이 한다
+
+        (self.proj / "a.txt").write_text("a\n")
+        with mock.patch.dict(os.environ, {**self.env, "HTEAM_GIT_LOCK_WAIT": "5"}, clear=True), \
+                mock.patch("hteam.gitio.subprocess.run", side_effect=git):
+            with self.assertRaises(HteamError) as cm:
+                gitio.commit_paths(self.proj, ["a.txt"], "a")
+        self.assertEqual(len(adds), 1)
+        self.assertFalse((cm.exception.data or {}).get("index_lock"))
 
     def test_commit_paths_shares_one_lock_deadline(self):
         # add 와 commit 이 마감 하나를 나눠 쓴다. 따로 쓰면 add 가 쓴 시간 뒤로 HTEAM_GIT_LOCK_WAIT 를 다시 기다린다

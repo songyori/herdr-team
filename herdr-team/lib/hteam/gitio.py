@@ -43,12 +43,26 @@ def run(root, *args: str, check: bool = True, input: str | bytes | None = None,
         if raw:
             err = err.decode("utf-8", "replace")
         # index.lock 은 git 의 긴 안내문 앞에 나와 300자로 자르면 사라질 수 있다. 자르기 전에 표시한다(_wait_index).
-        # 다른 git 이 쥐고 있을 때(`Unable to create '…/index.lock': File exists.`)만 표시한다. 권한 오류 등은 기다려도
-        # 풀리지 않는다
-        held = "index.lock" in err and "File exists" in err
+        # 다른 git 이 쥐고 있을 때(`Unable to create '…/index.lock': File exists.` 이거나 실패 직후 잠금 파일이 있을 때)만
+        # 표시한다. 권한 오류 등은 기다려도 풀리지 않는다. gettext 를 켠 git 은 로캘에 따라 그 문구를 번역하므로 잠금
+        # 파일을 직접 본다(LC_ALL=C 로 부르지 않는다: git commit 이 돌리는 사용자 훅이 그 로캘을 물려받는다)
+        held = "index.lock" in err and ("File exists" in err or _index_locked(root))
         raise HteamError("git_failed", f"git {_name(args)} 실패: {err.strip()[-300:]}", FAIL,
                          data={"index_lock": True} if held else None)
     return proc
+
+
+def _index_locked(root) -> bool:
+    """root 의 index 잠금 파일(`git rev-parse --git-path index` + `.lock`: 일반 저장소·worktree·GIT_INDEX_FILE 을 git 이
+    푼다)이 지금 있나. 실패한 git 뒤에만 부른다. 조회가 실패하면 False(부르는 쪽은 영어 문구로만 가른다). 번역된
+    로캘에서 실패와 이 확인 사이에 다른 git 이 잠금을 풀면 기다리지 않고 git_failed 다(드물고 안전한 쪽이다)."""
+    try:
+        proc = run(root, "rev-parse", "--git-path", "index", check=False, raw=True)
+    except HteamError:
+        return False
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return False
+    return os.path.lexists(os.path.join(os.fsdecode(root), _out_line(proc.stdout) + ".lock"))  # 상대 경로는 root 기준
 
 
 def _zb(data: bytes) -> list[str]:
