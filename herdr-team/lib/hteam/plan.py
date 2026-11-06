@@ -184,12 +184,32 @@ def _checked(cfg, tasks: list[dict]) -> list[list[str]]:
 
 
 def check(p, cfg, path: Path) -> dict:
+    """읽기 전용. 파일 검사에 더해 이미 적용한 계획(plan.json)이 있으면 apply --append 가 받아들일지도 본다.
+    그래서 기획 태스크의 사전 검사가 승인 전에 막는다(승인 뒤에는 고칠 라운드가 없다)."""
     tasks = read_tasks(path)
-    return {"tasks": len(tasks), "groups": _checked(cfg, tasks)}
+    groups = _checked(cfg, tasks)
+    plan = read_json(p.plan_file, None)
+    if plan is not None:
+        _keep_applied(plan["tasks"], tasks)
+    return {"tasks": len(tasks), "groups": groups}
 
 
 def digest(task: dict) -> str:
     return hashlib.sha1(json.dumps(task, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def _keep_applied(known: dict, tasks: list[dict]) -> dict[str, dict]:
+    """이미 적용한 key(known: plan.json 의 tasks)가 tasks 에 같은 내용으로 남아 있는가(읽기 전용). 빠졌거나 바뀌면
+    plan_changed. tasks 는 _checked 를 통과한 것이다. key → 태스크를 돌려준다."""
+    by_key = {t["key"]: t for t in tasks}
+    for key, rec in known.items():
+        if key not in by_key:
+            raise HteamError("plan_changed", f"이미 적용한 {key} 가 tasks.toml 에서 빠졌다", USAGE,
+                             "적용한 태스크는 tasks.toml 에 그대로 둔다")
+        if digest(by_key[key]) != rec["digest"]:
+            raise HteamError("plan_changed", f"이미 적용한 {key} 의 내용이 바뀌었다", USAGE,
+                             "바꾸려면 새 key 로 더하거나 수정 태스크를 만든다")
+    return by_key
 
 
 def _body(t: dict) -> str:
@@ -326,14 +346,7 @@ def apply(p, cfg, append: bool) -> dict:
         elif not append and resumed is None:
             raise HteamError("plan_applied", "이미 plan apply 했다", CONFLICT, "새 태스크만 더하려면 plan apply --append")
         known: dict = plan["tasks"]
-        by_key = {t["key"]: t for t in tasks}
-        for key, rec in known.items():
-            if key not in by_key:
-                raise HteamError("plan_changed", f"이미 적용한 {key} 가 tasks.toml 에서 빠졌다", USAGE,
-                                 "적용한 태스크는 tasks.toml 에 그대로 둔다")
-            if digest(by_key[key]) != rec["digest"]:
-                raise HteamError("plan_changed", f"이미 적용한 {key} 의 내용이 바뀌었다", USAGE,
-                                 "바꾸려면 새 key 로 더하거나 수정 태스크를 만든다")
+        by_key = _keep_applied(known, tasks)
         for key, rec in known.items():  # 앞선 apply 가 상태를 다 만들지 못하고 멈췄으면 여기서 채운다
             state.create(p, rec["id"], by_key[key]["role"])
         fresh = [t for t in tasks if t["key"] not in known]

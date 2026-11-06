@@ -228,6 +228,27 @@ class PlanApplyTest(TeamCase):
         code, out = self.hteam("plan", "apply", "--append")
         self.assertEqual((code, out["error"]["code"]), (2, "plan_changed"))
 
+    def test_check_refuses_what_append_would_refuse(self):
+        # 기획 승인 전에 막는다: 이미 적용한 key 를 바꾸거나 빼면 plan check(--file 도)가 apply --append 와 같이 거부한다
+        base = [task("a"), task("b", "tester", ["tests/**"])]
+        self.write_plan(base)
+        self.assertEqual(self.hteam("plan", "apply")[0], 0)
+        self.write_plan(base + [task("c", owns=["src/c/**"], deps=["a"])])
+        code, out = self.hteam("plan", "check", as_=None)
+        self.assertEqual((code, out.get("tasks")), (0, 3), out)
+        alt = self.proj / "alt.toml"
+        for changed, needle in (([task("a", title="바뀜"), base[1]], "이미 적용한 a 의 내용이 바뀌었다"),
+                                ([base[1]], "이미 적용한 a 가 tasks.toml 에서 빠졌다")):
+            self.write_plan(changed)
+            alt.write_text(toml(changed), encoding="utf-8")
+            for args in ((), ("--file", "alt.toml")):
+                code, out = self.hteam("plan", "check", *args, as_=None)
+                self.assertEqual((code, out["error"]["code"]), (2, "plan_changed"), (args, out))
+                self.assertIn(needle, out["error"]["message"])
+            code, out = self.hteam("plan", "apply", "--append")
+            self.assertEqual((code, out["error"]["code"], out["error"]["message"]),
+                             (2, "plan_changed", needle), out)
+
     def test_missing_plan_json_with_planned_tasks(self):
         self.write_plan([task("a")])
         self.assertEqual(self.hteam("plan", "apply")[0], 0)

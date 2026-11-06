@@ -170,6 +170,30 @@ class PrecheckTest(ReviewCase):
         self.act_work("T-001", files={"docs/planning/tasks.toml": bad})
         self.assert_changes("plan check 를 통과하지 못한다")
 
+    def applied_then_planner(self, rewritten) -> tuple[int, dict]:
+        """key a 를 plan apply 한 뒤(T-001) 기획 태스크 T-002 가 tasks.toml 을 rewritten(처음 내용)으로 바꾸고 review 한다."""
+        first = '[[task]]\nkey = "a"\nrole = "developer"\ntitle = "a 제목"\nowns = ["src/**"]\n' \
+                'target = "대상"\nchange = "바꿀 것"\nconstraints = "제약"\nacceptance = ["확인 1"]\n'
+        self.commit("docs/planning/tasks.toml", first, "기획 초안")
+        code, out = self.hteam("plan", "apply")
+        self.assertEqual((code, out.get("applied")), (0, [{"key": "a", "id": "T-001"}]), out)
+        self.started("T-002", "planner")
+        self.act_work("T-002", files={"docs/planning/tasks.toml": rewritten(first)})
+        return self.hteam("review", "T-002")
+
+    def test_planner_changing_applied_task_fails_precheck(self):
+        # 승인 뒤에는 plan apply --append 가 plan_changed 로 실패하고 fix 도 task_closed 라 승인 전에 막는다
+        code, out = self.applied_then_planner(lambda first: first.replace("a 제목", "바뀐 제목"))
+        self.assertEqual((code, out.get("status"), out.get("source")), (0, "changes", "hteam"), out)
+        self.assertTrue(any("plan check 를 통과하지 못한다: 이미 적용한 a 의 내용이 바뀌었다" in x
+                            for x in out["problems"]), out["problems"])
+
+    def test_planner_appending_tasks_passes_precheck(self):
+        more = '\n[[task]]\nkey = "b"\nrole = "tester"\ntitle = "b 제목"\nowns = ["tests/**"]\n' \
+               'depends_on = ["a"]\ntarget = "대상"\nchange = "바꿀 것"\nconstraints = "제약"\nacceptance = ["확인 1"]\n'
+        code, out = self.applied_then_planner(lambda first: first + more)
+        self.assertEqual((code, out.get("status")), (0, "reviewing"), out)
+
     def test_resume_after_precheck_commit(self):
         self.started()
         self.act_work("T-001", commit=False)

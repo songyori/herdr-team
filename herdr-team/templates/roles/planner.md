@@ -49,6 +49,7 @@ acceptance = ["…", "…"]       # 관찰할 수 있는 완료 기준
 ```
 
 - 텍스트 필드 안에 `## ` 로 시작하는 줄을 쓰지 않는다.
+- 이미 적용한(plan apply 한) `[[task]]` 는 key 와 내용을 그대로 둔다. 빼거나 고치지 않고 새 `[[task]]` 만 더한다(바꿀 일은 새 key 의 태스크로 만든다).
 - 끝내기 전에 `.herdr-team/bin/hteam plan check --file docs/planning/tasks.toml` 이 통과해야 한다(리뷰 사전 검사도 같은 검사를 한다).
 
 ## 하지 않는 것
