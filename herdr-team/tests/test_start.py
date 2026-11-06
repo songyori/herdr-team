@@ -8,7 +8,7 @@ import unittest
 from unittest import mock
 
 from tests.helpers import BASE_CONFIG, TeamCase
-from hteam import compose, config, dispatch, launch, procs, specs, state, tasks
+from hteam import compose, config, dispatch, horch, launch, procs, specs, state, tasks
 from hteam.errors import HteamError
 from hteam.paths import Project
 
@@ -851,6 +851,15 @@ class SameRoundTest(StartCase):
         self.assertEqual((code, out["error"]["code"]), (2, "owns_too_wide"))
         self.make_task("T-002", owns="src/auth/**")
         self.assertEqual(self.hteam("start", "T-002")[0], 0)
+
+
+class LeftRunningHintTest(TeamCase):
+    def test_closed_task_hint_is_runnable(self):
+        """태스크가 hteam 밖에서 닫힌 채 워커가 떴으면 직접 정리하라고 한다. 그 명령은 --home 까지 붙인 전체 명령이다."""
+        h = horch.Horch(self.horch_home)
+        exc = dispatch.left_running(HteamError("task_closed", "닫혔다", 3), {"task": "task-1", "dispatch": "dsp-1"}, h)
+        self.assertIn(f"--home {self.horch_home} worker-abandon --dispatch dsp-1 --kill", exc.hint)
+        self.assertIn(f"--home {self.horch_home} worker-release --dispatch dsp-1", exc.hint)
 
 
 if __name__ == "__main__":

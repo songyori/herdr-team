@@ -105,16 +105,18 @@ def owned(p, tid: str, pick, expect=None, after_save=None) -> Iterator[dict]:
         yield st
 
 
-def left_running(exc: HteamError, info: dict) -> HteamError:
+def left_running(exc: HteamError, info: dict, h) -> HteamError:
     """horch 워커가 이미 떴는데 실행 권한을 잃었다. 기록하지 않고(working 도 아님) 정리는 fix·drop 에 맡긴다.
 
     fix·drop 은 기록된 horch Task, 없으면 실행 키(제목)의 모든 Dispatch 를 horch 상태로 골라 정리한다. 이 실행자가
     살아 있는 동안 그 fix·drop 은 launching 으로 멈추고 마지막 전이(새 라운드·dropped)를 쓰지 않는다(tasks._closing).
-    그래서 태스크가 닫힌 채(done·dropped) 이 오류가 나는 일은 hteam 밖에서 상태를 바꾼 경우뿐이다. 그때는 직접 정리한다."""
+    그래서 태스크가 닫힌 채(done·dropped) 이 오류가 나는 일은 hteam 밖에서 상태를 바꾼 경우뿐이다. 그때는 직접 정리한다.
+    힌트의 horch 명령은 그대로 실행할 수 있게 h.cmd()(절대 경로와 --home)로 만든다."""
     if exc.code == "task_closed":
-        did = info.get("dispatch") or info.get("task")
-        exc.hint = (f"horch 워커({did})가 이미 떴지만 태스크가 이미 닫혀 기록하지 않았다. horch worker-abandon --kill 과 "
-                    "worker-release 로 직접 정리한다")
+        did, cmd = info.get("dispatch") or "<Dispatch>", h.cmd()
+        exc.hint = (f"horch 워커({info.get('dispatch') or info.get('task')})가 이미 떴지만 태스크가 이미 닫혀 기록하지 "
+                    f"않았다. 직접 정리한다: {cmd} worker-abandon --dispatch {did} --kill 뒤 {cmd} worker-release "
+                    f"--dispatch {did}")
     else:
         exc.hint = ("horch 워커가 이미 떴지만 working 으로 두지 않았다. 실행 키를 취소한 fix·drop 을 다시 부르면 horch "
                     "상태로 그 Dispatch 를 찾아 정리한다")
@@ -162,7 +164,7 @@ def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str |
             with owned(p, tid, pick, expect) as st:
                 pick(st).update(horch_task=row["task"], dispatch=row["id"], error=None)
         except HteamError as exc:
-            left_running(exc, {"task": row["task"], "dispatch": row["id"], "state": row["state"]})
+            left_running(exc, {"task": row["task"], "dispatch": row["id"], "state": row["state"]}, h)
             raise
         # 이어 붙인 Dispatch 의 실제 에이전트·모델을 돌려준다. 호출자가 라운드·시도 기록을 그것에 맞춘다
         return {"mode": "adopt", "horch_task": row["task"], "dispatch": row["id"], "terminal": row.get("terminal"),
@@ -191,7 +193,7 @@ def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str |
                 s["error"] = {"exit": code, **(data.get("error") or {})}
     except HteamError as exc:
         if ok:
-            left_running(exc, data)
+            left_running(exc, data, h)
         raise
     if not ok:
         err = data.get("error") or {}

@@ -254,14 +254,15 @@ def _dict(value) -> dict:
     return value if isinstance(value, dict) else {}
 
 
-def attention(p, rows: list[dict], seen: dict, grace: float, *, states: list[dict] | None = None) -> list[dict]:
+def attention(p, rows: list[dict], grace: float, *, states: list[dict] | None = None,
+              horch_cmd: str = "horch") -> list[dict]:
     """메시지 없이도 손볼 행(설계 8.2): grace 초 넘게 이어진 no_status, launch_failed. 끝나지 않은 태스크의 현재 라운드·
     현재 시도 Dispatch 만 본다.
 
     state/attention.json = {"reported": {Dispatch: 알린 단어}, "since": {Dispatch: no_status 를 처음 본 시각(epoch)}}.
     한 번 알린 것은 다시 알리지 않는다. 처음 본 시각을 파일에 남기므로 wait 호출이 바뀌어도(메시지가 계속 와서 wait 가
     자주 돌아와도) 이어 센다. no_status 가 풀리면 그 시각을 지운다(다시 no_status 가 되면 처음부터 센다).
-    seen 은 같은 처음 본 시각의 사본이다(호출자가 볼 수 있게 채운다)."""
+    horch_cmd: 힌트에 넣을 horch 명령(--home 포함, Horch.cmd)."""
     if states is None:
         states = state.all_states(p)
     p.ensure_state()
@@ -287,7 +288,8 @@ def attention(p, rows: list[dict], seen: dict, grace: float, *, states: list[dic
                         first = since[did] = now
                     if now - first < grace:
                         continue
-                    hint = "시작 확인 창에서 멈췄을 수 있다. worker-show 로 화면을 보고 메인에 질문으로 올린다(키를 누르지 않는다)"
+                    hint = (f"시작 확인 창에서 멈췄을 수 있다. `{horch_cmd} worker-show --dispatch {did} --lines 80` 으로 "
+                            "화면을 보고 메인에 질문으로 올린다(키를 누르지 않는다)")
                     item = {**loc, "dispatch": did, "attention": word, "next": None, "horch_next": row.get("next"),
                             "hint": hint}
                 else:
@@ -299,8 +301,6 @@ def attention(p, rows: list[dict], seen: dict, grace: float, *, states: list[dic
         since = {d: at for d, at in since.items() if d in watching}
         if (reported, since) != before:
             write_json(p.attention, {"reported": reported, "since": since})
-    seen.clear()
-    seen.update(since)
     return found
 
 
@@ -312,7 +312,7 @@ def wait(p, ack: int | None, total: float) -> dict:
     h = Horch(p.horch_home)
     chunk, grace = env_float("HTEAM_WAIT_CHUNK", 60.0), env_float("HTEAM_NO_STATUS_GRACE", 60.0)
     deadline = time.monotonic() + total
-    first_ack, seen = ack, {}
+    first_ack = ack
     while True:
         left = deadline - time.monotonic()
         if left <= 0 and first_ack is None:
@@ -334,11 +334,11 @@ def wait(p, ack: int | None, total: float) -> dict:
             out = {"reason": "message", "delivery": data["delivery"], "count": data["count"],
                    "messages": [annotate(p, m, rows, cmd, cfg=cfg, states=states) for m in data["messages"]],
                    "hint": f"모두 처리한 뒤 `{SHIM} wait --ack {data['delivery']}` 를 백그라운드로 다시 띄운다"}
-            found = attention(p, rows, seen, grace, states=states)
+            found = attention(p, rows, grace, states=states, horch_cmd=cmd)
             if found:
                 out["attention"] = found
             return out
-        found = attention(p, rows, seen, grace, states=states)
+        found = attention(p, rows, grace, states=states, horch_cmd=h.cmd())
         if found:
             return {"reason": "attention", "delivery": None, "count": 0, "messages": [], "attention": found,
                     "hint": f"행마다 hint·next 를 따른 뒤 `{SHIM} wait` 를 백그라운드로 다시 띄운다"}

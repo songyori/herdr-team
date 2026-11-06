@@ -97,6 +97,8 @@ class WaitTest(CoordCase):
         out = self.wait()
         self.assertEqual(out["reason"], "attention")
         self.assertEqual((out["attention"][0]["attention"], out["attention"][0]["task"]), ("no_status", "T-001"))
+        did = out["attention"][0]["dispatch"]
+        self.assertIn(f"--home {self.horch_home} worker-show --dispatch {did}", out["attention"][0]["hint"])
         self.assertEqual(self.wait(timeout="0.8")["reason"], "timeout")  # 이미 알렸다
         self.write_spec("T-002", "tester")
         state.create(self.p, "T-002", "tester")

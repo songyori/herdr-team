@@ -9,7 +9,7 @@ from . import compose, config, dispatch, gitio, plan, procs, roles, specs, state
 from .errors import CONFLICT, FAIL, USAGE, HteamError
 from .globs import any_overlap, within
 from .horch import Horch
-from .paths import find_project
+from .paths import SHIM, find_project
 from .util import die_at, write_atomic
 
 
@@ -190,7 +190,7 @@ def run_work(p, cfg, h, tid: str) -> dict:
             state.move(st, "working", "launched", dispatch=res["dispatch"])
             rd = st["rounds"][-1]
     except HteamError as exc:
-        dispatch.left_running(exc, res)
+        dispatch.left_running(exc, res, h)
         raise
     return {"task": tid, "round": rd["round"], "status": "working", "agent": rd["agent"], "model": rd["model"],
             "effort": rd["effort"], **res}
@@ -473,15 +473,16 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
     return run_work(p, cfg, h, tid)
 
 
-def _live_error(tid: str, slot: dict, row: dict) -> HteamError:
+def _live_error(tid: str, slot: dict, row: dict, horch_cmd: str) -> HteamError:
+    """살아 있는 워커 때문에 accept 하지 않는다. 힌트의 horch 명령은 그대로 실행할 수 있다(horch_cmd = Horch.cmd())."""
     did = row["id"]
     if row["state"] == "launching":
         return HteamError("launching", f"{tid} 의 Dispatch {did}({slot['title']})가 아직 launching 이다", CONFLICT,
                           "끝난 뒤 다시 한다", data={"dispatch": did})
     return HteamError("worker_active", f"{tid} 의 Dispatch {did}({slot['title']})가 아직 active 다. 살아 있는 워커가 "
                       "파일을 고칠 수 있어 owns 잠금을 풀지 않는다", CONFLICT,
-                      f"워커를 끝낸 뒤 다시 한다: horch worker-abandon --dispatch {did} --kill 뒤 horch worker-release "
-                      f"--dispatch {did}. 태스크를 버리려면 hteam drop {tid} --force", data={"dispatch": did})
+                      f"워커를 끝낸 뒤 다시 한다: {horch_cmd} worker-abandon --dispatch {did} --kill 뒤 {horch_cmd} "
+                      f"worker-release --dispatch {did}. 태스크를 버리려면 {SHIM} drop {tid} --force", data={"dispatch": did})
 
 
 def accept(p, tid: str) -> dict:
@@ -505,7 +506,7 @@ def accept(p, tid: str) -> dict:
     for slot in _slots(st):
         for row in dispatch.slot_rows(rows, slot):
             if row["state"] in ("launching", "active"):
-                raise _live_error(tid, slot, row)
+                raise _live_error(tid, slot, row, h.cmd())
     warnings: list[str] = []
     slot = work_slot(st)
     cleaned = bool(slot.get("cleaned"))

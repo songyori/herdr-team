@@ -213,7 +213,7 @@ def _launch_attempt(p, cfg, h, tid: str, k: int) -> dict:
                 pick(cur).update(agent=res["agent"], model=res["model"], effort=res["effort"])
             state.move(cur, "reviewing", "review", attempt=k, dispatch=res["dispatch"])
     except HteamError as exc:
-        dispatch.left_running(exc, res)
+        dispatch.left_running(exc, res, h)
         raise
     out = {"task": tid, "round": rd["round"], "attempt": k, "status": "reviewing", "reviewer": att["agent"], **res}
     if res["mode"] == "adopt" and res.get("state") in ("settled", "retained", "released", "abandoned"):
