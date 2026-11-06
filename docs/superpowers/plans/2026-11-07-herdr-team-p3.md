@@ -5550,20 +5550,31 @@ Expected: `spec:`·`[plan] apply`·`[T-xxx] …`·`[T-xxx] review rN: …` 커�
 
 사용자 결정 대기: Q1. A(격리 코어 확인)를 허락받았을 때만 한다. B 면 이 단계를 건너뛰고 15.4 에 "확인하지 않음" 과 영향을 적는다. C 면 사용자가 다음 `hc update` 전후로 `hc ls --all --json` 을 남겨 주면 같은 비교를 한다.
 
+이 블록은 **한 번의 셸 실행으로 통째로** 돌린다(셸 상태는 실행 사이에 남지 않는다). `HC_SESSION` 을 `export` 하지 않고 격리 코어를 부르는 모든 `hc` 앞에 `HC_SESSION="$ISO"` 를 붙인다. 이 접두사가 빠진 `hc server restart`·`hc server stop` 은 사용자 core 를 멈추므로 절대 쓰지 않는다. 격리 코어의 `core.id`·`pid` 가 사용자 core 와 다를 때만 진행한다.
+
 ```bash
-export HC_SESSION=hq3   # 짧은 이름(소켓 경로 길이 제한). 사용자 core 와 다른 격리 코어다
-hc server status --json            # 격리 코어의 core.id 가 사용자 core 와 다른지 본다
-A=$(hc run --bg --json --no-notify --name iso-a -- sleep 600 | python3 -c 'import json,sys; print(json.load(sys.stdin)["address"])')
-B=$(hc run --bg --json --no-notify --name iso-b -- sleep 600 | python3 -c 'import json,sys; print(json.load(sys.stdin)["address"])')
-hc kill "$B" --json; hc rm "$B" --json
-hc server restart --json
-C=$(hc run --bg --json --no-notify --name iso-c -- sleep 600 | python3 -c 'import json,sys; print(json.load(sys.stdin)["address"])')
-hc ls --all --json
+set -u
+ISO=hq3   # 짧은 이름(소켓 경로 길이 제한). 사용자 core 와 다른 격리 코어다
+core() { python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["core"]["id"], d["pid"], d["uptime_ms"])'; }
+USER_BEFORE=$(hc server status --json | core)
+ISO_INFO=$(HC_SESSION="$ISO" hc server status --json | core)
+echo "user=$USER_BEFORE iso=$ISO_INFO"
+set -- $USER_BEFORE; U_ID=$1; U_PID=$2
+set -- $ISO_INFO; I_ID=$1; I_PID=$2
+if [ -z "$I_ID" ] || [ "$I_ID" = "$U_ID" ] || [ "$I_PID" = "$U_PID" ]; then
+  echo "격리 코어가 아니다. 아무것도 하지 않고 멈춘다"; exit 1
+fi
+addr() { python3 -c 'import json,sys; print(json.load(sys.stdin)["address"])'; }
+A=$(HC_SESSION="$ISO" hc run --bg --json --no-notify --name iso-a -- sleep 600 | addr)
+B=$(HC_SESSION="$ISO" hc run --bg --json --no-notify --name iso-b -- sleep 600 | addr)
+HC_SESSION="$ISO" hc kill "$B" --json; HC_SESSION="$ISO" hc rm "$B" --json
+HC_SESSION="$ISO" hc server restart --json
+C=$(HC_SESSION="$ISO" hc run --bg --json --no-notify --name iso-c -- sleep 600 | addr)
+HC_SESSION="$ISO" hc ls --all --json
 echo "A=$A B(지움)=$B C(재시작 뒤)=$C"
-for t in "$A" "$C"; do hc kill "$t" --json; hc rm "$t" --json; done
-hc server stop --json              # 격리 코어만 멈춘다(Q1 의 허락 범위)
-unset HC_SESSION
-hc server status --json            # 사용자 core 가 그대로인지(같은 core.id, uptime 이 줄지 않았다)
+for t in "$A" "$C"; do HC_SESSION="$ISO" hc kill "$t" --json; HC_SESSION="$ISO" hc rm "$t" --json; done
+HC_SESSION="$ISO" hc server stop --json   # 격리 코어만 멈춘다(Q1 의 허락 범위)
+echo "user_after=$(hc server status --json | core)"   # 같은 core.id·pid, uptime 이 줄지 않았다
 ```
 
 Expected: C 가 B 와 같은 주소면 재사용한다(설계 7.1 의 `main_terminals` 를 다시 본다: 지운 메인 터미널 ID 가 재사용되면 다른 터미널의 `[main]` 글이 메인으로 보일 수 있다. 그때는 결함으로 메인에 알리고 사용자에게 묻는다). 다르면 재사용하지 않는다. 사용자 core 의 `core.id` 와 `uptime_ms` 가 Step 1 스냅숏 뒤로 이어진다(멈추지 않았다).
