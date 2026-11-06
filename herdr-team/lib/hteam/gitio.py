@@ -279,11 +279,16 @@ def is_ancestor(root, a: str, b: str) -> bool:
     return _yes_no(run(root, *args, check=False), args)
 
 
-def _wait_index(root, *args: str) -> None:
+def _lock_deadline() -> float:
+    return time.monotonic() + env_float("HTEAM_GIT_LOCK_WAIT", 10.0)
+
+
+def _wait_index(root, *args: str, deadline: float | None = None) -> None:
     """index 를 쓰는 git 명령. 같은 폴더의 다른 git(워커의 커밋)이 index.lock 을 쥔 순간이면 잠깐 기다렸다 다시 한다.
     잠금을 얻지 못해 실패한 add·commit·rm 은 아무것도 바꾸지 않았으므로 다시 해도 된다. HTEAM_GIT_LOCK_WAIT 초(기본 10)
-    안에 풀리지 않으면 git_failed 와 할 일을 알린다."""
-    deadline = time.monotonic() + env_float("HTEAM_GIT_LOCK_WAIT", 10.0)
+    안에 풀리지 않으면 git_failed 와 할 일을 알린다. deadline 을 주면 그 마감을 쓴다(여러 명령이 한 번의 대기를 나눠 쓴다)."""
+    if deadline is None:
+        deadline = _lock_deadline()
     while True:
         try:
             run(root, *args)
@@ -302,11 +307,12 @@ def commit_paths(root, paths: list[str], subject: str, body: str | None = None) 
     """경로 지정 커밋. 다른 워커가 스테이징한 파일을 담지 않는다. 경로의 `*?[` 가 glob 으로 읽히지 않게 literal 로 넘긴다.
     다른 git 이 index.lock 을 쥐고 있으면 잠깐 기다린다(_wait_index)."""
     named = [literal(p) for p in paths]
-    _wait_index(root, "add", "--", *named)
+    deadline = _lock_deadline()  # add 와 commit 이 마감 하나를 나눠 쓴다(합쳐 HTEAM_GIT_LOCK_WAIT 초)
+    _wait_index(root, "add", "--", *named, deadline=deadline)
     args = ["commit", "-q", "-m", subject]
     if body:
         args += ["-m", body]
-    _wait_index(root, *args, "--", *named)
+    _wait_index(root, *args, "--", *named, deadline=deadline)
     return head(root)
 
 

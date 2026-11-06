@@ -789,6 +789,23 @@ class GitioTest(TeamCase):
         self.assertIn("index.lock", cm.exception.hint)
         self.assertIn("직접 지우지 않는다", cm.exception.hint)
 
+    def test_commit_paths_shares_one_lock_deadline(self):
+        # add 와 commit 이 마감 하나를 나눠 쓴다. 따로 쓰면 add 가 쓴 시간 뒤로 HTEAM_GIT_LOCK_WAIT 를 다시 기다린다
+        clock = [0.0]
+        fake = mock.Mock(monotonic=lambda: clock[0], sleep=lambda s: clock.__setitem__(0, clock[0] + s))
+
+        def git(root, *args, **kw):
+            if args[0] == "add" and clock[0] >= 0.4:
+                return None
+            raise HteamError("git_failed", "git 실패: index.lock", data={"index_lock": True})
+
+        with mock.patch.dict(os.environ, {"HTEAM_GIT_LOCK_WAIT": "1"}), mock.patch.object(gitio, "time", fake), \
+                mock.patch.object(gitio, "run", side_effect=git):
+            with self.assertRaises(HteamError) as cm:
+                gitio.commit_paths(self.proj, ["a.txt"], "a")
+        self.assertTrue(cm.exception.data.get("index_lock"))
+        self.assertLess(clock[0], 1.3)  # 마감을 따로 쓰면 0.4 + 1 = 1.4 까지 기다린다
+
     def test_git_timeout_is_json_error(self):
         with mock.patch("hteam.gitio.subprocess.run", side_effect=subprocess.TimeoutExpired(["git"], 120)):
             with self.assertRaises(HteamError) as cm:

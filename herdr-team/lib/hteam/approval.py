@@ -576,6 +576,9 @@ def decide(p, oid: str, text: str | None) -> dict:
         other = _open_decision(data, but=b)
         if other is not None:
             raise _decision_pending(other)
+        # 적용 기록을 먼저 엄격히 읽는다. 손상이면 결정을 기록하거나 fix·accept 하기 전에 bad_side_file 로 멈춘다
+        # (끝의 mark_applied 에서야 멈추면 결정만 하고 applied 를 적지 못한다)
+        outbox.applied_ids(p)
         replayed = b.get("decision") is not None
         if not replayed:
             b["decision"] = _compute(p, cfg, b, _decision_input(text, b))

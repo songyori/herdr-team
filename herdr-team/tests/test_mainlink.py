@@ -169,6 +169,8 @@ class AppliedRecordTest(LinkCase):
         info = coord.annotate(self.p, msg, [], "horch")["hteam"]
         self.assertEqual((info["kind"], info["reply_to"], info["duplicate"]), ("main", oid, None))
         self.assertIn("이미 적용했는지 모른다", info["hint"])
+        # 일괄 승인 답이어도 design_review 가 붙지 않는다. 손으로 반영(accept·fix)하지 않게 분명히 말한다
+        self.assertIn("이 답을 처리하지 않고 applied 도 적지 않는다", info["hint"])
 
 
 class AskUserTest(LinkCase):

@@ -211,6 +211,9 @@ class PrecheckTest(ReviewCase):
         code, out = self.hteam("review", "T-003")
         self.assertEqual((code, out["error"]["code"]), (3, "plan_incomplete"), out)
         self.assertIn("같은 review 를 다시 한다", out["error"]["hint"])
+        # 순서가 분명하다: plan apply 를 먼저 끝낸 뒤 review
+        hint = out["error"]["hint"]
+        self.assertLess(hint.index(".herdr-team/bin/hteam plan apply"), hint.index("같은 review 를 다시 한다"))
         self.assertEqual(self.task_state("T-003")["status"], "working")
         self.assertFalse((self.proj / "docs/reviews/T-003").exists())
 

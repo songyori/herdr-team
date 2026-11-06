@@ -608,6 +608,19 @@ class ApprovalDecisionTest(DecisionCase):
         self.assertEqual((code, out["error"]["code"]), (5, "not_coordinator"), out)
         self.assertNotIn("decision", self.record()["batches"][0])
 
+    def test_corrupt_applied_record_stops_before_deciding(self):
+        # 적용 기록을 읽지 못하면 결정을 기록하거나 fix·accept 하기 전에 멈춘다(끝의 mark_applied 에서야 멈추면 결정만 해 버린다)
+        self.task("T-001", "awaiting_user")
+        self.task("T-002", "awaiting_user")
+        self.assertEqual(self.review()[1].get("id"), "out-0001")
+        path = self.state_dir / "applied.json"
+        path.write_text("{broken", encoding="utf-8")
+        code, out = self.decide("out-0001", {"T-001": "버튼을 크게"})
+        self.assertEqual((code, out["error"]["code"]), (1, "bad_side_file"), out)
+        self.assertNotIn("decision", self.record()["batches"][0])
+        self.assertEqual(self.rounds("T-001", "T-002"), [("T-001", "awaiting_user", 1), ("T-002", "awaiting_user", 1)])
+        self.assertEqual(path.read_text(encoding="utf-8"), "{broken")
+
     def test_corrupt_decision_record_is_kept(self):
         self.task("T-001", "awaiting_user")
         self.review()

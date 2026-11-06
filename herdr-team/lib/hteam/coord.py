@@ -148,8 +148,9 @@ def _annotate_main(p, m: dict, rows: list[dict] | None, states: list[dict] | Non
             duplicate = oid in outbox.applied_ids(p)
         except HteamError as exc:  # 적용 기록을 읽지 못했다. 빈 기록으로 보면 적용한 답을 다시 처리한다
             info.update(reply_to=oid, duplicate=None,
-                        hint=f"{exc.message}. 이 답을 이미 적용했는지 모른다. `{SHIM} status` 로 태스크 상태를 보고 적용한 "
-                             "흔적이 있으면 다시 하지 않는다. 메인에 알려 사용자가 기록을 고치게 한다")
+                        hint=f"{exc.message}. 이 답을 이미 적용했는지 모른다. 이 답을 처리하지 않고 applied 도 적지 않는다"
+                             "(일괄 승인 답이어도 손으로 accept·fix 하지 않는다). 메인에 알려 사용자가 기록을 고친 뒤 메인이 "
+                             "같은 답을 다시 보내게 한다")
             return info
         info.update(reply_to=oid, duplicate=duplicate)
         info["hint"] = ("이미 적용한 답이다. ack 만 한다" if info["duplicate"]

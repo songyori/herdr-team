@@ -500,11 +500,11 @@ Python 3.11 이상, git(없으면 `git init` 과 빈 커밋을 권함), `horch` 
 
 | 훅 | 내용 |
 |---|---|
-| SessionStart | `state/plugin-root` 기록. 메인이면 "너는 메인이다, `/herdr-team:up` 을 실행한다" 와 열린 질문 수를 넣는다 |
+| SessionStart | `state/plugin-root` 기록. 메인이면 "너는 메인이다, `/herdr-team:up` 을 실행한다" 와 열린 질문 수를 넣는다. Herdr 터미널 밖(`$HC_TERMINAL_ID` 없음)이면 tell·watch·answer 가 되지 않으니 Herdr 안에서 다시 열라는 안내도 넣는다 |
 | PreToolUse (Edit·Write·MultiEdit·NotebookEdit) | 경로는 `..`·심볼릭 링크를 실제 경로로 푼 뒤 본다. 누구나 `state/` 를 고칠 수 없다. 코디네이터는 `.herdr-team/` 밖(프로젝트 밖 포함)을 고칠 수 없다. 메인은 `setup-mode` 가 아니면 제품 파일(`.herdr-team/`·`.claude/`·`docs/superpowers/`·`CLAUDE.md`·`AGENTS.md`·`.gitignore` 밖의 프로젝트 파일)을 고칠 수 없다. 프로젝트 밖은 메인에게 제품 파일이 아니다. 풀 수 없는 경로는 코디네이터·메인 모두 거부한다 |
 | PreToolUse (AskUserQuestion) | 코디네이터 → 거부하고 `hteam notify --json` 안내. planner·director 워커 → `hteam ask-user` 안내. 다른 워커 → `horch ask` 안내. 메인 → outbox 질문의 `context` 를 먼저 보여 주지 않았으면 그 질문에 한해 한 번 거부 |
 | PreToolUse (Bash) | 메인이 `horch` 를 직접 부르면 거부(`hteam tell` 안내) |
-| Stop | 메인이고 코디네이터가 있는데 watch 가 없으면 턴을 끝내지 못하게 하고 watch 를 다시 띄우라고 한다 |
+| Stop | 메인이고 코디네이터가 있는데 watch 가 없으면 턴을 끝내지 못하게 하고 watch 를 다시 띄우라고 한다. Herdr 터미널 밖(`$HC_TERMINAL_ID` 없음)의 메인은 watch 를 띄울 수 없어(exit 5) 막지 않는다 |
 
 Codex 워커·리뷰어에는 Claude 훅이 걸리지 않는다. 그쪽은 `AGENTS.md` 의 규칙(owns 밖 커밋 금지, 리뷰어는 리뷰 파일만)과 리뷰 사전 검사·변조 검사로 막는다. Bash 로 하는 파일 수정(`sed -i` 등)은 훅이 막지 못한다(리뷰가 잡는다).
 

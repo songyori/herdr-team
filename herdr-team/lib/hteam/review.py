@@ -94,7 +94,9 @@ def prechecks(p, cfg, st: dict, spec, commits: list[dict], files: list[str]) -> 
         except HteamError as exc:
             if exc.code == "plan_incomplete":  # 앞선 plan apply(코디네이터)가 남긴 일이다. 기획자가 고칠 수 없다
                 raise HteamError("plan_incomplete", f"{tid} 를 리뷰하기 전에 앞선 plan apply 를 정리해야 한다: {exc.message}",
-                                 CONFLICT, f"{exc.hint}. 메인에 알려 사용자가 정리한 뒤 같은 review 를 다시 한다",
+                                 CONFLICT, f"{exc.hint}. 순서: 메인에 알려 사용자가 사양을 정리한다 → 앞선 것과 같은 "
+                                 f"`{SHIM} plan apply`(앞선 것이 --append 였으면 --append)로 plan 을 끝낸다 → 그 뒤 같은 "
+                                 f"review 를 다시 한다(`{SHIM} review {tid}`)",
                                  data=exc.data) from None
             detail = "; ".join(exc.data.get("errors") or []) or exc.message
             found.append(f"`{plan.PLAN_FILE}` 가 plan check 를 통과하지 못한다: {detail}")

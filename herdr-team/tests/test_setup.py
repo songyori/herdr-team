@@ -435,7 +435,8 @@ class TemplateContractTest(unittest.TestCase):
         coord = (ROOT / "templates/coordinator.md").read_text(encoding="utf-8")
         self.assertIn("`start-ready` 의 `started` 행에도 `next`·`hint` 가 붙을 수 있다", coord)
         self.assertIn("exit 3 `plan_incomplete`", coord)
-        up = (ROOT / "skills/up/SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("`duplicate: null`", coord)
+        up =(ROOT / "skills/up/SKILL.md").read_text(encoding="utf-8")
         self.assertIn("`run_error`", up)
 
     def test_no_personal_paths_or_trust_all(self):
