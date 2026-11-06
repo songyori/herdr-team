@@ -122,11 +122,12 @@ def tracked_changes(root) -> list[str]:
 
 def index_blobs(root, paths: list[str]) -> dict[str, str | None]:
     """최상위 기준 경로(글자 그대로)의 인덱스 객체 ID(blob 과 견줄 수 있다). 인덱스에 없으면 None. 충돌 중이라 단계가
-    여럿이면 `단계:ID` 를 이어 붙인다(어느 blob 과도 같지 않다)."""
+    여럿이면 `단계:ID` 를 이어 붙인다(어느 blob 과도 같지 않다). 경로를 argv 로 넘기면 대량 변경에서 ARG_MAX 를
+    넘으므로 인덱스 전체(`:(top)`, root 가 하위 폴더여도 저장소 전체)를 한 번 읽어 거른다."""
     result: dict[str, str | None] = dict.fromkeys(paths)
     if not paths:
         return result
-    out = run(root, "ls-files", "-s", "-z", "--full-name", "--", *[f":(top,literal){x}" for x in paths]).stdout
+    out = run(root, "ls-files", "-s", "-z", "--full-name", "--", ":(top)").stdout
     found: dict[str, list[str]] = {}
     for entry in _z(out):
         meta, _, name = entry.partition("\t")

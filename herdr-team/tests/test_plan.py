@@ -585,6 +585,24 @@ class SubdirPlanTest(TeamCase):
 
 
 class GitioTest(TeamCase):
+    def test_index_blobs_reads_index_once_without_path_argv(self):
+        # 리뷰 기준점은 저장소 전체 변경을 거르기 전에 묻는다. 경로마다 argv 를 늘리면 대량 변경에서 ARG_MAX 를 넘는다
+        self.commit("src/a.py", "a\n", "a")
+        want = self.git("rev-parse", ":src/a.py").strip()
+        paths = ["src/a.py", "README.md"] + [f"bulk/{i:05d}/" + "x" * 80 for i in range(20000)]
+        calls, real = [], gitio.run
+
+        def spy(root, *args, **kw):
+            calls.append(args)
+            return real(root, *args, **kw)
+        with mock.patch.object(gitio, "run", spy):
+            got = gitio.index_blobs(self.proj, paths)
+        self.assertEqual(len(calls), 1)
+        self.assertLess(sum(len(a) for a in calls[0]), 200)
+        self.assertEqual((got["src/a.py"], len(got)), (want, len(paths)))
+        self.assertIsNotNone(got["README.md"])
+        self.assertIsNone(got[paths[-1]])
+
     def test_git_errors_are_not_answers(self):
         first = self.head()
         second = self.commit("x.txt", "x\n", "x")
