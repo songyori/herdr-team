@@ -630,6 +630,25 @@ orca-team 의 금지 규칙 10개를 옮긴다(이모지 장식, 왼쪽 강조 �
 
 (단계마다 채운다.)
 
+#### 1단계 (2026-11-06)
+
+환경: hc 0.1.18, Claude Code 2.1.318, codex-cli 0.166.0, Python 3.14. 버리는 시험 프로젝트("할 일 CLI", 파이썬 표준 라이브러리)를 새 space 에 만들었다. 이 저장소는 디렉터리 마켓플레이스로 시험 프로젝트 범위(project scope)에만 등록·설치했다. 디렉터리 소스라 Claude Code 는 설치 캐시가 아니라 저장소 폴더를 바로 읽었다(`CLAUDE_PLUGIN_ROOT`·`state/plugin-root` 가 저장소의 `herdr-team/`). 그래서 실행 중에 고친 결함이 다음 hteam 호출부터 바로 반영됐다. 메인·코디네이터·Claude 워커는 `--permission-mode=bypassPermissions` 로 돌았다(시험 프로젝트에서만).
+
+- init·doctor·scaffold·up·bind: doctor 통과(경고는 `chrome_devtools_mcp` 하나). scaffold 가 파일 11개를 만들었다. 4단계 표를 AskUserQuestion 한 번으로 승인받아 developer owns 에 `pyproject.toml`·`README.md` 를, `[agents.claude].args` 에 `--permission-mode=bypassPermissions` 를 넣었다(메인이 자격 증명 위험을 표에 적었다). `up --wait-run 180` 이 "팀" 탭(`tab_renamed: true`)에 `hteam.role=coordinator` 라벨로 코디네이터를 띄웠고, 코디네이터가 `bind` 로 Run 을 만들었다. 메인이 watch 를 백그라운드로 띄우고 `setup-done` 뒤 `chore: herdr-team 세팅` 을 커밋했다. Claude 폴더 신뢰 창은 메인에서 한 번 떴고 운영자가 넘겼다. 같은 폴더의 코디네이터·Claude 워커에는 다시 뜨지 않았다.
+- 기획 인터뷰 중계(ask-user → watch → AskUserQuestion → answer): 확인했다. 메인 `tell` → 코디네이터가 `task new`, `spec: T-001` 커밋, `start` → 기획자가 `ask-user` 로 저장 위치를 물음(`context` 없음) → 메인 watch 가 끝나 AskUserQuestion → 운영자가 추천안을 고름 → `answer` → 기획자가 `interview.md` 에 적고 `--ack`. tasks.toml 은 developer·tester 두 태스크(의존 없음, owns 분리)와 둘에 의존하는 통합 검증(tester) 하나였고 `plan check` 를 통과했다. 기획 리뷰어는 Codex pane 으로 팀 탭에 떴다.
+- 개발·테스트 병렬(start-ready, owns 잠금): 기획 accept 뒤 `plan apply` → `start-ready` 가 T-002(developer)·T-003(tester)을 동시에 띄웠다(`working` 둘, 팀 탭 pane 둘). owns 가 겹치지 않아 잠금 대기는 없었다. 통합 검증 T-004 는 둘이 done 된 뒤 `start-ready` 가 띄웠다.
+- Codex 리뷰 pane·review-finish·판정 커밋: 리뷰 다섯 번 모두 Codex pane(`--disable=hooks`)으로 팀 탭에 떴다. review-finish 가 `docs/reviews/T-xxx/rN.md` 와 `[T-xxx] review rN: …` 커밋을 남겼다. 병렬 커밋이 리뷰와 겹친 두 번(T-003 r1 리뷰 중 T-002 r2 커밋, T-002 r2 리뷰 중 T-003 의 리뷰 커밋)은 변조 검사가 진행 중 태스크와 `docs/reviews/**` 를 빼서 통과했다. 처음 보는 폴더라 첫 Codex 리뷰어에서 Codex 폴더 신뢰 창이 떴다(`--disable=hooks` 로도 사라지지 않는다). 운영자가 그 폴더만 신뢰("Trust and continue")로 넘겼고 그 뒤 리뷰어에는 뜨지 않았다.
+- 수정 라운드(fix → r2 → 리뷰): 두 갈래 모두 확인했다. 유도: 사용자 역할로 "T-002 r1 을 failed 로 끝내 달라" 를 보내 메인 → 코디네이터 → `horch send` 로 워커에 전달했다. r1 `worker_done` failed → `next` 의 `fix --note` → r2. 자연 발생: r2 의 Codex 리뷰가 REQUEST_CHANGES(P2 둘) → `fix` → r3 → APPROVE. `docs/tasks/T-002/report.md` 에 r1–r3 절이 있다.
+- accept·release 로 pane 닫힘: 네 태스크 모두 `done`. 끝난 워커·리뷰어 pane 은 release 로 닫혀 팀 탭에 코디네이터만 남았다. 시험 프로젝트 테스트 58개가 통과했다.
+- 열린 질문 확인:
+  - `hc get --json` 의 `parent` 는 문자열 주소다(예: `"t45"`). `--no-parent` 로 띄우면 `null` 이다. parent 는 `hc run` 을 부른 쪽의 `HC_TERMINAL_ID` 를 따른다. `outbox.require_main` 은 실제 메인(parent `null`)을 메인으로 받았고, 코디네이터·워커 아래에서 띄운 터미널은 조상 라벨로 거부했다.
+  - 터미널 id 는 kill·rm 뒤 다시 쓰이지 않았다(t45–t4b 를 지운 뒤 새 터미널이 t4c·t4d). core 를 다시 띄운 뒤의 재사용은 확인하지 않았다(사용자 core 를 멈추지 않는다).
+  - `status`·`wait` 의 `next` 는 코디네이터가 그대로 실행했다(`review`·`review-finish`. `fix` 는 note 를 바꿔서). `worker-show` 힌트 문자열은 Run 소유 터미널의 셸에 그대로 넣어 실행했고 성공했다.
+- 발견한 문제와 처리:
+  - 리뷰어 규칙 문구(고침): "추적 파일 내용이 바뀌거나 HEAD 가 움직이면 판정이 무효" 를 다른 워커·코디네이터의 커밋까지로 읽은 Codex 리뷰어가 병렬 커밋마다 코디네이터에게 묻거나 escalate 했다(질문 2건, escalation 1건). 리뷰 프롬프트와 `AGENTS.md` 절에 "무효는 리뷰어 자신의 쓰기뿐이고 병렬 커밋으로 HEAD 가 움직이는 것은 정상"이라고 적었다. 고친 뒤에는 병렬 커밋과 겹친 리뷰가 없어 실환경으로 다시 확인하지 못했다. scaffold 는 있는 `AGENTS.md` 를 덮어쓰지 않으므로 이미 세팅한 프로젝트는 그 절을 손으로 고쳐야 한다.
+  - 하네스: `herdr-app shot` 은 창이 앞에 없으면 지난 프레임을 그대로 준다. pane 배치는 `herdr-app ls` 로 확인했다. 코디네이터 터미널 밖에서 `hteam status` 를 보면 `horch_error`(not_owner)라 태스크 상태만 보인다(설계대로).
+  - 운영 주의: 시험용 `hc run` 에는 `--no-notify` 를 붙인다. 붙이지 않은 확인용 터미널이 끝날 때 종료 알림이 띄운 터미널의 입력란에 들어갔다. 코디네이터 아래에서 띄운 확인 터미널의 종료 소식도 코디네이터에게 갔다(코디네이터는 관계없는 터미널로 보고 넘어갔다).
+
 ## 16. 범위 밖
 
 - git worktree 로 워커 격리(작업 폴더 하나와 owns 잠금으로 한다).
