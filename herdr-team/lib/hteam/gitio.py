@@ -1,6 +1,7 @@
 """git 호출. 커밋은 늘 경로를 지정한다(설계 5.5): `git add -- <경로>` 와 `git commit -- <경로>`."""
 from __future__ import annotations
 
+import os
 import subprocess
 
 from .errors import FAIL, MISSING, HteamError
@@ -19,16 +20,20 @@ def _name(args: tuple[str, ...]) -> str:
     return args[i] if i < len(args) else ""
 
 
-def run(root, *args: str, check: bool = True, input: str | None = None) -> subprocess.CompletedProcess:
+def run(root, *args: str, check: bool = True, input: str | None = None, raw: bool = False) -> subprocess.CompletedProcess:
+    """raw 면 출력을 바이트로 둔다(파일명이 UTF-8 이 아닐 수 있는 출력을 부르는 쪽이 os.fsdecode 로 푼다)."""
     try:
-        proc = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, input=input,
+        proc = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=not raw, input=input,
                               timeout=120)
     except FileNotFoundError:
         raise HteamError("git_missing", "git 이 없다", MISSING) from None
     except subprocess.TimeoutExpired:
         raise HteamError("git_timeout", f"git {_name(args)} 이 120초 안에 끝나지 않았다", FAIL) from None
     if check and proc.returncode != 0:
-        raise HteamError("git_failed", f"git {_name(args)} 실패: {(proc.stderr or proc.stdout).strip()[-300:]}", FAIL)
+        err = proc.stderr or proc.stdout
+        if raw:
+            err = err.decode("utf-8", "replace")
+        raise HteamError("git_failed", f"git {_name(args)} 실패: {err.strip()[-300:]}", FAIL)
     return proc
 
 
@@ -123,16 +128,18 @@ def tracked_changes(root) -> list[str]:
 def index_blobs(root, paths: list[str]) -> dict[str, str | None]:
     """최상위 기준 경로(글자 그대로)의 인덱스 객체 ID(blob 과 견줄 수 있다). 인덱스에 없으면 None. 충돌 중이라 단계가
     여럿이면 `단계:ID` 를 이어 붙인다(어느 blob 과도 같지 않다). 경로를 argv 로 넘기면 대량 변경에서 ARG_MAX 를
-    넘으므로 인덱스 전체(`:(top)`, root 가 하위 폴더여도 저장소 전체)를 한 번 읽어 거른다."""
+    넘으므로 인덱스 전체(`:(top)`, root 가 하위 폴더여도 저장소 전체)를 한 번 읽어 거른다. 저장소 어딘가의 UTF-8
+    이 아닌 파일명이 디코딩 오류를 내지 않게 바이트로 읽고 os.fsdecode(surrogateescape, 손실 없음)로 푼다. UTF-8
+    이름은 다른 git 출력(text)과 같은 글자로 풀린다."""
     result: dict[str, str | None] = dict.fromkeys(paths)
     if not paths:
         return result
-    out = run(root, "ls-files", "-s", "-z", "--full-name", "--", ":(top)").stdout
+    out = run(root, "ls-files", "-s", "-z", "--full-name", "--", ":(top)", raw=True).stdout
     found: dict[str, list[str]] = {}
-    for entry in _z(out):
-        meta, _, name = entry.partition("\t")
-        _, sha, stage = meta.split()
-        found.setdefault(name, []).append(sha if stage == "0" else f"{stage}:{sha}")
+    for entry in (x for x in out.split(b"\0") if x):
+        meta, _, name = entry.partition(b"\t")
+        _, sha, stage = meta.decode("ascii").split()
+        found.setdefault(os.fsdecode(name), []).append(sha if stage == "0" else f"{stage}:{sha}")
     result.update({name: ",".join(shas) for name, shas in found.items() if name in result})
     return result
 

@@ -259,6 +259,29 @@ class TamperTest(ReviewCase):
         code, out = self.finish()
         self.assertEqual((code, out.get("status")), (0, "approved"), out)
 
+    def test_non_utf8_name_elsewhere_in_index_does_not_break_review(self):
+        # 기준점·변조 검사는 인덱스 전체를 읽는다. 무관한 비 UTF-8 파일명 하나가 디코딩 오류로 리뷰를 막지 않아야 한다.
+        # macOS(APFS) 는 그런 파일을 만들지 못하므로 git plumbing 으로 인덱스에만 넣고 skip-worktree(sparse 처럼)로 둔다
+        import subprocess
+        name = os.fsencode("bad-") + b"\xff.txt"
+        git = ["git", "-C", str(self.proj)]
+        made = subprocess.run(git + ["hash-object", "-w", "--stdin"], input=b"x\n", capture_output=True, env=self.env)
+        sha = made.stdout.strip()
+        for args in (["update-index", "--add", "--cacheinfo", b"100644," + sha + b"," + name],
+                     ["update-index", "--skip-worktree", name], ["commit", "-q", "-m", "비 UTF-8 이름"]):
+            done = subprocess.run(git + args, capture_output=True, env=self.env)
+            if done.returncode:
+                self.skipTest(f"git 이 비 UTF-8 이름을 받지 않는다: {done.stderr!r}")
+        self.assertIn(name, subprocess.run(git + ["ls-files", "-z"], capture_output=True, env=self.env).stdout)
+        self.worked()
+        (self.proj / "README.md").write_text("owns 밖, 커밋 안 함\n")  # 바뀐 추적 파일이 있어야 인덱스를 읽는다
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual((code, out.get("status")), (0, "reviewing"), out)
+        self.assertIn("README.md", self.attempt("T-001")["baseline"]["index"])
+        self.act_review("T-001", "APPROVE")
+        code, out = self.finish()
+        self.assertEqual((code, out.get("status")), (0, "approved"), out)
+
     def test_committed_rename_out_of_product_is_tamper(self):
         self.reviewing()
         self.act_review("T-001", "APPROVE")
