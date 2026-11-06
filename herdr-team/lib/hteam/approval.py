@@ -253,7 +253,8 @@ def _startable(p, cfg, st: dict) -> bool:
 def view(p, cfg, states: list[dict] | None = None, data: dict | None = None) -> dict:
     """지금의 승인 상황. waiting: awaiting_user 승인 태스크, blockers: 진행 중이거나 지금 시작할 수 있는 승인 태스크,
     stale: waiting 가운데 선행이 그 뒤에 고쳐진 것({task, round, because}), fresh: waiting 가운데 stale 이 아니고 아직 묻지
-    않은 것, asked: 물은 (태스크, 라운드) → out-id, answered: waiting 의 지금 라운드를 물은 out-id 가운데 답이 온 것.
+    않은 것, asked: 물은 (태스크, 라운드) → out-id, answered: waiting 의 지금 라운드를 물은 out-id 가운데 답이 온 것,
+    unreadable_answers: 그 가운데 답 파일이 있는데 읽지 못한 것.
     띄운 적 없는 queued 라운드는 pending 처럼 지금 시작할 수 있을 때만 blocker 다(띄우는 중이면 진행 중). 상태는 읽기만
     한다."""
     states = state.all_states(p) if states is None else states
@@ -278,10 +279,15 @@ def view(p, cfg, states: list[dict] | None = None, data: dict | None = None) -> 
             blockers.append({"task": st["id"], "status": st["status"], "why": "진행 중"})
     late = [{"task": st["id"], "round": st["round"], "because": behind[st["id"]]} for st in waiting if st["id"] in behind]
     fresh = [st for st in waiting if st["id"] not in behind and (st["id"], st["round"]) not in done]
-    answered = {oid for st in waiting if (oid := done.get((st["id"], st["round"])))
-                and outbox.answer_of(p, oid) is not None}
+    answered, unreadable = set(), set()
+    for oid in {oid for st in waiting if (oid := done.get((st["id"], st["round"])))}:
+        try:
+            if outbox.answer_strict(p, oid) is not None:
+                answered.add(oid)
+        except HteamError:  # 답 파일이 손상됐다. 답이 없다고 하지 않는다
+            unreadable.add(oid)
     return {"waiting": waiting, "blockers": blockers, "stale": late, "fresh": fresh, "asked": done, "replay": replay,
-            "answered": answered}
+            "answered": answered, "unreadable_answers": unreadable}
 
 
 def _urls(text: str) -> list[str]:
@@ -603,7 +609,7 @@ def decide(p, oid: str, text: str | None) -> dict:
         outbox.applied_ids(p)
         replayed = b.get("decision") is not None
         if not replayed:
-            if outbox.answer_of(p, oid) is None:
+            if outbox.answer_strict(p, oid) is None:  # 손상된 답 파일은 bad_side_file(답이 없다고 하지 않는다)
                 raise HteamError("no_answer", f"{oid} 에 아직 사용자 답이 없다. 결정하지 않았다", CONFLICT,
                                  f"답이 온 뒤(wait 의 `[main] reply {oid}` 메시지) 부른다")
             b["decision"] = _compute(p, cfg, b, _decision_input(text, b))

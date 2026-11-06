@@ -330,12 +330,14 @@ def _recover(p, cfg, h, st: dict, att: dict) -> dict:
             out = {"task": tid, "attempt": k, "status": "reviewing", "dispatch": att["dispatch"], "mode": "recorded"}
             # 리뷰어가 먼저 끝났으면 그 worker_done(next 가 review 였다)은 다시 오지 않는다. 태스크 잠금 밖에서 본다
             try:
-                row = dispatch.slot_row(h.workers(), att)
+                row, why = dispatch.slot_row(h.workers(), att), "worker-list 에 그 행이 없다"
             except HteamError as exc:
-                out["warnings"] = [f"리뷰 Dispatch {att['dispatch']} 의 상태를 읽지 못했다({exc.code}). 끝났으면 "
+                row, why = None, exc.code
+            if row is None:  # 리뷰어가 끝났는지 모른다
+                out["warnings"] = [f"리뷰 Dispatch {att['dispatch']} 의 상태를 읽지 못했다({why}). 끝났으면 "
                                    f"review-finish {tid}, 아니면 리뷰어 worker_done 을 기다린다(status 의 next)"]
                 return out
-            if row is not None and dispatch.review_ended(row):
+            if dispatch.review_ended(row):
                 out["next"] = [SHIM, "review-finish", tid]
             return out
         raise HteamError("review_in_progress", f"{tid} 의 리뷰 시도 a{k} 가 진행 중이다", CONFLICT,

@@ -293,15 +293,48 @@ def unmet_deps(p, cfg, spec) -> list[tuple[str, str]]:
     return found
 
 
+def _load_quiet(p, tid: str) -> dict | None:
+    """상태. 없거나 읽지 못하면 None(dropped 선행을 찾을 때만 쓴다. 읽지 못한 선행은 unmet_deps 가 알린다)."""
+    try:
+        return state.load(p, tid)
+    except HteamError:
+        return None
+
+
 def _unmet_text(unmet: list[tuple[str, str]], spec) -> str:
     return ", ".join(f"{d}({s})" for d, s in unmet) or ", ".join(spec.depends_on)
 
 
-def dropped_hint(tid: str, gone: list[str]) -> str:
-    """선행이 dropped 라 영영 시작하지 못하는 태스크(start-ready 가 띄우지 않는다)의 할 일. 버린 태스크는 다시 시작하지
-    않으므로(설계 6.4) 사람이 정한다."""
-    return (f"선행 {', '.join(gone)} 가 dropped 다. 이 태스크는 시작할 수 없다(start-ready 가 띄우지 않는다). 메인에 알려 "
-            f"사용자가 정한다: 버리려면 {SHIM} drop {tid}, 계속하려면 사양 `.herdr-team/tasks/{tid}.md` 의 depends_on 에서 "
+def dropped_blockers(graph, tid: str, load) -> dict[str, list[str]]:
+    """tid 를 영영 시작하지 못하게 하는 dropped 선행(직간접) → 그것을 depends_on 에 둔 태스크(tid 이거나 사이의 선행).
+    직접 선행이 dropped 이거나, start-ready 가 띄울 선행(pending, 띄운 적 없는 queued 라운드)을 거쳐 닿는 선행이 dropped
+    인 것이다. 이미 띄운 선행은 제 선행을 기다리지 않으므로 그 너머는 보지 않는다(그래서 Graph.ancestors 를 그대로 쓰지
+    않는다). graph 는 approval.Graph, load 는 태스크 → 상태(없거나 읽지 못하면 None). 순환이 있어도 끝난다."""
+    from . import approval  # approval 이 tasks 를 쓴다. 불러오는 순서가 꼬이지 않게 여기서 가져온다
+    found: dict[str, set[str]] = {}
+    seen, todo = {tid}, [tid]
+    while todo:
+        cur = todo.pop()
+        for d in graph.deps(cur):
+            ds = load(d)
+            if ds is None:
+                continue
+            if ds["status"] == "dropped":
+                found.setdefault(d, set()).add(cur)
+            elif d not in seen and (ds["status"] == "pending" or approval.unlaunched(ds)):
+                seen.add(d)
+                todo.append(d)
+    return {d: sorted(found[d], key=state.id_number) for d in sorted(found, key=state.id_number)}
+
+
+def dropped_hint(tid: str, gone: dict[str, list[str]]) -> str:
+    """선행이 dropped 라 영영 시작하지 못하는 태스크(start-ready 가 띄우지 않는다)의 할 일. gone 은 dropped_blockers 다.
+    버린 태스크는 다시 시작하지 않으므로(설계 6.4) 사람이 정한다. 간접 선행이면 그것을 depends_on 에 둔 사양을 적는다."""
+    names = ", ".join(d if tid in held else f"{d}({', '.join(held)} 의 선행)" for d, held in gone.items())
+    where = "·".join(f"`.herdr-team/tasks/{t}.md`"
+                     for t in sorted({t for held in gone.values() for t in held}, key=state.id_number))
+    return (f"선행 {names} 가 dropped 다. 이 태스크는 시작할 수 없다(start-ready 가 띄우지 않는다). 메인에 알려 "
+            f"사용자가 정한다: 버리려면 {SHIM} drop {tid}, 계속하려면 사양 {where} 의 depends_on 에서 "
             "그 선행을 빼거나 바꾼다")
 
 
@@ -318,6 +351,7 @@ def start_ready(p) -> dict:
     h = Horch(p.horch_home)
     cap = Capacity(h, cfg.max_parallel)
     started, waiting, failed = [], [], []
+    graph = None  # dropped 선행을 볼 때 만든다
     order = plan.order(p)
     for tid in state.unreadable_ids(p):  # plan.order 는 읽히는 상태만 본다. 손상된 상태 파일도 실패로 알린다
         if tid not in order:
@@ -335,9 +369,12 @@ def start_ready(p) -> dict:
             if not deps_met(p, cfg, spec):
                 unmet = unmet_deps(p, cfg, spec)  # 끝나지 않은 선행만 상태와 함께 적는다
                 item = {"task": tid, "reason": "deps", "detail": _unmet_text(unmet, spec)}
-                gone = [d for d, s in unmet if s == "dropped"]
+                if graph is None:
+                    from . import approval  # approval 이 tasks 를 쓴다. 불러오는 순서가 꼬이지 않게 여기서 가져온다
+                    graph = approval.Graph(p)
+                gone = dropped_blockers(graph, tid, lambda d: _load_quiet(p, d))  # 직간접 선행
                 if gone:
-                    item.update(dropped=gone, hint=dropped_hint(tid, gone))
+                    item.update(dropped=list(gone), hint=dropped_hint(tid, gone))
                 waiting.append(item)
                 continue
             die_at("start_ready_checked")  # 테스트: 의존을 본 뒤 시작 전에 결정이 끼는 순서를 재현한다

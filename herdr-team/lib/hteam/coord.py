@@ -415,14 +415,15 @@ def _live_hint(st: dict, rows: list[dict], horch_cmd: str = "horch") -> str | No
 
 def next_step(cfg, st: dict, by_task: dict[str, dict], have_rows: bool,
               rows: list[dict] | None = None, horch_cmd: str | None = None,
-              appr: dict | None = None, gone: list[str] | None = None) -> tuple[list[str] | None, str | None]:
+              appr: dict | None = None,
+              gone: dict[str, list[str]] | None = None) -> tuple[list[str] | None, str | None]:
     """태스크마다 다음 명령(설계 13장). 끝났다는 확실한 증거가 있을 때만 바꾸라고 하고, 모르면 기다린다.
 
     by_task: horch Task → 최신 시도 행. rows 를 주면(worker-list 전체) 지난 시도·제목으로 찾은 Dispatch 까지 본다.
     horch_cmd: 힌트에 넣을 horch 명령(--home 포함, Horch.cmd). 없으면 `horch`.
     appr: approval.view 결과(끝나지 않은 일괄 승인 결정, awaiting_user 의 next). 읽지 못했으면 None.
-    gone: 사양의 선행 가운데 dropped 인 것. start-ready 로 띄울 태스크(pending, 띄운 적 없는 queued 라운드)는 영영
-    시작하지 못하므로 start-ready 를 권하지 않고 사람이 정할 일을 알린다."""
+    gone: 직간접 선행 가운데 dropped 인 것(tasks.dropped_blockers). start-ready 로 띄울 태스크(pending, 띄운 적 없는
+    queued 라운드)는 영영 시작하지 못하므로 start-ready 를 권하지 않고 사람이 정할 일을 알린다."""
     tid, s = st["id"], st["status"]
     hc = horch_cmd or "horch"
     rd = state.current_round(st)
@@ -522,6 +523,10 @@ def _awaiting(cfg, st: dict, appr: dict | None) -> tuple[list[str] | None, str |
         oid = appr["asked"][key]
         if oid is None:
             return H("design-review"), "일괄 승인 질문을 쓰다 멈췄다. design-review 가 마저 쓴다"
+        if oid in appr.get("unreadable_answers", ()):  # 답이 왔지만 읽지 못한다. 기다리라고 하지 않는다
+            return None, (f"일괄 승인 질문 {oid} 의 답 파일 `.herdr-team/state/answers/{oid}.json` 을 읽지 못했다(손상). "
+                          f"design-review --decide {oid} 도 bad_side_file 로 멈춘다. 메인에 알린다(직접 고치거나 치운 뒤 "
+                          "다시 한다)")
         if oid in appr.get("answered", ()):  # 결정이 아무것도 기록하지 못한 채 답 메시지를 ack 했을 수 있다
             return None, (f"일괄 승인 질문 {oid} 의 답이 와 있다(`.herdr-team/state/answers/{oid}.json`). 결정이 없으면 답을 "
                           f"해석해 {SHIM} design-review --decide {oid} --json - 로 결정한다")
@@ -579,14 +584,15 @@ def status(p) -> dict:
             appr = approval.view(p, cfg, states)
         except HteamError as exc:  # 기록이 손상됐다. awaiting_user 는 next 없이 hint 만 준다
             warnings.append(f"일괄 승인 기록: {exc.message}")
-    status_of = {s["id"]: s["status"] for s in states}
+    by_id, graph = {s["id"]: s for s in states}, approval.Graph(p)
     for st in states:
         try:
-            spec = specs.load(p, st["id"])
-            title = spec.title
-            gone = [d for d in spec.depends_on if status_of.get(d) == "dropped"]  # 영영 시작하지 못하는 선행
+            title = specs.load(p, st["id"]).title
         except HteamError:
-            title, gone = None, []
+            title = None
+        gone = None  # 영영 시작하지 못하게 하는 dropped 선행(직간접). start-ready 로 띄울 태스크만 본다
+        if st["status"] == "pending" or approval.unlaunched(st):
+            gone = tasks.dropped_blockers(graph, st["id"], by_id.get)
         nxt, hint = next_step(cfg, st, by_task, horch_error is None, rows if horch_error is None else None,
                               horch_cmd=horch_cmd, appr=appr, gone=gone)
         rd = state.current_round(st)

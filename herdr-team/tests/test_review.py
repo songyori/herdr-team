@@ -712,6 +712,18 @@ class RecoveryTest(ReviewCase):
         self.assertIn("상태를 읽지 못했다", out["warnings"][0])
         self.assertEqual(self.task_state("T-001")["status"], "reviewing")
 
+    def test_recorded_recovery_without_the_dispatch_row_warns(self):
+        # worker-list 는 읽었지만 그 시도의 Dispatch 행이 없다. 리뷰어가 끝났는지 모르므로 읽지 못한 것과 같이 알린다
+        self.reviewing()
+        with state.edit(self.p, "T-001") as st:
+            state.move(st, "working", "test")
+        fake = self.tmp / "horch-empty"
+        fake.write_text('import json\nprint(json.dumps({"ok": True, "workers": []}))\n')
+        code, out = self.hteam("review", "T-001", env={"HERDR_ORCH_BIN": str(fake)})
+        self.assertEqual((code, out.get("status"), out.get("next")), (0, "reviewing", None), out)
+        self.assertIn("상태를 읽지 못했다", out["warnings"][0])
+        self.assertEqual(self.task_state("T-001")["status"], "reviewing")
+
     def test_dead_after_launch_adopts(self):
         self.worked()
         code, _ = self.hteam("review", "T-001", env={"HTEAM_TEST_DIE_AT": "after_launch"})

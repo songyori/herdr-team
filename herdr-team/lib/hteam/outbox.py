@@ -196,6 +196,18 @@ def answer_of(p, oid: str) -> dict | None:
     return read_json(p.answers / f"{oid}.json", None)
 
 
+def answer_strict(p, oid: str) -> dict | None:
+    """answer_of 와 같으나 답 파일이 있는데 읽지 못하거나 JSON 객체가 아니면 bad_side_file 이다(손상을 "답 없음" 으로
+    보지 않는다). 일괄 승인 결정과 status 의 안내가 쓴다. answer_of 의 다른 호출자(wait 주석·ask·answer)는 그대로다."""
+    path, none = p.answers / f"{oid}.json", object()
+    data = read_json_strict(path, none)
+    if data is none:
+        return None
+    if not isinstance(data, dict):
+        raise bad_side_file(path, "JSON 객체가 아니다")
+    return data
+
+
 def _unsent(entry: dict, ans: dict | None) -> bool:
     """question·approval 의 답을 남겼지만 코디네이터에게 보냈다는 기록(sent_at)이 없다."""
     return entry.get("type") in ("question", "approval") and bool(ans) and not ans.get("sent_at")

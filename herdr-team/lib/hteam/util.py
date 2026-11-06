@@ -50,8 +50,11 @@ def read_json(path: Path, default):
 
 
 def bad_side_file(path: Path, why: str) -> HteamError:
+    # 힌트의 경로는 state 폴더 기준이다(answers/ 아래 답 파일도 그 하위 경로까지 적는다)
+    rel = next((path.relative_to(up).as_posix() for up in path.parents
+                if up.name == "state" and up.parent.name == ".herdr-team"), path.name)
     return HteamError("bad_side_file", f"{path.name} 을 읽지 못했다: {why}", FAIL,
-                      f"`.herdr-team/state/{path.name}` 을 직접 고치거나 치운 뒤 다시 한다(덮어쓰지 않았다)")
+                      f"`.herdr-team/state/{rel}` 을 직접 고치거나 치운 뒤 다시 한다(덮어쓰지 않았다)")
 
 
 def read_json_strict(path: Path, default):

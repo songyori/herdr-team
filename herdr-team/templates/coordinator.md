@@ -99,7 +99,7 @@ EOF
 답은 `[main] reply out-NNNN` 메시지(`kind: main`, `reply_to`)로 온다. 반영한 뒤 `hteam applied out-NNNN`.
 
 ## 중단
-`hteam drop T [--force]` 는 태스크를 `dropped` 로 바꾸고 잠금을 푼다. 사용자가 버리기로 했을 때, 복구할 수 없는 `launch_failed` 일 때만 쓴다. 일하는 워커가 있으면 `--force` 가 필요하다(워커를 끝낸다). 버린 태스크는 다시 시작하지 않는다(새 태스크로 만든다). 버린 태스크에 의존하는 태스크는 `start-ready` 가 띄우지 않는다(대기 사유 `deps` 의 `dropped`·hint, `status` 의 hint): 메인에 알려 그 태스크도 버릴지 사양의 `depends_on` 을 고칠지 사용자가 정한다.
+`hteam drop T [--force]` 는 태스크를 `dropped` 로 바꾸고 잠금을 푼다. 사용자가 버리기로 했을 때, 복구할 수 없는 `launch_failed` 일 때만 쓴다. 일하는 워커가 있으면 `--force` 가 필요하다(워커를 끝낸다). 버린 태스크는 다시 시작하지 않는다(새 태스크로 만든다). 버린 태스크에 의존하는 태스크(아직 띄우지 않은 선행을 거친 간접 의존도)는 `start-ready` 가 띄우지 않는다(대기 사유 `deps` 의 `dropped`·hint, `status` 의 hint): 메인에 알려 그 태스크도 버릴지 사양의 `depends_on` 을 고칠지 사용자가 정한다.
 
 ## 직무
 - planner: 사용자 인터뷰(`hteam ask-user`, 메인을 거쳐 사용자에게 바로 간다), `docs/planning/`(spec.md, contracts.md, tasks.toml, interview.md). 기획자의 질문에 끼어들지 않는다.

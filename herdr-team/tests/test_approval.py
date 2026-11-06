@@ -915,6 +915,44 @@ class ApprovalCloseTest(DecisionCase):
         [w] = [w for w in out["waiting"] if w["task"] == "T-003"]
         self.assertEqual((w["detail"], w.get("dropped")), ("T-001(dropped)", ["T-001"]), w)
 
+    def test_unreadable_answer_file_is_not_read_as_no_answer(self):
+        # 답 파일이 있는데 손상됐다. 답이 왔으므로 "답을 기다린다"·no_answer 는 틀린 안내다
+        self.task("T-001", "awaiting_user")
+        self.assertEqual(self.review()[1].get("id"), "out-0001")
+        (self.state_dir / "answers").mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "answers" / "out-0001.json").write_text("{broken", encoding="utf-8")
+        code, out = self.decide("out-0001", {}, answer=False)
+        self.assertEqual((code, out["error"]["code"]), (1, "bad_side_file"), out)
+        self.assertIn(".herdr-team/state/answers/out-0001.json", out["error"]["hint"])
+        self.assertNotIn("decision", self.record()["batches"][0])
+        task = self.statuses()["T-001"]
+        self.assertIsNone(task["next"])
+        self.assertIn("`.herdr-team/state/answers/out-0001.json`", task["hint"])
+        self.assertIn("읽지 못했다", task["hint"])
+
+    def test_task_behind_an_indirect_dropped_predecessor_says_so(self):
+        # T-003 → T-002(pending) → T-001(dropped): T-002 가 영영 시작하지 못하므로 T-003 도 그렇다
+        self.task("T-001", "working", role="developer")
+        self.task("T-002", "pending", role="developer", depends="T-001")
+        self.task("T-003", "pending", role="developer", depends="T-002")
+        # 이미 띄운 선행(T-005)은 제 선행을 기다리지 않는다. 그 너머의 dropped 는 T-006 을 막지 않는다
+        self.task("T-004", "working", role="developer")
+        self.task("T-005", "working", role="developer", depends="T-004")
+        self.task("T-006", "pending", role="developer", depends="T-005")
+        self.move("T-001", "dropped")
+        self.move("T-004", "dropped")
+        tasks = self.statuses()
+        self.assertIsNone(tasks["T-003"]["next"])
+        for needle in ("선행 T-001", "T-002", f"{H} drop T-003", "`.herdr-team/tasks/T-002.md`"):
+            self.assertIn(needle, tasks["T-003"]["hint"])
+        self.assertEqual((tasks["T-006"]["next"], tasks["T-006"]["hint"]), ([H, "start-ready"], None))
+        code, out = self.hteam("start-ready")
+        [w] = [w for w in out["waiting"] if w["task"] == "T-003"]
+        self.assertEqual((w["detail"], w.get("dropped")), ("T-002(pending)", ["T-001"]), w)
+        self.assertIn(f"{H} drop T-003", w["hint"])
+        [w] = [w for w in out["waiting"] if w["task"] == "T-006"]
+        self.assertEqual((w["detail"], w.get("dropped"), w.get("hint")), ("T-005(working)", None, None), w)
+
     def test_queued_round_behind_a_predecessor_in_revision_leaves_the_blocker_on_the_predecessor(self):
         self.queued_pair()
         self.task("T-003", "awaiting_user")
@@ -1006,6 +1044,10 @@ class ApprovalFlowTest(DecisionCase):
     def setUp(self):
         super().setUp()
         self.env.update({"HTEAM_WAIT_CHUNK": "0.3", "HTEAM_NO_STATUS_GRACE": "60"})
+
+    def decide(self, oid, fix=None, answer=False, **kw):
+        """흐름 테스트는 실제 `hteam answer` 가 답 파일을 남긴다. helper 가 대신 두지 않는다(그 경로의 회귀를 숨긴다)."""
+        return super().decide(oid, fix, answer=answer, **kw)
 
     def start_design(self, tid, screen, depends=None):
         self.write_spec(tid, "designer", title=f"{screen} 화면", owns=f"docs/design/screens/{screen}/**",
