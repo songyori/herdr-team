@@ -668,6 +668,42 @@ class GitioTest(TeamCase):
         self.assertEqual(gitio.from_top(prefix, "app\r/README.md"), "README.md")
         self.assertEqual(gitio.toplevel(sub), os.path.realpath(self.proj))
 
+    def test_git_path_keeps_carriage_return(self):
+        # 링크된 작업 트리에서 --git-path 는 주 저장소의 절대 경로를 낸다. 그 경로의 \r 이 text 모드로 \n 이 되면 깨진 ref
+        # 파일(for-each-ref 가 내지 않는다)을 없는 것으로 잘못 본다
+        main = self.tmp / "m\r"
+        try:
+            main.mkdir()
+        except OSError as exc:
+            self.skipTest(f"이 파일 시스템은 \\r 이 든 이름을 만들지 못한다: {exc}")
+
+        def git(root, *args):
+            subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True, env=self.env)
+        (main / "f").write_text("f\n")
+        for args in (("init", "-q", "-b", "main"), ("add", "f"), ("commit", "-q", "-m", "f")):
+            git(main, *args)
+        wt = self.tmp / "wt"
+        git(main, "worktree", "add", "-q", str(wt))
+        (main / ".git" / "refs" / "heads" / "broken").write_text("")  # 비었거나 깨진 ref 파일
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            self.assertTrue(gitio._ref_present(wt, "refs/heads/broken"))
+
+    def test_worktree_entries_see_submodule_content(self):
+        # 서브모듈은 HEAD 와 안의 커밋하지 않은 변경(작업 트리·인덱스)으로 본다. HEAD 가 같아도 안에서 바뀌면 값이 다르다
+        head = self.submodule()
+        tree = gitio.tree_entry(self.proj, "HEAD", "sub")
+        self.assertEqual(tree, f"160000:{head}")
+        self.assertEqual(gitio.worktree_entries(self.proj, ["sub"])["sub"], tree)  # 깨끗하면 트리 항목과 같다
+        (self.proj / "sub" / "a.txt").write_text("b\n")
+        dirty = gitio.worktree_entries(self.proj, ["sub"])["sub"]
+        self.assertTrue(dirty.startswith(f"160000:{head}+"), dirty)
+        self.assertEqual(gitio.worktree_entries(self.proj, ["sub"])["sub"], dirty)  # 그대로면 같은 값
+        (self.proj / "sub" / "a.txt").write_text("c\n")
+        again = gitio.worktree_entries(self.proj, ["sub"])["sub"]
+        self.assertNotIn(again, (tree, dirty))
+        self.git("-C", "sub", "add", "a.txt")  # 스테이징만 해도 다르다
+        self.assertNotIn(gitio.worktree_entries(self.proj, ["sub"])["sub"], (tree, dirty, again))
+
     def test_git_errors_are_not_answers(self):
         first = self.head()
         second = self.commit("x.txt", "x\n", "x")

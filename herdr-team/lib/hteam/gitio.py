@@ -130,8 +130,10 @@ def tracked_changes(root, exec_bit: bool | None = None) -> list[str]:
     """HEAD 와 다른 추적 파일(작업 트리나 인덱스 어느 한쪽이라도), 최상위 기준, 저장소 전체. 이름 바꾸기는 양쪽 경로를
     다 낸다(`git mv 제품 제외경로` 가 옛 경로를 숨기지 못하게). `git diff HEAD` 는 작업 트리만 HEAD 와 견주므로
     스테이징한 뒤 작업 트리만 되돌린 변경은 `diff --cached` 로 더한다. exec_bit 를 주면 core.fileMode 를 그 값으로
-    고정해 견준다(리뷰 동안 바뀐 설정이 실행 비트 변경을 숨기지 못하게)."""
-    flags = (*ABSOLUTE, *(() if exec_bit is None else ("-c", f"core.fileMode={'true' if exec_bit else 'false'}")))
+    고정해 견준다(리뷰 동안 바뀐 설정이 실행 비트 변경을 숨기지 못하게). core.ignoreStat 은 끈다(이 조회가 항목에
+    assume-unchanged 를 새로 붙이지 않게). 이미 붙은 숨김 플래그는 git diff 가 보지 않으므로 changed_entries 가 따로 본다."""
+    flags = (*ABSOLUTE, "-c", "core.ignoreStat=false",
+             *(() if exec_bit is None else ("-c", f"core.fileMode={'true' if exec_bit else 'false'}")))
     work = _zb(run(root, *flags, "diff", "--name-only", "-z", "--no-renames", "HEAD", raw=True).stdout)
     staged = _zb(run(root, *flags, "diff", "--cached", "--name-only", "-z", "--no-renames", "HEAD", raw=True).stdout)
     return sorted(set(work) | set(staged))
@@ -142,23 +144,53 @@ def _entry(mode: str, oid: str) -> str:
     return f"{mode}:{oid}"
 
 
+def index_read(root) -> tuple[dict[str, str], set[str]]:
+    """인덱스 전체를 한 번 읽는다(`:(top)`, root 가 하위 폴더여도 저장소 전체): (최상위 기준 경로 → 항목 `모드:객체 ID`,
+    숨김 플래그가 붙은 경로). 충돌 중이라 단계가 여럿이면 `단계:모드:ID` 를 쉼표로 잇는다(어느 항목과도 같지 않다).
+    숨김 플래그는 `ls-files -v` 의 소문자 태그(assume-unchanged, core.ignoreStat 이 붙인 것도)와 `S`(skip-worktree)다:
+    git diff·status 는 그런 파일의 작업 트리 변경을 보지 않는다. 바이트로 읽고 os.fsdecode 로 푼다(UTF-8 이 아닌 이름도
+    손실 없이, 다른 git 출력과 같은 글자로)."""
+    out = run(root, "ls-files", "-s", "-v", "-z", "--full-name", "--", ":(top)", raw=True).stdout
+    found: dict[str, list[str]] = {}
+    hidden: set[str] = set()
+    for entry in (x for x in out.split(b"\0") if x):
+        meta, _, raw_name = entry.partition(b"\t")
+        tag, mode, sha, stage = meta.decode("ascii").split()
+        name, item = os.fsdecode(raw_name), _entry(mode, sha)
+        found.setdefault(name, []).append(item if stage == "0" else f"{stage}:{item}")
+        if tag.islower() or tag == "S":
+            hidden.add(name)
+    return {name: ",".join(items) for name, items in found.items()}, hidden
+
+
 def index_entries(root, paths: list[str]) -> dict[str, str | None]:
     """최상위 기준 경로(글자 그대로)의 인덱스 항목 `모드:객체 ID`(tree_entry·worktree_entries 와 견줄 수 있다). 인덱스에
-    없으면 None. 충돌 중이라 단계가 여럿이면 `단계:모드:ID` 를 쉼표로 잇는다(어느 항목과도 같지 않다). 경로를 argv 로
-    넘기면 대량 변경에서 ARG_MAX 를 넘으므로 인덱스 전체(`:(top)`, root 가 하위 폴더여도 저장소 전체)를 한 번 읽어
-    거른다. 바이트로 읽고 os.fsdecode 로 푼다(UTF-8 이 아닌 이름도 손실 없이, 다른 git 출력과 같은 글자로)."""
-    result: dict[str, str | None] = dict.fromkeys(paths)
+    없으면 None. 경로를 argv 로 넘기면 대량 변경에서 ARG_MAX 를 넘으므로 인덱스 전체를 한 번 읽어 거른다(index_read)."""
     if not paths:
-        return result
-    out = run(root, "ls-files", "-s", "-z", "--full-name", "--", ":(top)", raw=True).stdout
-    found: dict[str, list[str]] = {}
-    for entry in (x for x in out.split(b"\0") if x):
-        meta, _, name = entry.partition(b"\t")
-        mode, sha, stage = meta.decode("ascii").split()
-        item = _entry(mode, sha)
-        found.setdefault(os.fsdecode(name), []).append(item if stage == "0" else f"{stage}:{item}")
-    result.update({name: ",".join(items) for name, items in found.items() if name in result})
-    return result
+        return {}
+    entries, _ = index_read(root)
+    return {x: entries.get(x) for x in paths}
+
+
+def changed_entries(root, exec_bit: bool, inside=None, top: str | None = None) -> tuple[dict[str, str | None],
+                                                                                      dict[str, str | None]]:
+    """커밋하지 않은 변경의 (작업 트리 항목, 인덱스 항목), 둘 다 최상위 기준 경로 → 항목. 대상은 HEAD 와 다른 추적 파일
+    (tracked_changes, 저장소 전체)과, git diff 가 보지 않는 것: 숨김 플래그가 붙은 파일과 서브모듈(gitlink) 가운데 작업
+    트리 항목이 인덱스 항목과 다른 것이다(작업 트리를 직접 해시한다. 리뷰어가 플래그나 diff.ignoreSubmodules 로 변경을
+    숨기지 못하게). inside(최상위 기준 경로 → 참·거짓)를 주면 숨김 파일·서브모듈은 그것이 참인 경로만 본다(sparse
+    checkout 의 skip-worktree 파일은 아주 많을 수 있다). 인덱스는 한 번만 읽는다. top 은 이미 아는 git 최상위다."""
+    entries, hidden = index_read(root)
+    top = toplevel(root) if top is None else top
+    changed = set(tracked_changes(root, exec_bit))
+    extra = sorted(x for x in hidden | {x for x, e in entries.items() if e.startswith("160000:")}
+                   if x not in changed and (inside is None or inside(x)))
+    paths = sorted(changed) + extra
+    index = {x: entries.get(x) for x in paths}
+    work = worktree_entries(top, paths, exec_bit, index, top=top, prefix="")
+    for x in extra:
+        if work[x] == index[x]:  # 그대로다
+            del work[x], index[x]
+    return work, index
 
 
 def untracked(root) -> list[str]:
@@ -299,22 +331,36 @@ def _through_link(top: str, full: str) -> bool:
     return False
 
 
-def worktree_entries(root, paths: list[str], exec_bit: bool = True,
-                     index: dict[str, str | None] | None = None) -> dict[str, str | None]:
+def _submodule_changes(top: str, exec_bit: bool) -> str:
+    """서브모듈 작업 트리(top) 안의 커밋하지 않은 변경(changed_entries: 작업 트리·인덱스, 숨김 플래그, 안의 서브모듈)의
+    요약. 없으면 빈 문자열, 있으면 `+` 와 그 항목들의 해시다(HEAD 가 같아도 안에서 바뀔 때마다 값이 달라진다)."""
+    import hashlib
+    work, index = changed_entries(top, exec_bit, top=top)
+    if not work:
+        return ""
+    items = repr(sorted((x, work[x], index[x]) for x in work))
+    return "+" + hashlib.sha1(items.encode("utf-8", "backslashreplace")).hexdigest()
+
+
+def worktree_entries(root, paths: list[str], exec_bit: bool = True, index: dict[str, str | None] | None = None,
+                     top: str | None = None, prefix: str | None = None) -> dict[str, str | None]:
     """root 기준 경로(`../` 포함)의 작업 트리 항목 `모드:객체 ID`(tree_entry·index_entries 와 견줄 수 있다). 없으면 None.
 
     git 이 보는 대로 본다. 심볼릭 링크는 따라가지 않는다: 120000 과 링크 글자의 blob 이다. 상위 폴더가 링크면 git 처럼
     그 파일은 없다. 일반 파일은 실행 비트로 100755·100644 와 git 필터를 적용한 hash-object 다. exec_bit 가 거짓이면
     (core.fileMode=false) git 처럼 실행 비트를 믿지 않고 index(root 기준 경로 → 인덱스 항목)의 모드를 쓴다(없거나
-    충돌 중이면 100644). 폴더는 그 자리가 서브모듈 작업 트리면 160000 과 그 HEAD, 아니면 `dir`. 그 밖(FIFO 등)은 `other`.
+    충돌 중이면 100644). 폴더는 그 자리가 서브모듈 작업 트리면 160000 과 그 HEAD(안에 커밋하지 않은 변경이 있으면
+    `+해시` 를 붙인다, _submodule_changes), 아니면 `dir`. 그 밖(FIFO 등)은 `other`.
     lstat 할 수 없는 경로(권한, 파일 시스템이 거부하는 이름)는 없는 것이다.
     hash-object 는 최상위에서 최상위 기준 경로를 argv 로 넘겨 부른다(`--stdin-paths` 는 줄 끝 \\r 을 지우고 `"` 로
-    시작하면 따옴표를 풀며, 절대 경로는 .gitattributes 의 필터가 맞지 않는다). ARG_MAX 를 넘지 않게 나눠 부른다."""
+    시작하면 따옴표를 풀며, 절대 경로는 .gitattributes 의 필터가 맞지 않는다). ARG_MAX 를 넘지 않게 나눠 부른다.
+    top(git 최상위)·prefix(top_prefix)를 이미 알면 넘긴다(git 을 다시 부르지 않는다)."""
     import stat
     result: dict[str, str | None] = dict.fromkeys(paths)
     if not paths:
         return result
-    top, prefix = toplevel(root), top_prefix(root)
+    top = toplevel(root) if top is None else top
+    prefix = top_prefix(root) if prefix is None else prefix
     regular: list[tuple[str, str, str]] = []  # (root 기준, 최상위 기준, 모드)
     for rel in paths:
         name = to_top(prefix, rel)
@@ -338,7 +384,8 @@ def worktree_entries(root, paths: list[str], exec_bit: bool = True,
             sub = run(full, "rev-parse", "--show-toplevel", "HEAD", check=False, raw=True)
             lines = sub.stdout.split(b"\n")
             mine = sub.returncode == 0 and len(lines) > 1 and os.fsdecode(lines[0]) == os.path.realpath(full)
-            result[rel] = f"160000:{lines[1].decode('ascii').strip()}" if mine else "dir"
+            result[rel] = (f"160000:{lines[1].decode('ascii').strip()}"
+                           + _submodule_changes(os.fsdecode(lines[0]), exec_bit)) if mine else "dir"
         else:
             result[rel] = "other"
     for i in range(0, len(regular), 500):

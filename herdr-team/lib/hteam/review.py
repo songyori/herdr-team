@@ -124,26 +124,25 @@ def _precheck_fail(p, tid: str, n: int, problems: list[str]) -> dict:
             "problems": problems, "commit": sha}
 
 
-def _index(p, prefix: str, paths: list[str]) -> dict[str, str | None]:
-    """프로젝트 기준 경로의 인덱스 항목 `모드:객체 ID`(gitio.index_entries 는 최상위 기준 경로를 받는다)."""
-    tops = {x: gitio.to_top(prefix, x) for x in paths}
-    entries = gitio.index_entries(p.root, list(tops.values()))
-    return {x: entries[t] for x, t in tops.items()}
+def _changes(p, prefix: str, exec_bit: bool) -> tuple[dict[str, str | None], dict[str, str | None]]:
+    """프로젝트 기준 경로의 (작업 트리 항목, 인덱스 항목)(gitio.changed_entries 는 최상위 기준이다). 숨김 플래그가 붙은
+    파일과 서브모듈은 프로젝트 안만 본다(밖은 경고뿐이고 sparse checkout 의 skip-worktree 파일이 아주 많을 수 있다)."""
+    work, index = gitio.changed_entries(p.root, exec_bit, inside=lambda top: top.startswith(prefix))
+    return ({gitio.from_top(prefix, t): v for t, v in work.items()},
+            {gitio.from_top(prefix, t): v for t, v in index.items()})
 
 
 def baseline(p, tid: str) -> dict:
-    """변조 기준점(설계 6.1 5): HEAD, HEAD 와 다른 추적 파일(작업 트리·인덱스)의 작업 트리 항목과 인덱스 항목
-    (`모드:객체 ID`), 추적 안 된 파일, 진행 중인 다른 태스크, git 이 작업 트리의 실행 비트를 보는지(exec_bit,
-    core.fileMode. 거짓이면 작업 트리 파일의 모드는 인덱스의 모드다).
+    """변조 기준점(설계 6.1 5): HEAD, 커밋하지 않은 변경(HEAD 와 다른 추적 파일, 프로젝트 안의 숨김 플래그 파일·서브모듈
+    가운데 바뀐 것)의 작업 트리 항목과 인덱스 항목(`모드:객체 ID`), 추적 안 된 파일, 진행 중인 다른 태스크, git 이 작업
+    트리의 실행 비트를 보는지(exec_bit, core.fileMode. 거짓이면 작업 트리 파일의 모드는 인덱스의 모드다).
     경로는 프로젝트 기준이다. 추적 파일은 저장소 전체를 본다(프로젝트 밖은 `../`, 리뷰 동안 바뀌면 경고를 내려고).
     추적 안 된 파일은 프로젝트 안만 본다."""
     others = [s["id"] for s in state.all_states(p) if s["id"] != tid and s["status"] in ("working", "launch_failed")]
     prefix = gitio.top_prefix(p.root)
     exec_bit = gitio.file_mode(p.root)
-    changed = _rel(prefix, gitio.tracked_changes(p.root, exec_bit))
-    index = _index(p, prefix, changed)
-    return {"at": now(), "head": gitio.head(p.root), "exec_bit": exec_bit,
-            "dirty": gitio.worktree_entries(p.root, changed, exec_bit, index), "index": index,
+    dirty, index = _changes(p, prefix, exec_bit)
+    return {"at": now(), "head": gitio.head(p.root), "exec_bit": exec_bit, "dirty": dirty, "index": index,
             "untracked": gitio.untracked(p.root), "in_progress": others}
 
 
@@ -153,8 +152,11 @@ def tamper_check(p, tid: str, base: dict) -> tuple[dict | None, list[str]]:
     변조: fast-forward 가 아닌 HEAD 이동, 프로젝트 안 제외 경로 밖의 추적 파일 변경과 커밋. 경고: 프로젝트 안의 추적 안 된
     새 파일, 프로젝트 밖(`../`)에서 바뀐 추적 파일과 커밋(hteam 작업은 owns 밖을 건드리지 않으므로 모노레포의 다른 일이다).
     견주는 값은 git 항목 `모드:객체 ID` 다: 내용이 같아도 심볼릭 링크로 바꾸거나 실행 비트를 바꾸면 변조다. 트리·인덱스의
-    모드는 그대로 견주고, 작업 트리의 실행 비트는 기준점 때의 core.fileMode 로 본다(false 면 인덱스의 모드). 값이 객체
-    ID 뿐인 옛 기준점(이 형식 전)은 모두 달라 보여 변조로 멈춘다."""
+    모드는 그대로 견주고, 작업 트리의 실행 비트는 기준점 때의 core.fileMode 로 본다(false 면 인덱스의 모드). 프로젝트 안의
+    숨김 플래그(assume-unchanged·skip-worktree, core.ignoreStat) 파일과 서브모듈은 git diff 가 보지 않아도 작업 트리를
+    직접 해시해 견준다(서브모듈은 HEAD 와 안의 커밋하지 않은 변경). 값이 객체 ID 뿐인 옛 기준점(이 형식 전)에 기록된
+    경로는 지금 값과 늘 달라 보인다: 기준점 때 커밋하지 않은 추적 파일 변경이 있었으면 그 경로가 프로젝트 안·제외 경로
+    밖일 때 변조로 멈추고(프로젝트 밖이면 경고), 깨끗한 트리에서 만든 옛 기준점은 그대로 끝난다."""
     states = {s["id"]: s for s in state.all_states(p)}
     during = [s["id"] for s in states.values() if s["id"] != tid and any(
         h.get("event") in ("start", "fix") and h.get("at", "") >= base["at"] for h in s.get("history", []))]
@@ -183,19 +185,20 @@ def tamper_check(p, tid: str, base: dict) -> tuple[dict | None, list[str]]:
                 continue
             outside.update(f for f in files if _outside(f))
             bad.update(f for f in files if not _outside(f) and not excluded(f))
-    changed = _rel(prefix, gitio.tracked_changes(p.root, exec_bit))
-    now_index = _index(p, prefix, changed)
-    now_dirty = gitio.worktree_entries(p.root, changed, exec_bit, now_index)
+    now_dirty, now_index = _changes(p, prefix, exec_bit)
     candidates = set(base["dirty"]) | set(now_dirty)
     if head != base["head"]:
         candidates |= set(_rel(prefix, gitio.diff_names(p.root, base["head"], head)))
+    trees: dict[tuple[str, str], str | None] = {}  # 이 검사 안에서 (커밋, 경로)마다 ls-tree 를 한 번만 부른다
     for path in candidates - allowed:
         if excluded(path):
             continue
         top = gitio.to_top(prefix, path)  # ls-tree --full-tree 는 최상위 기준 경로를 받는다
 
         def tree(commit: str, top: str = top) -> str | None:
-            return gitio.tree_entry(p.root, commit, top)
+            if (commit, top) not in trees:
+                trees[(commit, top)] = gitio.tree_entry(p.root, commit, top)
+            return trees[(commit, top)]
         before = base["dirty"][path] if path in base["dirty"] else tree(base["head"])
         after = now_dirty[path] if path in now_dirty else tree(head)
         moved = before != after
@@ -510,7 +513,8 @@ def _finish(p, tid: str) -> dict:
     if tamper:
         with _finish_write(p, tid, k) as (_, a):
             a.update(tamper=tamper, result="tampered", warnings=warnings)
-        raise HteamError("review_tampered", f"{tid} r{n} 리뷰 중 제품이 바뀌었다: {', '.join(tamper['paths']) or tamper['reason']}",
+        raise HteamError("review_tampered", f"{tid} r{n} 리뷰 중 제품이 바뀌었다: "
+                         f"{', '.join(show(x) for x in tamper['paths']) or tamper['reason']}",
                          FAIL, "자동으로 다시 하지 않는다. 메인에 올리고, 사용자가 정리한 뒤 hteam review T --retry",
                          data={"tamper": tamper})
     die_at("before_verdict")

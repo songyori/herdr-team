@@ -81,11 +81,13 @@ def dumps(obj, indent: int | None = None) -> str:
 
 
 def show(text: str) -> str:
-    """사람이 읽는 글(리뷰 파일·프롬프트·커밋 본문)에 넣을 경로. UTF-8 이 아닌 바이트는 `\\xff` 꼴로 보인다."""
+    """사람이 읽는 글(리뷰 파일·프롬프트·커밋 본문)에 넣을 경로. UTF-8 이 아닌 바이트는 `\\xff` 꼴로, 줄바꿈은 `\\n` 으로
+    보인다(이름의 줄바꿈이 목록 한 줄을 둘로 나누지 않게). 저장·JSON 값은 그대로 둔다(dumps)."""
     try:
-        return os.fsencode(text).decode("utf-8", "backslashreplace")
+        shown = os.fsencode(text).decode("utf-8", "backslashreplace")
     except UnicodeEncodeError:  # surrogateescape 로 만들 수 없는 서로게이트
-        return text.encode("utf-8", "backslashreplace").decode("utf-8")
+        shown = text.encode("utf-8", "backslashreplace").decode("utf-8")
+    return shown.replace("\n", "\\n")
 
 
 def write_json(path: Path, obj) -> None:

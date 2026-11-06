@@ -131,6 +131,17 @@ class TeamCase(unittest.TestCase):
         self.git("commit", "-q", "-m", message, "--", rel)
         return self.git("rev-parse", "HEAD").strip()
 
+    def submodule(self, rel: str = "sub") -> str:
+        """프로젝트 안에 서브모듈 rel(추적 파일 a.txt 하나)을 더해 커밋한다. 서브모듈의 HEAD 를 낸다."""
+        src = self.tmp / f"{rel}-src"
+        src.mkdir()
+        (src / "a.txt").write_text("a\n")
+        for args in (("init", "-q", "-b", "main"), ("add", "a.txt"), ("commit", "-q", "-m", "a")):
+            subprocess.run(["git", "-C", str(src), *args], check=True, capture_output=True, env=self.env)
+        self.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", str(src), rel)
+        self.git("commit", "-q", "-m", "서브모듈", "--", ".gitmodules", rel)
+        return self.git("-C", rel, "rev-parse", "HEAD").strip()
+
     def head(self) -> str:
         return self.git("rev-parse", "HEAD").strip()
 

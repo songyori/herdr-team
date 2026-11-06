@@ -407,6 +407,99 @@ class TamperEntryTest(ReviewCase):
         code, out = self.finish()
         self.assertEqual((code, out.get("status")), (0, "approved"), out)
 
+    def test_non_utf8_tamper_path_is_printed_losslessly(self):
+        # 리뷰 동안 UTF-8 이 아닌 이름의 스테이징이 바뀌면 변조다. stdout JSON 은 올바른 UTF-8 이고 경로는 같은 바이트로
+        # 되돌아가며, 메시지에는 show 꼴(\xff)로 보인다
+        import subprocess
+        import sys
+        from tests.helpers import BIN
+        name = os.fsencode("bad-") + b"\xff.txt"
+        git = ["git", "-C", str(self.proj)]
+
+        def plumb(*args, data=None):
+            done = subprocess.run(git + list(args), input=data, capture_output=True, env=self.env)
+            if done.returncode:
+                self.skipTest(f"git 이 비 UTF-8 이름을 받지 않는다: {done.stderr!r}")
+            return done.stdout.strip()
+        one = plumb("hash-object", "-w", "--stdin", data=b"1\n")
+        two = plumb("hash-object", "-w", "--stdin", data=b"2\n")
+        plumb("update-index", "--add", "--cacheinfo", b"100644," + one + b"," + name)
+        plumb("update-index", "--skip-worktree", name)
+        plumb("commit", "-q", "-m", "비 UTF-8 이름")
+        self.reviewing()
+        plumb("update-index", "--cacheinfo", b"100644," + two + b"," + name)  # 리뷰어가 스테이징을 바꿨다
+        self.act_review("T-001", "APPROVE")
+        proc = subprocess.run([sys.executable, str(BIN), "review-finish", "T-001"], capture_output=True,
+                              env=self._env("coordinator", None, None), cwd=str(self.proj), timeout=60)
+        out = json.loads(proc.stdout.decode("utf-8").strip().split("\n")[-1])  # 엄격한 UTF-8 디코딩
+        self.assertEqual((proc.returncode, out["error"]["code"]), (1, "review_tampered"), out)
+        self.assertEqual([os.fsencode(x) for x in out["tamper"]["paths"]], [name])
+        self.assertIn("bad-\\xff.txt", out["error"]["message"])
+
+    def test_symlink_replaced_by_regular_file_is_tamper(self):
+        os.symlink("README.md", self.proj / "lnk")
+        self.git("add", "--", "lnk")
+        self.git("commit", "-q", "-m", "링크", "--", "lnk")
+        self.reviewing()
+        (self.proj / "lnk").unlink()
+        (self.proj / "lnk").write_text("README.md")  # 링크 글자와 같은 내용(같은 blob)의 일반 파일
+        self.assertEqual(self.assert_tamper("lnk")["tamper"]["paths"], ["lnk"])
+
+    def test_assume_unchanged_edit_is_tamper(self):
+        self.reviewing()
+        (self.proj / "README.md").write_text("리뷰어가 고침\n")
+        self.git("update-index", "--assume-unchanged", "README.md")  # git diff·status 가 보지 않게 숨겼다
+        self.assertEqual(self.assert_tamper("README.md")["tamper"]["paths"], ["README.md"])
+
+    def test_skip_worktree_edit_is_tamper(self):
+        self.reviewing()
+        (self.proj / "README.md").write_text("리뷰어가 고침\n")
+        self.git("update-index", "--skip-worktree", "README.md")
+        self.assertEqual(self.assert_tamper("README.md")["tamper"]["paths"], ["README.md"])
+
+    def test_ignore_stat_set_during_review_is_tamper(self):
+        self.reviewing()
+        self.git("config", "core.ignoreStat", "true")
+        self.git("update-index", "--really-refresh")  # 모든 항목에 assume-unchanged 가 붙는다
+        (self.proj / "README.md").write_text("리뷰어가 고침\n")
+        self.assertEqual(self.assert_tamper("README.md")["tamper"]["paths"], ["README.md"])
+
+    def test_clean_submodule_is_not_tamper(self):
+        self.submodule()
+        self.reviewing()
+        self.act_review("T-001", "APPROVE")
+        code, out = self.finish()
+        self.assertEqual((code, out.get("status")), (0, "approved"), out)
+
+    def test_dirty_submodule_content_is_tamper(self):
+        # 서브모듈 HEAD 는 그대로지만 안의 추적 파일을 고쳤다(커밋하지 않음)
+        self.submodule()
+        self.reviewing()
+        (self.proj / "sub" / "a.txt").write_text("evil\n")
+        self.assertEqual(self.assert_tamper("sub")["tamper"]["paths"], ["sub"])
+
+    def test_staged_submodule_content_is_tamper(self):
+        self.submodule()
+        self.reviewing()
+        (self.proj / "sub" / "a.txt").write_text("evil\n")
+        self.git("-C", "sub", "add", "a.txt")
+        self.assertEqual(self.assert_tamper("sub")["tamper"]["paths"], ["sub"])
+
+    def test_submodule_dirty_at_baseline_changed_again_is_tamper(self):
+        self.submodule()
+        (self.proj / "sub" / "a.txt").write_text("before\n")  # 기준점 때 이미 고쳐져 있었다
+        self.reviewing()
+        (self.proj / "sub" / "a.txt").write_text("evil\n")
+        self.assertEqual(self.assert_tamper("sub")["tamper"]["paths"], ["sub"])
+
+    def test_newline_in_path_is_shown_escaped_in_commit_body(self):
+        # 경로의 줄바꿈이 목록 한 줄을 둘로 나누지 않는다. JSON 값은 그대로다
+        self.reviewing()
+        self.act_review("T-001", "APPROVE", extra={"write": {"x\ny.log": "x\n"}})
+        code, out = self.finish()
+        self.assertEqual((code, out.get("status"), out.get("warnings")), (0, "approved", ["x\ny.log"]), out)
+        self.assertIn("- x\\ny.log\n", self.git("log", "-1", "--format=%b"))
+
 
 class LosslessJsonTest(unittest.TestCase):
     def test_surrogates_round_trip_as_valid_utf8(self):
@@ -418,6 +511,7 @@ class LosslessJsonTest(unittest.TestCase):
         self.assertEqual(json.loads(text), value)
         self.assertEqual(show("bad-\udcff.txt"), "bad-\\xff.txt")
         self.assertEqual(show("정상 a\rb"), "정상 a\rb")
+        self.assertEqual(show("a\nb.txt"), "a\\nb.txt")  # 줄바꿈은 보이게(목록 한 줄이 나뉘지 않게)
 
 
 class AttemptTest(ReviewCase):
