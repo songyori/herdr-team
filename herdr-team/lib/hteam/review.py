@@ -468,6 +468,7 @@ def _finish(p, tid: str) -> dict:
         raise HteamError("bad_state", f"{tid} 는 {st['status']} 다(review-finish 는 reviewing 에서)", CONFLICT,
                          data={"status": st["status"]})
     rd = st["rounds"][-1]
+    _check_round(tid, rd)  # 취소된 시도는 열린 시도가 아니다. no_open_review 의 --retry 안내도 여기서 막힌다
     att = state.open_attempt(rd)
     if att is None:
         raise HteamError("no_open_review", f"{tid} 에 끝나지 않은 리뷰 시도가 없다", CONFLICT,

@@ -641,7 +641,10 @@ class FinishAfterCancelTest(LifeCase):
         self.assertEqual(code, 137)
         before, head = self.task_state("T-001"), self.head()
         code, out = self.hteam("review-finish", "T-001")
-        self.assertEqual((code, out["error"]["code"]), (3, "no_open_review"), out)  # 취소된 시도는 열린 시도가 아니다
+        # 취소된 시도는 열린 시도가 아니다. no_open_review 의 `review --retry` 안내는 round_canceled 로 막히므로
+        # 처음부터 round_canceled 로 앞선 fix·drop 을 다시 하라고 안내한다
+        self.assertEqual((code, out["error"]["code"]), (3, "round_canceled"), out)
+        self.assertIn("앞선 fix·drop 이 끝나지 않았다", out["error"]["hint"])
         self.assertEqual((self.task_state("T-001"), self.head()), (before, head))
 
     def test_cancel_landing_mid_finish_is_round_canceled(self):
