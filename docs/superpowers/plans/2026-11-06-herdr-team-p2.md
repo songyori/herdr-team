@@ -4,7 +4,7 @@
 
 **Goal:** 설계 15.3 의 2단계를 만든다: 기획 인터뷰 체크리스트·확정 질문(10장), 승인 직무와 `awaiting_user` 흐름, 사용자 일괄 승인 `hteam design-review`(11.4), designer 기본 직무. 1단계가 넘긴 정확성 결함(변조 검사의 심볼릭 링크·실행 비트·경로 디코딩, 코디네이터 루프와 훅의 작은 결함)도 고친다.
 
-**Architecture:** 새 모듈 `herdr-team/lib/hteam/approval.py` 가 승인 상황(`view`)과 일괄 승인 묶음(`design-review`)을 맡는다. 묶음은 `state/design-review.json` 에 먼저 기록하고 outbox 의 `approval` 항목으로 쓴다(그 사이 죽어도 두 번 묻지 않는다). `coord.py` 는 이 모듈로 `status` 의 awaiting_user `next` 와 `wait` 의 답 주석(`design_review`)을 만든다. 인터뷰 규칙은 hteam 코드가 아니라 planner 직무 문서가 담는다(설계 10장). 리뷰어는 `hteam ask-user --history` 로 실제 질문과 답을 확인한다. 정리 태스크 둘은 `gitio.py` 의 무손실 경로와 git 항목(모드·객체 ID) 비교, 그리고 루프의 작은 결함을 고친다.
+**Architecture:** 새 모듈 `herdr-team/lib/hteam/approval.py` 가 승인 상황(`view`)과 일괄 승인 묶음(`design-review`), 그 답의 결정(`design-review --decide`)을 맡는다. 묶음은 `state/design-review.json` 에 먼저 기록하고 outbox 의 `approval` 항목으로 쓴다(그 사이 죽어도 두 번 묻지 않는다). 답은 결정 기록 하나(고칠 태스크와 의존 승인 태스크마다 그때의 라운드·사용자 요청, 승인할 태스크마다 그때의 라운드)를 한 번 쓰고 그대로 다시 하는 방식으로 처리한다. 수정 라운드는 바로 띄우지 않고(queued) `start-ready` 의 의존 검사가 선행이 다시 승인될 때까지 기다리게 한다. `coord.py` 는 이 모듈로 `status` 의 awaiting_user `next` 와 `wait` 의 답 주석(`design_review`)을 만든다. 인터뷰 규칙은 hteam 코드가 아니라 planner 직무 문서가 담는다(설계 10장). 리뷰어는 `hteam ask-user --history` 로 실제 질문과 답을 확인한다. 정리 태스크 둘은 `gitio.py` 의 무손실 경로와 git 항목(모드·객체 ID) 비교, 그리고 루프의 작은 결함을 고친다.
 
 **Tech Stack:** Python 3.11+ 표준 라이브러리(argparse, tomllib, subprocess, fcntl, unittest), git, herdr-orch 0.1.1(`horch`, 바꾸지 않는다), herdr-core `hc`, herdr-app, Claude Code CLI, Codex CLI.
 
@@ -41,11 +41,13 @@
 ```
 herdr-team/
   lib/hteam/
-    approval.py   새로: 승인 상황 view·stale, design-review 묶음·기록 검사·복구, 답 주석 reply_view·reply_hint(Task 3·4)
+    approval.py   새로: 승인 상황 view·stale(읽기만), design-review 묶음·기록 검사·복구(Task 3), 일괄 승인 결정
+                  --decide·답 주석 reply_view·reply_hint(Task 4)
     cli.py        COMMAND_MODULES 에 "approval"(Task 3), 출력 JSON 은 util.dumps(Task 5)
     paths.py      Project.design_review(Task 3)
     util.py       read_json_strict·bad_side_file(Task 3), dumps·show(Task 5)
-    tasks.py      accept·fix 의 --round, accept 의 stale 거부·awaiting_user next, fix 의 from_user(Task 4), 이어 붙인 워커의 next·hint(Task 6)
+    tasks.py      accept·fix 의 --round, accept 의 마지막 전이에서 stale 재확인·awaiting_user next, fix 의
+                  queued·from_user(Task 4), 이어 붙인 워커의 next·hint(Task 6)
     compose.py    수정 라운드의 열린 질문(Task 2), 사용자 수정 요청 블록(Task 4), 리뷰 프롬프트 경로 표시(Task 5)
     coord.py      awaiting_user next·답 주석·한 Delivery 안의 중복(Task 4), applied 손상·run_error(Task 6)
     gitio.py      무손실 경로(top_prefix 포함)·git 항목(모드:ID)·작업 트리 항목(Task 5), index.lock 다시 시도(Task 6)
@@ -92,6 +94,8 @@ docs/superpowers/specs/2026-11-05-herdr-team-design.md   동작을 바꾼 태스
 ### 태스크 상태에 더하는 것
 
 - 라운드 기록 `rounds[i].from_user: true`: awaiting_user 에서 `fix` 로 연 라운드(사용자 수정 요청, Task 4).
+- 라운드 기록 `rounds[i].queued: true`: 일괄 승인 결정으로 만들고 아직 띄우지 않은 수정 라운드(`launch_failed`, Task 4). `start-ready` 가 의존이 풀린 뒤 띄운다.
+- 묶음 기록 `batches[i].decision`(Task 4) = `{"at", "input": {태스크: 사용자 요청}, "fix": [{"task", "round", "note", "because"}], "accept": [{"task", "round"}], "skipped": [{"task", "why"}], "done": null | 시각}`.
 - 새 필드는 아니지만 stale 판정(Task 3)이 history 의 `start`·`fix` 기록(`round`, `at`)으로 라운드를 연 시각을 읽는다.
 - 리뷰 기준점 `baseline.exec_bit`(core.fileMode), `dirty`·`index` 의 값은 `모드:객체 ID`(Task 5). 이 커밋 전에 만든 기준점은 값이 객체 ID 뿐이라 그 시도의 review-finish 는 변조로 본다(배포 전 중간 형식이라 옮기지 않는다. 사용자가 확인한 뒤 `review --retry`).
 
@@ -612,7 +616,7 @@ Expected: `git grep` 출력 없음, 커밋 성공. 컨트롤러가 `scripts/code
 
 정한 것(설계가 정하지 않은 부분, 이 커밋에서 설계 11.4 에 옮긴다):
 - 한 (태스크, 라운드)는 한 번만 묻는다. 이미 물은 태스크가 답을 기다리는 동안 새 태스크가 awaiting_user 가 되면 새 묶음에는 새 태스크만 넣는다. 수정 라운드는 라운드가 달라 다시 묻는다. 링크가 없으면 보고서 경로를 쓴다.
-- **stale**: 승인 태스크의 선행(직간접)이 이 태스크의 현재 라운드를 연 뒤에 새 라운드를 열었으면(사용자 수정 요청으로 고쳐졌으면) 이 태스크는 옛 선행을 보고 만든 것이다. 설계 11.4 "그 태스크에 의존하는 승인 태스크도 이어서 fix"(사용자 결정)를 기계적으로 지키려고, stale 인 awaiting_user 태스크가 있으면 묻지 않고 exit 3 `approval_stale` 로 그 태스크의 fix 를 요구한다(다른 묶음에 들어갔거나, 코디네이터가 선행만 고치고 죽었어도 놓치지 않는다). 라운드를 연 시각은 상태 history 의 그 라운드 `start`·`fix` 기록이다. 같은 초에 열린 것은 함께 고친 것으로 본다(stale 아님).
+- **stale**: 승인 태스크의 선행(직간접)이 이 태스크의 현재 라운드를 연 뒤에 새 라운드를 열었으면(사용자 수정 요청으로 고쳐졌으면) 이 태스크는 옛 선행을 보고 만든 것이다. 의존 승인 태스크는 일괄 승인 결정(Task 4)이 선행과 함께 고치므로, stale 은 결정 밖에서 선행을 고친 이상한 경우다. 그래서 읽기만 하는 검사 하나로 둔다: stale 인 awaiting_user 태스크가 있으면 묻지 않고 exit 3 `approval_stale`(fix 를 자동으로 권하지 않는다. 메인에 알린다). 라운드를 연 시각은 상태 history 의 그 라운드 `start`·`fix` 기록이다. 같은 초에 열린 것은 함께 고친 것으로 본다(stale 아님).
 - 상태 파일 하나라도 읽지 못하면 묶음을 잘못 나눌 수 있어 묻지 않는다(exit 1 `bad_state_file`). 기록은 모양을 모두 검사한다(묶음 id·시각·out-id·태스크·라운드·render, 묶음·out-id·태스크 라운드 중복). 어기면 쓰기 전에 exit 1 `bad_side_file`.
 - 쓰는 순서는 기록(id 없음) → outbox(묶음 id `batch` 를 붙인다) → 기록의 id 이고 모두 프로젝트 잠금 안이다. 그 사이 죽으면 다음 호출이 새 묶음보다 먼저 마저 쓴다. outbox 에서 같은 `batch` 를 찾는 일은 `outbox.append` 의 잠금 안에서, 마지막 LF 가 빠진 줄을 완결한 뒤에 한다(잠금 밖에서 찾으면 LF 만 빠진 항목을 못 보고 같은 질문을 두 번 쓴다).
 
@@ -642,7 +646,7 @@ import json
 import unittest
 
 from tests.helpers import BASE_CONFIG, TeamCase
-from hteam import approval, config, outbox, state
+from hteam import approval, config, dispatch, outbox, roles, state
 from hteam.paths import Project
 
 APPROVAL = BASE_CONFIG.replace("user_approval_roles = []", 'user_approval_roles = ["designer"]') + """
@@ -662,13 +666,17 @@ class ApprovalCase(TeamCase):
         self.p = Project(self.proj)
 
     def task(self, tid, status, role="designer", rnd=1, depends=None, title="화면 디자인"):
-        """상태만 만든다(워커는 띄우지 않는다). designer 는 화면마다, developer 는 태스크마다 owns 를 나눈다."""
+        """상태만 만든다(워커는 띄우지 않는다). designer 는 화면마다, developer 는 태스크마다 owns 를 나눈다. 시작한
+        태스크에는 띄운 적 없는 라운드 기록 하나를 둔다(accept·fix 가 라운드 기록을 본다)."""
         owns = f"docs/design/screens/{tid.lower()}/**" if role == "designer" else f"src/{tid.lower()}/**"
         self.write_spec(tid, role, title=title, owns=owns, depends=depends, commit=False)
         state.create(self.p, tid, role)
         if status != "pending":
             with state.edit(self.p, tid) as st:
-                st.update(round=rnd, owns=[owns])
+                rd = {"round": rnd, "round_base": None, "agent": "claude", "model": None, "effort": None, "note": None,
+                      "supplement": None, "work": dispatch.new_slot(roles.work_title(tid, rnd)), "reviews": [],
+                      "verdict": None}
+                st.update(round=rnd, owns=[owns], rounds=[rd])
                 state.move(st, status, "test")
 
     def move(self, tid, status, rnd=None):
@@ -765,7 +773,7 @@ class DesignReviewTest(ApprovalCase):
         code, out = self.review()
         self.assertEqual((code, out["error"]["code"]), (3, "approval_stale"), out)
         self.assertEqual(out["stale"], [{"task": "T-002", "round": 1, "because": ["T-001"]}])
-        self.assertIn("--round 1", out["error"]["hint"])
+        self.assertIn("메인에 알린다", out["error"]["hint"])
         self.assertEqual(approval.stale(self.p, config.load(self.p), state.all_states(self.p)), {"T-002": ["T-001"]})
         self.opened("T-002", 2, "2026-11-06T10:05:00Z")  # 선행과 함께(같은 초에) 고쳤다: stale 이 아니다
         code, out = self.review()
@@ -989,9 +997,10 @@ approved·changes·launch_failed)이거나 지금 바로 시작할 수 있는(�
 하나로 묻는다. 승인 → 비승인 → 승인 사슬의 뒤 태스크는 비승인 태스크가 done 이어야 시작할 수 있으므로 앞 묶음을 막지
 않고 다음 묶음이 된다.
 
-stale: 승인 태스크의 선행(직간접)이 이 태스크의 현재 라운드를 연 뒤에 새 라운드를 열었으면(사용자 수정 요청으로 고쳐짐)
-이 태스크는 옛 선행을 보고 만든 것이다. 설계 11.4 의 "그 태스크에 의존하는 승인 태스크도 이어서 fix" 를 지키려고 stale
-인 awaiting_user 태스크가 있으면 묻지 않는다(approval_stale). 라운드를 연 시각은 history 의 그 라운드 start·fix 기록이다.
+stale: 승인 태스크의 선행(직간접)이 이 태스크의 현재 라운드를 연 뒤에 새 라운드를 열었으면 이 태스크는 옛 선행을 보고
+만든 것이다. 일괄 승인 결정(decide)은 의존 승인 태스크를 선행과 함께 고치므로 stale 은 결정 밖에서 선행을 고친 경우뿐이다.
+읽기만 하는 검사다: stale 인 awaiting_user 태스크는 묻지 않고(approval_stale) accept 가 받지 않는다. 라운드를 연 시각은
+history 의 그 라운드 start·fix 기록이다.
 
 기록 `state/design-review.json` = {"batches": [{"batch": "dr-0001", "at", "id": "out-NNNN" | null, "render",
 "tasks": [{"task", "round"}]}]}. 한 (태스크, 라운드)는 한 번만 묻는다(수정 라운드는 라운드가 달라 다시 묻는다).
@@ -1147,7 +1156,8 @@ def view(p, cfg, states: list[dict] | None = None, data: dict | None = None) -> 
     stale: waiting 가운데 선행이 그 뒤에 고쳐진 것({task, round, because}), fresh: waiting 가운데 stale 이 아니고 아직 묻지
     않은 것, asked: 물은 (태스크, 라운드) → out-id. 상태는 읽기만 한다."""
     states = state.all_states(p) if states is None else states
-    done = asked(load(p) if data is None else data)
+    data = load(p) if data is None else data
+    done = asked(data)
     behind = stale(p, cfg, states)
     waiting, blockers = [], []
     for st in states:
@@ -1260,13 +1270,11 @@ def design_review(p) -> dict:
         v = view(p, cfg, data=data)
         if not v["waiting"]:
             raise HteamError("nothing_to_approve", "awaiting_user 인 승인 직무 태스크가 없다", CONFLICT)
-        if v["stale"]:
+        if v["stale"]:  # 읽기만 한다. 일괄 승인 결정은 의존 태스크를 함께 고치므로 이것은 결정 밖에서 선행을 고친 경우다
             names = ", ".join(f"{s['task']} r{s['round']}(선행 {', '.join(s['because'])})" for s in v["stale"])
-            fixes = "; ".join(f"`hteam fix {s['task']} --round {s['round']} --note=\"선행 {', '.join(s['because'])} 의 "
-                              "수정을 반영한다\"`" for s in v["stale"])
-            raise HteamError("approval_stale", f"선행이 그 뒤에 고쳐져 다시 만들어야 하는 승인 태스크가 있다: {names}",
-                             CONFLICT, f"{fixes}. 그 태스크들이 다시 승인된 뒤 design-review 를 다시 부른다",
-                             data={"stale": v["stale"]})
+            raise HteamError("approval_stale", f"선행이 그 뒤에 고쳐져 옛 선행을 보고 만든 승인 태스크는 묻지 않는다: {names}",
+                             CONFLICT, "메인에 알린다. 사용자가 정하면 그 태스크를 `hteam fix T --note=…` 로 다시 만든 뒤 "
+                             "design-review 를 다시 부른다", data={"stale": v["stale"]})
         if not v["fresh"]:
             ids = sorted({v["asked"][(s["id"], s["round"])] for s in v["waiting"]})
             raise HteamError("already_asked", f"awaiting_user 승인 태스크는 이미 물었다: {', '.join(ids)}", CONFLICT,
@@ -1304,7 +1312,7 @@ def register(sub) -> None:
 ```
 
 ```markdown
-같은 태스크·라운드 묶음을 이미 물었으면 exit 3. 기록은 `state/design-review.json`. 한 (태스크, 라운드)는 한 번만 묻는다: 이미 물은 태스크가 답을 기다리는 동안 새로 awaiting_user 가 된 태스크는 다음 묶음이 되고, 수정 라운드는 라운드가 달라 다시 묻는다. 링크가 없으면 보고서 경로를 보인다. 선택지 label 은 render 규칙(7.4)대로 `모두 승인 (추천)` / `수정 요청` 이다. 묶음 기록을 먼저 쓰고 outbox 항목에 묶음 id 를 붙인다. 그 사이 죽으면 다음 호출이 그 묶음을 마저 쓴다(같은 묶음을 찾는 일은 outbox 잠금 안에서 한다. 두 번 묻지 않는다). 선행(직간접)이 그 태스크의 현재 라운드를 연 뒤에 새 라운드를 열었으면(사용자 요청으로 고쳐졌으면) 그 태스크는 stale 이다: 옛 선행을 보고 만들었으므로 묻지 않고 exit 3 `approval_stale` 로 그 태스크의 `fix` 를 요구한다(라운드를 연 시각은 상태 history 의 start·fix 기록, 같은 초면 함께 고친 것).
+같은 태스크·라운드 묶음을 이미 물었으면 exit 3. 기록은 `state/design-review.json`. 한 (태스크, 라운드)는 한 번만 묻는다: 이미 물은 태스크가 답을 기다리는 동안 새로 awaiting_user 가 된 태스크는 다음 묶음이 되고, 수정 라운드는 라운드가 달라 다시 묻는다. 링크가 없으면 보고서 경로를 보인다. 선택지 label 은 render 규칙(7.4)대로 `모두 승인 (추천)` / `수정 요청` 이다. 묶음 기록을 먼저 쓰고 outbox 항목에 묶음 id 를 붙인다. 그 사이 죽으면 다음 호출이 그 묶음을 마저 쓴다(같은 묶음을 찾는 일은 outbox 잠금 안에서 한다. 두 번 묻지 않는다). 선행(직간접)이 그 태스크의 현재 라운드를 연 뒤에 새 라운드를 열었으면 그 태스크는 stale 이다: 옛 선행을 보고 만들었으므로 묻지 않는다(exit 3 `approval_stale`, 읽기만 하는 검사. 라운드를 연 시각은 상태 history 의 start·fix 기록, 같은 초면 함께 고친 것). 일괄 승인 결정이 의존 태스크를 함께 고치므로 이것은 결정 밖에서 선행을 고친 경우다.
 ```
 
 - [ ] **Step 4: 통과 확인**
@@ -1329,28 +1337,38 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam
 Expected: `git grep` 출력 없음, 커밋 성공. 컨트롤러가 `scripts/codex-review.sh commit HEAD` 를 돌리고 Global Constraints 의 Codex 규칙대로 처리한다.
 
 ---
-### Task 4: 승인 흐름 연결 — accept·status·wait 답 주석·사용자 수정 라운드·문서
+### Task 4: 승인 흐름 연결 — 일괄 승인 결정 기록, accept·status·wait, 사용자 수정 라운드, 문서
 
-설계 11.4·6.4·7.4·13장: 승인 직무 태스크를 accept 하면 `awaiting_user` 가 되고 다음 명령이 `design-review` 다. `status` 는 awaiting_user 태스크마다 `next`(stale 이면 `fix --round`, 묻지 않았고 막는 승인 태스크가 없으면 `design-review`) 또는 `hint`(어느 질문의 답을, 어느 승인 태스크를 기다리는지)를 준다. 1단계 `coord.py` 의 awaiting_user hint 가 없는 명령을 가리키던 것을 이것으로 바꾼다. `wait` 는 일괄 승인 질문의 답(`[main] reply out-NNNN`)에 `design_review` 를 붙이고, 한 Delivery 안의 같은 out-id 는 뒤의 것을 `duplicate: true` 로 표시한다. 코디네이터가 답을 해석한다(사용자 결정): 승인이면 accept, 아니면 해당 태스크 `fix --note`, 수정 요청이 가리키지 않은 태스크는 승인, 그 태스크에 의존하는 승인 태스크도 이어서 fix. awaiting_user 에서 연 수정 라운드는 사양의 수정 블록이 "사용자 요청"으로 적는다.
+설계 11.4·6.4·7.4·13장: 승인 직무 태스크를 accept 하면 `awaiting_user` 가 되고 다음 명령이 `design-review` 다. 일괄 승인 질문의 답은 코디네이터가 해석한다(사용자 결정): 이름이 나온 태스크는 그 요청으로 고치고, 이름이 없는 태스크는 승인하고, 고칠 태스크에 의존하는 승인 태스크도 고친다.
 
-다시 온 답이 일을 두 번 하지 않게(Codex 계획 리뷰 r1 P1): accept·fix 에 `--round N` 을 더한다(지금 라운드가 N 일 때만 한다, 아니면 exit 3 `round_changed`). 고칠 대상은 답과 묶음 전체(pending 이 아닌 태스크 포함)로 먼저 정하고 의존 승인 태스크는 프로젝트 전체 그래프에서 찾는다(`dependents`, 다른 묶음 포함). 실행할 때만 지금 awaiting_user 인지로 거른다. 선행만 고치고 죽었어도 의존 태스크는 stale(Task 3)이라 accept 가 거부하고 status 가 fix 를 준다. 상태 파일을 읽지 못한 태스크가 있으면 처리한 것으로 보지 않는다(`unknown`, applied 하지 않는다). 이 커밋에서 설계 6.4·7.4·11.4 를 맞춘다.
+다시 온 답·재시작에서 일을 두 번 하거나 빠뜨리지 않게(Codex 계획 리뷰 r1·r2), 답 처리는 **결정 기록 하나를 한 번 쓰고 그대로 다시 하는 방식**이다:
+- 코디네이터가 해석한 것을 `hteam design-review --decide <out-id> --json -` 에 넘긴다: `{"fix": {"T-xxx": "<사용자 요청 원문>"}}`(모두 승인이면 `{"fix": {}}`).
+- hteam 이 프로젝트 잠금 안에서 결정을 한 번 계산해 그 묶음 기록(`state/design-review.json` 의 `decision`)에 **먼저** 쓴다: 고칠 태스크(지목된 묶음 태스크와 그것에 직간접으로 의존하는 승인 태스크 전부, 다른 묶음 포함)마다 **그때의 라운드**와 사용자 요청, 승인할 태스크(묶음의 나머지)마다 그때의 라운드. 아직 시작하지 않은 의존 태스크(pending)는 고칠 것이 없고(선행이 다시 승인된 뒤에 시작한다), 끝난 태스크(done·dropped)는 고칠 수 없어 `skipped` 로 남긴다.
+- 그다음 기록대로 `fix --round <기록한 라운드>`·`accept --round <기록한 라운드>` 를 한다. 수정 라운드는 바로 띄우지 않는다(`launch_failed`, `queued`). 그래서 `start-ready` 의 의존 검사(승인 직무 선행은 awaiting_user·done 이어야 끝난 것, `tasks.deps_met`)가 의존 태스크를 선행의 수정 라운드가 다시 승인될 때까지 기다리게 한다. `status` 는 queued 라운드의 next 를 `start-ready` 로 준다(`start T` 는 의존을 보지 않으므로 권하지 않는다).
+- 다시 부르면(재시작·다시 온 답, 입력 없이) 기록대로 이어 한다. 기록한 라운드가 이미 지난 항목은 한 것이다(`round_changed`·`task_closed`). 사용자 요청은 기록에 있으므로 잃지 않는다. 끝나면 hteam 이 `applied` 를 적는다.
+- 결정이 끝나지 않은 동안에는 다른 묶음의 결정과 새 질문을 하지 않는다(exit 3 `decision_pending`). `status` 는 그 결정의 항목 태스크마다 next 를 `design-review --decide <out-id>` 로 준다(일반 fix 를 권하지 않는다).
+- `accept` 의 stale 검사(Task 3, 읽기만)는 마지막 전이 때 프로젝트 → 태스크 잠금 아래에서 한다(선행의 새 라운드는 fix 가 프로젝트 잠금 안에서 쓴다).
+- `wait` 는 답에 `design_review`(묶음, `approve_all`, `decision` 상태, 묶음 태스크의 `pending`, 상태를 읽지 못한 `unknown`)를 붙이고, 한 Delivery 안의 같은 out-id 는 뒤의 것을 `duplicate: true` 로 표시한다.
 
-정한 것: `approve_all` 은 답이 정확히 `모두 승인 (추천)` 일 때만 참이다. 메인은 사용자가 `수정 요청` 을 고르면 무엇을 고칠지 대화로 물은 뒤 `수정 요청: <내용>` 한 줄로 답한다.
+정한 것: `approve_all` 은 답이 정확히 `모두 승인 (추천)` 일 때만 참이다(코디네이터 안내용). 결정 입력의 태스크는 그 묶음의 태스크여야 한다. 이미 기록된 결정에 새 입력을 주면 쓰지 않고 경고한다. 결정으로 고치는 의존 태스크는 진행 중(working·launch_failed·changes·reviewing·approved)이어도 수정 라운드로 돌리고, 라운드 상한은 보지 않는다(사용자 요청에서 나온 수정이다). 메인은 사용자가 `수정 요청` 을 고르면 무엇을 고칠지 대화로 물은 뒤 `수정 요청: <내용>` 한 줄로 답한다. 이 커밋에서 설계 6.4·7.4·11.4 를 맞춘다.
 
 **Files:**
-- Modify: `herdr-team/lib/hteam/tasks.py`(`_expect_round`, `accept`, `fix`, CLI `--round`), `herdr-team/lib/hteam/compose.py`(수정 블록), `herdr-team/lib/hteam/approval.py`(`reply_view`, `reply_hint`), `herdr-team/lib/hteam/coord.py`(`_once`, `_annotate_main`, `_design_review`, `annotate`, `wait`, `next_step`, `_awaiting`, `status`)
+- Modify: `herdr-team/lib/hteam/tasks.py`(`_expect_round`, `_refuse_stale`, `accept`, `fix`, CLI `--round`), `herdr-team/lib/hteam/compose.py`(수정 블록), `herdr-team/lib/hteam/approval.py`(결정: `decide`·`_compute`·`_apply`·검사, `view` 의 `replay`, `design_review` 의 `decision_pending`, `reply_view`, `reply_hint`, CLI `--decide`), `herdr-team/lib/hteam/coord.py`(`_once`, `_annotate_main`, `_design_review`, `annotate`, `wait`, `next_step`, `_awaiting`, `status`)
 - Modify: `herdr-team/templates/coordinator.md`, `herdr-team/templates/CLAUDE.section.md`, `docs/superpowers/specs/2026-11-05-herdr-team-design.md`(6.4, 7.4, 11.4)
-- Test: `herdr-team/tests/test_approval.py`(`ApprovalFlowTest`, `ApprovalReplyTest`, `ApprovalDocsTest`)
+- Test: `herdr-team/tests/test_approval.py`(`ApprovalReplyTest`, `ApprovalDecisionTest`, `ApprovalFlowTest`, `ApprovalDocsTest`)
 
 **Interfaces:**
-- Consumes: Task 3 의 `approval.load(p)`, `approval.view(p, cfg, states)`, `approval.stale(p, cfg, states, graph)`, `approval.Graph(p)`, `approval.APPROVE`, `tests.test_approval.ApprovalCase`. 기존 `specs.list_ids(p)`, `state.load(p, tid)`, `state.all_states(p)`, `state.id_number`.
+- Consumes: Task 3 의 `approval.load`, `approval.view`, `approval.stale`, `approval.Graph`, `approval._task_ok`, `approval.APPROVE`, `tests.test_approval.ApprovalCase`(`task`·`opened`·`review`·`record`). 기존 `tasks.deps_met`, `specs.list_ids(p)`, `state.load`, `state.all_states`, `state.unreadable_ids`, `state.id_number`, `outbox.mark_applied(p, oid)`.
 - Produces:
-  - `hteam accept T [--round N]`, `hteam fix T … [--round N]`: 지금 라운드가 N 이 아니면 exit 3 `round_changed`(data `round`). `tasks.accept(p, tid, expect_round=None)`, `tasks.fix(..., expect_round=None)`. `accept` 는 awaiting_user 인 승인 태스크가 stale 이면 exit 3 `approval_stale`(data `because`).
+  - `hteam accept T [--round N]`, `hteam fix T … [--round N]`: 지금 라운드가 N 이 아니면 exit 3 `round_changed`(data `round`). `tasks.accept(p, tid, expect_round=None)`: awaiting_user 인 승인 태스크가 stale 이면 마지막 전이에서 exit 3 `approval_stale`(data `because`). die_at 지점 `accept_before_final`.
+  - `tasks.fix(..., expect_round=None, queue=False, from_user=None, extra_from=())`: `queue` 면 새 라운드를 쓰고 띄우지 않는다(`launch_failed`, 라운드 기록 `queued: true`, 결과 `{"task", "round", "status": "launch_failed", "queued": true, "next": [".herdr-team/bin/hteam", "start-ready"]}`). `from_user` 가 None 이면 awaiting_user 에서 연 라운드일 때 `from_user: true`. `extra_from` 은 FIX_FROM 밖에서 더 받을 상태.
   - `accept` 결과: awaiting_user 로 갔으면 `"next": [".herdr-team/bin/hteam", "design-review"]` 와 `hint`.
-  - 라운드 기록 `from_user: true`(awaiting_user 에서 연 fix). 사양 수정 블록 문장 `사용자가 일괄 승인에서 수정을 요청했다(이전 리뷰는 승인이었다).` 와 `사용자 요청: <note>`(아니면 `코디네이터 메모: <note>`).
-  - `approval.reply_view(p, cfg, oid, answer, states=None) -> {"batch", "approve_all", "unknown": [태스크], "tasks": [{"task", "round", "status", "round_now", "pending", "stale", "depends_on", "dependents": [{"task", "status", "round", "stale"}]}]} | None`, `approval.reply_hint(view, oid) -> str`.
-  - `coord.next_step(..., appr=None)`: awaiting_user 는 `appr`(approval.view 결과)로 정한다. `coord.annotate(..., cfg=, states=)` 의 `[main] reply` 주석에 `design_review`(일괄 승인 질문의 답일 때). 기록·설정을 읽지 못하면 `warning`. `wait` 는 한 Delivery 안의 같은 `reply_to` 뒤 메시지를 `duplicate: true` 로.
-  - `status` 의 `warnings` 에 일괄 승인 기록 오류.
+  - 사양 수정 블록 문장 `사용자가 일괄 승인에서 수정을 요청했다(이전 리뷰는 승인이었다).` 와 `사용자 요청: <note>`(아니면 `코디네이터 메모: <note>`).
+  - `hteam design-review --decide OUT_ID [--json -]` → `approval.decide(p, oid, text)`: `{"id", "batch", "decision", "replayed", "fixed": [{"task", "round"}], "accepted": [태스크], "passed": [이미 한 항목], "skipped", "warnings", "next": [".herdr-team/bin/hteam", "start-ready"], "hint"}`. 오류: exit 2 `unknown_batch`·`bad_decision`·`usage`(결정이 없는데 입력 없음), exit 3 `decision_pending`(data `pending`)·`approval_stale`, exit 1 `bad_state_file`. die_at 지점 `decision_recorded`(기록 뒤), `decision_after_fix`(fix 항목마다).
+  - 기록의 `decision` = `{"at", "input": {태스크: 요청}, "fix": [{"task", "round", "note", "because": [선행 지목 태스크]}], "accept": [{"task", "round"}], "skipped": [{"task", "why"}], "done": null | 시각}`.
+  - `approval.view` 결과에 `replay`(끝나지 않은 결정의 항목 태스크 → out-id). `design-review`(묻기)는 끝나지 않은 결정이 있으면 exit 3 `decision_pending`.
+  - `approval.reply_view(p, oid, answer, states=None) -> {"batch", "approve_all", "decision": None | "recorded" | "done", "unknown", "tasks": [{"task", "round", "status", "round_now", "pending"}]} | None`, `approval.reply_hint(view, oid) -> str`.
+  - `coord.next_step(..., appr=None)`: 결정 항목이면 `design-review --decide <out-id>`, queued 라운드면 `start-ready`, awaiting_user 는 `appr` 로. `coord.annotate` 의 `[main] reply` 주석에 `design_review`. `wait` 는 한 Delivery 안의 같은 `reply_to` 뒤 메시지를 `duplicate: true` 로.
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
@@ -1367,6 +1385,7 @@ from tests.helpers import BASE_CONFIG, TeamCase
 import json
 import time
 import unittest
+from pathlib import Path
 
 from tests.helpers import BASE_CONFIG, ROOT, TeamCase
 ```
@@ -1387,40 +1406,152 @@ if __name__ == "__main__":
 H = ".herdr-team/bin/hteam"
 
 
-class ApprovalReplyTest(ApprovalCase):
-    """답 주석(reply_view)이 처리 대상을 바르게 알려 준다: 다른 묶음의 의존 태스크, 읽지 못한 상태."""
+class DecisionCase(ApprovalCase):
+    def decide(self, oid, fix=None, **kw):
+        """design-review --decide. fix 가 None 이면 입력 없이(기록대로 다시 한다)."""
+        args = ["design-review", "--decide", oid] + ([] if fix is None else ["--json", "-"])
+        stdin = None if fix is None else json.dumps({"fix": fix}, ensure_ascii=False)
+        return self.hteam(*args, stdin=stdin, **kw)
 
-    def test_dependents_come_from_the_whole_project(self):
-        # T-001 의 답을 기다리는 동안 T-001 에 의존하는 T-002 가 따로 둘째 묶음에 들어갔다
-        self.task("T-001", "awaiting_user")
-        self.assertEqual(self.review()[1].get("id"), "out-0001")
-        self.task("T-002", "awaiting_user", depends="T-001")
-        self.assertEqual(self.review()[1].get("id"), "out-0002")
-        cfg = config.load(self.p)
-        view = approval.reply_view(self.p, cfg, "out-0001", "수정 요청: T-001 색을 바꿔")
-        [first] = view["tasks"]
-        self.assertEqual(first["dependents"], [{"task": "T-002", "status": "awaiting_user", "round": 1, "stale": False}])
-        self.assertFalse(view["approve_all"])
-        self.assertIn("dependents", approval.reply_hint(view, "out-0001"))
-        self.assertEqual(approval.reply_view(self.p, cfg, "out-0002", "모두 승인 (추천)")["tasks"][0]["depends_on"],
-                         ["T-001"])
-        self.assertIsNone(approval.reply_view(self.p, cfg, "out-0009", "x"))  # 일괄 승인 질문이 아니다
+    def rounds(self, *tids):
+        return [(t, self.task_state(t)["status"], self.task_state(t)["round"]) for t in tids]
 
+
+class ApprovalReplyTest(DecisionCase):
     def test_unreadable_task_state_is_not_treated_as_done(self):
         self.task("T-001", "awaiting_user")
         self.assertEqual(self.review()[0], 0)
         (self.state_dir / "tasks" / "T-001.json").write_text("{", encoding="utf-8")
-        view = approval.reply_view(self.p, config.load(self.p), "out-0001", "모두 승인 (추천)")
-        self.assertEqual(view["unknown"], ["T-001"])
-        self.assertFalse(view["tasks"][0]["pending"])
+        view = approval.reply_view(self.p, "out-0001", "모두 승인 (추천)")
+        self.assertEqual((view["unknown"], view["tasks"][0]["pending"], view["decision"]), (["T-001"], False, None))
         hint = approval.reply_hint(view, "out-0001")
-        self.assertIn("applied", hint)
-        self.assertIn("하지 않는다", hint)
-        self.assertNotIn("이미 모두 처리됐다", hint)
+        self.assertIn("결정하지 않는다", hint)
+        self.assertIsNone(approval.reply_view(self.p, "out-0009", "x"))  # 일괄 승인 질문이 아니다
+        code, out = self.decide("out-0001", {})  # 결정도 상태를 읽지 못하면 하지 않는다
+        self.assertEqual((code, out["error"]["code"]), (1, "bad_state_file"), out)
+        self.assertNotIn("decision", self.record()["batches"][0])
 
 
-class ApprovalFlowTest(ApprovalCase):
-    """accept → awaiting_user → design-review → 메인 답 → wait 주석 → accept·fix(설계 11.4)."""
+class ApprovalDecisionTest(DecisionCase):
+    """일괄 승인 결정: 한 번 기록하고 기록대로 다시 한다(설계 11.4)."""
+
+    def test_decision_fixes_named_tasks_and_their_dependents_in_other_batches(self):
+        self.task("T-001", "awaiting_user")
+        self.task("T-002", "awaiting_user")
+        self.assertEqual(self.review()[1].get("id"), "out-0001")
+        self.task("T-003", "awaiting_user", depends="T-001")  # T-001 의 답을 기다리는 동안 따로 둘째 묶음에 들어갔다
+        self.assertEqual(self.review()[1].get("id"), "out-0002")
+        self.task("T-004", "pending", depends="T-001")  # 아직 시작하지 않았다: 선행이 다시 승인된 뒤에 시작한다
+        code, out = self.decide("out-0001", {"T-001": "버튼을 크게"})
+        self.assertEqual(code, 0, out)
+        d = out["decision"]
+        self.assertEqual([(e["task"], e["round"], e["note"]) for e in d["fix"]],
+                         [("T-001", 1, "버튼을 크게"), ("T-003", 1, "선행 T-001 의 사용자 요청을 반영한다: 버튼을 크게")])
+        self.assertEqual(d["accept"], [{"task": "T-002", "round": 1}])
+        self.assertEqual([s["task"] for s in d["skipped"]], ["T-004"])
+        self.assertEqual(self.rounds("T-001", "T-002", "T-003"),
+                         [("T-001", "launch_failed", 2), ("T-002", "done", 1), ("T-003", "launch_failed", 2)])
+        self.assertTrue(self.task_state("T-003")["rounds"][-1]["queued"])
+        work = (self.state_dir / "tasks/T-003/r2-work.md").read_text(encoding="utf-8")
+        self.assertIn("사용자 요청: 선행 T-001 의 사용자 요청을 반영한다: 버튼을 크게", work)
+        self.assertIn("out-0001", json.loads((self.state_dir / "applied.json").read_text(encoding="utf-8")))
+        tasks_ = {t["id"]: t for t in self.hteam("status")[1]["tasks"]}
+        self.assertEqual(tasks_["T-003"]["next"], [H, "start-ready"])  # start T 는 의존을 보지 않으므로 권하지 않는다
+        # 둘째 묶음의 답(모두 승인)이 와도 이미 고친 T-003 을 승인하지 않는다
+        code, out = self.decide("out-0002", {})
+        self.assertEqual((code, out["decision"]["accept"]), (0, []), out)
+        # 첫 답이 다시 와도 기록한 라운드가 지나 아무것도 다시 하지 않는다(T-003 은 r3 가 되지 않는다)
+        code, out = self.decide("out-0001")
+        self.assertEqual((code, out["replayed"]), (0, True), out)
+        self.assertEqual(self.rounds("T-001", "T-003"), [("T-001", "launch_failed", 2), ("T-003", "launch_failed", 2)])
+
+    def test_crash_and_replay_keep_every_request(self):
+        # T-002 는 T-001 에 의존한다. 사용자는 둘 다 고치라고 했다(T-001 버튼, T-002 글꼴)
+        self.task("T-001", "awaiting_user")
+        self.task("T-002", "awaiting_user", depends="T-001")
+        self.review()
+        want = {"T-001": "버튼을 크게", "T-002": "글꼴을 바꾼다"}
+        code, _ = self.decide("out-0001", want, env={"HTEAM_TEST_DIE_AT": "decision_recorded"})
+        self.assertEqual(code, 137)
+        self.assertEqual(self.rounds("T-001", "T-002"), [("T-001", "awaiting_user", 1), ("T-002", "awaiting_user", 1)])
+        tasks_ = {t["id"]: t for t in self.hteam("status")[1]["tasks"]}
+        self.assertEqual(tasks_["T-002"]["next"], [H, "design-review", "--decide", "out-0001"])  # 일반 fix 를 권하지 않는다
+        code, _ = self.decide("out-0001", env={"HTEAM_TEST_DIE_AT": "decision_after_fix"})  # 첫 fix 뒤 죽었다
+        self.assertEqual(code, 137)
+        self.assertEqual(self.rounds("T-001", "T-002"), [("T-001", "launch_failed", 2), ("T-002", "awaiting_user", 1)])
+        code, out = self.decide("out-0001", {"T-001": "다른 해석"})  # 다시 온 답을 다르게 읽어도 기록대로 한다
+        self.assertEqual((code, out["replayed"], out["passed"]), (0, True, ["T-001"]), out)
+        self.assertTrue(out["warnings"])
+        self.assertEqual(self.rounds("T-001", "T-002"), [("T-001", "launch_failed", 2), ("T-002", "launch_failed", 2)])
+        second = (self.state_dir / "tasks/T-002/r2-work.md").read_text(encoding="utf-8")
+        self.assertIn("글꼴을 바꾼다", second)
+        self.assertIn("선행 T-001 의 사용자 요청을 반영한다: 버튼을 크게", second)
+        self.assertNotIn("다른 해석", (self.state_dir / "tasks/T-001/r2-work.md").read_text(encoding="utf-8"))
+
+    def test_unfinished_decision_comes_first(self):
+        self.task("T-001", "awaiting_user")
+        self.review()
+        self.task("T-002", "awaiting_user")
+        self.review()
+        code, _ = self.decide("out-0001", {"T-001": "x"}, env={"HTEAM_TEST_DIE_AT": "decision_recorded"})
+        self.assertEqual(code, 137)
+        code, out = self.decide("out-0002", {})
+        self.assertEqual((code, out["error"]["code"], out.get("pending")), (3, "decision_pending", "out-0001"), out)
+        self.task("T-003", "awaiting_user")
+        code, out = self.review()
+        self.assertEqual((code, out["error"]["code"]), (3, "decision_pending"), out)
+
+    def test_decision_input_is_checked_before_anything(self):
+        self.task("T-001", "awaiting_user")
+        self.review()
+        for fix in ({"T-009": "x"}, {"T-001": " "}):
+            code, out = self.decide("out-0001", fix)
+            self.assertEqual((code, out["error"]["code"]), (2, "bad_decision"), out)
+        code, out = self.decide("out-0001")  # 결정이 아직 없는데 입력이 없다
+        self.assertEqual((code, out["error"]["code"]), (2, "usage"), out)
+        code, out = self.decide("out-0009", {})
+        self.assertEqual((code, out["error"]["code"]), (2, "unknown_batch"), out)
+        code, out = self.decide("out-0001", {}, as_="main")
+        self.assertEqual((code, out["error"]["code"]), (5, "not_coordinator"), out)
+        self.assertNotIn("decision", self.record()["batches"][0])
+
+    def test_corrupt_decision_record_is_kept(self):
+        self.task("T-001", "awaiting_user")
+        self.review()
+        data = self.record()
+        data["batches"][0]["decision"] = {"at": "2026-11-06T10:00:00Z", "fix": [{"task": "T-001", "round": 1}],
+                                          "accept": [], "skipped": [], "done": None}  # note 가 없다
+        path = self.state_dir / "design-review.json"
+        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        before = path.read_text(encoding="utf-8")
+        code, out = self.decide("out-0001")
+        self.assertEqual((code, out["error"]["code"]), (1, "bad_side_file"), out)
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+
+    def test_accept_rechecks_predecessor_at_the_final_transition(self):
+        # accept 의 사전 처리(Dispatch 정리) 동안 선행이 새 라운드를 열었다. 마지막 전이에서 다시 보고 승인하지 않는다
+        self.task("T-001", "awaiting_user")
+        self.task("T-002", "awaiting_user", depends="T-001")
+        self.opened("T-001", 1, "2026-11-06T09:00:00Z")
+        self.opened("T-002", 1, "2026-11-06T10:00:00Z")
+        gate = self.tmp / "gate-accept"
+        proc = self.hteam_bg("accept", "T-002", "--round", "1",
+                             env={"HTEAM_TEST_PAUSE_AT": "accept_before_final", "HTEAM_TEST_PAUSE_FILE": str(gate)})
+        reached = Path(str(gate) + ".reached")
+        deadline = time.monotonic() + 30
+        while not reached.exists():
+            self.assertIsNone(proc.poll())
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.05)
+        self.opened("T-001", 2, "2026-11-06T10:05:00Z")
+        gate.touch()
+        code, out = self.finish(proc)
+        self.assertEqual((code, out["error"]["code"], out.get("because")), (3, "approval_stale", ["T-001"]), out)
+        self.assertEqual(self.task_state("T-002")["status"], "awaiting_user")
+
+
+class ApprovalFlowTest(DecisionCase):
+    """실제 워커로: accept → awaiting_user → design-review → 메인 답 → wait 주석 → 결정 → start-ready(설계 11.4)."""
 
     def setUp(self):
         super().setUp()
@@ -1480,14 +1611,15 @@ class ApprovalFlowTest(ApprovalCase):
         self.assertEqual(self.hteam("answer", "out-0001", "모두 승인 (추천)", as_="main")[0], 0)
         [info] = self.wait_mains()
         self.assertEqual((info["reply_to"], info["duplicate"]), ("out-0001", False))
-        self.assertEqual(info["design_review"], {"batch": "dr-0001", "approve_all": True, "unknown": [], "tasks": [
-            {"task": "T-001", "round": 1, "status": "awaiting_user", "round_now": 1, "pending": True, "stale": False,
-             "depends_on": [], "dependents": []}]})
-        self.assertIn("accept", info["hint"])
-        self.assertEqual(self.hteam("accept", "T-001", "--round", "1")[1].get("status"), "done")
+        self.assertEqual(info["design_review"], {"batch": "dr-0001", "approve_all": True, "decision": None,
+                                                 "unknown": [], "tasks": [{"task": "T-001", "round": 1,
+                                                                           "status": "awaiting_user", "round_now": 1,
+                                                                           "pending": True}]})
+        self.assertIn("--decide out-0001", info["hint"])
+        code, out = self.decide("out-0001", {})
+        self.assertEqual((code, out["accepted"], self.task_state("T-001")["status"]), (0, ["T-001"], "done"), out)
         code, out = self.hteam("start-ready")
         self.assertEqual([s["task"] for s in out.get("started", [])], ["T-002"], out)
-        self.assertEqual(self.hteam("applied", "out-0001")[0], 0)
 
     def test_same_answer_twice_in_one_delivery_is_handled_once(self):
         self.start_design("T-001", "login")
@@ -1499,11 +1631,13 @@ class ApprovalFlowTest(ApprovalCase):
         self.assertEqual((first["duplicate"], second["duplicate"]), (False, True))
         self.assertIn("design_review", first)
         self.assertNotIn("design_review", second)
-        self.assertEqual(self.hteam("fix", "T-001", "--round", "1", "--note=버튼을 크게")[1].get("round"), 2)
-        code, out = self.hteam("fix", "T-001", "--round", "1", "--note=버튼을 크게")  # 같은 지시를 또 해도
+        for _ in range(2):  # 두 번 처리해도 라운드는 하나만 열린다
+            self.assertEqual(self.decide("out-0001", {"T-001": "버튼을 크게"})[0], 0)
+        self.assertEqual(self.rounds("T-001"), [("T-001", "launch_failed", 2)])
+        code, out = self.hteam("fix", "T-001", "--round", "1", "--note=버튼을 크게")
         self.assertEqual((code, out["error"]["code"], out.get("round")), (3, "round_changed", 2), out)
 
-    def test_revise_fixes_dependents_and_stale_guards(self):
+    def test_dependent_fix_waits_for_predecessor_and_keeps_both_requests(self):
         self.start_design("T-001", "login")
         self.finish_design("T-001", "login")
         self.start_design("T-002", "list", depends="T-001")
@@ -1514,34 +1648,27 @@ class ApprovalFlowTest(ApprovalCase):
         code, out = self.hteam("design-review")
         self.assertEqual((code, out.get("tasks")), (0, [{"task": "T-001", "round": 1}, {"task": "T-002", "round": 1}]),
                          out)
-        self.assertEqual(self.hteam("answer", "out-0001", "수정 요청: T-001 버튼을 더 크게", as_="main")[0], 0)
+        self.assertEqual(self.hteam("answer", "out-0001", "수정 요청: T-001 버튼, T-002 글꼴", as_="main")[0], 0)
         [info] = self.wait_mains()
-        dr = info["design_review"]
-        self.assertFalse(dr["approve_all"])
-        self.assertEqual(dr["tasks"][0]["dependents"],
-                         [{"task": "T-002", "status": "awaiting_user", "round": 1, "stale": False}])
-        self.assertIn("fix", info["hint"])
-        time.sleep(1.1)  # 라운드를 연 시각(초)이 T-002 r1 보다 늦게
-        code, out = self.hteam("fix", "T-001", "--round", "1", "--note=T-001 버튼을 더 크게")
-        self.assertEqual((code, out.get("round")), (0, 2), out)
+        self.assertFalse(info["design_review"]["approve_all"])
+        code, out = self.decide("out-0001", {"T-001": "버튼을 더 크게", "T-002": "글꼴을 바꾼다"})
+        self.assertEqual((code, [f["task"] for f in out["fixed"]]), (0, ["T-001", "T-002"]), out)
         self.assertTrue(self.task_state("T-001")["rounds"][1]["from_user"])
-        work = (self.state_dir / "tasks/T-001/r2-work.md").read_text(encoding="utf-8")
-        self.assertIn("사용자가 일괄 승인에서 수정을 요청했다", work)
-        self.assertIn("사용자 요청: T-001 버튼을 더 크게", work)
-        self.assertNotIn("의 지적을 모두 다룬다", work)
-        # 여기서 코디네이터가 죽고 같은 답이 다시 왔다: T-001 은 이미 고쳤고 T-002 는 stale 이라 고쳐야 한다
-        view = approval.reply_view(self.p, config.load(self.p), "out-0001", "수정 요청: T-001 버튼을 더 크게")
-        self.assertEqual([(t["task"], t["pending"], t["stale"]) for t in view["tasks"]],
-                         [("T-001", False, False), ("T-002", True, True)])
-        self.assertIn("stale", approval.reply_hint(view, "out-0001"))
-        code, out = self.hteam("accept", "T-002", "--round", "1")  # 답에 이름이 없어도 승인하지 않는다
-        self.assertEqual((code, out["error"]["code"], out.get("because")), (3, "approval_stale", ["T-001"]), out)
-        self.assertEqual(self.statuses()["T-002"]["next"][:5], [H, "fix", "T-002", "--round", "1"])
-        code, out = self.hteam("fix", "T-001", "--round", "1", "--note=T-001 버튼을 더 크게")
-        self.assertEqual((code, out["error"]["code"]), (3, "round_changed"), out)
-        code, out = self.hteam("fix", "T-002", "--round", "1", "--note=선행 T-001 의 사용자 요청을 반영한다")
-        self.assertEqual((code, out.get("round")), (0, 2), out)
+        first = (self.state_dir / "tasks/T-001/r2-work.md").read_text(encoding="utf-8")
+        self.assertIn("사용자가 일괄 승인에서 수정을 요청했다", first)
+        self.assertIn("사용자 요청: 버튼을 더 크게", first)
+        self.assertNotIn("의 지적을 모두 다룬다", first)
+        second = (self.state_dir / "tasks/T-002/r2-work.md").read_text(encoding="utf-8")
+        self.assertIn("글꼴을 바꾼다", second)
+        self.assertIn("선행 T-001 의 사용자 요청을 반영한다: 버튼을 더 크게", second)
+        code, out = self.hteam("start-ready")  # 선행의 수정 라운드가 다시 승인되기 전에는 의존 태스크를 띄우지 않는다
+        self.assertEqual([s["task"] for s in out["started"]], ["T-001"], out)
+        self.assertIn({"task": "T-002", "reason": "deps", "detail": "T-001"}, out["waiting"])
+        self.assertEqual(self.task_state("T-002")["status"], "launch_failed")
         self.finish_design("T-001", "login")
+        self.assertEqual(self.task_state("T-001")["status"], "awaiting_user")  # 이제 의존이 풀렸다
+        code, out = self.hteam("start-ready")
+        self.assertEqual([s["task"] for s in out["started"]], ["T-002"], out)
         self.finish_design("T-002", "list")
         code, out = self.hteam("design-review")  # 다시 승인된 r2 둘을 함께 묻는다
         self.assertEqual((code, out.get("tasks")), (0, [{"task": "T-001", "round": 2}, {"task": "T-002", "round": 2}]),
@@ -1562,8 +1689,9 @@ class ApprovalDocsTest(unittest.TestCase):
     def test_coordinator_and_main_docs(self):
         coord = (ROOT / "templates" / "coordinator.md").read_text(encoding="utf-8")
         for needle in ("`hteam design-review`", "exit 3 `approval_not_ready`", "`already_asked`", "## 일괄 승인 답",
-                       "`--round`", "`approval_stale`", "`dependents`", "같은 `reply_to` 가 둘 이상이면",
-                       '--note="<사용자 요청 원문>"', "- designer:"):
+                       "`hteam design-review --decide out-NNNN --json -`", '{"fix": {"T-xxx": "<사용자 요청 원문>"}}',
+                       "`decision_pending`", "`approval_stale`", "`queued`", "같은 `reply_to` 가 둘 이상이면",
+                       "- designer:"):
             self.assertIn(needle, coord)
         main = (ROOT / "templates" / "CLAUDE.section.md").read_text(encoding="utf-8")
         self.assertIn("`수정 요청: <태스크 ID 와 고칠 내용>`", main)
@@ -1575,12 +1703,12 @@ if __name__ == "__main__":
 
 - [ ] **Step 2: 실패 확인**
 
-Run: `bash herdr-team/tests/run.sh -k ApprovalFlow -k ApprovalReply -k ApprovalDocs`
-Expected: FAIL — `approval.reply_view` 가 없고, accept 결과에 `next` 가 없고, `--round` 를 모르고(exit 2 usage), 문서에 일괄 승인 절이 없다.
+Run: `bash herdr-team/tests/run.sh -k ApprovalReply -k ApprovalDecision -k ApprovalFlow -k ApprovalDocs`
+Expected: FAIL — `--decide`·`--round` 를 모르고(exit 2 usage), `approval.reply_view` 가 없고, accept 결과에 `next` 가 없고, 문서에 일괄 승인 절이 없다.
 
 - [ ] **Step 3: 구현**
 
-라운드 조건과 stale 거부.
+라운드 조건, stale 거부(마지막 전이에서), queued 수정 라운드.
 
 **Edit** `herdr-team/lib/hteam/tasks.py`
 
@@ -1590,11 +1718,24 @@ def _live_error(tid: str, slot: dict, row: dict, horch_cmd: str) -> HteamError:
 
 ```python
 def _expect_round(tid: str, st: dict, want: int | None) -> None:
-    """--round N: 명령을 정한 때의 라운드와 지금 라운드가 같아야 한다. 다시 온 지시(일괄 승인 답)가 이미 처리한 라운드를
+    """--round N: 명령을 정한 때의 라운드와 지금 라운드가 같아야 한다. 다시 하는 결정(일괄 승인)이 이미 한 항목을
     다음 라운드에 다시 적용하지 않게 한다(설계 6.4)."""
     if want is not None and st["round"] != want:
         raise HteamError("round_changed", f"{tid} 는 지금 r{st['round']} 다(--round {want}). 그 라운드는 이미 처리됐다",
                          CONFLICT, "다시 하지 않는다. hteam status 로 지금 상태를 본다", data={"round": st["round"]})
+
+
+def _refuse_stale(p, cfg, tid: str) -> None:
+    """awaiting_user 승인 태스크의 선행이 이 라운드를 연 뒤에 고쳐졌으면 승인하지 않는다(설계 11.4, 읽기만 하는 검사).
+    프로젝트 잠금 안에서 부른다(선행의 새 라운드는 fix 가 같은 잠금 안에서 쓴다)."""
+    from . import approval  # approval 이 tasks 를 쓴다. 불러오는 순서가 꼬이지 않게 여기서 가져온다
+    behind = approval.stale(p, cfg, state.all_states(p)).get(tid)
+    if behind:
+        names = ", ".join(behind)
+        raise HteamError("approval_stale", f"{tid} 의 선행 {names} 가 이 라운드를 연 뒤에 고쳐졌다. 옛 선행을 보고 만든 "
+                         "결과를 승인하지 않는다", CONFLICT,
+                         "메인에 알린다. 사용자가 정하면 일괄 승인 결정의 fix 에 넣거나 hteam fix T --note=… 로 다시 만든다",
+                         data={"because": behind})
 
 
 def _live_error(tid: str, slot: dict, row: dict, horch_cmd: str) -> HteamError:
@@ -1624,30 +1765,30 @@ def accept(p, tid: str, expect_round: int | None = None) -> dict:
         raise HteamError("bad_state", f"{tid} 는 {st['status']} 다(accept 는 approved·awaiting_user 에서)", CONFLICT,
                          data={"status": st["status"]})
     _expect_round(tid, st, expect_round)
-    if st["status"] == "awaiting_user":
-        from . import approval  # approval 이 tasks 를 쓴다. 불러오는 순서가 꼬이지 않게 여기서 가져온다
-        behind = approval.stale(p, cfg, state.all_states(p)).get(tid)
-        if behind:  # 선행이 그 뒤에 고쳐졌다(설계 11.4): 옛 선행을 보고 만든 결과를 승인하지 않는다
-            names = ", ".join(behind)
-            raise HteamError("approval_stale", f"{tid} 의 선행 {names} 가 이 라운드를 연 뒤에 고쳐졌다", CONFLICT,
-                             f"{SHIM} fix {tid} --round {st['round']} --note=\"선행 {names} 의 수정을 반영한다\"",
-                             data={"because": behind})
     to = "awaiting_user" if st["status"] == "approved" and cfg.is_approval(st["role"]) else "done"
 ```
-
-accept 가 awaiting_user 로 가면 다음 명령을 준다.
 
 **Edit** `herdr-team/lib/hteam/tasks.py`
 
 ```python
+    with state.edit(p, tid, expect={st["status"]}) as cur:
+        if cur["round"] != st["round"]:  # 멈춘 사이 다음 라운드가 같은 상태에 닿았다. 본 적 없는 라운드를 닫지 않는다
+            raise _changed(tid, st, cur)
         work_slot(cur)["cleaned"] = cleaned
         state.move(cur, to, "accept")
     return {"task": tid, "status": to, "warnings": warnings}
 ```
 
 ```python
-        work_slot(cur)["cleaned"] = cleaned
-        state.move(cur, to, "accept")
+    die_at("accept_before_final")
+    with state.project_lock(p):  # 선행의 새 라운드(fix 가 같은 잠금 안에서 쓴다)와 겹치지 않게 이 안에서 다시 본다
+        if st["status"] == "awaiting_user" and cfg.is_approval(st["role"]):
+            _refuse_stale(p, cfg, tid)
+        with state.edit(p, tid, expect={st["status"]}) as cur:
+            if cur["round"] != st["round"]:  # 멈춘 사이 다음 라운드가 같은 상태에 닿았다. 본 적 없는 라운드를 닫지 않는다
+                raise _changed(tid, st, cur)
+            work_slot(cur)["cleaned"] = cleaned
+            state.move(cur, to, "accept")
     out = {"task": tid, "status": to, "warnings": warnings}
     if to == "awaiting_user":  # 승인 직무: 다른 승인 태스크와 묶어 사용자에게 묻는다(설계 11.4)
         out["next"] = [SHIM, "design-review"]
@@ -1660,11 +1801,22 @@ accept 가 awaiting_user 로 가면 다음 명령을 준다.
 
 ```python
 def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: bool, cli: dict) -> dict:
+    """새 라운드(설계 6.4). 입력(사양·owns·잠금)을 먼저 검사하고, 이전 라운드들의 작업·리뷰 Dispatch 를 모두 정리한
+    뒤에만 새 라운드를 쓰고 띄운다(이전 워커와 새 워커가 같은 폴더에서 함께 일하지 않게). 일하는 중인 워커는
+    abandon --kill 뒤 release."""
 ```
 
 ```python
 def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: bool, cli: dict,
-        expect_round: int | None = None) -> dict:
+        expect_round: int | None = None, queue: bool = False, from_user: bool | None = None,
+        extra_from: tuple[str, ...] = ()) -> dict:
+    """새 라운드(설계 6.4). 입력(사양·owns·잠금)을 먼저 검사하고, 이전 라운드들의 작업·리뷰 Dispatch 를 모두 정리한
+    뒤에만 새 라운드를 쓰고 띄운다(이전 워커와 새 워커가 같은 폴더에서 함께 일하지 않게). 일하는 중인 워커는
+    abandon --kill 뒤 release.
+
+    일괄 승인 결정(설계 11.4)이 부를 때: queue 면 새 라운드를 쓰고 띄우지 않는다(launch_failed, queued. start-ready 가
+    의존이 풀린 뒤 띄운다). from_user 가 None 이면 awaiting_user 에서 연 라운드가 사용자 요청이다. extra_from 은
+    FIX_FROM 밖에서 더 받을 상태다(결정이 고치는 의존 태스크는 리뷰 중·승인됨이어도 다시 만든다)."""
 ```
 
 **Edit** `herdr-team/lib/hteam/tasks.py`
@@ -1674,17 +1826,21 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
         if st["status"] in state.CLOSED:
             raise state.closed_error(st)
         if st["status"] not in FIX_FROM:
+            raise HteamError("bad_state", f"{tid} 는 {st['status']} 다(fix 는 {', '.join(FIX_FROM)} 에서)", CONFLICT,
+                             data={"status": st["status"]})
 ```
 
 ```python
+    allowed_from = FIX_FROM + tuple(extra_from)
+
     def allowed(st: dict) -> None:
         if st["status"] in state.CLOSED:
             raise state.closed_error(st)
         _expect_round(tid, st, expect_round)  # 미리 보고, 취소를 저장하는 잠금 안에서 다시 본다(_close_round 의 check)
-        if st["status"] not in FIX_FROM:
+        if st["status"] not in allowed_from:
+            raise HteamError("bad_state", f"{tid} 는 {st['status']} 다(fix 는 {', '.join(allowed_from)} 에서)", CONFLICT,
+                             data={"status": st["status"]})
 ```
-
-awaiting_user 에서 연 라운드에 표시를 남긴다(사양 조립 전에).
 
 **Edit** `herdr-team/lib/hteam/tasks.py`
 
@@ -1695,9 +1851,27 @@ awaiting_user 에서 연 라운드에 표시를 남긴다(사양 조립 전에).
 
 ```python
         rd = _new_round(st, st["round"] + 1, gitio.head(p.root), choice, note=note, supplement=supplement)
-        if old == "awaiting_user":  # 사용자 일괄 승인의 수정 요청(설계 11.4). 수정 블록이 사용자 요청으로 적는다
-            rd["from_user"] = True
+        if (old == "awaiting_user") if from_user is None else from_user:
+            rd["from_user"] = True  # 사용자 일괄 승인의 수정 요청(설계 11.4). 수정 블록이 사용자 요청으로 적는다
+        if queue:
+            rd["queued"] = True
         text = compose.work_spec(p, cfg, spec, rd, owns)
+```
+
+**Edit** `herdr-team/lib/hteam/tasks.py`
+
+```python
+        _begin(p, st, rd, text, "fix", previous=old, force_round=force_round)
+    return run_work(p, cfg, h, tid)
+```
+
+```python
+        _begin(p, st, rd, text, "fix", previous=old, force_round=force_round)
+    if queue:  # 띄우지 않는다. start-ready 의 의존 검사가 선행이 다시 승인된 뒤에 띄운다(설계 11.4)
+        return {"task": tid, "round": rd["round"], "status": "launch_failed", "queued": True,
+                "next": [SHIM, "start-ready"],
+                "hint": "수정 라운드를 만들었다. start-ready 가 선행이 끝난(승인 직무는 awaiting_user) 뒤에 띄운다"}
+    return run_work(p, cfg, h, tid)
 ```
 
 **Edit** `herdr-team/lib/hteam/tasks.py`
@@ -1774,109 +1948,362 @@ def _cmd_accept(args) -> dict:
             parts.append(f"{'사용자 요청' if rd.get('from_user') else '코디네이터 메모'}: {rd['note']}")
 ```
 
-일괄 승인 답의 처리 정보를 approval 에 더한다.
+approval: 결정 기록·검사·재생, 끝나지 않은 결정, 답 주석.
 
 **Edit** `herdr-team/lib/hteam/approval.py`
 
 ```python
+import re
+
+from . import config, outbox, roles, specs, state, tasks
+from .errors import CONFLICT, USAGE, HteamError
 from .paths import find_project, report_rel
 ```
 
 ```python
+import json
+import re
+import sys
+
+from . import config, outbox, roles, specs, state, tasks
+from .errors import CONFLICT, FAIL, USAGE, HteamError
 from .paths import SHIM, find_project, report_rel
 ```
 
 **Edit** `herdr-team/lib/hteam/approval.py`
 
 ```python
+    try:
+        outbox.validate_render(b.get("render"), HEADER)
+    except HteamError as exc:
+        return f"{b['batch']}: render 가 질문 형식이 아니다({exc.message})"
+    return None
+```
+
+```python
+    try:
+        outbox.validate_render(b.get("render"), HEADER)
+    except HteamError as exc:
+        return f"{b['batch']}: render 가 질문 형식이 아니다({exc.message})"
+    if b.get("decision") is not None:
+        return _decision_problem(b)
+    return None
+
+
+def _decision_problem(b: dict) -> str | None:
+    """결정 기록의 모양 문제(없으면 None). 틀린 결정으로 accept·fix 를 하지 않는다."""
+    d, name = b["decision"], b["batch"]
+    if b.get("id") is None:
+        return f"{name}: 묻지 않은 묶음에 결정이 있다"
+    if not isinstance(d, dict) or not isinstance(d.get("at"), str) or not isinstance(d.get("input"), dict):
+        return f"{name}: decision 이 객체가 아니거나 at·input 이 없다"
+    if not all(isinstance(d.get(k), list) for k in ("fix", "accept", "skipped")):
+        return f"{name}: decision 의 fix·accept·skipped 가 목록이 아니다"
+    if not all(_task_ok(e) and isinstance(e.get("note"), str) and e["note"].strip()
+               and isinstance(e.get("because"), list) for e in d["fix"]):
+        return f"{name}: decision.fix 가 [{{task, round, note, because}}] 가 아니다"
+    if not all(_task_ok(e) for e in d["accept"]):
+        return f"{name}: decision.accept 가 [{{task, round}}] 가 아니다"
+    if d.get("done") is not None and not isinstance(d["done"], str):
+        return f"{name}: decision.done 이 시각이나 null 이 아니다"
+    return None
+
+
+def _open_decision(data: dict, but: dict | None = None) -> dict | None:
+    """끝나지 않은 결정이 있는 묶음(but 은 뺀다)."""
+    return next((b for b in data["batches"] if b is not but and b.get("decision") and not b["decision"].get("done")),
+                None)
+
+
+def _decision_pending(b: dict) -> HteamError:
+    return HteamError("decision_pending", f"{b['id']} 의 일괄 승인 결정을 아직 다 하지 않았다", CONFLICT,
+                      f"먼저 `{SHIM} design-review --decide {b['id']}` 로 기록대로 마저 한다", data={"pending": b["id"]})
+
+
+def _unfinished(data: dict, states: list[dict]) -> dict[str, str]:
+    """끝나지 않은 결정의 항목 가운데 아직 하지 않은 것(태스크가 기록한 라운드 그대로) → 그 out-id."""
+    by_id = {s["id"]: s for s in states}
+    found: dict[str, str] = {}
+    for b in data["batches"]:
+        d = b.get("decision")
+        if not d or d.get("done"):
+            continue
+        for e in [*d["fix"], *d["accept"]]:
+            st = by_id.get(e["task"])
+            if st is not None and st["status"] not in state.CLOSED and st["round"] == e["round"]:
+                found[e["task"]] = b["id"]
+    return found
+```
+
+**Edit** `herdr-team/lib/hteam/approval.py`
+
+```python
+    data = load(p) if data is None else data
+    done = asked(data)
+    behind = stale(p, cfg, states)
+```
+
+```python
+    data = load(p) if data is None else data
+    done = asked(data)
+    behind = stale(p, cfg, states)
+    replay = _unfinished(data, states)
+```
+
+**Edit** `herdr-team/lib/hteam/approval.py`
+
+```python
+    return {"waiting": waiting, "blockers": blockers, "stale": late, "fresh": fresh, "asked": done}
+```
+
+```python
+    return {"waiting": waiting, "blockers": blockers, "stale": late, "fresh": fresh, "asked": done, "replay": replay}
+```
+
+**Edit** `herdr-team/lib/hteam/approval.py`
+
+```python
+        bad = state.unreadable_ids(p)
+        if bad:  # 그 태스크가 진행 중인 승인 태스크인지 알 수 없다. 묶음을 잘못 나누지 않게 묻지 않는다
+```
+
+```python
+        busy = _open_decision(data)
+        if busy is not None:  # 끝나지 않은 결정이 태스크를 바꾸는 중이다. 그 태스크를 새 묶음에 넣지 않는다
+            raise _decision_pending(busy)
+        bad = state.unreadable_ids(p)
+        if bad:  # 그 태스크가 진행 중인 승인 태스크인지 알 수 없다. 묶음을 잘못 나누지 않게 묻지 않는다
+```
+
+**Edit** `herdr-team/lib/hteam/approval.py`
+
+```python
 def _cmd(args) -> dict:
     p = find_project(args.root)
     roles.require_coordinator(p)
     return design_review(p)
+
+
+def register(sub) -> None:
+    sub.add_parser("design-review").set_defaults(func=_cmd)
 ```
 
 ````python
-def reply_view(p, cfg, oid: str, answer: str, states: list[dict] | None = None) -> dict | None:
+# 결정이 고치는 의존 태스크는 진행 중(리뷰 중·승인됨 포함)이어도 다시 만든다(옛 선행을 보고 만들었다)
+DEPENDENT_FROM = ("reviewing", "approved")
+
+
+def _decision_input(text: str | None, b: dict) -> dict[str, str]:
+    """코디네이터가 해석한 답: {"fix": {태스크: 사용자 요청}}. 태스크는 그 묶음의 것이어야 한다. 틀리면 exit 2."""
+    if text is None:
+        raise HteamError("usage", f"{b['id']} 에는 아직 결정이 없다. --json - 으로 {{\"fix\": {{태스크: 사용자 요청}}}} 을 "
+                         "준다(모두 승인이면 {\"fix\": {}})", USAGE)
+    try:
+        obj = json.loads(text)
+    except ValueError as exc:
+        raise HteamError("bad_decision", f"결정 JSON 을 읽지 못했다: {exc}", USAGE) from None
+    fix = obj.get("fix") if isinstance(obj, dict) else None
+    if not isinstance(obj, dict) or set(obj) != {"fix"} or not isinstance(fix, dict):
+        raise HteamError("bad_decision", "결정은 {\"fix\": {태스크: 사용자 요청}} 이다", USAGE)
+    mine = {t["task"] for t in b["tasks"]}
+    errors = [f"{k}: 이 묶음({b['id']})의 태스크가 아니다" for k in fix if k not in mine]
+    errors += [f"{k}: 사용자 요청이 비었다" for k, v in fix.items() if not isinstance(v, str) or not v.strip()]
+    if errors:
+        raise HteamError("bad_decision", "결정 입력이 틀렸다: " + "; ".join(errors), USAGE, data={"errors": errors})
+    return {k: v.strip() for k, v in fix.items()}
+
+
+def _compute(p, cfg, b: dict, wanted: dict[str, str]) -> dict:
+    """결정을 한 번 계산한다(프로젝트 잠금 안). 고칠 태스크 = 지목된 묶음 태스크(아직 그 라운드의 awaiting_user) + 그것에
+    직간접으로 의존하는 승인 태스크 전부(다른 묶음 포함). 각자 지금 라운드와 사용자 요청을 적는다. 시작하지 않은 의존
+    태스크(pending)는 선행이 다시 승인된 뒤 시작하므로 고칠 것이 없고, 끝난 태스크는 고칠 수 없어 skipped 다. 승인할 태스크
+    = 묶음의 나머지(아직 그 라운드의 awaiting_user). 상태를 읽지 못하면, 승인할 태스크가 stale 이면 아무것도 쓰지 않는다."""
+    bad = state.unreadable_ids(p)
+    if bad:
+        raise tasks._unreadable(p, bad)
+    states = state.all_states(p)
+    by_id = {s["id"]: s for s in states}
+    missing = [t["task"] for t in b["tasks"] if t["task"] not in by_id]
+    if missing:
+        raise HteamError("bad_state_file", f"묶음 태스크의 상태 파일이 없다: {', '.join(missing)}", FAIL,
+                         "메인에 알린다", data={"missing": missing})
+    graph = Graph(p)
+    live = {t["task"] for t in b["tasks"]
+            if by_id[t["task"]]["status"] == "awaiting_user" and by_id[t["task"]]["round"] == t["round"]}
+    direct = sorted((t for t in wanted if t in live), key=state.id_number)
+    skipped = [{"task": t, "why": f"{by_id[t]['status']} r{by_id[t]['round']}: 이미 처리됐다"}
+               for t in sorted(wanted, key=state.id_number) if t not in live]
+    fix: dict[str, dict] = {}
+    for tid in sorted(set(by_id) | set(specs.list_ids(p)), key=state.id_number):
+        ups = [d for d in direct if d != tid and d in graph.ancestors(tid)]
+        if tid not in direct and not ups:
+            continue
+        st = by_id.get(tid)
+        if tid not in direct:
+            if not cfg.is_approval((st or {}).get("role") or graph.role(tid)):
+                continue
+            if st is None or st["status"] == "pending":
+                skipped.append({"task": tid, "why": "pending: 선행이 다시 승인된 뒤에 시작한다(고칠 것이 없다)"})
+                continue
+            if st["status"] in state.CLOSED:
+                skipped.append({"task": tid, "why": f"{st['status']}: 끝난 태스크라 고칠 수 없다(메인에 알린다)"})
+                continue
+        parts = [wanted[tid]] if tid in direct else []
+        parts += [f"선행 {d} 의 사용자 요청을 반영한다: {wanted[d]}" for d in ups]
+        fix[tid] = {"task": tid, "round": st["round"], "note": " / ".join(parts), "because": ups}
+    # 선행부터(결정 안의 선행 수가 적은 것부터). 라운드를 연 시각이 선행 → 의존 순서가 된다
+    order = sorted(fix.values(), key=lambda e: (len([x for x in fix if x in graph.ancestors(e["task"])]),
+                                                state.id_number(e["task"])))
+    accept = [{"task": t["task"], "round": t["round"]} for t in b["tasks"] if t["task"] in live and t["task"] not in fix]
+    skipped += [{"task": t["task"], "why": "이미 처리됐다"} for t in b["tasks"]
+                if t["task"] not in live and t["task"] not in wanted]
+    behind = stale(p, cfg, states, graph)
+    late = [a["task"] for a in accept if a["task"] in behind]
+    if late:
+        raise HteamError("approval_stale", f"승인할 태스크의 선행이 그 뒤에 고쳐졌다: {', '.join(late)}", CONFLICT,
+                         "메인에 알린다. 사용자가 정하면 그 태스크도 결정의 fix 에 넣는다", data={"stale": late})
+    return {"at": now(), "input": wanted, "fix": order, "accept": accept, "skipped": skipped, "done": None}
+
+
+def _stopped(exc: HteamError, oid: str) -> HteamError:
+    exc.hint = (f"{exc.hint} 결정은 기록돼 있다. 원인이 풀리면 `{SHIM} design-review --decide {oid}` 를 다시 한다"
+                "(기록대로 이어 한다)").strip()
+    return exc
+
+
+def _apply(p, oid: str, d: dict) -> dict:
+    """기록한 결정을 그대로 한다. 기록한 라운드가 이미 지났거나 닫힌 항목은 한 것으로 본다(다시 하지 않는다). 다른 오류는
+    거기서 멈춘다(다시 부르면 이어 한다). 다 하면 결정에 done 을 적고 그 답을 applied 로 적는다."""
+    fixed: list[dict] = []
+    accepted: list[str] = []
+    passed: list[str] = []
+    for e in d["fix"]:
+        try:
+            res = tasks.fix(p, e["task"], note=e["note"], supplement=None, force_round=True, cli={},
+                            expect_round=e["round"], queue=True, from_user=True, extra_from=DEPENDENT_FROM)
+            fixed.append({"task": e["task"], "round": res["round"]})
+        except HteamError as exc:
+            if exc.code not in ("round_changed", "task_closed"):
+                raise _stopped(exc, oid)
+            passed.append(e["task"])
+        die_at("decision_after_fix")
+    for e in d["accept"]:
+        try:
+            tasks.accept(p, e["task"], expect_round=e["round"])
+            accepted.append(e["task"])
+        except HteamError as exc:
+            if exc.code not in ("round_changed", "task_closed"):
+                raise _stopped(exc, oid)
+            passed.append(e["task"])
+    with state.project_lock(p):
+        data = load(p)
+        b = next(x for x in data["batches"] if x.get("id") == oid)
+        b["decision"]["done"] = now()
+        write_json(p.design_review, data)
+    outbox.mark_applied(p, oid)
+    return {"fixed": fixed, "accepted": accepted, "passed": passed}
+
+
+def decide(p, oid: str, text: str | None) -> dict:
+    """일괄 승인 답의 결정(설계 11.4). 결정이 없으면 계산해 묶음 기록에 먼저 쓰고, 있으면 그대로 쓴다. 그다음 기록대로
+    fix(queued)·accept 를 한다. 다른 묶음의 결정이 끝나지 않았으면 exit 3 decision_pending."""
+    cfg = config.load(p)
+    warnings: list[str] = []
+    with state.project_lock(p):
+        data = load(p)
+        b = next((x for x in data["batches"] if x.get("id") == oid), None)
+        if b is None:
+            raise HteamError("unknown_batch", f"{oid} 는 design-review 가 쓴 일괄 승인 질문이 아니다", USAGE)
+        other = _open_decision(data, but=b)
+        if other is not None:
+            raise _decision_pending(other)
+        replayed = b.get("decision") is not None
+        if not replayed:
+            b["decision"] = _compute(p, cfg, b, _decision_input(text, b))
+            write_json(p.design_review, data)
+        elif text is not None:
+            warnings.append("결정이 이미 기록돼 있어 새 입력은 쓰지 않았다(기록대로 한다)")
+        d = b["decision"]
+    die_at("decision_recorded")
+    out = {"id": oid, "batch": b["batch"], "decision": d, "replayed": replayed, "skipped": d["skipped"]}
+    if d.get("done"):
+        outbox.mark_applied(p, oid)  # 다 한 뒤 applied 전에 죽었을 수 있다(두 번 적어도 같다)
+        res = {"fixed": [], "accepted": [], "passed": [e["task"] for e in [*d["fix"], *d["accept"]]]}
+    else:
+        res = _apply(p, oid, d)
+    closed = [s["task"] for s in d["skipped"] if s["why"].startswith(("done", "dropped"))]
+    if closed:
+        warnings.append(f"끝난 의존 태스크({', '.join(closed)})는 고치지 못했다. 메인에 알린다")
+    return {**out, **res, "warnings": warnings, "next": [SHIM, "start-ready"],
+            "hint": "고칠 태스크는 수정 라운드를 만들어 두었다(queued). start-ready 가 선행이 다시 승인된 뒤 띄운다"}
+
+
+def reply_view(p, oid: str, answer: str, states: list[dict] | None = None) -> dict | None:
     """oid 가 design-review 묶음의 질문이면 그 답의 처리 정보, 아니면 None(설계 11.4).
 
-    {"batch", "approve_all": 답이 정확히 APPROVE 인가, "unknown": [상태를 읽지 못한 태스크], "tasks": [{"task", "round"(물은
-    라운드), "status", "round_now", "pending", "stale", "depends_on", "dependents": [{"task", "status", "round", "stale"}]}]}.
-    pending: 아직 그 라운드의 awaiting_user 다. dependents: 프로젝트 전체에서 이 태스크에 직간접으로 의존하는 승인 태스크
-    (다른 묶음에 있어도). 고칠 대상은 답과 묶음 전체로 정하고 실행할 때만 지금 상태로 거른다(다시 온 답이 일을 두 번 하거나
-    빠뜨리지 않게). 묶음 태스크의 상태를 읽지 못하면 unknown 이다(처리한 것으로 보지 않는다). 기록을 읽지 못하면
-    bad_side_file, 설정이 없으면 bad_config."""
+    {"batch", "approve_all": 답이 정확히 APPROVE 인가, "decision": None | "recorded" | "done", "unknown": [상태를 읽지
+    못한 묶음 태스크], "tasks": [{"task", "round"(물은 라운드), "status", "round_now", "pending"}]}. 읽지 못한 태스크는
+    처리한 것으로 보지 않는다. 기록을 읽지 못하면 bad_side_file."""
     b = next((x for x in load(p)["batches"] if x.get("id") == oid), None)
     if b is None:
         return None
-    if cfg is None:
-        raise HteamError("bad_config", "설정을 읽지 못해 승인 직무를 모른다", USAGE, "`.herdr-team/config.toml` 을 고친다")
-    states = state.all_states(p) if states is None else states
-    by_id = {s["id"]: s for s in states}
-    graph = Graph(p)
-    behind = stale(p, cfg, states, graph)
+    by_id = {s["id"]: s for s in (state.all_states(p) if states is None else states)}
     unknown: list[str] = []
-
-    def current(tid: str, required: bool) -> dict:
-        """지금 상태. 읽지 못하면(손상·id 불일치, 묶음 태스크는 없어도) unknown 에 넣고 빈 값."""
-        if tid in by_id:
-            return by_id[tid]
-        try:
-            st = state.load(p, tid)
-        except HteamError:
-            st = False
-        if st is False or (st is None and required) or (st is not None and st.get("id") != tid):
-            unknown.append(tid)
-            return {}
-        return st or {}
-
-    ids = sorted(set(by_id) | set(specs.list_ids(p)), key=state.id_number)
     items = []
     for t in b["tasks"]:
-        st = current(t["task"], True)
-        dependents = []
-        for d in ids:
-            if d == t["task"] or t["task"] not in graph.ancestors(d):
-                continue
-            if not cfg.is_approval((by_id.get(d) or {}).get("role") or graph.role(d)):
-                continue
-            ds = current(d, False)
-            dependents.append({"task": d, "status": ds.get("status"), "round": ds.get("round"), "stale": d in behind})
+        st = by_id.get(t["task"])
+        if st is None:
+            try:
+                st = state.load(p, t["task"])
+            except HteamError:
+                st = None
+            if st is None or st.get("id") != t["task"]:
+                unknown.append(t["task"])
+                st = {}
         items.append({"task": t["task"], "round": t["round"], "status": st.get("status"), "round_now": st.get("round"),
-                      "pending": st.get("status") == "awaiting_user" and st.get("round") == t["round"],
-                      "stale": t["task"] in behind, "depends_on": graph.deps(t["task"]), "dependents": dependents})
+                      "pending": st.get("status") == "awaiting_user" and st.get("round") == t["round"]})
+    d = b.get("decision")
     return {"batch": b["batch"], "approve_all": answer.strip() == APPROVE,
-            "unknown": sorted(set(unknown), key=state.id_number), "tasks": items}
+            "decision": None if d is None else ("done" if d.get("done") else "recorded"), "unknown": unknown,
+            "tasks": items}
 
 
 def reply_hint(view: dict, oid: str) -> str:
     """reply_view 결과로 코디네이터가 할 일(coordinator.md 의 "일괄 승인 답")."""
+    cmd = f"{SHIM} design-review --decide {oid}"
     if view["unknown"]:
-        return (f"상태를 읽지 못한 태스크가 있다({', '.join(view['unknown'])}). 이 답으로 아무것도 하지 않고 "
-                f"`{SHIM} applied {oid}` 도 하지 않는다. 메인에 알려 상태 파일을 고친 뒤 다시 받는다")
-    pending = [t for t in view["tasks"] if t["pending"]]
-    if not pending:
-        return (f"이 묶음의 태스크는 이미 모두 처리됐다. 다시 accept·fix 하지 않는다(stale 인 dependents 는 status 의 next 가 "
-                f"fix 를 준다). `{SHIM} applied {oid}` 만 한다")
-    rows = ", ".join(f"{t['task']}(r{t['round']}{', stale' if t['stale'] else ''})" for t in pending)
+        return (f"상태를 읽지 못한 태스크가 있다({', '.join(view['unknown'])}). 결정하지 않는다. 메인에 알려 상태 파일을 고친 뒤 "
+                "다시 받는다")
+    if view["decision"] == "done":
+        return "이 답은 이미 결정대로 처리했다. ack 만 한다"
+    if view["decision"] == "recorded":
+        return f"이 답의 결정이 기록돼 있다. `{cmd}` 를 입력 없이 다시 해 기록대로 마저 한다"
     if view["approve_all"]:
-        return (f"모두 승인이다. pending 태스크 {rows} 마다 `{SHIM} accept <T> --round <round>`. stale 인 태스크는 accept 가 "
-                f"거부한다: 대신 `{SHIM} fix <T> --round <round> --note=\"선행 수정을 반영한다\"`. 끝나면 `{SHIM} start-ready`, "
-                f"`{SHIM} applied {oid}`")
-    return (f"수정 요청이다(pending: {rows}). ① 답이 고치라는 태스크를 이 묶음 전체(pending 이 아닌 것 포함)에서 정한다. "
-            "② 고칠 대상 = 그 태스크들 + 각 dependents(프로젝트 전체, 다른 묶음 포함). ③ 고칠 대상 가운데 지금 awaiting_user "
-            f"인 것만 선행부터 `{SHIM} fix <T> --round <지금 라운드> --note=\"<사용자 요청 원문>\"`(이미 고친 것은 건너뛴다. 진행 "
-            "중인 dependents 는 awaiting_user 가 된 뒤 status 의 next 가 fix 를 준다). ④ 고칠 대상이 아닌 pending 태스크는 "
-            f"`{SHIM} accept <T> --round <round>`(stale 이면 fix). 어느 태스크인지 모호하면 notify --type question 으로 다시 "
-            f"묻는다. 끝나면 `{SHIM} start-ready`, `{SHIM} applied {oid}`")
+        return f"모두 승인이다. `{cmd} --json -` 에 {{\"fix\": {{}}}} 를 준다. 그다음 `{SHIM} start-ready`"
+    return (f"수정 요청이다. 답에서 고칠 태스크와 사용자 요청을 정해 `{cmd} --json -` 에 "
+            "{\"fix\": {\"T-xxx\": \"<사용자 요청 원문>\"}} 를 준다. 이름이 없는 태스크는 승인되고, 의존 승인 태스크는 "
+            f"hteam 이 같은 요청과 함께 고친다. 모호하면 notify --type question 으로 다시 묻는다. 그다음 `{SHIM} start-ready`")
 
 
 def _cmd(args) -> dict:
     p = find_project(args.root)
     roles.require_coordinator(p)
+    if args.decide:
+        text = sys.stdin.read() if args.json == "-" else args.json
+        return decide(p, args.decide, text)
+    if args.json is not None:
+        raise HteamError("usage", "--json 은 --decide 와 함께 쓴다", USAGE)
     return design_review(p)
+
+
+def register(sub) -> None:
+    s = sub.add_parser("design-review")
+    s.add_argument("--decide", metavar="OUT_ID", help="그 질문의 답을 결정으로 기록하고 기록대로 한다(설계 11.4)")
+    s.add_argument("--json", help="'-' 면 표준 입력: {\"fix\": {태스크: 사용자 요청}}. 모두 승인이면 {\"fix\": {}}")
+    s.set_defaults(func=_cmd)
 ````
 
-coord: 답 주석, 한 Delivery 안의 중복, awaiting_user 의 next.
+coord: 답 주석, 한 Delivery 안의 중복, 결정·queued·awaiting_user 의 next.
 
 **Edit** `herdr-team/lib/hteam/coord.py`
 
@@ -1895,7 +2322,7 @@ def _annotate_main(p, m: dict, rows: list[dict] | None) -> dict:
 ```
 
 ```python
-def _annotate_main(p, m: dict, rows: list[dict] | None, states: list[dict] | None = None, cfg=_LOAD) -> dict:
+def _annotate_main(p, m: dict, rows: list[dict] | None, states: list[dict] | None = None) -> dict:
 ```
 
 **Edit** `herdr-team/lib/hteam/coord.py`
@@ -1910,18 +2337,16 @@ def _annotate_main(p, m: dict, rows: list[dict] | None, states: list[dict] | Non
         info["hint"] = ("이미 적용한 답이다. ack 만 한다" if info["duplicate"]
                         else f"{oid} 의 답이다. 처리한 뒤 `{SHIM} applied {oid}`")
         if not info["duplicate"]:
-            _design_review(p, info, oid, m, states, cfg)
+            _design_review(p, info, oid, m, states)
     return info
 
 
-def _design_review(p, info: dict, oid: str, m: dict, states: list[dict] | None, cfg) -> None:
+def _design_review(p, info: dict, oid: str, m: dict, states: list[dict] | None) -> None:
     """design-review 묶음의 답이면 처리 정보(design_review)와 할 일(hint)을 붙인다(설계 11.4)."""
-    if cfg is _LOAD:
-        cfg = _config(p)
     try:
-        view = approval.reply_view(p, cfg, oid, m.get("body") or "", states)
+        view = approval.reply_view(p, oid, m.get("body") or "", states)
     except HteamError as exc:
-        info["warning"] = f"이 답이 일괄 승인 답인지 보지 못했다: {exc.message}. 고친 뒤 다시 받는다(applied 하지 않는다)"
+        info["warning"] = f"이 답이 일괄 승인 답인지 보지 못했다: {exc.message}. 고친 뒤 다시 받는다(결정하지 않는다)"
         return
     if view is not None:
         info["design_review"] = view
@@ -1951,7 +2376,7 @@ def _once(messages: list[dict]) -> list[dict]:
 ```
 
 ```python
-        return {**m, "hteam": _annotate_main(p, m, rows, states, cfg)}
+        return {**m, "hteam": _annotate_main(p, m, rows, states)}
 ```
 
 **Edit** `herdr-team/lib/hteam/coord.py`
@@ -1983,7 +2408,43 @@ def next_step(cfg, st: dict, by_task: dict[str, dict], have_rows: bool,
 
     by_task: horch Task → 최신 시도 행. rows 를 주면(worker-list 전체) 지난 시도·제목으로 찾은 Dispatch 까지 본다.
     horch_cmd: 힌트에 넣을 horch 명령(--home 포함, Horch.cmd). 없으면 `horch`.
-    appr: approval.view 결과(awaiting_user 의 next). 읽지 못했으면 None."""
+    appr: approval.view 결과(끝나지 않은 일괄 승인 결정, awaiting_user 의 next). 읽지 못했으면 None."""
+```
+
+**Edit** `herdr-team/lib/hteam/coord.py`
+
+```python
+    slot = rd["work"]
+    if _round_canceled(rd):
+        return None, CANCELED_HINT
+```
+
+```python
+    slot = rd["work"]
+    if _round_canceled(rd):
+        return None, CANCELED_HINT
+    if appr is not None and tid in appr.get("replay", {}):
+        oid = appr["replay"][tid]  # 일반 fix·accept 를 권하지 않는다(사용자 요청은 결정 기록에 있다)
+        return H("design-review", "--decide", oid), f"일괄 승인 결정 {oid} 을 기록대로 마저 한다"
+```
+
+**Edit** `herdr-team/lib/hteam/coord.py`
+
+```python
+    if s == "launch_failed":
+        if dispatch.busy(st, slot):
+            return None, "띄우는 중이다(launching)"
+        return H("start", tid), None
+```
+
+```python
+    if s == "launch_failed":
+        if dispatch.busy(st, slot):
+            return None, "띄우는 중이다(launching)"
+        if rd.get("queued") and not slot.get("launched") and not slot.get("horch_task"):
+            # start T 는 의존을 보지 않는다. start-ready 가 선행이 다시 승인된 뒤에 띄운다(설계 11.4)
+            return H("start-ready"), "일괄 승인 결정으로 연 수정 라운드다. 선행이 끝나면 start-ready 가 띄운다"
+        return H("start", tid), None
 ```
 
 **Edit** `herdr-team/lib/hteam/coord.py`
@@ -2001,21 +2462,20 @@ def next_step(cfg, st: dict, by_task: dict[str, dict], have_rows: bool,
 
 
 def _awaiting(st: dict, appr: dict | None) -> tuple[list[str] | None, str | None]:
-    """awaiting_user 의 다음(설계 11.4): 선행이 그 뒤에 고쳐졌으면(stale) fix, 이미 물었으면 그 답을 기다리고, 진행
-    중이거나 시작할 수 있는 승인 태스크가 있으면 그것을 기다리고, 아니면 design-review."""
+    """awaiting_user 의 다음(설계 11.4): stale 이면 알리기만 하고, 이미 물었으면 그 답을 기다리고, 진행 중이거나 시작할 수
+    있는 승인 태스크가 있으면 그것을 기다리고, 아니면 design-review."""
     if appr is None:
         return None, "사용자 일괄 승인을 기다린다(일괄 승인 기록을 읽지 못했다. status 의 warnings 를 본다)"
     late = next((s for s in appr["stale"] if s["task"] == st["id"]), None)
     if late:
-        names = ", ".join(late["because"])
-        return (H("fix", st["id"], "--round", str(st["round"]), f"--note=선행 {names} 의 수정을 반영한다"),
-                f"선행 {names} 가 이 라운드를 연 뒤에 고쳐졌다. 이 결과는 accept·design-review 가 받지 않는다")
+        return None, (f"선행 {', '.join(late['because'])} 가 이 라운드를 연 뒤에 결정 밖에서 고쳐졌다. 묻지도 승인하지도 "
+                      "않는다. 메인에 알린다")
     key = (st["id"], st["round"])
     if key in appr["asked"]:
         oid = appr["asked"][key]
         if oid is None:
             return H("design-review"), "일괄 승인 질문을 쓰다 멈췄다. design-review 가 마저 쓴다"
-        return None, f"일괄 승인 질문 {oid} 의 사용자 답을 기다린다"
+        return None, f"일괄 승인 질문 {oid} 의 사용자 답을 기다린다(답이 오면 design-review --decide {oid})"
     if appr["blockers"]:
         names = ", ".join(b["task"] for b in appr["blockers"])
         return None, f"승인 직무 태스크 {names} 가 accept 로 awaiting_user 가 되면 함께 묻는다(그때 design-review)"
@@ -2085,7 +2545,7 @@ def _awaiting(st: dict, appr: dict | None) -> tuple[list[str] | None, str | None
 
 ```markdown
 - `review-finish` 의 `status: approved` → `hteam accept T` → `hteam start-ready`. 기획 태스크면 accept 뒤 `hteam plan apply`(처음) 또는 `hteam plan apply --append`(추가) 를 먼저 한다.
-- 승인 직무(designer 등)는 `accept` 가 `status: awaiting_user` 와 `next` 를 준다. `hteam start-ready` 뒤 `hteam design-review` 를 부른다. exit 3 `approval_not_ready` 면 다른 승인 직무 태스크가 아직 진행 중이거나 지금 시작할 수 있다: 그 태스크를 accept 한 뒤 다시 부른다. `already_asked` 면 사용자 답을 기다린다. `nothing_to_approve` 면 할 일이 없다. `approval_stale` 이면 선행이 그 뒤에 고쳐진 태스크다: hint 의 `hteam fix T --round N --note=…` 를 한다.
+- 승인 직무(designer 등)는 `accept` 가 `status: awaiting_user` 와 `next` 를 준다. `hteam start-ready` 뒤 `hteam design-review` 를 부른다. exit 3 `approval_not_ready` 면 다른 승인 직무 태스크가 아직 진행 중이거나 지금 시작할 수 있다: 그 태스크를 accept 한 뒤 다시 부른다. `already_asked` 면 사용자 답을 기다린다. `nothing_to_approve` 면 할 일이 없다. `decision_pending` 이면 hint 의 `--decide` 를 먼저 마저 한다. `approval_stale` 이면 메인에 알린다(아래).
 ```
 
 **Edit** `herdr-team/templates/coordinator.md`
@@ -2096,13 +2556,14 @@ def _awaiting(st: dict, appr: dict | None) -> tuple[list[str] | None, str | None
 
 ```markdown
 ## 일괄 승인 답
-`hteam design-review` 가 올린 approval 질문의 답은 `kind: main`, `reply_to: out-NNNN` 에 `design_review` 필드(`batch`, `approve_all`, `unknown`, `tasks`)가 붙어 온다. `tasks` 의 행마다 `round`(물은 라운드), `status`·`round_now`(지금), `pending`(아직 그 라운드의 awaiting_user), `stale`(선행이 그 뒤에 고쳐졌다), `depends_on`, `dependents`(프로젝트 전체에서 이 태스크에 직간접으로 의존하는 승인 태스크와 그 상태·라운드, 다른 묶음 포함)가 있다. hint 가 할 일을 요약한다.
-- 같은 묶음(Delivery)에 같은 `reply_to` 가 둘 이상이면 앞의 것만 처리한다(뒤의 것은 `duplicate: true`). `unknown` 이 비어 있지 않으면 아무것도 하지 않고 `applied` 도 하지 않는다(메인에 알린다).
-- 모든 accept·fix 에는 `--round` 를 붙인다: 묶음 태스크는 그 `round`, dependents 는 지금 `round`. 그 라운드가 이미 지났으면 exit 3 `round_changed` 다(이미 처리했다. 넘어간다).
-- `approve_all: true`(모두 승인): pending 태스크마다 `hteam accept T --round N` → `hteam start-ready` → `hteam applied out-NNNN`. stale 인 태스크는 accept 가 exit 3 `approval_stale` 로 거부한다: 대신 `hteam fix T --round N --note="선행 T-xxx 의 수정을 반영한다"`.
-- 그 밖(수정 요청): ① 답이 고치라는 태스크를 이 묶음 전체(pending 이 아닌 것 포함)에서 정한다. ② 고칠 대상은 그 태스크들과 각 `dependents` 다(다른 묶음에 있어도). ③ 고칠 대상 가운데 지금 awaiting_user 인 것만 선행부터 `hteam fix T --round N --note="<사용자 요청 원문>"`(dependents 는 `--note="선행 T-xxx 의 사용자 요청을 반영한다: <원문>"`). 이미 고쳐 awaiting_user 가 아닌 것은 건너뛴다. 아직 진행 중인 dependents 는 두면 된다(awaiting_user 가 되면 status 의 next 가 fix 를 준다). ④ 고칠 대상이 아닌 pending 태스크는 `hteam accept T --round N`(사용자 결정: 수정 요청이 가리키지 않은 태스크는 승인). 어느 태스크를 고치라는지 모호하면 `hteam notify --type question` 으로 다시 묻고, 그 답이 올 때까지 이 묶음의 태스크를 바꾸지 않는다. 끝나면 `hteam start-ready` → `hteam applied out-NNNN`.
-- 같은 답이 다시 와도(재시작 뒤) 같은 순서로 다시 한다: `pending`·`--round`·stale 이 이미 한 일을 다시 하지 않고 빠뜨린 일만 하게 한다.
+`hteam design-review` 가 올린 approval 질문의 답은 `kind: main`, `reply_to: out-NNNN` 에 `design_review` 필드(`batch`, `approve_all`, `decision`, `unknown`, `tasks`)가 붙어 온다. hint 가 할 일을 알려 준다.
+- 같은 묶음(Delivery)에 같은 `reply_to` 가 둘 이상이면 앞의 것만 처리한다(뒤의 것은 `duplicate: true`). `unknown` 이 비어 있지 않으면 결정하지 않는다(메인에 알린다).
+- 답을 읽어 고칠 태스크와 사용자 요청을 정하고 결정을 한 번에 넘긴다: `hteam design-review --decide out-NNNN --json -` 의 표준 입력에 `{"fix": {"T-xxx": "<사용자 요청 원문>"}}`(여럿이면 태스크마다). 모두 승인이면 `{"fix": {}}`. 이름이 나오지 않은 태스크는 승인된다(사용자 결정). 고칠 태스크에 직간접으로 의존하는 승인 태스크는 다른 묶음에 있어도 hteam 이 더해 같은 요청과 함께 고친다. 어느 태스크를 고치라는지 모호하면 `hteam notify --type question` 으로 다시 묻고 그 답이 올 때까지 결정하지 않는다.
+- hteam 은 결정(태스크마다 그때의 라운드와 요청)을 먼저 기록한 뒤 accept 와 수정 라운드를 만든다. 수정 라운드는 바로 띄우지 않는다(`launch_failed`, `queued`): `hteam start-ready` 가 선행의 수정 라운드가 다시 승인된 뒤에 띄운다. 결정을 다 하면 `applied` 도 hteam 이 적는다. 다음은 `hteam start-ready`.
+- 결정이 이미 있으면(재시작, 다시 온 답) 같은 `hteam design-review --decide out-NNNN` 을 입력 없이 다시 부른다. 기록대로 이어 하고, 기록한 라운드가 지난 항목은 다시 하지 않는다. `status` 의 next 도 그 명령을 준다(그 태스크에 일반 fix·accept 를 하지 않는다). 다른 묶음의 결정이 끝나지 않았으면 exit 3 `decision_pending`: 그 결정을 먼저 마저 한다.
+- `skipped` 에 끝난(done·dropped) 의존 태스크가 있으면 고치지 못한 것이다. 메인에 알린다(새 태스크로 고칠지 사용자가 정한다).
 - 고친 태스크가 다시 승인되면(accept 뒤 awaiting_user) 새 라운드라 `hteam design-review` 가 다시 묻는다.
+- `approval_stale`: 선행이 결정 밖에서 고쳐져 옛 선행을 보고 만든 승인 태스크다. design-review 가 묻지 않고 accept 가 받지 않는다. 메인에 알리고, 사용자가 정하면 `hteam fix T --note="…"` 로 다시 만든다.
 
 ## 요청 처리
 ```
@@ -2114,7 +2575,7 @@ def _awaiting(st: dict, appr: dict | None) -> tuple[list[str] | None, str | None
 ```
 
 ```markdown
-- designer: 화면 디자인(화면마다 태스크 하나, `docs/design/screens/<화면>/`). 승인 직무라 리뷰 승인 뒤 accept 하면 `awaiting_user` 가 되고, 사용자 일괄 승인(`hteam design-review`) 뒤 accept 로 `done` 이 된다. 그 화면을 구현하는 개발 태스크는 그 뒤에 시작된다.
+- designer: 화면 디자인(화면마다 태스크 하나, `docs/design/screens/<화면>/`). 승인 직무라 리뷰 승인 뒤 accept 하면 `awaiting_user` 가 되고, 사용자 일괄 승인(`hteam design-review`, `--decide`) 뒤 `done` 이 된다. 그 화면을 구현하는 개발 태스크는 그 뒤에 시작된다.
 - developer: 구현. tester: 테스트와 QA 보고서.
 ```
 
@@ -2141,7 +2602,7 @@ def _awaiting(st: dict, appr: dict | None) -> tuple[list[str] | None, str | None
 - 설정 `.herdr-team/config.toml`, 태스크 사양 `.herdr-team/tasks/`, 기획 `docs/planning/`, 디자인 `docs/design/`, 워커 보고서 `docs/tasks/`, 리뷰 `docs/reviews/`.
 ```
 
-설계를 같은 커밋에서 맞춘다(6.4 의 `--round`, 7.4 의 한 Delivery 안의 중복, 11.4 의 답 해석).
+설계를 같은 커밋에서 맞춘다(6.4 의 `--round`, 7.4 의 한 Delivery 안의 중복, 11.4 의 결정 기록).
 
 **Edit** `docs/superpowers/specs/2026-11-05-herdr-team-design.md`
 
@@ -2171,7 +2632,7 @@ def _awaiting(st: dict, appr: dict | None) -> tuple[list[str] | None, str | None
 
 ```markdown
 - `max_rounds` 에 닿으면 코디네이터가 메인에 묻는다(계속 / 버림). 계속이면 `--note` 와 함께 `fix --force-round`(상한을 한 번 넘긴다).
-- `--round N`(`accept`·`fix`): 지금 라운드가 N 일 때만 한다(아니면 아무것도 바꾸지 않고 exit 3 `round_changed`). 다시 올 수 있는 지시(일괄 승인 답)를 처리할 때 붙여, 이미 처리한 라운드의 지시를 다음 라운드에 적용하지 않게 한다. `accept` 는 awaiting_user 인 승인 태스크가 stale(11.4)이면 exit 3 `approval_stale` 로 거부한다.
+- `--round N`(`accept`·`fix`): 지금 라운드가 N 일 때만 한다(아니면 아무것도 바꾸지 않고 exit 3 `round_changed`). 일괄 승인 결정(11.4)을 다시 할 때 이미 한 항목을 다시 하지 않게 한다. `accept` 는 awaiting_user 인 승인 태스크가 stale(11.4)이면 마지막 전이 때 프로젝트 잠금 아래에서 다시 보고 exit 3 `approval_stale` 로 거부한다.
 ```
 
 **Edit** `docs/superpowers/specs/2026-11-05-herdr-team-design.md`
@@ -2181,7 +2642,7 @@ def _awaiting(st: dict, appr: dict | None) -> tuple[list[str] | None, str | None
 ```
 
 ```markdown
-같은 답이 두 번 와서 둘 다 적용 전이면: 한 Delivery 안이면 `hteam wait` 가 뒤 메시지를 `duplicate: true` 로 표시하고, Delivery 가 다르면 둘 다 `duplicate: false` 이므로 코디네이터는 같은 `out-id` 를 한 번만 처리하고 `applied` 를 기록한 뒤 나머지를 무시한다. 일괄 승인 답의 accept·fix 는 `--round`(6.4)로 이미 처리한 라운드를 다시 처리하지 않는다.
+같은 답이 두 번 와서 둘 다 적용 전이면: 한 Delivery 안이면 `hteam wait` 가 뒤 메시지를 `duplicate: true` 로 표시하고, Delivery 가 다르면 둘 다 `duplicate: false` 이므로 코디네이터는 같은 `out-id` 를 한 번만 처리하고 `applied` 를 기록한 뒤 나머지를 무시한다. 일괄 승인 답은 결정 기록(11.4)이 두 번 처리하지 않게 한다.
 ```
 
 **Edit** `docs/superpowers/specs/2026-11-05-herdr-team-design.md`
@@ -2191,7 +2652,7 @@ def _awaiting(st: dict, appr: dict | None) -> tuple[list[str] | None, str | None
 ```
 
 ```markdown
-- 코디네이터가 답을 해석한다: 승인이면 `accept`(`awaiting_user` → `done`), 아니면 해당 태스크 `fix --note`, 그 태스크에 의존하는 승인 태스크도 이어서 `fix`. 수정 요청이 가리키지 않은 태스크는 승인으로 본다(모호하면 다시 묻는다). `hteam wait` 가 그 답에 `design_review` 를 붙인다: 묶음의 태스크마다 `pending`(아직 그 라운드의 awaiting_user), `stale`, `depends_on`, `dependents`(프로젝트 전체에서 직간접으로 의존하는 승인 태스크, 다른 묶음 포함). 고칠 대상은 답이 가리키는 태스크(pending 이 아니어도)와 그 dependents 이고, 그 가운데 지금 awaiting_user 인 것만 고친다. 모든 accept·fix 는 `--round` 를 붙인다. 선행만 고치고 멈췄어도 의존 태스크는 stale 이라 accept 가 거부하고 `status` 의 next 가 fix 다. 묶음 태스크의 상태 파일을 읽지 못하면 그 답을 처리하지 않고 `applied` 하지 않는다. 메인은 사용자가 `수정 요청` 을 고르면 무엇을 고칠지 물은 뒤 `수정 요청: <내용>` 한 줄로 답한다. awaiting_user 에서 연 라운드의 사양은 수정 블록에 "사용자 요청"으로 적는다.
+- 코디네이터가 답을 해석한다: 승인이면 `accept`(`awaiting_user` → `done`), 아니면 해당 태스크 `fix --note`, 그 태스크에 의존하는 승인 태스크도 이어서 `fix`. 수정 요청이 가리키지 않은 태스크는 승인으로 본다(모호하면 다시 묻는다). 해석한 것은 `hteam design-review --decide <out-id> --json -`(`{"fix": {태스크: 사용자 요청}}`, 모두 승인이면 빈 `fix`)로 넘긴다. hteam 은 결정을 한 번 계산해 묶음 기록에 먼저 쓴다: 고칠 태스크(지목된 태스크와 그것에 직간접으로 의존하는 승인 태스크 전부, 다른 묶음 포함, 리뷰 중·승인됨이어도)마다 그때의 라운드와 사용자 요청, 승인할 태스크마다 그때의 라운드. 아직 시작하지 않은 의존 태스크는 고칠 것이 없고(선행이 다시 승인된 뒤 시작한다), 끝난 의존 태스크는 고칠 수 없어 알린다. 그다음 기록대로 `fix --round`·`accept --round` 를 한다. 수정 라운드는 바로 띄우지 않는다(`launch_failed`, queued). `start-ready` 의 의존 검사(승인 직무 선행은 awaiting_user·done 이어야 끝난 것)가 선행의 수정 라운드가 다시 승인될 때까지 기다리게 한다. 다시 부르면(재시작·다시 온 답) 기록대로 이어 하고 기록한 라운드가 지난 항목은 다시 하지 않는다. 결정이 끝나지 않은 동안에는 다른 묶음의 결정과 새 질문을 하지 않고(`decision_pending`) `status` 의 next 가 그 결정을 다시 하는 명령이다. 다 하면 hteam 이 `applied` 를 적는다. `hteam wait` 는 답에 `design_review`(묶음 태스크의 `pending`, 결정 상태, 상태를 읽지 못한 `unknown`)를 붙인다. 묶음 태스크의 상태 파일을 읽지 못하면 결정하지 않는다. 메인은 사용자가 `수정 요청` 을 고르면 무엇을 고칠지 물은 뒤 `수정 요청: <내용>` 한 줄로 답한다. 결정으로 연 라운드의 사양은 수정 블록에 "사용자 요청"으로 적는다.
 ```
 
 - [ ] **Step 4: 통과 확인**
@@ -2206,7 +2667,7 @@ git grep -n -I -P '/[U]sers/|/private/[t]mp|~[/]Workspace' -- . ':!.codex-review
 git add -- herdr-team/lib/hteam/tasks.py herdr-team/lib/hteam/compose.py herdr-team/lib/hteam/approval.py \
   herdr-team/lib/hteam/coord.py herdr-team/templates/coordinator.md herdr-team/templates/CLAUDE.section.md \
   herdr-team/tests/test_approval.py docs/superpowers/specs/2026-11-05-herdr-team-design.md
-git commit -m "feat(herdr-team): 승인 흐름 연결 — design-review next, 답 주석(dependents·stale), --round, 사용자 수정 라운드
+git commit -m "feat(herdr-team): 승인 흐름 — 일괄 승인 결정 기록(--decide), queued 수정 라운드, --round, 답 주석
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam herdr-team/templates \
   herdr-team/tests/test_approval.py docs/superpowers/specs/2026-11-05-herdr-team-design.md
@@ -3714,7 +4175,7 @@ Expected(설계 10장): 메인이 `hteam tell` → 코디네이터가 planner �
 - designer 워커가 `docs/design/screens/<화면>/index.html`·`notes.md` 와 보고서(`- 아티팩트: …` 줄)를 커밋하고, Codex 리뷰어 pane 이 APPROVE 하면 코디네이터가 accept → `awaiting_user`(출력 `next` 가 `design-review`).
 - 하나가 먼저 awaiting_user 가 되면 `design-review` 는 exit 3 `approval_not_ready`(다른 하나가 진행 중). 둘 다 awaiting_user 가 된 뒤 `design-review` 가 approval 질문 하나를 쓴다(`state/design-review.json` 의 `dr-0001`).
 - 메인이 `context`(태스크마다 한 줄과 링크: 아티팩트 URL 또는 보고서 경로)를 그대로 보여 준 뒤 AskUserQuestion(`모두 승인 (추천)` / `수정 요청`).
-- 첫 일괄 승인에서는 `수정 요청` 을 고른다. 메인이 무엇을 고칠지 대화로 묻는다 → 운영자가 "통계 화면의 완료율 숫자를 더 크게" 라고 답한다 → 메인이 `hteam answer <id> "수정 요청: <통계 화면 태스크 ID> 완료율 숫자를 더 크게"`. 코디네이터의 `wait` 결과에 `design_review`(두 태스크 `pending: true`, `dependents`)가 붙는다 → 통계 화면은 `fix --round 1 --note=…`(r2, 사양 수정 블록에 "사용자 요청"), 목록 화면은 `accept --round 1` → `done`(둘 사이에 의존이 있으면 의존하는 쪽도 fix 되고, 빠뜨려도 accept 가 `approval_stale` 로 거부한다). developer 태스크는 통계 화면이 done 이 아니라 아직 기다린다.
+- 첫 일괄 승인에서는 `수정 요청` 을 고른다. 메인이 무엇을 고칠지 대화로 묻는다 → 운영자가 "통계 화면의 완료율 숫자를 더 크게" 라고 답한다 → 메인이 `hteam answer <id> "수정 요청: <통계 화면 태스크 ID> 완료율 숫자를 더 크게"`. 코디네이터의 `wait` 결과에 `design_review`(두 태스크 `pending: true`)가 붙는다 → 코디네이터가 `hteam design-review --decide <id> --json -` 에 `{"fix": {"<통계 화면 태스크>": "완료율 숫자를 더 크게"}}` → 결정 기록(`state/design-review.json` 의 `decision`) → 통계 화면은 queued 수정 라운드(r2, 사양 수정 블록에 "사용자 요청"), 목록 화면은 accept → `done`(둘 사이에 의존이 있으면 의존하는 쪽도 같은 요청과 함께 queued 된다) → `start-ready` 가 r2 를 띄운다. developer 태스크는 통계 화면이 done 이 아니라 아직 기다린다.
 - r2 리뷰 승인 → accept → `design-review` 가 새 묶음(통계 화면 r2 하나)을 묻는다 → `모두 승인 (추천)` → accept → `done` → `start-ready` 가 developer 를 띄운다 → tester → 모두 `done`.
 - 끝난 워커·리뷰어 pane 은 release 로 닫힌다.
 
@@ -3796,7 +4257,7 @@ main 에 병합하지 않는다(3단계 뒤). 사용자에게 실환경 결과, 
 ---
 ## 자체 검토: 설계 대응표(15.3 2번)
 
-계획의 코드는 이 저장소(1f35fb7)를 새로 복사한 작업 트리에 Task 1–7 의 편집을 처음부터 차례로 적용해 확인했다(Codex 계획 리뷰 r1 반영 뒤 다시). 편집 지시는 모두 정확히 한 번씩 맞았다. 태스크 커밋마다 그 태스크의 Step 4 테스트와 Python 3.11 문법 검사(`ast.parse(..., feature_version=(3, 11))`, 모든 .py 와 진입점)를 돌렸다. Task 2·5·6 은 구현 전에 새 테스트가 실패하는 것도, r1 의 지적 7건(P1 중복 답·LF, P2 기록 검사·인덱스 모드·top_prefix·이력 render·started hint)은 옛 계획 코드에서 새 테스트가 실패하는 것도 확인했다. 마지막에 두 테스트 모음 전체: herdr-team 458, herdr-orch 202, 모두 OK(1단계 끝은 412·202).
+계획의 코드는 이 저장소(1f35fb7)를 새로 복사한 작업 트리에 Task 1–7 의 편집을 처음부터 차례로 적용해 확인했다(Codex 계획 리뷰 r1·r2 반영 뒤 다시). 편집 지시는 모두 정확히 한 번씩 맞았다. 태스크 커밋마다 그 태스크의 Step 4 테스트와 Python 3.11 문법 검사(`ast.parse(..., feature_version=(3, 11))`, 모든 .py 와 진입점)를 돌렸다. Task 2·5·6 은 구현 전에 새 테스트가 실패하는 것도, r1 의 지적 7건(P1 중복 답·LF, P2 기록 검사·인덱스 모드·top_prefix·이력 render·started hint)은 옛 계획 코드에서 새 테스트가 실패하는 것도 확인했다. r2 의 지적은 결정 기록 회귀 테스트(기록 뒤·첫 fix 뒤 죽음과 재생, 다른 묶음 의존 태스크와 재전달, 선행이 끝나기 전 의존 태스크를 띄우지 않음, accept 마지막 전이의 재확인)로 덮었다. 마지막에 두 테스트 모음 전체: herdr-team 463, herdr-orch 202, 모두 OK(1단계 끝은 412·202).
 
 | 설계 | 내용 | 태스크 |
 |---|---|---|
@@ -3809,12 +4270,12 @@ main 에 병합하지 않는다(3단계 뒤). 사용자에게 실환경 결과, 
 | 4, 4.2 | `user_approval_roles = ["designer"]`, designer owns, director·designer 는 claude 만 | 1(템플릿), 1단계(검사) |
 | 5.2 | 승인 직무 사이 의존 + owns 겹침 거부 | 1단계(plan check), 1(템플릿 설정으로 다시 확인), 2(planner.md 안내) |
 | 5.3 | awaiting_user 는 잠금을 쥔다, 의존 끝 조건(승인 → 승인은 awaiting_user 도 끝) | 1단계(`state.LOCKING`, `deps_met`), 3(`view` 가 같은 조건을 쓴다) |
-| 6.4 | accept: approved → awaiting_user(승인 직무) → done. fix: awaiting_user 에서 상한을 보지 않는다 | 1단계 + 4(accept 의 `next`, 수정 블록의 사용자 요청, `--round`, stale 거부) |
+| 6.4 | accept: approved → awaiting_user(승인 직무) → done. fix: awaiting_user 에서 상한을 보지 않는다 | 1단계 + 4(accept 의 `next`, 수정 블록의 사용자 요청, `--round`, 마지막 전이의 stale 재확인) |
 | 7.2, 7.4 | approval 항목, render 검사, answer(파일 먼저 → send), applied, duplicate(같은 out-id 는 한 번) | 3(approval 항목을 쓴다), 1단계(answer·applied), 4(`design_review` 주석, 한 Delivery 안의 중복), 6(applied 손상) |
 | 7.6 | 답이 없는 approval 은 열린 질문, `reask` | 1단계(`open_questions`), 3(테스트가 열린 질문을 확인) |
 | 11.2 | designer 기본: 화면마다 태스크, owns, 화면 원본, 보고서 항목, 승인 직무 | 1(designer.md), 2(tasks.toml 안내) |
 | 11.4 | `design-review` 조건(진행 중·지금 시작할 수 있는 승인 태스크 없음), 그 순간의 awaiting_user 전부, 승인 → 비승인 → 승인은 다음 묶음, context 한 줄과 링크(design_system_url 제외), 선택지, 이미 물었으면 exit 3, `state/design-review.json` | 3 |
-| 11.4 | 답 해석: 승인 → accept, 아니면 그 태스크 fix --note, 의존하는 승인 태스크도 fix | 4(주석·hint·coordinator.md·설계), 3(stale: 의존 태스크를 빠뜨려도 묻지 않는다) |
+| 11.4 | 답 해석: 승인 → accept, 아니면 그 태스크 fix --note, 의존하는 승인 태스크도 fix | 4(결정 기록 `--decide`, queued 수정 라운드, 주석·hint·coordinator.md·설계), 3(stale 은 읽기만 하는 검사) |
 | 8.3 | 명령 표의 `design-review`(코디네이터) | 3 |
 | 13 | status 의 next(awaiting_user), 오류·복구 | 4(next), 6(이어 붙인 워커의 next·hint, index.lock, run_error, 13장 표) |
 | 15.2 | 실환경: 사용자가 인터뷰에 답하고 일괄 승인 | 7 |
@@ -3827,9 +4288,10 @@ main 에 병합하지 않는다(3단계 뒤). 사용자에게 실환경 결과, 
 - 한 (태스크, 라운드)는 한 번만 묻는다. 이미 물은 태스크가 답을 기다리는 동안 새로 awaiting_user 가 된 태스크는 새 묶음에 그것만 넣는다(같은 태스크를 두 질문에 넣지 않는다). 수정 라운드는 다시 묻는다.
 - 링크: 보고서의 마지막 `https://claude.ai/…` URL. `design_system_url` 이 든 줄과 `docs/design/direction.md` 의 `design_system_url` 값은 뺀다. 없으면 보고서 경로를 보인다. context 가 4000자를 넘으면 뒤 태스크는 ID 만 적는다.
 - `design-review` 오류: exit 2 `no_approval_roles`, exit 3 `nothing_to_approve`·`approval_stale`·`already_asked`·`approval_not_ready`, exit 1 `bad_side_file`(기록 손상·모양 오류·중복, 덮어쓰지 않는다)·`bad_state_file`(읽지 못하는 상태 파일이 하나라도 있으면 묶음을 나누지 않는다). 코디네이터만 부른다. 프로젝트 잠금 안에서 기록 → outbox → id 순서로 쓴다. 같은 묶음 항목 찾기는 `outbox.append` 의 잠금 안에서(LF 만 빠진 마지막 줄을 완결한 뒤) 한다.
-- 답 해석 보조: `wait` 가 답에 `design_review` 를 붙인다(태스크마다 `pending`·`stale`·`depends_on`·`dependents`, 읽지 못한 상태 `unknown`). 고칠 대상은 답과 묶음 전체(pending 이 아닌 태스크 포함)로 먼저 정하고, 의존 승인 태스크는 프로젝트 전체 그래프에서 찾는다(다른 묶음 포함). 실행할 때만 지금 awaiting_user 인지로 거른다. `approve_all` 은 답이 정확히 `모두 승인 (추천)` 일 때만이다. 수정 요청이 가리키지 않은 태스크는 승인으로 보고, 의존하는 승인 태스크도 fix 한다(사용자 결정). 메인은 `수정 요청` 을 고르면 무엇을 고칠지 대화로 물은 뒤 `수정 요청: <내용>` 한 줄로 답한다.
-- 다시 온 답이 일을 두 번 하지 않게: accept·fix 에 `--round N`(지금 라운드가 N 일 때만, 아니면 exit 3 `round_changed`). 한 Delivery 안의 같은 out-id 는 `wait` 가 뒤 메시지를 `duplicate: true` 로 표시한다(설계 7.4 의 "한 번만 처리"). 상태를 읽지 못한 태스크가 있으면 처리하지 않고 applied 하지 않는다.
-- stale: 승인 태스크의 선행(직간접)이 이 태스크의 현재 라운드를 연 뒤에 새 라운드를 열었으면 옛 선행을 보고 만든 것이다. 라운드를 연 시각은 history 의 그 라운드 `start`·`fix` 기록(초 단위, 같은 초면 함께 고친 것). stale 인 awaiting_user 태스크는 design-review 가 묻지 않고(exit 3 `approval_stale`), accept 가 거부하고, status 의 next 가 `fix --round`. 그래서 선행만 고치고 죽거나 의존 태스크가 다른 묶음에 있어도 옛 결과를 승인하지 않는다.
+- 일괄 승인 답의 처리는 결정 기록 하나다(Codex 계획 리뷰 r2 뒤 단순화): 코디네이터가 해석한 `{"fix": {태스크: 사용자 요청}}` 을 `design-review --decide` 에 넘기면 hteam 이 프로젝트 잠금 안에서 한 번 계산해 먼저 기록한다. 고칠 태스크 = 지목된 묶음 태스크 + 그것에 직간접으로 의존하는 승인 태스크 전부(다른 묶음 포함, 리뷰 중·승인됨이어도), 각자 그때의 라운드와 요청(의존 태스크는 선행의 요청을 함께 적는다). 승인할 태스크 = 묶음의 나머지. 시작 안 한 의존 태스크는 고칠 것이 없다(선행이 다시 승인된 뒤 시작한다). 끝난 의존 태스크는 고칠 수 없어 알린다. 그다음 기록대로 `fix --round`(queued: 띄우지 않는다)·`accept --round` 를 한다. 다시 부르면 기록대로 이어 하고, 기록한 라운드가 지난 항목은 한 것이다. 사용자 결정(라벨, 이름 없는 태스크는 승인, 의존 승인 태스크도 고침)은 그대로다. 메인은 `수정 요청` 을 고르면 무엇을 고칠지 대화로 물은 뒤 `수정 요청: <내용>` 한 줄로 답한다.
+- 순서: queued 수정 라운드는 `start-ready` 의 기존 의존 검사(`tasks.deps_met`: 승인 직무 선행은 awaiting_user·done 이어야 끝난 것)가 선행의 수정 라운드가 다시 승인될 때까지 띄우지 않는다. `status` 는 queued 라운드에 `start-ready` 를 권한다(`start T` 는 의존을 보지 않는다). 끝나지 않은 결정이 있으면 다른 묶음의 결정과 새 질문을 하지 않고(`decision_pending`), 그 항목 태스크의 next 는 `design-review --decide <out-id>` 다.
+- 다시 온 답이 일을 두 번 하지 않게: accept·fix 에 `--round N`(지금 라운드가 N 일 때만, 아니면 exit 3 `round_changed`)이고 결정은 기록한 라운드로만 부른다. 한 Delivery 안의 같은 out-id 는 `wait` 가 뒤 메시지를 `duplicate: true` 로 표시한다(설계 7.4 의 "한 번만 처리"). 상태를 읽지 못한 태스크가 있으면 결정하지 않는다.
+- stale(줄였다): 승인 태스크의 선행(직간접)이 이 태스크의 현재 라운드를 연 뒤에 새 라운드를 열었으면 옛 선행을 보고 만든 것이다. 라운드를 연 시각은 history 의 그 라운드 `start`·`fix` 기록(초 단위, 같은 초면 함께 고친 것). 결정이 의존 태스크를 함께 고치므로 이것은 결정 밖에서 선행을 고친 경우뿐이다. 그래서 읽기만 하는 검사로 둔다: design-review 가 묻지 않고(exit 3 `approval_stale`), accept 가 마지막 전이에서 프로젝트 → 태스크 잠금 아래 다시 보고 거부하고, 결정이 그런 태스크를 승인하지 않는다. 자동으로 fix 를 권하지 않는다(메인에 알린다).
 - accept 가 awaiting_user 로 가면 `next` 가 `design-review` 다(그 전에 `start-ready` 를 하라는 hint). status 는 awaiting_user 에 묻지 않았고 막는 승인 태스크가 없을 때만 `next` 를 준다.
 - designer 기본형: 화면 원본은 `docs/design/screens/<화면>/index.html`(외부 리소스 없이)·`notes.md`. claude.ai 아티팩트는 쓸 수 있을 때만(워커 pane 에서 Artifact 도구를 쓸 수 있는지 보장되지 않는다).
 - 설정 템플릿은 designer 를 기본으로 담고 `user_approval_roles = ["designer"]` 다(사용자 결정, 설계 4장 예시와 같다). 화면이 없는 프로젝트면 init 이 빼자고 제안한다.
@@ -3853,6 +4315,17 @@ main 에 병합하지 않는다(3단계 뒤). 사용자에게 실환경 결과, 
 | P2 top_prefix 가 text 모드다 | 맞다(`--git-path`·`--show-toplevel` 도 같은 결함) | Task 5 `_out_line` 으로 셋 다 바이트로, 테스트 |
 | P2 이력에 확정 질문의 context 가 없다 | 맞다 | Task 2 `--history` 에 `render`, planner 리뷰 기준, 테스트 |
 | P2 start-ready 가 상한 hint 를 버린다 | 맞다 | Task 6 `started` 행에 hint, coordinator.md, 테스트 |
+
+### Codex 계획 리뷰 r2(P1×3, P2×1) 반영
+
+r1 의 10건 가운데 8건은 해결로 판정됐고, 의존 승인 2건이 부분 해결이었다. 새 지적은 모두 의존 승인 장치(stale 자동 수정·현재 라운드 계산)에서 나왔다. 가드를 더하지 않고 장치를 결정 기록 하나로 바꿨다(Task 4).
+
+| 지적 | 판단 | 반영 |
+|---|---|---|
+| P1 재시작의 stale 자동 수정이 사용자 요청 일부를 잃는다 | 맞다(status next 가 일반 메모로 fix) | 사용자 요청은 결정 기록에 있고, 결정 항목 태스크의 next 는 `--decide` 재생이다. stale 은 fix 를 권하지 않는다. 테스트: 기록 뒤·첫 fix 뒤에 죽고 다시 해도 두 태스크의 요청이 다 사양에 있다 |
+| P1 의존 수정 워커가 선행 수정이 끝나기 전에 뜬다 | 맞다(fix 는 의존을 보지 않는다) | 결정의 수정 라운드는 queued 로 만들고 `start-ready` 의 의존 검사가 띄운다. 테스트: 선행이 working 인 동안 start-ready 가 의존 태스크를 `deps` 로 기다리게 하고, 선행이 awaiting_user 가 된 뒤에만 띄운다 |
+| P1 재전달 때 의존 태스크의 현재 라운드를 쓴다 | 맞다 | 결정이 처음 계산할 때의 라운드를 기록하고 재생은 그 라운드로만 한다. 테스트: 다른 묶음의 의존 태스크를 고친 뒤 첫 답을 다시 해도 r3 가 열리지 않고, 둘째 묶음의 모두 승인도 그 태스크를 승인하지 않는다 |
+| P2 accept 의 stale 검사가 마지막 전이 전에 낡는다 | 맞다 | 마지막 전이에서 프로젝트 → 태스크 잠금 아래 다시 본다. 테스트: accept 를 사전 처리 뒤에 멈추고 선행 라운드를 바꾸면 거부한다 |
 
 ### 1단계가 넘긴 것의 처리
 
