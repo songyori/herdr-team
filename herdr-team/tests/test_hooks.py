@@ -204,15 +204,20 @@ class GuardTest(HookCase):
             out = self.hook("guard", {"tool_name": "Bash", "tool_input": {"command": cmd}}, terminal=MAIN)
             self.assertIsNone(out, cmd)
 
-    def test_main_bash_horch_only_when_executed(self):
-        """설계 9.4: 메인이 horch 를 직접 실행할 때만 거부한다. 인자·본문에 나오는 낱말은 막지 않는다."""
-        for cmd in ('.herdr-team/bin/hteam tell "horch 상태 봐 줘"', "ls herdr-orch/bin/horch",
-                    "grep -rn horch herdr-team/lib"):
+    def test_main_bash_hteam_single_call_only(self):
+        """설계 9.4: 메인은 horch 를 직접 부르지 않는다. 명령 전체가 hteam 한 번 호출일 때만 글 안의 horch 낱말을 허용하고,
+        나머지는 낱말 일치로 거부한다(셸 파서 우회를 막는 닫힌 쪽). hteam 밖의 언급(ls·grep)도 거부된다."""
+        for cmd in ('.herdr-team/bin/hteam tell "horch 상태 봐 줘"', 'hteam answer out-0001 "horch 결과"',
+                    '"$PWD/.herdr-team/bin/hteam" --root . tell \'x horch y\''):
             out = self.hook("guard", {"tool_name": "Bash", "tool_input": {"command": cmd}}, terminal=MAIN)
             self.assertIsNone(out, cmd)
-        for cmd in ('echo "$(horch status)"', "env X=1 horch status", 'bash -c "horch status"', "horch>/dev/null"):
+        for cmd in ("ls herdr-orch/bin/horch", "grep -rn horch herdr-team/lib", "hteam tell x; horch status",
+                    "if true; then horch run-create --objective demo; fi"):
             out = self.hook("guard", {"tool_name": "Bash", "tool_input": {"command": cmd}}, terminal=MAIN)
             self.assertEqual(self.decision(out), "deny", cmd)
+            reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+            self.assertIn("answer", reason)  # 같은 거부로 돌아오지 않게 hteam 한 번 호출로 보내라고 한다
+            self.assertIn("한 번", reason)
 
     def test_notebook_and_multiedit(self):
         def tool(name, key, rel, **kw):
@@ -438,26 +443,31 @@ class PathGuardTest(HookCase):
 
 
 class HorchRuleTest(unittest.TestCase):
-    """메인 Bash 의 horch 직접 실행 판별(순수 함수). 설계 9.4 는 '직접 부르면' 거부한다."""
+    """메인 Bash 의 horch 거부(순수 함수): hteam 한 번 호출만 허용 목록, 나머지는 brief 의 낱말 규칙 HORCH_RE."""
 
-    DENY = ("herdr-orch/bin/horch status", "python3 /x/bin/horch --home h check", "horch send", "horch",
-            'echo "$(horch status)"', "echo `horch status`", "env X=1 horch status", "X=1 horch status",
-            "sudo -u x horch status", "nice -n 5 horch status", '"herdr-orch/bin/horch" status',
-            'bash -c "horch status"', "sh -lc 'horch status'", 'eval "horch status"', "cd x && ./horch status",
-            "herdr-orch/bin/horch\tstatus", "horch>/dev/null", ">/dev/null horch status", "ls; horch status | jq .",
-            "(horch status)", "nohup horch watch &", "diff <(horch status) x", "echo a#b; horch status",
-            "ls\nhorch status", 'cat <<EOF\n$(horch status)\nEOF', 'hteam tell "unbalanced horch')
-    ALLOW = (".herdr-team/bin/hteam tell hi", "ls herdr-orch/", "echo horchestra", 'hteam tell "horch 상태 봐 줘"',
-             '.herdr-team/bin/hteam tell "check horch status"', "ls herdr-orch/bin/horch",
-             "grep -rn horch herdr-team/lib", "git log --grep horch", "cat herdr-orch/bin/horch",
-             "herdr-orch/bin/horch.py status", "echo '$(horch status)'", "hteam tell '`horch status` 결과를 봐 줘'",
-             "hteam answer q-1 \"don't use horch\"",
-             "hteam tell \"$(cat <<'EOF'\n`horch status` 결과를 봐 줘\nhorch status 는 메인이 부르지 않는다\nEOF\n)\"")
+    CODEX = ("if true; then horch run-create --objective demo; fi",
+             "bash <<'EOF'\nhorch run-create --objective demo\nEOF",
+             "printf '%s\\n' 'example <<EOF'\nhorch run-create --objective demo",
+             "/usr/bin/env horch run-create --objective demo",
+             "2>/dev/null horch run-create --objective demo",
+             "env \\\nhorch run-create --objective demo",
+             "env -S 'horch run-create --objective demo'")
+    DENY = CODEX + (
+        "{ horch; }", "! horch x", "while true; do horch; done",
+        'hteam tell "$(horch status)"', "hteam tell x; horch status", "hteam tell x && horch y",
+        "hteam tell x <<EOF\nhorch status\nEOF", "herdr-orch/bin/horch status", "python3 /x/bin/horch --home h check",
+        "horch send", 'hteam tell "`horch status`"', "hteam tell x | horch y", "hteam tell x & horch y",
+        "hteam tell x\nhorch status", "hteam tell don\\'t; horch status", "hteam tell $'it\\'s'; horch status",
+        "hteam tell 'unbalanced horch", "ls herdr-orch/bin/horch", "grep -rn horch herdr-team/lib")
+    ALLOW = ('.herdr-team/bin/hteam tell "horch 상태 봐 줘"', 'hteam answer out-0001 "horch 결과"',
+             '"$PWD/.herdr-team/bin/hteam" --root . tell \'x horch y\'', ".herdr-team/bin/hteam tell hi",
+             "ls herdr-orch/", "echo horchestra", 'hteam tell "horch 상태; 둘째 | 셋째 > 넷째 & 다섯째"',
+             "hteam tell 'a; horch | b && $(c) `d`'", 'hteam answer out-0002 "don\'t use horch\n둘째 줄"')
 
     def test_rule(self):
-        calls = load_hook().calls_horch
-        self.assertEqual([c for c in self.DENY if not calls(c)], [])
-        self.assertEqual([c for c in self.ALLOW if calls(c)], [])
+        denied = load_hook().horch_denied
+        self.assertEqual([c for c in self.DENY if not denied(c)], [])
+        self.assertEqual([c for c in self.ALLOW if denied(c)], [])
 
 
 class HookImportTest(TeamCase):

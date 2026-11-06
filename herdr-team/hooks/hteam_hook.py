@@ -32,18 +32,8 @@ NOISE_RE = re.compile(r"[\s#*_>|\-`]+")
 FINGERPRINT = 80  # 정규화한 render.context 앞 80자가 메인 텍스트에 있으면 보여 준 것으로 본다
 TAIL_BYTES = 1 << 20
 
-# 메인 Bash 의 horch 직접 실행 판별(calls_horch)
-HORCH_RE = re.compile(r"(^|[\s;&|(`'\"/])horch(?=$|[\s;&|)`'\"])")  # 명령을 나누지 못할 때: 낱말만 나와도 거부
-WRAPPERS = {"env", "command", "builtin", "exec", "nohup", "time", "nice", "sudo"}
-WRAPPER_ARGS = {"sudo": {"-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U", "-r", "-t"},
-                "env": {"-u", "-C", "-S"}, "nice": {"-n"}, "time": {"-f", "-o"}, "exec": {"-a"}}  # 값을 받는 옵션
-SHELLS = {"bash", "sh", "zsh"}
-INTERP_RE = re.compile(r"^(python[0-9.]*|bash|sh|zsh)$")
-SHELL_C_RE = re.compile(r"^-[A-Za-z]*c[A-Za-z]*$")  # -c, -lc 등
-ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-PUNCT = set("();<>|&")
-HEREDOC_RE = re.compile(r"(?<!<)<<(?!<)-?[ \t]*(\\?)(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
-NEST = 4  # 명령 치환·-c 글을 따라 들어가는 깊이 상한. 넘으면 낱말 규칙(닫힌 쪽)
+# 메인 Bash 의 horch 거부(horch_denied). brief 의 낱말 규칙 그대로다
+HORCH_RE = re.compile(r"(^|[\s;&|(`'\"/])horch(?=$|[\s;&|)`'\"])")
 
 
 def _load() -> None:
@@ -164,129 +154,46 @@ def _in_state(p, real: Path, rel: str | None) -> bool:
     return folded == STATE_DIR or folded.startswith(STATE_DIR + "/") or _below(real, p.state) is not None
 
 
-def _heredocs(cmd: str) -> tuple[str, list[str]]:
-    """(heredoc 본문 줄을 뺀 명령, 명령 치환이 일어나는 본문들). 본문은 명령이 아니다. 구분자를 따옴표나 `\\` 로 막은
-    본문은 글자 그대로라 치환도 없다."""
-    kept, bodies, pending = [], [], []
-    for line in cmd.split("\n"):
-        if pending:
-            delim, literal, body = pending[0]
-            if line.strip() == delim:
-                pending.pop(0)
-                if not literal:
-                    bodies.append("\n".join(body))
-            else:
-                body.append(line)
-            continue
-        kept.append(line)
-        pending = [(m.group(3), bool(m.group(1) or m.group(2)), []) for m in HEREDOC_RE.finditer(line)]
-    bodies += ["\n".join(body) for _, literal, body in pending if not literal]
-    return "\n".join(kept), bodies
-
-
-def _substitutions(text: str, quotes: bool = True) -> list[str]:
-    """셸이 실행하는 명령 치환 `$(…)`·`` `…` `` 의 본문(큰따옴표 안 포함). 작은따옴표 안과 `\\` 로 막은 글자는 건너뛴다.
-    quotes=False 는 heredoc 본문이다(따옴표가 글자일 뿐이다)."""
-    found, i, quote = [], 0, None
-    while i < len(text):
-        c = text[i]
+def _plain(cmd: str) -> bool:
+    """셸 연산자·치환·heredoc 이 없는 명령인가. 따옴표 밖의 `; & | < >`·줄바꿈·`$'`, 작은따옴표 밖의 `` ` ``·`$(` 가
+    있으면 False 다(heredoc `<<` 도 `<` 다). 따옴표가 닫히지 않아도 False. `\\` 로 막은 글자는 글자다(셸과 같다)."""
+    quote, i = None, 0
+    while i < len(cmd):
+        c = cmd[i]
         if quote == "'":
-            quote = None if c == "'" else quote
-            i += 1
+            if c == "'":
+                quote = None
         elif c == "\\":
-            i += 2
-        elif quotes and c == "'" and quote is None:
-            quote, i = "'", i + 1
-        elif quotes and c == '"':
-            quote, i = (None if quote == '"' else '"'), i + 1
-        elif c == "`":
-            end = text.find("`", i + 1)
-            end = len(text) if end < 0 else end
-            found.append(text[i + 1:end])
-            i = end + 1
-        elif text.startswith("$(", i) and not text.startswith("$((", i):
-            depth, j = 1, i + 2
-            while j < len(text) and depth:
-                depth += {"(": 1, ")": -1}.get(text[j], 0)
-                j += 1
-            found.append(text[i + 2:j - 1] if depth == 0 else text[i + 2:])
-            i = j
-        else:
-            i += 1
-    return found
+            i += 1  # 다음 글자는 글자다(따옴표 밖 `\\` 줄바꿈은 줄 잇기)
+        elif c == "`" or cmd.startswith("$(", i):
+            return False
+        elif quote == '"':
+            if c == '"':
+                quote = None
+        elif c in ";&|<>\n" or cmd.startswith("$'", i):
+            return False
+        elif c in "'\"":
+            quote = c
+        i += 1
+    return quote is None
 
 
-def calls_horch(cmd: str, depth: int = 0) -> bool:
-    """Bash 명령이 horch 를 실행하는가(설계 9.4 '직접 부르면'). 인자나 따옴표 안 글에 나오는 낱말은 실행이 아니다.
-
-    단순 명령(`; & && | || ( )`·줄바꿈으로 나눔)마다 앞의 NAME=값·감싸는 명령(env·sudo 등)과 그 옵션을 건너뛴 명령어를
-    본다. 이름이 horch 이거나, python·셸의 첫 인자(스크립트)가 horch 이거나, `bash|sh|zsh -c <글>`·`eval <글>` 의 글이
-    horch 를 실행하면 참이다. 명령 치환 본문도 같은 규칙으로 본다. 따옴표가 맞지 않아 나누지 못하면 낱말만 나와도
-    참이다(닫힌 쪽)."""
-    if depth > NEST:
-        return bool(HORCH_RE.search(cmd))
-    text, bodies = _heredocs(cmd)
-    inner = _substitutions(text) + [s for body in bodies for s in _substitutions(body, quotes=False)]
-    if any(calls_horch(s, depth + 1) for s in inner):
-        return True
-    try:
-        lex = shlex.shlex(text.replace("\n", ";"), posix=True, punctuation_chars=True)
-        lex.whitespace_split = True
-        lex.commenters = ""  # `#` 뒤를 버리면 뒤따르는 명령까지 숨을 수 있다
-        tokens = list(lex)
-    except ValueError:
-        return bool(HORCH_RE.search(cmd))
-    words, target = [], False
-    for tok in tokens + [";"]:
-        if target:  # 리다이렉션 대상(파일 이름)은 명령어가 아니다
-            target = False
-            continue
-        if tok and set(tok) <= PUNCT:
-            if ("<" in tok or ">" in tok) and "(" not in tok and ")" not in tok:
-                target = True
-                continue
-            if words and _simple_calls(words, depth):
-                return True
-            words = []
-        else:
-            words.append(tok)
-    return False
-
-
-def _command_index(words: list[str]) -> int:
-    """단순 명령에서 명령어의 위치. 앞의 NAME=값, 감싸는 명령과 그 옵션(값을 받는 옵션은 값까지)을 건너뛴다."""
-    i, wrapper = 0, None
-    while i < len(words):
-        word = words[i]
-        if ASSIGN_RE.match(word) or word in WRAPPERS:
-            wrapper = word if word in WRAPPERS else wrapper
-            i += 1
-        elif wrapper and word == "--":
-            return i + 1
-        elif wrapper and word.startswith("-") and len(word) > 1:
-            i += 2 if word in WRAPPER_ARGS.get(wrapper, ()) else 1
-        else:
-            return i
-    return i
-
-
-def _simple_calls(words: list[str], depth: int) -> bool:
-    i = _command_index(words)
-    if i >= len(words):
+def hteam_only(cmd: str) -> bool:
+    """명령 전체가 hteam 한 번 호출인가(첫 단어의 basename 이 hteam 이고 연산자·치환·heredoc 이 없다).
+    이때 horch 낱말은 tell·answer 의 글일 뿐 실행이 아니다."""
+    if not _plain(cmd):
         return False
-    name, args = os.path.basename(words[i]), words[i + 1:]
-    if name == "horch":
-        return True
-    if name == "eval":
-        return calls_horch(" ".join(args), depth + 1)
-    if name in SHELLS:
-        flag = next((k for k, a in enumerate(args) if SHELL_C_RE.match(a)), None)
-        if flag is not None:
-            return flag + 1 < len(args) and calls_horch(args[flag + 1], depth + 1)
-    if INTERP_RE.match(name):
-        script = next((a for a in args if not a.startswith("-")), "")
-        return os.path.basename(script) == "horch"
-    return False
+    try:
+        words = shlex.split(cmd)
+    except ValueError:
+        return False
+    return bool(words) and os.path.basename(words[0]) == "hteam"
+
+
+def horch_denied(cmd: str) -> bool:
+    """메인 Bash 명령을 horch 직접 호출로 보고 거부하는가(설계 9.4). 셸 문법을 따라가지 않는다: hteam 한 번 호출만
+    허용 목록이고, 나머지는 horch 낱말이 나오면 거부한다(닫힌 쪽. `ls …/horch`·`grep horch` 도 거부된다)."""
+    return not hteam_only(cmd) and bool(HORCH_RE.search(cmd))
 
 
 def deny(reason: str) -> dict:
@@ -401,9 +308,11 @@ def guard(p, payload: dict):
                 return deny(f"메인은 제품 파일({rel})을 고치지 않는다. `{SHIM} tell \"<요청>\"` 으로 코디네이터에게 넘긴다.")
         return None
     command = tool_input.get("command")
-    if tool == "Bash" and role == "main" and isinstance(command, str) and calls_horch(command):
-        return deny(f"메인은 horch 를 직접 부르지 않는다(Run 에 묶이면 깨우기 글이 사용자 입력란에 들어온다). "
-                    f"`{SHIM} tell \"<글>\"` 을 쓴다.")
+    if tool == "Bash" and role == "main" and isinstance(command, str) and horch_denied(command):
+        return deny(f"메인은 horch 를 직접 부르지 않는다(Run 에 묶이면 깨우기 글이 사용자 입력란에 들어온다). horch 가 나오는 "
+                    f"글은 `{SHIM} tell \"<글>\"` 이나 `{SHIM} answer <out-id> \"<답>\"` 한 번의 호출 안에만 둔다: 다른 "
+                    "명령과 잇지 않고(; && | 없이) 리다이렉션·$(…)·백틱·heredoc 도 쓰지 않는다. 그 밖의 명령은 horch 라는 "
+                    "낱말만 나와도 거부한다(ls·grep 포함).")
     return None
 
 
