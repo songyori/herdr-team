@@ -53,6 +53,16 @@ class PlannerDocTest(unittest.TestCase):
         # plan.py 의 디렉터 규칙: director 직무가 있으면 director 태스크 하나, 에셋 전용이 아닌 designer 는 그것에 의존
         self.assertIn("director 태스크를 정확히 하나", section(self.text, "tasks.toml 형식"))
 
+    def test_designer_task_names_the_designer_outputs(self):
+        # 실환경(2단계): planner 문서가 designer 산출물 이름을 말하지 않아 기획자가 design.md·mockup.html 을 지어
+        # 사양에 적었고 designer 는 직무 문서(index.html·notes.md) 대신 사양을 따랐다. 기획자는 직무 문서의 이름을 쓴다.
+        designer = (ROOT / "templates" / "roles" / "designer.md").read_text(encoding="utf-8")
+        outputs = re.findall(r"(?m)^- `(docs/design/screens/<화면>/[^`]+)`", section(designer, "산출물"))
+        self.assertEqual(outputs, ["docs/design/screens/<화면>/index.html", "docs/design/screens/<화면>/notes.md"])
+        fmt = section(self.text, "tasks.toml 형식")
+        for path in outputs:
+            self.assertIn(f"`{path}`", fmt)
+
 
 class FixRoundQuestionTest(TeamCase):
     """수정 라운드의 기획자는 앞 라운드의 열린 질문을 새로 묻지 않고 기다린다(설계 10장)."""
