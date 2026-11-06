@@ -5556,12 +5556,11 @@ Expected: `spec:`·`[plan] apply`·`[T-xxx] …`·`[T-xxx] review rN: …` 커�
 set -u
 ISO=hq3   # 짧은 이름(소켓 경로 길이 제한). 사용자 core 와 다른 격리 코어다
 core() { python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["core"]["id"], d["pid"], d["uptime_ms"])'; }
-USER_BEFORE=$(hc server status --json | core)
-ISO_INFO=$(HC_SESSION="$ISO" hc server status --json | core)
-echo "user=$USER_BEFORE iso=$ISO_INFO"
-set -- $USER_BEFORE; U_ID=$1; U_PID=$2
-set -- $ISO_INFO; I_ID=$1; I_PID=$2
-if [ -z "$I_ID" ] || [ "$I_ID" = "$U_ID" ] || [ "$I_PID" = "$U_PID" ]; then
+# read 로 나눈다(zsh 는 따옴표 없는 $VAR 를 낱말로 나누지 않아 set -- $VAR 가 쪼개지 않는다)
+read -r U_ID U_PID U_UP <<< "$(hc server status --json | core)"
+read -r I_ID I_PID I_UP <<< "$(HC_SESSION="$ISO" hc server status --json | core)"
+echo "user=$U_ID/$U_PID iso=$I_ID/$I_PID"
+if [ -z "$I_ID" ] || [ -z "$U_ID" ] || [ "$I_ID" = "$U_ID" ] || [ "$I_PID" = "$U_PID" ]; then
   echo "격리 코어가 아니다. 아무것도 하지 않고 멈춘다"; exit 1
 fi
 addr() { python3 -c 'import json,sys; print(json.load(sys.stdin)["address"])'; }
