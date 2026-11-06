@@ -73,6 +73,8 @@ class GlobTest(unittest.TestCase):
         self.assertNotEqual(nfc, nfd)
         self.assertTrue(overlaps(nfc, nfd) and overlaps(nfd, nfc))
         self.assertTrue(overlaps(unicodedata.normalize("NFD", "src/CAFÉ/a.py"), "src/café/**"))
+        # NFD 결합 글자에 대소문자 차이까지: casefold 만 한 판정이 `??` 두 글자와 맞는다(Codex P2, db50c05 회귀)
+        self.assertTrue(overlaps("src/CAFÉ.py", "src/caf??.py") and overlaps("src/caf??.py", "src/CAFÉ.py"))
         for a, b in (("src/café/**", "src/cafe/**"), ("src/Foo/**", "src/bar/**"), ("src/straße.py", "src/stra?e.txt")):
             self.assertFalse(overlaps(a, b) or overlaps(b, a), (a, b))
 
