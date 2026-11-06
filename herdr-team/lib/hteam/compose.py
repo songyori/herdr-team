@@ -45,7 +45,7 @@ def work_spec(p, cfg, spec, rd: dict, owns: list[str]) -> str:
     if n > 1:
         parts += ["", f"## 수정 라운드 r{n}",
                   f"이전 대화는 없다. 먼저 `{report_rel(tid)}` 와 `git log --grep '^\\[{tid}\\]'` 를 읽는다."]
-        prior = review_rel(tid, n - 1)
+        prior = review_rel(tid, rd.get("prior_review_round") or n - 1)  # 사용자 요청 라운드는 기록한 리뷰 라운드
         verdict = rd.get("prior_verdict")
         if rd.get("from_user"):
             said = "(이전 리뷰는 승인이었다)" if verdict == "APPROVE" else ""

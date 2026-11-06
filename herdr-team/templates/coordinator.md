@@ -67,7 +67,7 @@ hteam 명령이 exit 5 `not_coordinator` 를 주면 `hteam up` 이 새 코디네
 - 결정이 이미 있으면(재시작, 다시 온 답) 같은 `hteam design-review --decide out-NNNN` 을 입력 없이 다시 부른다. 기록대로 이어 하고, 기록한 라운드가 지난 항목은 다시 하지 않는다. `status` 의 next 도 그 명령을 준다(그 태스크에 일반 fix·accept 를 하지 않는다). 다른 묶음의 결정이 끝나지 않았으면 exit 3 `decision_pending`: 그 결정을 먼저 마저 한다.
 - `skipped` 에 끝난(done·dropped) 의존 태스크가 있으면 고치지 못한 것이다. 메인에 알린다(새 태스크로 고칠지 사용자가 정한다). 지목한 태스크가 끝났으면 exit 3 `decision_conflict` 로 아무것도 하지 않는다: 메인에 알리고 사용자가 정한 대로 그 태스크를 뺀 결정을 다시 준다.
 - 다른 묶음의 결정이 이미 고친 태스크(라운드가 지났다)를 이 답이 지목해도 그대로 넘긴다. hteam 이 지금 라운드에서 새 요청(과 앞 요청)으로 다시 고친다.
-- 결정이 끝나기 전에는 그 결정이 고치는 태스크와 의존 태스크를 `start`·`start-ready` 가 띄우지 않는다(start-ready 의 대기 사유 `decision`).
+- 결정이 끝나기 전에는 그 결정이 고치는 태스크와 의존 태스크를 `start`·`start-ready` 가 띄우지 않고(start-ready 의 대기 사유 `decision`), 결정 밖의 `fix`·`accept` 도 exit 3 `decision_pending` 으로 거부한다. hint 의 `--decide` 를 먼저 마저 한다.
 - 고친 태스크가 다시 승인되면(accept 뒤 awaiting_user) 새 라운드라 `hteam design-review` 가 다시 묻는다.
 - `approval_stale`: 선행이 결정 밖에서 고쳐져 옛 선행을 보고 만든 승인 태스크다. design-review 가 묻지 않고 accept 가 받지 않는다. 메인에 알리고, 사용자가 정하면 `hteam fix T --note="…"` 로 다시 만든다.
 

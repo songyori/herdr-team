@@ -805,6 +805,43 @@ class ApprovalFollowupTest(DecisionCase):
         self.assertIsNone(task["next"])
         self.assertIn("선행 T-001 가 이 라운드를 연 뒤에 결정 밖에서 고쳐졌다", task["hint"])
 
+    def test_changes_dependent_refixed_twice_keeps_the_review_findings(self):
+        # T-002(changes, r1 REQUEST_CHANGES)가 서로 다른 묶음의 T-001·T-005 에 의존한다. 두 결정이 차례로 고쳐 r2 는
+        # 띄우지 않은 채 r3 이 된다. r3 도 r1 리뷰의 지적을 가리킨다
+        from hteam.paths import review_rel
+        self.task("T-001", "awaiting_user")
+        self.assertEqual(self.review()[1].get("id"), "out-0001")
+        self.task("T-005", "awaiting_user")
+        self.assertEqual(self.review()[1].get("id"), "out-0002")
+        self.task("T-002", "changes", depends="T-001, T-005")
+        with state.edit(self.p, "T-002") as st:
+            st["rounds"][-1]["verdict"] = "REQUEST_CHANGES"
+        prior = review_rel("T-002", 1)
+        self.commit(prior, "# 리뷰\nREQUEST_CHANGES: 여백이 틀렸다\n", "[T-002] review r1: REQUEST_CHANGES")
+        self.assertEqual(self.decide("out-0001", {"T-001": "버튼을 크게"})[0], 0)
+        self.assertEqual(self.decide("out-0002", {"T-005": "글꼴을 바꾼다"})[0], 0)
+        self.assertEqual(self.rounds("T-002"), [("T-002", "launch_failed", 3)])
+        rd = self.task_state("T-002")["rounds"][-1]
+        self.assertEqual((rd.get("prior_verdict"), rd.get("prior_review_round")), ("REQUEST_CHANGES", 1))
+        work = self.work("T-002")
+        self.assertIn(f"`{prior}` 의 지적을 모두 다룬다", work)
+        self.assertIn("버튼을 크게", work)
+        self.assertIn("글꼴을 바꾼다", work)
+        self.assertNotIn("이전 리뷰는 승인이었다", work)
+
+    def test_plain_fix_after_a_failed_user_round_keeps_the_request(self):
+        # 결정이 연 사용자 요청 라운드(r2)의 워커가 done 없이 끝났다(working). next 대로 일반 fix 를 해도 요청을 잃지 않는다
+        self.task("T-001", "awaiting_user")
+        self.review()
+        self.assertEqual(self.decide("out-0001", {"T-001": "버튼을 크게"})[0], 0)
+        self.move("T-001", "working")
+        code, out = self.hteam("fix", "T-001", "--note=이전 워커가 done 없이 끝남")
+        self.assertEqual((code, self.task_state("T-001")["round"]), (0, 3), out)
+        self.assertTrue(self.task_state("T-001")["rounds"][-1].get("from_user"))  # 다음 결정·fix 도 이 요청을 잇는다
+        work = self.work("T-001")
+        self.assertIn("버튼을 크게", work)
+        self.assertIn("이전 워커가 done 없이 끝남", work)
+
 
 class ApprovalFlowTest(DecisionCase):
     """실제 워커로: accept → awaiting_user → design-review → 메인 답 → wait 주석 → 결정 → start-ready(설계 11.4)."""
@@ -967,6 +1004,10 @@ class ApprovalDocsTest(unittest.TestCase):
         coord = (ROOT / "templates" / "coordinator.md").read_text(encoding="utf-8")
         self.assertIn("일괄 승인 답은 `hteam design-review --decide` 가 applied 를 적는다. 그 답에는 `hteam applied` 를 하지 "
                       "않는다", coord)
+
+    def test_fix_and_accept_are_held_by_an_unfinished_decision(self):
+        coord = (ROOT / "templates" / "coordinator.md").read_text(encoding="utf-8")
+        self.assertIn("결정 밖의 `fix`·`accept` 도 exit 3 `decision_pending` 으로 거부한다", coord)
 
 
 if __name__ == "__main__":
