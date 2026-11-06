@@ -458,7 +458,8 @@ class HorchRuleTest(unittest.TestCase):
         "hteam tell x <<EOF\nhorch status\nEOF", "herdr-orch/bin/horch status", "python3 /x/bin/horch --home h check",
         "horch send", 'hteam tell "`horch status`"', "hteam tell x | horch y", "hteam tell x & horch y",
         "hteam tell x\nhorch status", "hteam tell don\\'t; horch status", "hteam tell $'it\\'s'; horch status",
-        "hteam tell 'unbalanced horch", "ls herdr-orch/bin/horch", "grep -rn horch herdr-team/lib")
+        "hteam tell 'unbalanced horch", "ls herdr-orch/bin/horch", "grep -rn horch herdr-team/lib",
+        "horch>/dev/null", "horch<x", "x>horch status", "2>/dev/null<horch")
     ALLOW = ('.herdr-team/bin/hteam tell "horch 상태 봐 줘"', 'hteam answer out-0001 "horch 결과"',
              '"$PWD/.herdr-team/bin/hteam" --root . tell \'x horch y\'', ".herdr-team/bin/hteam tell hi",
              "ls herdr-orch/", "echo horchestra", 'hteam tell "horch 상태; 둘째 | 셋째 > 넷째 & 다섯째"',

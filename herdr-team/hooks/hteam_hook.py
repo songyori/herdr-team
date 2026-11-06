@@ -33,7 +33,7 @@ FINGERPRINT = 80  # 정규화한 render.context 앞 80자가 메인 텍스트에
 TAIL_BYTES = 1 << 20
 
 # 메인 Bash 의 horch 거부(horch_denied). brief 의 낱말 규칙 그대로다
-HORCH_RE = re.compile(r"(^|[\s;&|(`'\"/])horch(?=$|[\s;&|)`'\"])")
+HORCH_RE = re.compile(r"(^|[\s;&|(`'\"/<>])horch(?=$|[\s;&|)`'\"<>])")
 
 
 def _load() -> None:
