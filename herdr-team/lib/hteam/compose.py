@@ -46,7 +46,10 @@ def work_spec(p, cfg, spec, rd: dict, owns: list[str]) -> str:
         parts += ["", f"## 수정 라운드 r{n}",
                   f"이전 대화는 없다. 먼저 `{report_rel(tid)}` 와 `git log --grep '^\\[{tid}\\]'` 를 읽는다."]
         prior = review_rel(tid, n - 1)
-        if (p.root / prior).is_file():
+        if rd.get("from_user"):
+            parts.append("사용자가 일괄 승인에서 수정을 요청했다(이전 리뷰는 승인이었다). 아래 사용자 요청을 모두 반영하고, "
+                         f"요청마다 어떻게 반영했는지 보고서 `## r{n}` 절에 적는다.")
+        elif (p.root / prior).is_file():
             parts.append(f"`{prior}` 의 지적을 모두 다룬다. 지적마다 어떻게 다뤘는지 보고서 `## r{n}` 절에 적는다.")
         if spec.role in ASK_ROLES:
             parts.append(f"먼저 `{SHIM} ask-user --task {tid} --pending` 과 `--history` 로 이전 질문과 답을 확인한다. "
@@ -56,7 +59,7 @@ def work_spec(p, cfg, spec, rd: dict, owns: list[str]) -> str:
             sup = rd["supplement"]
             parts.append(f"디렉터 보강 태스크 {sup} 의 결과(`{report_rel(sup)}`, `docs/design/system/`)를 반영한다.")
         if rd.get("note"):
-            parts.append(f"코디네이터 메모: {rd['note']}")
+            parts.append(f"{'사용자 요청' if rd.get('from_user') else '코디네이터 메모'}: {rd['note']}")
     return "\n".join(parts).rstrip() + "\n"
 
 

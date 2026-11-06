@@ -21,11 +21,13 @@ stale: 승인 태스크의 선행(직간접)이 이 태스크의 현재 라운�
 """
 from __future__ import annotations
 
+import json
 import re
+import sys
 
 from . import config, outbox, roles, specs, state, tasks
-from .errors import CONFLICT, USAGE, HteamError
-from .paths import find_project, report_rel
+from .errors import CONFLICT, FAIL, USAGE, HteamError
+from .paths import SHIM, find_project, report_rel
 from .util import bad_side_file, die_at, now, read_json_strict, write_json
 
 PROGRESS = frozenset({"working", "reviewing", "approved", "changes", "launch_failed"})
@@ -61,7 +63,54 @@ def _problem(b) -> str | None:
         outbox.validate_render(b.get("render"), HEADER)
     except HteamError as exc:
         return f"{b['batch']}: render 가 질문 형식이 아니다({exc.message})"
+    if b.get("decision") is not None:
+        return _decision_problem(b)
     return None
+
+
+def _decision_problem(b: dict) -> str | None:
+    """결정 기록의 모양 문제(없으면 None). 틀린 결정으로 accept·fix 를 하지 않는다."""
+    d, name = b["decision"], b["batch"]
+    if b.get("id") is None:
+        return f"{name}: 묻지 않은 묶음에 결정이 있다"
+    if not isinstance(d, dict) or not isinstance(d.get("at"), str) or not isinstance(d.get("input"), dict):
+        return f"{name}: decision 이 객체가 아니거나 at·input 이 없다"
+    if not all(isinstance(d.get(k), list) for k in ("fix", "accept", "skipped")):
+        return f"{name}: decision 의 fix·accept·skipped 가 목록이 아니다"
+    if not all(_task_ok(e) and isinstance(e.get("note"), str) and e["note"].strip()
+               and isinstance(e.get("because"), list) for e in d["fix"]):
+        return f"{name}: decision.fix 가 [{{task, round, note, because}}] 가 아니다"
+    if not all(_task_ok(e) for e in d["accept"]):
+        return f"{name}: decision.accept 가 [{{task, round}}] 가 아니다"
+    if d.get("done") is not None and not isinstance(d["done"], str):
+        return f"{name}: decision.done 이 시각이나 null 이 아니다"
+    return None
+
+
+def _open_decision(data: dict, but: dict | None = None) -> dict | None:
+    """끝나지 않은 결정이 있는 묶음(but 은 뺀다)."""
+    return next((b for b in data["batches"] if b is not but and b.get("decision") and not b["decision"].get("done")),
+                None)
+
+
+def _decision_pending(b: dict) -> HteamError:
+    return HteamError("decision_pending", f"{b['id']} 의 일괄 승인 결정을 아직 다 하지 않았다", CONFLICT,
+                      f"먼저 `{SHIM} design-review --decide {b['id']}` 로 기록대로 마저 한다", data={"pending": b["id"]})
+
+
+def _unfinished(data: dict, states: list[dict]) -> dict[str, str]:
+    """끝나지 않은 결정의 항목 가운데 아직 하지 않은 것(태스크가 기록한 라운드 그대로) → 그 out-id."""
+    by_id = {s["id"]: s for s in states}
+    found: dict[str, str] = {}
+    for b in data["batches"]:
+        d = b.get("decision")
+        if not d or d.get("done"):
+            continue
+        for e in [*d["fix"], *d["accept"]]:
+            st = by_id.get(e["task"])
+            if st is not None and st["status"] not in state.CLOSED and st["round"] == e["round"]:
+                found[e["task"]] = b["id"]
+    return found
 
 
 def load(p) -> dict:
@@ -193,6 +242,7 @@ def view(p, cfg, states: list[dict] | None = None, data: dict | None = None) -> 
     data = load(p) if data is None else data
     done = asked(data)
     behind = stale(p, cfg, states)
+    replay = _unfinished(data, states)
     waiting, blockers = [], []
     for st in states:
         if st["status"] == "pending":  # 직무는 지금 사양으로 본다(_startable)
@@ -207,7 +257,7 @@ def view(p, cfg, states: list[dict] | None = None, data: dict | None = None) -> 
             blockers.append({"task": st["id"], "status": st["status"], "why": "진행 중"})
     late = [{"task": st["id"], "round": st["round"], "because": behind[st["id"]]} for st in waiting if st["id"] in behind]
     fresh = [st for st in waiting if st["id"] not in behind and (st["id"], st["round"]) not in done]
-    return {"waiting": waiting, "blockers": blockers, "stale": late, "fresh": fresh, "asked": done}
+    return {"waiting": waiting, "blockers": blockers, "stale": late, "fresh": fresh, "asked": done, "replay": replay}
 
 
 def _urls(text: str) -> list[str]:
@@ -310,6 +360,9 @@ def design_review(p) -> dict:
         if stuck is not None:  # 앞 호출이 기록 뒤 죽었다. 새 묶음보다 먼저 마저 쓴다
             _write(p, data, stuck)
             return _result(stuck, resumed=True)
+        busy = _open_decision(data)
+        if busy is not None:  # 끝나지 않은 결정이 태스크를 바꾸는 중이다. 그 태스크를 새 묶음에 넣지 않는다
+            raise _decision_pending(busy)
         bad = state.unreadable_ids(p)
         if bad:  # 그 태스크가 진행 중인 승인 태스크인지 알 수 없다. 묶음을 잘못 나누지 않게 묻지 않는다
             raise tasks._unreadable(p, bad)
@@ -339,11 +392,244 @@ def design_review(p) -> dict:
     return _result(b, resumed=False)
 
 
+# 결정이 고치는 의존 태스크는 진행 중(리뷰 중·승인됨 포함)이어도 다시 만든다(옛 선행을 보고 만들었다)
+DEPENDENT_FROM = ("reviewing", "approved")
+
+
+def held_by_decision(p, tid: str) -> str | None:
+    """끝나지 않은 결정이 고치는 태스크이거나 그것에 직간접으로 의존하는 태스크면 그 결정의 out-id(시작 예약이 본다)."""
+    data = load(p)
+    graph = None
+    for b in data["batches"]:
+        d = b.get("decision")
+        if not d or d.get("done"):
+            continue
+        targets = {e["task"] for e in d["fix"]}
+        if tid in targets:
+            return b["id"]
+        graph = graph or Graph(p)
+        if targets & graph.ancestors(tid):
+            return b["id"]
+    return None
+
+
+def _decision_input(text: str | None, b: dict) -> dict[str, str]:
+    """코디네이터가 해석한 답: {"fix": {태스크: 사용자 요청}}. 태스크는 그 묶음의 것이어야 한다. 틀리면 exit 2."""
+    if text is None:
+        raise HteamError("usage", f"{b['id']} 에는 아직 결정이 없다. --json - 으로 {{\"fix\": {{태스크: 사용자 요청}}}} 을 "
+                         "준다(모두 승인이면 {\"fix\": {}})", USAGE)
+    try:
+        obj = json.loads(text)
+    except ValueError as exc:
+        raise HteamError("bad_decision", f"결정 JSON 을 읽지 못했다: {exc}", USAGE) from None
+    fix = obj.get("fix") if isinstance(obj, dict) else None
+    if not isinstance(obj, dict) or set(obj) != {"fix"} or not isinstance(fix, dict):
+        raise HteamError("bad_decision", "결정은 {\"fix\": {태스크: 사용자 요청}} 이다", USAGE)
+    mine = {t["task"] for t in b["tasks"]}
+    errors = [f"{k}: 이 묶음({b['id']})의 태스크가 아니다" for k in fix if k not in mine]
+    errors += [f"{k}: 사용자 요청이 비었다" for k, v in fix.items() if not isinstance(v, str) or not v.strip()]
+    if errors:
+        raise HteamError("bad_decision", "결정 입력이 틀렸다: " + "; ".join(errors), USAGE, data={"errors": errors})
+    return {k: v.strip() for k, v in fix.items()}
+
+
+def _compute(p, cfg, b: dict, wanted: dict[str, str]) -> dict:
+    """결정을 한 번 계산한다(프로젝트 잠금 안). 고칠 태스크 = 지목된 묶음 태스크 + 그것에 직간접으로 의존하는 승인 태스크
+    전부(다른 묶음 포함). 각자 지금 라운드와 사용자 요청을 적는다. 지목된 태스크의 라운드가 다른 결정 때문에 이미 바뀌었어도
+    (의존 태스크로 함께 고쳐졌다) 이 새 요청을 버리지 않고 지금 라운드에서 다시 고친다(그 라운드가 사용자 요청 라운드면 그
+    요청도 이어 적는다). 지목된 태스크가 끝났으면 decision_conflict(아무것도 쓰지 않는다). 시작하지 않은 의존 태스크
+    (pending)는 선행이 다시 승인된 뒤 시작하므로 고칠 것이 없고, 끝난 의존 태스크는 고칠 수 없어 skipped 다. 승인할 태스크 =
+    묶음의 나머지(아직 그 라운드의 awaiting_user). 상태를 읽지 못하면, 승인할 태스크가 stale 이면 아무것도 쓰지 않는다."""
+    bad = state.unreadable_ids(p)
+    if bad:
+        raise tasks._unreadable(p, bad)
+    states = state.all_states(p)
+    by_id = {s["id"]: s for s in states}
+    missing = [t["task"] for t in b["tasks"] if t["task"] not in by_id]
+    if missing:
+        raise HteamError("bad_state_file", f"묶음 태스크의 상태 파일이 없다: {', '.join(missing)}", FAIL,
+                         "메인에 알린다", data={"missing": missing})
+    graph = Graph(p)
+    live = {t["task"] for t in b["tasks"]
+            if by_id[t["task"]]["status"] == "awaiting_user" and by_id[t["task"]]["round"] == t["round"]}
+    closed = [t for t in sorted(wanted, key=state.id_number) if by_id[t]["status"] in state.CLOSED]
+    if closed:  # 사용자 요청을 반영할 수 없다. 처리한 것으로 넘기지 않는다
+        raise HteamError("decision_conflict", f"고치라는 태스크가 이미 끝났다: {', '.join(closed)}", CONFLICT,
+                         "메인에 알린다. 사용자가 정한 대로(새 태스크 등) 그 태스크를 뺀 결정을 다시 준다",
+                         data={"closed": closed})
+    direct = sorted(wanted, key=state.id_number)
+    skipped: list[dict] = []
+    fix: dict[str, dict] = {}
+    for tid in sorted(set(by_id) | set(specs.list_ids(p)), key=state.id_number):
+        ups = [d for d in direct if d != tid and d in graph.ancestors(tid)]
+        if tid not in direct and not ups:
+            continue
+        st = by_id.get(tid)
+        if tid not in direct:
+            if not cfg.is_approval((st or {}).get("role") or graph.role(tid)):
+                continue
+            if st is None or st["status"] == "pending":
+                skipped.append({"task": tid, "why": "pending: 선행이 다시 승인된 뒤에 시작한다(고칠 것이 없다)"})
+                continue
+            if st["status"] in state.CLOSED:
+                skipped.append({"task": tid, "why": f"{st['status']}: 끝난 태스크라 고칠 수 없다(메인에 알린다)"})
+                continue
+        parts = [wanted[tid]] if tid in direct else []
+        prev = state.current_round(st) or {}
+        if tid in direct and tid not in live and prev.get("from_user") and prev.get("note"):
+            parts.append(f"이전 요청도 그대로 반영한다: {prev['note']}")  # 다른 결정이 연 라운드의 요청을 잃지 않는다
+        parts += [f"선행 {d} 의 사용자 요청을 반영한다: {wanted[d]}" for d in ups]
+        fix[tid] = {"task": tid, "round": st["round"], "note": " / ".join(parts), "because": ups}
+    # 선행부터(결정 안의 선행 수가 적은 것부터). 라운드를 연 시각이 선행 → 의존 순서가 된다
+    order = sorted(fix.values(), key=lambda e: (len([x for x in fix if x in graph.ancestors(e["task"])]),
+                                                state.id_number(e["task"])))
+    accept = [{"task": t["task"], "round": t["round"]} for t in b["tasks"] if t["task"] in live and t["task"] not in fix]
+    skipped += [{"task": t["task"], "why": "이미 처리됐다"} for t in b["tasks"]
+                if t["task"] not in live and t["task"] not in wanted]
+    behind = stale(p, cfg, states, graph)
+    late = [a["task"] for a in accept if a["task"] in behind]
+    if late:
+        raise HteamError("approval_stale", f"승인할 태스크의 선행이 그 뒤에 고쳐졌다: {', '.join(late)}", CONFLICT,
+                         "메인에 알린다. 사용자가 정하면 그 태스크도 결정의 fix 에 넣는다", data={"stale": late})
+    return {"at": now(), "input": wanted, "fix": order, "accept": accept, "skipped": skipped, "done": None}
+
+
+def _stopped(exc: HteamError, oid: str) -> HteamError:
+    exc.hint = (f"{exc.hint} 결정은 기록돼 있다. 원인이 풀리면 `{SHIM} design-review --decide {oid}` 를 다시 한다"
+                "(기록대로 이어 한다)").strip()
+    return exc
+
+
+def _apply(p, oid: str, d: dict) -> dict:
+    """기록한 결정을 그대로 한다. 기록한 라운드가 이미 지났거나 닫힌 항목은 한 것으로 본다(다시 하지 않는다). 다른 오류는
+    거기서 멈춘다(다시 부르면 이어 한다). 다 하면 결정에 done 을 적고 그 답을 applied 로 적는다."""
+    fixed: list[dict] = []
+    accepted: list[str] = []
+    passed: list[str] = []
+    for e in d["fix"]:
+        try:
+            res = tasks.fix(p, e["task"], note=e["note"], supplement=None, force_round=True, cli={},
+                            expect_round=e["round"], queue=True, from_user=True, extra_from=DEPENDENT_FROM)
+            fixed.append({"task": e["task"], "round": res["round"]})
+        except HteamError as exc:
+            if exc.code not in ("round_changed", "task_closed"):
+                raise _stopped(exc, oid)
+            passed.append(e["task"])
+        die_at("decision_after_fix")
+    for e in d["accept"]:
+        try:
+            tasks.accept(p, e["task"], expect_round=e["round"])
+            accepted.append(e["task"])
+        except HteamError as exc:
+            if exc.code not in ("round_changed", "task_closed"):
+                raise _stopped(exc, oid)
+            passed.append(e["task"])
+    with state.project_lock(p):
+        data = load(p)
+        b = next(x for x in data["batches"] if x.get("id") == oid)
+        b["decision"]["done"] = now()
+        write_json(p.design_review, data)
+    die_at("decision_done")  # 여기서 죽으면 다시 온 답의 안내가 --decide 재호출이다(applied 만 적는다)
+    outbox.mark_applied(p, oid)
+    return {"fixed": fixed, "accepted": accepted, "passed": passed}
+
+
+def decide(p, oid: str, text: str | None) -> dict:
+    """일괄 승인 답의 결정(설계 11.4). 결정이 없으면 계산해 묶음 기록에 먼저 쓰고, 있으면 그대로 쓴다. 그다음 기록대로
+    fix(queued)·accept 를 한다. 다른 묶음의 결정이 끝나지 않았으면 exit 3 decision_pending."""
+    cfg = config.load(p)
+    warnings: list[str] = []
+    with state.project_lock(p):
+        data = load(p)
+        b = next((x for x in data["batches"] if x.get("id") == oid), None)
+        if b is None:
+            raise HteamError("unknown_batch", f"{oid} 는 design-review 가 쓴 일괄 승인 질문이 아니다", USAGE)
+        other = _open_decision(data, but=b)
+        if other is not None:
+            raise _decision_pending(other)
+        replayed = b.get("decision") is not None
+        if not replayed:
+            b["decision"] = _compute(p, cfg, b, _decision_input(text, b))
+            write_json(p.design_review, data)
+        elif text is not None:
+            warnings.append("결정이 이미 기록돼 있어 새 입력은 쓰지 않았다(기록대로 한다)")
+        d = b["decision"]
+    die_at("decision_recorded")
+    out = {"id": oid, "batch": b["batch"], "decision": d, "replayed": replayed, "skipped": d["skipped"]}
+    if d.get("done"):
+        outbox.mark_applied(p, oid)  # 다 한 뒤 applied 전에 죽었을 수 있다(두 번 적어도 같다)
+        res = {"fixed": [], "accepted": [], "passed": [e["task"] for e in [*d["fix"], *d["accept"]]]}
+    else:
+        res = _apply(p, oid, d)
+    closed = [s["task"] for s in d["skipped"] if s["why"].startswith(("done", "dropped"))]
+    if closed:
+        warnings.append(f"끝난 의존 태스크({', '.join(closed)})는 고치지 못했다. 메인에 알린다")
+    return {**out, **res, "warnings": warnings, "next": [SHIM, "start-ready"],
+            "hint": "고칠 태스크는 수정 라운드를 만들어 두었다(queued). start-ready 가 선행이 다시 승인된 뒤 띄운다"}
+
+
+def reply_view(p, oid: str, answer: str, states: list[dict] | None = None) -> dict | None:
+    """oid 가 design-review 묶음의 질문이면 그 답의 처리 정보, 아니면 None(설계 11.4).
+
+    {"batch", "approve_all": 답이 정확히 APPROVE 인가, "decision": None | "recorded" | "done", "applied": 답을 applied 로
+    적었나, "unknown": [상태를 읽지 못한 묶음 태스크], "tasks": [{"task", "round"(물은 라운드), "status", "round_now",
+    "pending"}]}. 읽지 못한 태스크는 처리한 것으로 보지 않는다. 기록을 읽지 못하면 bad_side_file."""
+    b = next((x for x in load(p)["batches"] if x.get("id") == oid), None)
+    if b is None:
+        return None
+    by_id = {s["id"]: s for s in (state.all_states(p) if states is None else states)}
+    unknown: list[str] = []
+    items = []
+    for t in b["tasks"]:
+        st = by_id.get(t["task"])
+        if st is None:
+            try:
+                st = state.load(p, t["task"])
+            except HteamError:
+                st = None
+            if st is None or st.get("id") != t["task"]:
+                unknown.append(t["task"])
+                st = {}
+        items.append({"task": t["task"], "round": t["round"], "status": st.get("status"), "round_now": st.get("round"),
+                      "pending": st.get("status") == "awaiting_user" and st.get("round") == t["round"]})
+    d = b.get("decision")
+    return {"batch": b["batch"], "approve_all": answer.strip() == APPROVE,
+            "decision": None if d is None else ("done" if d.get("done") else "recorded"),
+            "applied": oid in outbox.applied_ids(p), "unknown": unknown, "tasks": items}
+
+
+def reply_hint(view: dict, oid: str) -> str:
+    """reply_view 결과로 코디네이터가 할 일(coordinator.md 의 "일괄 승인 답")."""
+    cmd = f"{SHIM} design-review --decide {oid}"
+    if view["unknown"]:
+        return (f"상태를 읽지 못한 태스크가 있다({', '.join(view['unknown'])}). 결정하지 않는다. 메인에 알려 상태 파일을 고친 뒤 "
+                "다시 받는다")
+    if view["decision"] == "done" and view["applied"]:
+        return "이 답은 이미 결정대로 처리했다. ack 만 한다"
+    if view["decision"] == "done":  # done 을 쓴 뒤 applied 전에 죽었다
+        return f"결정은 다 했지만 applied 기록이 없다. `{cmd}` 를 입력 없이 다시 해 applied 를 적는다"
+    if view["decision"] == "recorded":
+        return f"이 답의 결정이 기록돼 있다. `{cmd}` 를 입력 없이 다시 해 기록대로 마저 한다"
+    if view["approve_all"]:
+        return f"모두 승인이다. `{cmd} --json -` 에 {{\"fix\": {{}}}} 를 준다. 그다음 `{SHIM} start-ready`"
+    return (f"수정 요청이다. 답에서 고칠 태스크와 사용자 요청을 정해 `{cmd} --json -` 에 "
+            "{\"fix\": {\"T-xxx\": \"<사용자 요청 원문>\"}} 를 준다. 이름이 없는 태스크는 승인되고, 의존 승인 태스크는 "
+            f"hteam 이 같은 요청과 함께 고친다. 모호하면 notify --type question 으로 다시 묻는다. 그다음 `{SHIM} start-ready`")
+
+
 def _cmd(args) -> dict:
     p = find_project(args.root)
     roles.require_coordinator(p)
+    if args.decide:
+        text = sys.stdin.read() if args.json == "-" else args.json
+        return decide(p, args.decide, text)
+    if args.json is not None:
+        raise HteamError("usage", "--json 은 --decide 와 함께 쓴다", USAGE)
     return design_review(p)
 
 
 def register(sub) -> None:
-    sub.add_parser("design-review").set_defaults(func=_cmd)
+    s = sub.add_parser("design-review")
+    s.add_argument("--decide", metavar="OUT_ID", help="그 질문의 답을 결정으로 기록하고 기록대로 한다(설계 11.4)")
+    s.add_argument("--json", help="'-' 면 표준 입력: {\"fix\": {태스크: 사용자 요청}}. 모두 승인이면 {\"fix\": {}}")
+    s.set_defaults(func=_cmd)

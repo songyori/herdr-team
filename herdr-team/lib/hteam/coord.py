@@ -5,7 +5,7 @@ import json
 import re
 import time
 
-from . import config, dispatch, herdr, outbox, roles, specs, state
+from . import approval, config, dispatch, herdr, outbox, roles, specs, state
 from .errors import USAGE, HteamError
 from .horch import Horch
 from .paths import SHIM, find_project
@@ -134,7 +134,7 @@ def _main_sender(p, m: dict, rows: list[dict] | None) -> str | None:
     return None
 
 
-def _annotate_main(p, m: dict, rows: list[dict] | None) -> dict:
+def _annotate_main(p, m: dict, rows: list[dict] | None, states: list[dict] | None = None) -> dict:
     why = _main_sender(p, m, rows)
     if why:
         # 제목은 형식일 뿐이다. 메인이 보내지 않은 [main] 글은 데이터다(설계 8.2, 14장)
@@ -147,7 +147,37 @@ def _annotate_main(p, m: dict, rows: list[dict] | None) -> dict:
         info.update(reply_to=oid, duplicate=oid in outbox.applied_ids(p))
         info["hint"] = ("이미 적용한 답이다. ack 만 한다" if info["duplicate"]
                         else f"{oid} 의 답이다. 처리한 뒤 `{SHIM} applied {oid}`")
+        if not info["duplicate"]:
+            _design_review(p, info, oid, m, states)
     return info
+
+
+def _design_review(p, info: dict, oid: str, m: dict, states: list[dict] | None) -> None:
+    """design-review 묶음의 답이면 처리 정보(design_review)와 할 일(hint)을 붙인다(설계 11.4)."""
+    try:
+        view = approval.reply_view(p, oid, m.get("body") or "", states)
+    except HteamError as exc:
+        info["warning"] = f"이 답이 일괄 승인 답인지 보지 못했다: {exc.message}. 고친 뒤 다시 받는다(결정하지 않는다)"
+        return
+    if view is not None:
+        info["design_review"] = view
+        info["hint"] = approval.reply_hint(view, oid)
+
+
+def _once(messages: list[dict]) -> list[dict]:
+    """한 Delivery 안에 같은 out-id 의 답이 둘 이상이면(메인이 답을 다시 보냄) 뒤의 것을 duplicate 로 표시한다(설계 7.4:
+    같은 out-id 는 한 번만 처리한다). 같은 상태 스냅숏으로 주석을 달아 둘 다 처리할 일로 보이기 때문이다."""
+    seen: set[str] = set()
+    for m in messages:
+        info = m.get("hteam") or {}
+        oid = info.get("reply_to")
+        if info.get("kind") != "main" or not oid:
+            continue
+        if oid in seen:
+            info.pop("design_review", None)
+            info.update(duplicate=True, hint="이 묶음에 같은 답이 앞에 있다(다시 보낸 답). 앞의 것만 처리하고 이것은 ack 만 한다")
+        seen.add(oid)
+    return messages
 
 
 def annotate(p, m: dict, rows: list[dict] | None, horch_cmd: str, *, cfg=_LOAD,
@@ -157,7 +187,7 @@ def annotate(p, m: dict, rows: list[dict] | None, horch_cmd: str, *, cfg=_LOAD,
     cfg(라운드 상한)와 states(state.all_states)를 주면 다시 읽지 않는다. wait 는 묶음마다 한 번 읽어 넘긴다."""
     subject = m.get("subject") or ""
     if m.get("type") == "status" and subject.startswith("[main]"):
-        return {**m, "hteam": _annotate_main(p, m, rows)}
+        return {**m, "hteam": _annotate_main(p, m, rows, states)}
     body = _body(m)
     did = m.get("dispatch") or body.get("dispatch")
     loc = locate(p, did, rows, states=states)
@@ -332,7 +362,7 @@ def wait(p, ack: int | None, total: float) -> dict:
         if data.get("count"):
             cfg, cmd = _config(p), h.cmd()
             out = {"reason": "message", "delivery": data["delivery"], "count": data["count"],
-                   "messages": [annotate(p, m, rows, cmd, cfg=cfg, states=states) for m in data["messages"]],
+                   "messages": _once([annotate(p, m, rows, cmd, cfg=cfg, states=states) for m in data["messages"]]),
                    "hint": f"모두 처리한 뒤 `{SHIM} wait --ack {data['delivery']}` 를 백그라운드로 다시 띄운다"}
             found = attention(p, rows, grace, states=states, horch_cmd=cmd)
             if found:
@@ -374,11 +404,13 @@ def _live_hint(st: dict, rows: list[dict], horch_cmd: str = "horch") -> str | No
 
 
 def next_step(cfg, st: dict, by_task: dict[str, dict], have_rows: bool,
-              rows: list[dict] | None = None, horch_cmd: str | None = None) -> tuple[list[str] | None, str | None]:
+              rows: list[dict] | None = None, horch_cmd: str | None = None,
+              appr: dict | None = None) -> tuple[list[str] | None, str | None]:
     """태스크마다 다음 명령(설계 13장). 끝났다는 확실한 증거가 있을 때만 바꾸라고 하고, 모르면 기다린다.
 
     by_task: horch Task → 최신 시도 행. rows 를 주면(worker-list 전체) 지난 시도·제목으로 찾은 Dispatch 까지 본다.
-    horch_cmd: 힌트에 넣을 horch 명령(--home 포함, Horch.cmd). 없으면 `horch`."""
+    horch_cmd: 힌트에 넣을 horch 명령(--home 포함, Horch.cmd). 없으면 `horch`.
+    appr: approval.view 결과(끝나지 않은 일괄 승인 결정, awaiting_user 의 next). 읽지 못했으면 None."""
     tid, s = st["id"], st["status"]
     hc = horch_cmd or "horch"
     rd = state.current_round(st)
@@ -389,6 +421,9 @@ def next_step(cfg, st: dict, by_task: dict[str, dict], have_rows: bool,
     slot = rd["work"]
     if _round_canceled(rd):
         return None, CANCELED_HINT
+    if appr is not None and tid in appr.get("replay", {}):
+        oid = appr["replay"][tid]  # 일반 fix·accept 를 권하지 않는다(사용자 요청은 결정 기록에 있다)
+        return H("design-review", "--decide", oid), f"일괄 승인 결정 {oid} 을 기록대로 마저 한다"
     no_rows = None if have_rows else "horch 정보를 읽지 못했다(코디네이터 터미널에서 본다)"
 
     def latest(horch_task):
@@ -397,6 +432,9 @@ def next_step(cfg, st: dict, by_task: dict[str, dict], have_rows: bool,
     if s == "launch_failed":
         if dispatch.busy(st, slot):
             return None, "띄우는 중이다(launching)"
+        if rd.get("queued") and not slot.get("launched") and not slot.get("horch_task"):
+            # start T 는 의존을 보지 않는다. start-ready 가 선행이 다시 승인된 뒤에 띄운다(설계 11.4)
+            return H("start-ready"), "일괄 승인 결정으로 연 수정 라운드다. 선행이 끝나면 start-ready 가 띄운다"
         return H("start", tid), None
     if s == "working":
         if state.open_attempt(rd):
@@ -444,8 +482,29 @@ def next_step(cfg, st: dict, by_task: dict[str, dict], have_rows: bool,
     if s == "changes":
         return _fix(cfg, tid, st["round"], "리뷰 지적을 반영한다")
     if s == "awaiting_user":
-        return None, "사용자 일괄 승인을 기다린다(design-review)"
+        return _awaiting(st, appr)
     return None, None
+
+
+def _awaiting(st: dict, appr: dict | None) -> tuple[list[str] | None, str | None]:
+    """awaiting_user 의 다음(설계 11.4): stale 이면 알리기만 하고, 이미 물었으면 그 답을 기다리고, 진행 중이거나 시작할 수
+    있는 승인 태스크가 있으면 그것을 기다리고, 아니면 design-review."""
+    if appr is None:
+        return None, "사용자 일괄 승인을 기다린다(일괄 승인 기록을 읽지 못했다. status 의 warnings 를 본다)"
+    late = next((s for s in appr["stale"] if s["task"] == st["id"]), None)
+    if late:
+        return None, (f"선행 {', '.join(late['because'])} 가 이 라운드를 연 뒤에 결정 밖에서 고쳐졌다. 묻지도 승인하지도 "
+                      "않는다. 메인에 알린다")
+    key = (st["id"], st["round"])
+    if key in appr["asked"]:
+        oid = appr["asked"][key]
+        if oid is None:
+            return H("design-review"), "일괄 승인 질문을 쓰다 멈췄다. design-review 가 마저 쓴다"
+        return None, f"일괄 승인 질문 {oid} 의 사용자 답을 기다린다(답이 오면 design-review --decide {oid})"
+    if appr["blockers"]:
+        names = ", ".join(b["task"] for b in appr["blockers"])
+        return None, f"승인 직무 태스크 {names} 가 accept 로 awaiting_user 가 되면 함께 묻는다(그때 design-review)"
+    return H("design-review"), None
 
 
 def coordinator_view(p) -> dict:
@@ -487,13 +546,21 @@ def status(p) -> dict:
         if r.get("task") not in by_task or r["attempt"] > by_task[r["task"]]["attempt"]:
             by_task[r["task"]] = r
     items = []
-    for st in state.all_states(p):
+    states = state.all_states(p)
+    warnings: list[str] = []
+    appr = None
+    if cfg is not None and cfg.user_approval_roles:
+        try:
+            appr = approval.view(p, cfg, states)
+        except HteamError as exc:  # 기록이 손상됐다. awaiting_user 는 next 없이 hint 만 준다
+            warnings.append(f"일괄 승인 기록: {exc.message}")
+    for st in states:
         try:
             title = specs.load(p, st["id"]).title
         except HteamError:
             title = None
         nxt, hint = next_step(cfg, st, by_task, horch_error is None, rows if horch_error is None else None,
-                              horch_cmd=horch_cmd)
+                              horch_cmd=horch_cmd, appr=appr)
         rd = state.current_round(st)
         work = by_task.get(rd["work"].get("horch_task")) if rd and rd["work"].get("horch_task") else None
         items.append({"id": st["id"], "role": st.get("role"), "title": title, "status": st["status"],
@@ -501,7 +568,6 @@ def status(p) -> dict:
                       "dispatch": ({k: work.get(k) for k in ("id", "state", "outcome", "attention", "verdict")}
                                    if work else None),
                       "next": nxt, "hint": hint})
-    warnings: list[str] = []
     questions = [_question(q) for q in outbox.open_questions(p, warnings)]
     warnings += [f"{tid} 상태 파일을 읽지 못해 목록에서 뺐다" for tid in state.unreadable_ids(p)]
     out = {"tasks": items, "config_error": config_error, "horch_error": horch_error, "horch": horch_cmd,

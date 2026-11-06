@@ -189,6 +189,7 @@ def _prepare_start(p, cfg, spec, choice, cli: dict, cap: Capacity | None = None)
             else:
                 owns = checked_owns(cfg, spec)
             _check_locks(p, cfg, spec, owns)
+            _start_gate(p, cfg, spec, check_deps=cap is not None)
             if cap is not None:
                 # 상한 검사와 예약(아래 _begin 의 launch_failed·실행자)을 한 프로젝트 잠금 안에서 한다(start-ready 만)
                 busy = occupied(p, tid, cap)
@@ -256,7 +257,8 @@ def deps_met(p, cfg, spec) -> bool:
     return True
 
 
-WAIT_CODES = {"owns_locked": "lock", "planner_busy": "lock", "launching": "launching", "parallel_limit": "limit"}
+WAIT_CODES = {"owns_locked": "lock", "planner_busy": "lock", "launching": "launching", "parallel_limit": "limit",
+              "deps_unmet": "deps", "decision_pending": "decision"}
 
 
 def start_ready(p) -> dict:
@@ -285,6 +287,7 @@ def start_ready(p) -> dict:
             if not deps_met(p, cfg, spec):
                 waiting.append({"task": tid, "reason": "deps", "detail": ", ".join(spec.depends_on)})
                 continue
+            die_at("start_ready_checked")  # 테스트: 의존을 본 뒤 시작 전에 결정이 끼는 순서를 재현한다
             res = start(p, tid, {}, cfg=cfg, h=h, cap=cap)
             started.append({"task": tid, "round": res["round"], "dispatch": res["dispatch"],
                             "warnings": res["warnings"]})
@@ -466,10 +469,16 @@ def _closing(p, tid: str, seen: dict) -> Iterator[dict]:
             yield st
 
 
-def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: bool, cli: dict) -> dict:
+def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: bool, cli: dict,
+        expect_round: int | None = None, queue: bool = False, from_user: bool | None = None,
+        extra_from: tuple[str, ...] = ()) -> dict:
     """새 라운드(설계 6.4). 입력(사양·owns·잠금)을 먼저 검사하고, 이전 라운드들의 작업·리뷰 Dispatch 를 모두 정리한
     뒤에만 새 라운드를 쓰고 띄운다(이전 워커와 새 워커가 같은 폴더에서 함께 일하지 않게). 일하는 중인 워커는
-    abandon --kill 뒤 release."""
+    abandon --kill 뒤 release.
+
+    일괄 승인 결정(설계 11.4)이 부를 때: queue 면 새 라운드를 쓰고 띄우지 않는다(launch_failed, queued. start-ready 가
+    의존이 풀린 뒤 띄운다). from_user 가 None 이면 awaiting_user 에서 연 라운드가 사용자 요청이다. extra_from 은
+    FIX_FROM 밖에서 더 받을 상태다(결정이 고치는 의존 태스크는 리뷰 중·승인됨이어도 다시 만든다)."""
     cfg = config.load(p)
     spec = specs.check(p, cfg, tid)
     choice = config.resolve(cfg, spec.role, spec.front, cli)
@@ -479,11 +488,14 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
             raise HteamError("unknown_task", f"--supplement {supplement} 사양이 없다", USAGE)
     h = Horch(p.horch_home)
 
+    allowed_from = FIX_FROM + tuple(extra_from)
+
     def allowed(st: dict) -> None:
         if st["status"] in state.CLOSED:
             raise state.closed_error(st)
-        if st["status"] not in FIX_FROM:
-            raise HteamError("bad_state", f"{tid} 는 {st['status']} 다(fix 는 {', '.join(FIX_FROM)} 에서)", CONFLICT,
+        _expect_round(tid, st, expect_round)  # 미리 보고, 취소를 저장하는 잠금 안에서 다시 본다(_close_round 의 check)
+        if st["status"] not in allowed_from:
+            raise HteamError("bad_state", f"{tid} 는 {st['status']} 다(fix 는 {', '.join(allowed_from)} 에서)", CONFLICT,
                              data={"status": st["status"]})
         if st["status"] != "awaiting_user" and st["round"] >= cfg.max_rounds and not force_round:
             raise HteamError("max_rounds", f"{tid} 는 이미 {st['round']} 라운드다(상한 {cfg.max_rounds})", CONFLICT,
@@ -497,16 +509,61 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
     _close_round(p, h, tid, kill=True, check=allowed, seen=seen)
     with _closing(p, tid, seen) as st:
         _check_locks(p, cfg, spec, owns)
+        if not queue:  # 결정 밖의 fix 는 끝나지 않은 결정이 고치는 태스크를 띄우지 않는다(결정 자신의 fix 는 queue 다)
+            _start_gate(p, cfg, spec, check_deps=False)
         old = st["status"]
         st["role"] = spec.role  # 첫 실행과 같이 워커가 뜨는 사양의 직무로 맞춘다. planner 하나 검사가 저장된 직무를 본다
         rd = _new_round(st, st["round"] + 1, gitio.head(p.root), choice, note=note, supplement=supplement)
+        if (old == "awaiting_user") if from_user is None else from_user:
+            rd["from_user"] = True  # 사용자 일괄 승인의 수정 요청(설계 11.4). 수정 블록이 사용자 요청으로 적는다
+        if queue:
+            rd["queued"] = True
         text = compose.work_spec(p, cfg, spec, rd, owns)
         st["rounds"].append(rd)
         st["round"] = rd["round"]
         st["owns"] = owns
         st["note"] = note
         _begin(p, st, rd, text, "fix", previous=old, force_round=force_round)
+    if queue:  # 띄우지 않는다. start-ready 의 의존 검사가 선행이 다시 승인된 뒤에 띄운다(설계 11.4)
+        return {"task": tid, "round": rd["round"], "status": "launch_failed", "queued": True,
+                "next": [SHIM, "start-ready"],
+                "hint": "수정 라운드를 만들었다. start-ready 가 선행이 끝난(승인 직무는 awaiting_user) 뒤에 띄운다"}
     return run_work(p, cfg, h, tid)
+
+
+def _expect_round(tid: str, st: dict, want: int | None) -> None:
+    """--round N: 명령을 정한 때의 라운드와 지금 라운드가 같아야 한다. 다시 하는 결정(일괄 승인)이 이미 한 항목을
+    다음 라운드에 다시 적용하지 않게 한다(설계 6.4)."""
+    if want is not None and st["round"] != want:
+        raise HteamError("round_changed", f"{tid} 는 지금 r{st['round']} 다(--round {want}). 그 라운드는 이미 처리됐다",
+                         CONFLICT, "다시 하지 않는다. hteam status 로 지금 상태를 본다", data={"round": st["round"]})
+
+
+def _start_gate(p, cfg, spec, check_deps: bool) -> None:
+    """시작 예약(프로젝트 잠금 안)에서 다시 본다(설계 11.4). 끝나지 않은 일괄 승인 결정이 고치는 태스크와 그것에
+    의존하는 태스크는 띄우지 않는다(결정을 기록한 뒤 선행을 고치기 전 구간 포함). check_deps(start-ready)면 의존도 다시
+    본다: 잠금 밖에서 의존을 본 뒤 결정이 선행을 고쳤을 수 있다."""
+    from . import approval  # approval 이 tasks 를 쓴다. 불러오는 순서가 꼬이지 않게 여기서 가져온다
+    held = approval.held_by_decision(p, spec.id)
+    if held:
+        raise HteamError("decision_pending", f"{spec.id} 는 끝나지 않은 일괄 승인 결정 {held} 이 고치는 태스크이거나 그 "
+                         "의존 태스크다", CONFLICT, f"`{SHIM} design-review --decide {held}` 로 결정을 마저 한 뒤 start-ready",
+                         data={"pending": held})
+    if check_deps and not deps_met(p, cfg, spec):
+        raise HteamError("deps_unmet", f"{spec.id} 의 선행이 아직 끝나지 않았다: {', '.join(spec.depends_on)}", CONFLICT)
+
+
+def _refuse_stale(p, cfg, tid: str) -> None:
+    """awaiting_user 승인 태스크의 선행이 이 라운드를 연 뒤에 고쳐졌으면 승인하지 않는다(설계 11.4, 읽기만 하는 검사).
+    프로젝트 잠금 안에서 부른다(선행의 새 라운드는 fix 가 같은 잠금 안에서 쓴다)."""
+    from . import approval  # approval 이 tasks 를 쓴다. 불러오는 순서가 꼬이지 않게 여기서 가져온다
+    behind = approval.stale(p, cfg, state.all_states(p)).get(tid)
+    if behind:
+        names = ", ".join(behind)
+        raise HteamError("approval_stale", f"{tid} 의 선행 {names} 가 이 라운드를 연 뒤에 고쳐졌다. 옛 선행을 보고 만든 "
+                         "결과를 승인하지 않는다", CONFLICT,
+                         "메인에 알린다. 사용자가 정하면 일괄 승인 결정의 fix 에 넣거나 hteam fix T --note=… 로 다시 만든다",
+                         data={"because": behind})
 
 
 def _live_error(tid: str, slot: dict, row: dict, horch_cmd: str) -> HteamError:
@@ -521,7 +578,7 @@ def _live_error(tid: str, slot: dict, row: dict, horch_cmd: str) -> HteamError:
                       f"worker-release --dispatch {did}. 태스크를 버리려면 {SHIM} drop {tid} --force", data={"dispatch": did})
 
 
-def accept(p, tid: str) -> dict:
+def accept(p, tid: str, expect_round: int | None = None) -> dict:
     """approved → done(승인 직무면 awaiting_user), awaiting_user → done(설계 6.4). 작업 Dispatch 를 release 한다
     (같은 horch Task 의 이전 시도도).
 
@@ -536,6 +593,7 @@ def accept(p, tid: str) -> dict:
     if st["status"] not in ("approved", "awaiting_user"):
         raise HteamError("bad_state", f"{tid} 는 {st['status']} 다(accept 는 approved·awaiting_user 에서)", CONFLICT,
                          data={"status": st["status"]})
+    _expect_round(tid, st, expect_round)
     to = "awaiting_user" if st["status"] == "approved" and cfg.is_approval(st["role"]) else "done"
     h = Horch(p.horch_home)
     rows = h.workers()
@@ -556,12 +614,21 @@ def accept(p, tid: str) -> dict:
             except HteamError as exc:
                 cleaned = False
                 warnings.append(f"작업 Dispatch {row['id']}({slot['title']})를 정리하지 못했다: {exc.message}")
-    with state.edit(p, tid, expect={st["status"]}) as cur:
-        if cur["round"] != st["round"]:  # 멈춘 사이 다음 라운드가 같은 상태에 닿았다. 본 적 없는 라운드를 닫지 않는다
-            raise _changed(tid, st, cur)
-        work_slot(cur)["cleaned"] = cleaned
-        state.move(cur, to, "accept")
-    return {"task": tid, "status": to, "warnings": warnings}
+    die_at("accept_before_final")
+    with state.project_lock(p):  # 선행의 새 라운드(fix 가 같은 잠금 안에서 쓴다)와 겹치지 않게 이 안에서 다시 본다
+        if st["status"] == "awaiting_user" and cfg.is_approval(st["role"]):
+            _refuse_stale(p, cfg, tid)
+        with state.edit(p, tid, expect={st["status"]}) as cur:
+            if cur["round"] != st["round"]:  # 멈춘 사이 다음 라운드가 같은 상태에 닿았다. 본 적 없는 라운드를 닫지 않는다
+                raise _changed(tid, st, cur)
+            work_slot(cur)["cleaned"] = cleaned
+            state.move(cur, to, "accept")
+    out = {"task": tid, "status": to, "warnings": warnings}
+    if to == "awaiting_user":  # 승인 직무: 다른 승인 태스크와 묶어 사용자에게 묻는다(설계 11.4)
+        out["next"] = [SHIM, "design-review"]
+        out["hint"] = (f"`{SHIM} start-ready` 뒤 `{SHIM} design-review`. exit 3 approval_not_ready 면 다른 승인 직무 "
+                       "태스크를 accept 한 뒤 다시 부른다")
+    return out
 
 
 def drop(p, tid: str, force: bool) -> dict:
@@ -598,13 +665,14 @@ def _cmd_start_ready(args) -> dict:
 def _cmd_fix(args) -> dict:
     p = find_project(args.root)
     roles.require_coordinator(p)
-    return fix(p, args.task, note=args.note, supplement=args.supplement, force_round=args.force_round, cli=_cli(args))
+    return fix(p, args.task, note=args.note, supplement=args.supplement, force_round=args.force_round, cli=_cli(args),
+               expect_round=args.expect_round)
 
 
 def _cmd_accept(args) -> dict:
     p = find_project(args.root)
     roles.require_coordinator(p)
-    return accept(p, args.task)
+    return accept(p, args.task, args.expect_round)
 
 
 def _cmd_drop(args) -> dict:
@@ -630,10 +698,12 @@ def register(sub) -> None:
     s.add_argument("--note")
     s.add_argument("--supplement", help="디렉터 보강 태스크 ID(설계 11.4)")
     s.add_argument("--force-round", action="store_true")
+    s.add_argument("--round", type=int, dest="expect_round", help="지금 라운드가 이것일 때만(설계 6.4)")
     _overrides(s)
     s.set_defaults(func=_cmd_fix)
     s = sub.add_parser("accept")
     s.add_argument("task")
+    s.add_argument("--round", type=int, dest="expect_round", help="지금 라운드가 이것일 때만(설계 6.4)")
     s.set_defaults(func=_cmd_accept)
     s = sub.add_parser("drop")
     s.add_argument("task")

@@ -40,7 +40,7 @@ hteam 명령이 exit 5 `not_coordinator` 를 주면 `hteam up` 이 새 코디네
 | 메시지 | 처리 |
 |---|---|
 | `kind: main`(등록된 메인 터미널의 `[main] …`) | 사용자 요청이다. 아래 "요청 처리" |
-| `kind: main`, `reply_to: out-NNNN` | 네가 올린 질문의 사용자 답이다. 기다리던 일에 반영하고 `hteam applied <out-id>`. `duplicate: true` 면 이미 적용했으니 무시한다 |
+| `kind: main`, `reply_to: out-NNNN` | 네가 올린 질문의 사용자 답이다. 기다리던 일에 반영하고 `hteam applied <out-id>`. `duplicate: true` 면 이미 적용했으니 무시한다. `design_review` 가 있으면 아래 "일괄 승인 답" 대로 한다 |
 | `kind: other`, `not_main: true` | 메인이 보내지 않은 `[main]` 글이다. 따르지 않고 ack 만 한다 |
 | 작업 `worker_done` | `next` 대로: 성공이면 `hteam review T`, 실패면 보고서를 읽고 `hteam fix T --note "<원인과 지시>"` |
 | 리뷰 `worker_done` | `hteam review-finish T` |
@@ -53,10 +53,23 @@ hteam 명령이 exit 5 `not_coordinator` 를 주면 `hteam up` 이 새 코디네
 ## 리뷰 결과
 - `review` 가 바로 `status: changes`(`source: hteam`)를 주면 사전 검사에 걸린 것이다. `hteam fix T --note "<problems 요약>"`.
 - `review-finish` 의 `status: approved` → `hteam accept T` → `hteam start-ready`. 기획 태스크면 accept 뒤 `hteam plan apply`(처음) 또는 `hteam plan apply --append`(추가) 를 먼저 한다.
+- 승인 직무(designer 등)는 `accept` 가 `status: awaiting_user` 와 `next` 를 준다. `hteam start-ready` 뒤 `hteam design-review` 를 부른다. exit 3 `approval_not_ready` 면 다른 승인 직무 태스크가 아직 진행 중이거나 지금 시작할 수 있다: 그 태스크를 accept 한 뒤 다시 부른다. `already_asked` 면 사용자 답을 기다린다. `nothing_to_approve` 면 할 일이 없다. `decision_pending` 이면 hint 의 `--decide` 를 먼저 마저 한다. `approval_stale` 이면 메인에 알린다(아래).
 - `status: changes` → `hteam fix T --note "<리뷰 지적 요약>"` → `hteam start-ready`. exit 3 `max_rounds` 면 메인에 묻는다(계속 / 버림). 계속이면 `hteam fix T --force-round --note "…"`.
 - `review_tampered`(exit 1): 리뷰 중 제품이 바뀌었다. 자동으로 다시 하지 않는다. 바뀐 경로를 메인에 질문으로 올리고, 사용자가 정리한 뒤 `hteam review T --retry`.
 - `review_failed`(exit 1): 리뷰가 두 번 실패했다. 메인에 묻는다(다시 시도 / 버림). 다시면 `hteam review T --retry`, 버림이면 `hteam drop T --force`.
 - `retried: true` 면 새 리뷰어가 떴다. 기다린다.
+
+## 일괄 승인 답
+`hteam design-review` 가 올린 approval 질문의 답은 `kind: main`, `reply_to: out-NNNN` 에 `design_review` 필드(`batch`, `approve_all`, `decision`, `unknown`, `tasks`)가 붙어 온다. hint 가 할 일을 알려 준다.
+- 같은 묶음(Delivery)에 같은 `reply_to` 가 둘 이상이면 앞의 것만 처리한다(뒤의 것은 `duplicate: true`). `unknown` 이 비어 있지 않으면 결정하지 않는다(메인에 알린다).
+- 답을 읽어 고칠 태스크와 사용자 요청을 정하고 결정을 한 번에 넘긴다: `hteam design-review --decide out-NNNN --json -` 의 표준 입력에 `{"fix": {"T-xxx": "<사용자 요청 원문>"}}`(여럿이면 태스크마다). 모두 승인이면 `{"fix": {}}`. 이름이 나오지 않은 태스크는 승인된다(사용자 결정). 고칠 태스크에 직간접으로 의존하는 승인 태스크는 다른 묶음에 있어도 hteam 이 더해 같은 요청과 함께 고친다. 어느 태스크를 고치라는지 모호하면 `hteam notify --type question` 으로 다시 묻고 그 답이 올 때까지 결정하지 않는다.
+- hteam 은 결정(태스크마다 그때의 라운드와 요청)을 먼저 기록한 뒤 accept 와 수정 라운드를 만든다. 수정 라운드는 바로 띄우지 않는다(`launch_failed`, `queued`): `hteam start-ready` 가 선행의 수정 라운드가 다시 승인된 뒤에 띄운다. 결정을 다 하면 `applied` 도 hteam 이 적는다. 다음은 `hteam start-ready`.
+- 결정이 이미 있으면(재시작, 다시 온 답) 같은 `hteam design-review --decide out-NNNN` 을 입력 없이 다시 부른다. 기록대로 이어 하고, 기록한 라운드가 지난 항목은 다시 하지 않는다. `status` 의 next 도 그 명령을 준다(그 태스크에 일반 fix·accept 를 하지 않는다). 다른 묶음의 결정이 끝나지 않았으면 exit 3 `decision_pending`: 그 결정을 먼저 마저 한다.
+- `skipped` 에 끝난(done·dropped) 의존 태스크가 있으면 고치지 못한 것이다. 메인에 알린다(새 태스크로 고칠지 사용자가 정한다). 지목한 태스크가 끝났으면 exit 3 `decision_conflict` 로 아무것도 하지 않는다: 메인에 알리고 사용자가 정한 대로 그 태스크를 뺀 결정을 다시 준다.
+- 다른 묶음의 결정이 이미 고친 태스크(라운드가 지났다)를 이 답이 지목해도 그대로 넘긴다. hteam 이 지금 라운드에서 새 요청(과 앞 요청)으로 다시 고친다.
+- 결정이 끝나기 전에는 그 결정이 고치는 태스크와 의존 태스크를 `start`·`start-ready` 가 띄우지 않는다(start-ready 의 대기 사유 `decision`).
+- 고친 태스크가 다시 승인되면(accept 뒤 awaiting_user) 새 라운드라 `hteam design-review` 가 다시 묻는다.
+- `approval_stale`: 선행이 결정 밖에서 고쳐져 옛 선행을 보고 만든 승인 태스크다. design-review 가 묻지 않고 accept 가 받지 않는다. 메인에 알리고, 사용자가 정하면 `hteam fix T --note="…"` 로 다시 만든다.
 
 ## 요청 처리
 1. 새 요청이면 기획 태스크가 언제나 먼저다: `hteam task new --role planner --title "<요청 요약> 기획"`, 사양 네 절(Target·Change·Constraints·Acceptance)에 요청 원문과 맥락을 채우고 `git add -- <사양> && git commit -m "spec: T-xxx" -- <사양>`. `hteam start T-xxx`.
@@ -87,5 +100,6 @@ EOF
 
 ## 직무
 - planner: 사용자 인터뷰(`hteam ask-user`, 메인을 거쳐 사용자에게 바로 간다), `docs/planning/`(spec.md, contracts.md, tasks.toml, interview.md). 기획자의 질문에 끼어들지 않는다.
+- designer: 화면 디자인(화면마다 태스크 하나, `docs/design/screens/<화면>/`). 승인 직무라 리뷰 승인 뒤 accept 하면 `awaiting_user` 가 되고, 사용자 일괄 승인(`hteam design-review`, `--decide`) 뒤 `done` 이 된다. 그 화면을 구현하는 개발 태스크는 그 뒤에 시작된다.
 - developer: 구현. tester: 테스트와 QA 보고서.
 - 직무별 owns·모델은 `.herdr-team/config.toml`. 리뷰어는 작업 에이전트의 반대쪽(Claude ↔ Codex)이다.
