@@ -70,7 +70,10 @@ class ReviewTest(ReviewCase):
         self.assertEqual(json.loads(row["agent_args"]), ["--disable=hooks"])
         prompt = (self.state_dir / "tasks/T-001/r1-review-a1.md").read_text()
         for needle in ("REVIEW_FILE: docs/reviews/T-001/r1-a1.md", "[T-001] r1 작업", "`src/app.py`",
-                       "VERDICT: REQUEST_CHANGES", "--report-path docs/reviews/T-001/r1-a1.md", "이전 리뷰: 없음"):
+                       "VERDICT: REQUEST_CHANGES", "--report-path docs/reviews/T-001/r1-a1.md", "이전 리뷰: 없음",
+                       # 실환경(1단계): 병렬 커밋으로 HEAD 가 움직일 때마다 리뷰어가 멈추고 물었다
+                       "네가 추적 파일 내용을 바꾸거나 HEAD 를 움직이면 판정이 무효가 된다",
+                       "리뷰 동안 다른 워커와 코디네이터의 커밋으로 HEAD 가 움직이는 것은 정상이다"):
             self.assertIn(needle, prompt)
         code, res = self.act_review("T-001", "APPROVE")
         self.assertEqual(code, 0, res)

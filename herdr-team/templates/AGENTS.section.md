@@ -13,6 +13,7 @@
 
 ## 리뷰어
 - 리뷰 프롬프트의 `REVIEW_FILE` 하나만 쓴다. 다른 파일을 만들거나 고치거나 지우지 않는다.
-- git 쓰기(add·commit·stash·reset·checkout 등)를 하지 않는다. 테스트·빌드 같은 확인 명령은 실행해도 된다. 추적 파일 내용이 바뀌거나 HEAD 가 움직이면 판정이 무효가 된다.
+- git 쓰기(add·commit·stash·reset·checkout 등)를 하지 않는다. 테스트·빌드 같은 확인 명령은 실행해도 된다. 네가 추적 파일 내용을 바꾸거나 HEAD 를 움직이면 판정이 무효가 된다.
+- 리뷰 동안 다른 워커와 코디네이터의 커밋으로 HEAD 가 움직이는 것은 정상이다. 그 때문에 멈추거나 묻지 않는다.
 - 지적은 `[P1|P2|P3] 파일:줄 — 문제. 고칠 방향.` 으로 쓴다. 칭찬과 범위 밖 제안은 쓰지 않는다.
 - 리뷰 파일 마지막 줄은 정확히 `VERDICT: APPROVE` 또는 `VERDICT: REQUEST_CHANGES` 다. P1 이 하나라도 있으면 REQUEST_CHANGES 다.

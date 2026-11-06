@@ -120,6 +120,15 @@ class ScaffoldTest(TeamCase):
         self.assertEqual((self.proj / "CLAUDE.md").read_text().count("<!-- herdr-team -->"), 1)
         self.assertEqual((self.proj / ".gitignore").read_text().count(".herdr-team/state/"), 1)
 
+    def test_agents_section_says_parallel_head_moves_are_normal(self):
+        # 실환경(1단계): "HEAD 가 움직이면 판정이 무효" 를 다른 워커의 커밋까지로 읽은 Codex 리뷰어가 병렬 커밋마다
+        # 코디네이터에게 묻고 escalate 했다. 무효는 리뷰어 자신의 쓰기만이고 남의 커밋은 정상이라고 적어야 한다.
+        self.scaffold()
+        agents = (self.proj / "AGENTS.md").read_text()
+        self.assertIn("네가 추적 파일 내용을 바꾸거나 HEAD 를 움직이면 판정이 무효가 된다", agents)
+        self.assertIn("리뷰 동안 다른 워커와 코디네이터의 커밋으로 HEAD 가 움직이는 것은 정상이다", agents)
+        self.assertNotIn("추적 파일 내용이 바뀌거나 HEAD 가 움직이면", agents)
+
     def test_shim_finds_plugin(self):
         self.scaffold()
         shim = str(self.proj / ".herdr-team/bin/hteam")
