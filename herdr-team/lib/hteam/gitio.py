@@ -42,9 +42,12 @@ def run(root, *args: str, check: bool = True, input: str | bytes | None = None,
         err = proc.stderr or proc.stdout
         if raw:
             err = err.decode("utf-8", "replace")
-        # index.lock 은 git 의 긴 안내문 앞에 나와 300자로 자르면 사라질 수 있다. 자르기 전에 표시한다(_wait_index)
+        # index.lock 은 git 의 긴 안내문 앞에 나와 300자로 자르면 사라질 수 있다. 자르기 전에 표시한다(_wait_index).
+        # 다른 git 이 쥐고 있을 때(`Unable to create '…/index.lock': File exists.`)만 표시한다. 권한 오류 등은 기다려도
+        # 풀리지 않는다
+        held = "index.lock" in err and "File exists" in err
         raise HteamError("git_failed", f"git {_name(args)} 실패: {err.strip()[-300:]}", FAIL,
-                         data={"index_lock": True} if "index.lock" in err else None)
+                         data={"index_lock": True} if held else None)
     return proc
 
 

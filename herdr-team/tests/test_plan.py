@@ -798,6 +798,23 @@ class GitioTest(TeamCase):
         self.assertIn("index.lock", cm.exception.hint)
         self.assertIn("직접 지우지 않는다", cm.exception.hint)
 
+    def test_index_lock_permission_error_is_not_retried(self):
+        # git 의 index.lock 메시지가 File exists(다른 git 이 쥐고 있다)일 때만 기다린다. 권한 오류는 기다려도 풀리지 않는다
+        calls = []
+
+        def git(argv, **kw):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 128, "", "fatal: Unable to create '/x/.git/index.lock': "
+                                                             "Permission denied\n")
+
+        with mock.patch.dict(os.environ, {"HTEAM_GIT_LOCK_WAIT": "5"}), \
+                mock.patch("hteam.gitio.subprocess.run", side_effect=git):
+            with self.assertRaises(HteamError) as cm:
+                gitio.commit_paths(self.proj, ["a.txt"], "a")
+        self.assertEqual(len(calls), 1)
+        self.assertFalse((cm.exception.data or {}).get("index_lock"))
+        self.assertNotIn("다른 git 명령", cm.exception.hint)
+
     def test_commit_paths_shares_one_lock_deadline(self):
         # add 와 commit 이 마감 하나를 나눠 쓴다. 따로 쓰면 add 가 쓴 시간 뒤로 HTEAM_GIT_LOCK_WAIT 를 다시 기다린다
         clock = [0.0]
