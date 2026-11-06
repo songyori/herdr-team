@@ -198,7 +198,7 @@ def _surviving(p, plan: dict) -> dict:
     """plan.json 의 tasks 가운데 다음 apply 의 복구(_settle) 뒤에도 남을 항목(읽기 전용). pending 이 아니면 남는다.
     pending 은 _settle 처럼 사양이 HEAD 에 있으면(커밋 뒤에 멈춤, 마저 끝낸다) 남고 없으면(되돌린다) 빠진다."""
     pending = {r["key"]: _rel(p, r["id"]) for r in plan.get("pending", [])}
-    committed = set(_committed(p, list(pending.values())))
+    committed = set(_pending_done(p, list(pending.values())))  # 일부만 커밋됐으면 apply 처럼 plan_incomplete
     return {k: v for k, v in plan["tasks"].items() if k not in pending or pending[k] in committed}
 
 
@@ -295,17 +295,24 @@ def _rollback(p, plan: dict) -> dict | None:
     return plan
 
 
+def _pending_done(p, files: list[str]) -> list[str]:
+    """pending 사양 files 가운데 HEAD 에 커밋된 것. 전부(커밋 뒤에 멈춤)나 하나도 없음(커밋 전)이 아니면 되돌리지도
+    마저 끝내지도 못하므로 plan_incomplete 다. _settle 과 읽기 전용 check 가 같이 쓴다."""
+    done = _committed(p, files)
+    if done and len(done) != len(files):
+        raise HteamError("plan_incomplete", f"앞선 plan apply 의 사양 일부만 커밋돼 있다: {', '.join(done)}", CONFLICT,
+                         "남은 사양을 커밋하거나 커밋한 사양을 되돌린 뒤 다시 plan apply 한다")
+    return done
+
+
 def _settle(p, plan: dict) -> tuple[dict | None, dict | None]:
     """앞선 apply 가 남긴 pending 을 정리한다. 사양이 모두 HEAD 에 있으면 커밋 뒤에 멈춘 것이라 마저 끝내고
     (상태를 만든 뒤 pending 을 지우고 그 결과를 돌려준다), 하나도 없으면 커밋 전에 멈춘 것이라 되돌린다."""
     pending = plan["pending"]
     files = [_rel(p, r["id"]) for r in pending]
-    done = _committed(p, files)
+    done = _pending_done(p, files)
     if not done:
         return _rollback(p, plan), None
-    if len(done) != len(files):
-        raise HteamError("plan_incomplete", f"앞선 plan apply 의 사양 일부만 커밋돼 있다: {', '.join(done)}", CONFLICT,
-                         "남은 사양을 커밋하거나 커밋한 사양을 되돌린 뒤 다시 plan apply 한다")
     _check_ours(p, pending, need_file=True)
     for r in pending:
         state.create(p, r["id"], r["role"])

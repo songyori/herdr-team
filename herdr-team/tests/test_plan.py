@@ -279,6 +279,19 @@ class PlanApplyTest(TeamCase):
         self.assertEqual((code, out.get("applied")), (0, [{"key": "b", "id": "T-002"}]), out)
         self.assertIn("title: 고친 초안", (self.proj / ".herdr-team/tasks/T-002.md").read_text())
 
+    def test_check_refuses_partly_committed_pending_like_apply(self):
+        # pending a·b 가운데 a 만 따로 커밋됐다. apply 는 되돌리지도 마저 끝내지도 않고 plan_incomplete 로 멈춘다
+        self.write_plan([task("a"), task("b", "tester", ["tests/**"])])
+        self.die("plan_before_commit")
+        self.git("add", "--", ".herdr-team/tasks/T-001.md")
+        self.git("commit", "-q", "-m", "a 만 커밋", "--", ".herdr-team/tasks/T-001.md")
+        self.write_plan([task("a"), task("b", "tester", ["tests/**"], title="고친 초안")])
+        for args in (("check",), ("apply", "--append")):
+            code, out = self.hteam("plan", *args, as_=None if args == ("check",) else "coordinator")
+            self.assertEqual((code, out["error"]["code"], out["error"]["message"]),
+                             (3, "plan_incomplete", "앞선 plan apply 의 사양 일부만 커밋돼 있다: .herdr-team/tasks/T-001.md"),
+                             (args, out))
+
     def test_check_compares_pending_committed_before_crash(self):
         # 커밋 뒤에 멈춘 apply 의 pending 은 다음 apply 가 마저 끝낸다. 고치면 check 도 apply 처럼 거부한다
         self.write_plan([task("a"), task("b", "tester", ["tests/**"])])
