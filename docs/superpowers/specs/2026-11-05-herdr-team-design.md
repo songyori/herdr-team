@@ -194,7 +194,7 @@ owns = ["tests/**", "docs/qa/**"]
 - `worker` 는 `claude`·`codex` 중 하나.
 - `director`·`designer` 직무는 `worker = "claude"` 만(Claude Design 을 쓴다, 11장). front matter 나 `--worker` 로 바꿔도 같다.
 - `owns` 비지 않음, `max_parallel` ≥ 1, `max_rounds` ≥ 1, `user_approval_roles` 의 직무가 존재.
-- 모델·effort 값은 검사하지 않고 그대로 넘긴다(에이전트가 판단).
+- 모델·effort 값은 비지 않은 문자열인지만 검사하고 내용은 그대로 넘긴다(에이전트가 판단). 설정 파일을 읽지 못하면(디렉터리·권한) `bad_config`.
 
 설정을 읽지 않는 명령(`tell`, `notify`, `watch`, `answer`, `ask-user`, `reask`, `status`)은 설정이 깨져도 동작한다. `status` 는 `config_error` 를 보여 준다.
 
@@ -240,7 +240,7 @@ constraints = "…"
 acceptance = ["…", "…"]
 ```
 
-- `hteam plan check [--file <경로>]`(읽기 전용): 필수 필드, 직무 존재, `key` 형식(`[a-z0-9-]`)과 중복, 모르는 의존, 순환, 조상 관계가 아닌 두 태스크의 owns 겹침, 디렉터 규칙(`[roles.director]` 가 있고 designer 태스크가 있으면 director 태스크가 정확히 하나이고, 에셋 전용이 아닌 designer 는 모두 director 에 직간접으로 의존), 텍스트 필드 안 `## ` 로 시작하는 줄 금지, 태스크 owns 가 직무 owns 안(4.1). 결과에 병렬 깊이 묶음(`groups`). 두 승인 직무 태스크가 의존 관계(직간접)이고 owns 가 겹치면 거부한다: 선행이 `awaiting_user` 로 잠금을 쥔 채 후행을 기다려 일괄 승인이 교착된다. owns 를 나누거나 승인 묶음을 나눈다.
+- `hteam plan check [--file <경로>]`(읽기 전용): 필수 필드, 직무 존재, `key` 형식(`[a-z0-9-]`)과 중복, 모르는 의존, 순환, 조상 관계가 아닌 두 태스크의 owns 겹침, 디렉터 규칙(`[roles.director]` 가 있고 designer 태스크가 있으면 director 태스크가 정확히 하나이고, 에셋 전용이 아닌 designer 는 모두 director 에 직간접으로 의존), 텍스트 필드 안 `## ` 로 시작하는 줄 금지, 태스크 owns 가 직무 owns 안(4.1), `state/plan.json` 이 있으면 `apply --append` 와 같은 호환성(이미 적용한 key 가 빠지거나 내용이 바뀌면 거부. 기획 리뷰 사전 검사도 이것으로 막아 accept 뒤 append 실패를 막는다). 결과에 병렬 깊이 묶음(`groups`). 두 승인 직무 태스크가 의존 관계(직간접)이고 owns 가 겹치면 거부한다: 선행이 `awaiting_user` 로 잠금을 쥔 채 후행을 기다려 일괄 승인이 교착된다. owns 를 나누거나 승인 묶음을 나눈다.
 - `hteam plan apply`: 검사를 통과하면 `T-xxx.md` 를 만들고 한 번에 경로 지정 커밋(`[plan] apply: N tasks`). `state/plan.json` 에 key → T-id 와 태스크별 SHA-1 digest. 상태 파일을 `pending` 으로 만든다.
 - `hteam plan apply --append`: 새 key 만 더한다. 기존 key 의 내용이 바뀌거나 빠지면 거부(digest 비교). `plan.json` 이 없는데 계획된 태스크가 있으면 거부(exit 2).
 - owns 겹침 판정은 보수적이다: 두 glob 의 고정 접두사 중 하나가 다른 하나의 접두사면 겹친다. `**` 는 디렉터리를 넘고, `*`·`?` 는 한 마디 안이다.
