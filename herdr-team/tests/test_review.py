@@ -464,6 +464,20 @@ class TamperEntryTest(ReviewCase):
         (self.proj / "README.md").write_text("리뷰어가 고침\n")
         self.assertEqual(self.assert_tamper("README.md")["tamper"]["paths"], ["README.md"])
 
+    def test_fake_fsmonitor_does_not_hide_edit(self):
+        # 가짜 fsmonitor 훅이 "바뀐 것 없음"(토큰만, 경로 없음)을 답하면 git diff·status 가 stat 을 건너뛰어 변경을 놓친다
+        # (아무것도 내지 않는 훅은 git 이 경고하고 다시 훑으므로 숨기지 못한다)
+        self.reviewing()
+        hook = self.tmp / "fsmonitor-hook"
+        hook.write_text('#!/bin/sh\nprintf "tok\\0"\n')
+        os.chmod(hook, 0o755)
+        self.git("config", "core.fsmonitor", str(hook))
+        self.git("update-index", "--fsmonitor")
+        self.git("status", "--porcelain")
+        (self.proj / "README.md").write_text("리뷰어가 고침\n")
+        self.assertEqual(self.git("diff", "--name-only", "HEAD"), "")  # git 은 정말 보지 못한다
+        self.assertEqual(self.assert_tamper("README.md")["tamper"]["paths"], ["README.md"])
+
     def test_clean_submodule_is_not_tamper(self):
         self.submodule()
         self.reviewing()

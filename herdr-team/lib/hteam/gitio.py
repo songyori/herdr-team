@@ -7,9 +7,14 @@ import subprocess
 from .errors import FAIL, MISSING, HteamError
 
 
+# 작업 트리를 직접 stat 하게 한다. core.fsmonitor 훅이 "바뀐 것 없음" 이라고 답하면 git diff·status·ls-files 가 stat 을
+# 건너뛰어 변경을 놓친다(리뷰어도 .git/config 를 쓸 수 있다). 변조 기준점·검사가 기대는 조회에 붙인다.
+NO_FSMONITOR = ("-c", "core.fsmonitor=false")
+
 # 경로를 최상위 기준으로 받는 diff·status 조회에 붙인다. 사용자·리뷰어가 diff.relative=true 를 두면 `git diff` 가
 # 프로젝트 기준 경로만 내고 밖을 숨긴다(.git/config 는 리뷰어도 쓸 수 있다). `--no-relative` 는 git 2.28 부터라 -c 로 끈다.
-ABSOLUTE = ("-c", "diff.relative=false")
+# 같은 조회가 fsmonitor 에 속지 않게 NO_FSMONITOR 도 붙인다.
+ABSOLUTE = ("-c", "diff.relative=false", *NO_FSMONITOR)
 
 
 def _name(args: tuple[str, ...]) -> str:
@@ -150,7 +155,7 @@ def index_read(root) -> tuple[dict[str, str], set[str]]:
     숨김 플래그는 `ls-files -v` 의 소문자 태그(assume-unchanged, core.ignoreStat 이 붙인 것도)와 `S`(skip-worktree)다:
     git diff·status 는 그런 파일의 작업 트리 변경을 보지 않는다. 바이트로 읽고 os.fsdecode 로 푼다(UTF-8 이 아닌 이름도
     손실 없이, 다른 git 출력과 같은 글자로)."""
-    out = run(root, "ls-files", "-s", "-v", "-z", "--full-name", "--", ":(top)", raw=True).stdout
+    out = run(root, *NO_FSMONITOR, "ls-files", "-s", "-v", "-z", "--full-name", "--", ":(top)", raw=True).stdout
     found: dict[str, list[str]] = {}
     hidden: set[str] = set()
     for entry in (x for x in out.split(b"\0") if x):
@@ -195,7 +200,7 @@ def changed_entries(root, exec_bit: bool, inside=None, top: str | None = None) -
 
 def untracked(root) -> list[str]:
     """root 아래의 추적하지 않는 파일(무시 규칙 적용), root 기준."""
-    return sorted(_zb(run(root, "ls-files", "--others", "--exclude-standard", "-z", raw=True).stdout))
+    return sorted(_zb(run(root, *NO_FSMONITOR, "ls-files", "--others", "--exclude-standard", "-z", raw=True).stdout))
 
 
 def tree_entry(root, commit: str, path: str) -> str | None:
