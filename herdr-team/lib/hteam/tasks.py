@@ -587,7 +587,7 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
         if not queue:
             followers = _supplement_followers(p, cfg, tid, supplement)  # 바꾸기 전에 거부할 것을 모두 본다
             die_at("supplement_followers_found")  # 테스트: 사전 검사 뒤 의존 태스크를 고치기 전에 결정이 끼는 순서
-            kept = _reuse_queued(p, cfg, spec, tid, supplement, note, expect_round)
+            kept = _reuse_queued(p, cfg, spec, tid, supplement, note, expect_round, choice, cli)
             if kept is not None:  # 이미 같은 보강의 대기 라운드가 있다. 새 라운드 없이 메모만 더한다(라운드 상한을 쓰지 않는다)
                 kept["followers"], kept["warnings"] = _queue_followers(p, followers, supplement, tid) if followers else ([], [])
                 return kept
@@ -689,7 +689,7 @@ def _supplement_followers(p, cfg, tid: str, sup: str) -> list[dict]:
     return found
 
 
-def _reuse_queued(p, cfg, spec, tid: str, sup: str, note: str | None, expect_round: int | None) -> dict | None:
+def _reuse_queued(p, cfg, spec, tid: str, sup: str, note: str | None, expect_round: int | None, choice, cli: dict) -> dict | None:
     """tid 에 아직 띄우지 않은 같은 보강(sup)의 대기 라운드가 있으면(선행의 `fix --supplement` 가 만들었다) 새 라운드를 만들지
     않고 그 라운드에 메모만 더한다(라운드 수 그대로, max_rounds 를 쓰지 않는다). 없으면 None. 프로젝트 잠금 → 태스크 잠금
     아래에서 다시 확인하고, 끝나지 않은 결정이 고치는 태스크면 exit 3 으로 아무것도 바꾸지 않는다."""
@@ -699,8 +699,16 @@ def _reuse_queued(p, cfg, spec, tid: str, sup: str, note: str | None, expect_rou
             rd = state.current_round(st) or {}
             if not (approval.unlaunched(st) and rd.get("supplement") == sup):
                 return None
+            if rd["work"].get("canceled"):  # 앞선 fix·drop 이 취소를 기록한 채 끊겼다. 재사용하면 시작이 launch_canceled 로 실패한다
+                return None
+            if cli.get("worker") and choice.worker != rd.get("agent"):  # 다른 워커 에이전트는 새 라운드로 만든다
+                return None
             _start_gate(p, cfg, spec, check_deps=False)
             _expect_round(tid, st, expect_round)
+            if cli.get("model"):  # 명시한 모델·effort 는 대기 라운드에 반영한다(안 주면 그대로)
+                rd["model"] = choice.model
+            if cli.get("effort"):
+                rd["effort"] = choice.effort
             if note:
                 key = "coord_note" if rd.get("from_user") else "note"
                 parts = (rd.get(key) or "").split(" / ") + [note]

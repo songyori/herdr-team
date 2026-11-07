@@ -1091,6 +1091,35 @@ class SupplementTest(DecisionCase):
         self.assertEqual(self.hteam("fix", "T-002", "--supplement", "T-009", "--note=상세의 제안")[1]["round"], 3)  # 쌓이지 않는다
         self.assertEqual(self.task_state("T-002")["rounds"][-1]["note"].count("상세의 제안"), 1)
 
+    def reuse_case(self):
+        self.task("T-001", "awaiting_user")
+        self.task("T-002", "awaiting_user", depends="T-001")
+        self.task("T-009", "done", role="director")
+        self.assertEqual(self.hteam("fix", "T-001", "--supplement", "T-009")[0], 0)  # T-002 에 대기 보강 라운드
+
+    def test_reuse_skips_a_canceled_waiting_round(self):
+        # 앞선 fix·drop 이 취소를 기록한 채 끊긴 대기 라운드는 재사용하지 않는다(시작이 launch_canceled 로 실패한다)
+        self.reuse_case()
+        with state.edit(self.p, "T-002") as st:
+            st["rounds"][-1]["work"]["canceled"] = True
+        code, out = self.hteam("fix", "T-002", "--supplement", "T-009", "--note=상세")
+        self.assertEqual((code, out["round"], out.get("reused")), (0, 3, None), out)
+        self.assertFalse(self.task_state("T-002")["rounds"][-1]["work"]["canceled"])
+        self.settle("T-001")
+        self.assertEqual([s["task"] for s in self.hteam("start-ready")[1]["started"]], ["T-002"])
+
+    def test_reuse_applies_an_explicit_model_and_effort(self):
+        self.reuse_case()
+        before = self.task_state("T-002")["rounds"][-1]
+        code, out = self.hteam("fix", "T-002", "--supplement", "T-009", "--note=a")
+        self.assertEqual((code, out["round"], out["reused"]), (0, 2, True), out)
+        rd = self.task_state("T-002")["rounds"][-1]
+        self.assertEqual((rd["model"], rd["effort"]), (before["model"], before["effort"]))  # 옵션이 없으면 그대로
+        code, out = self.hteam("fix", "T-002", "--supplement", "T-009", "--model", "opus", "--effort", "high")
+        self.assertEqual((code, out["round"], out["reused"]), (0, 2, True), out)
+        rd = self.task_state("T-002")["rounds"][-1]
+        self.assertEqual((rd["model"], rd["effort"]), ("opus", "high"))
+
     def test_unreadable_report_stops_design_review(self):
         self.task("T-001", "awaiting_user")
         (self.proj / "docs/tasks/T-001/report.md").mkdir(parents=True)  # 파일이 아니라 폴더라 읽지 못한다
