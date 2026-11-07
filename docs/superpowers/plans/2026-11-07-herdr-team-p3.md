@@ -17,7 +17,7 @@
 ## Global Constraints
 
 - Python 3.11 이상, 표준 라이브러리만. 외부 패키지 금지(PNG 읽기·쓰기도 zlib·struct 로 한다). 3.11 에서도 동작해야 한다(닫힌 stdin 이 붙은 채로 `communicate()` 를 부르지 않는다. 테스트 하네스는 `proc.stdin = None` 으로 뗀다). `scripts/codex-run.sh` 는 bash 3.2 에서 돌고 jq·GNU timeout 을 쓰지 않는다.
-- 모듈 경계: `hc`·`herdr-app` 은 `herdr-team/lib/hteam/herdr.py` 에서만, `horch` 는 `herdr-team/lib/hteam/horch.py` 에서만(시작 장벽 `launch.py` 는 `horch.py` 가 만든 argv 를 exec 할 뿐이다), git 은 `herdr-team/lib/hteam/gitio.py` 에서만 부른다. `codex exec` 는 `herdr-team/scripts/codex-run.sh` 에서만 부른다. codex 를 부르는 파이썬 모듈은 둘뿐이다: `setup.py`(doctor 의 `codex login status`·`codex features list`, 그대로. 새 `codex_browser` 점검은 설정과 PATH 만 본다)와 새 `image.py`(사전 점검 `codex features list`, 래퍼 실행, PNG 가 아닌 결과를 바꿀 때만 `sips`). 새 `lint.py` 는 외부 프로그램을 부르지 않는다(`hteam lint --task` 만 `review.target_commits`·`changed_files` 를 거쳐 gitio 를 쓴다). 훅(`hooks/hteam_hook.py`)도 이 모듈들을 거친다. `approval.py` 는 셋 중 아무것도 직접 부르지 않는다.
+- 모듈 경계: `hc`·`herdr-app` 은 `herdr-team/lib/hteam/herdr.py` 에서만, `horch` 는 `herdr-team/lib/hteam/horch.py` 에서만(시작 장벽 `launch.py` 는 `horch.py` 가 만든 argv 를 exec 할 뿐이다), git 은 `herdr-team/lib/hteam/gitio.py` 에서만 부른다. `codex exec` 는 `herdr-team/scripts/codex-run.sh` 에서만 부른다. codex 를 부르는 파이썬 모듈은 셋이다: `setup.py`(doctor 의 `codex login status`·`codex features list`, 그대로. 새 `codex_browser` 점검은 설정과 PATH 만 본다), 새 `image.py`(사전 점검 `codex features list`, 래퍼 실행, PNG 가 아닌 결과를 바꿀 때만 `sips`), 새 `browser.py`(읽기 전용 `codex mcp get chrome-devtools --json` 하나, 15초 상한·프로세스 캐시. `dispatch.py`·`image.py` 가 부른다). 새 `lint.py` 는 외부 프로그램을 부르지 않는다(`hteam lint --task` 만 `review.target_commits`·`changed_files` 를 거쳐 gitio 를 쓴다). 훅(`hooks/hteam_hook.py`)도 이 모듈들을 거친다. `approval.py` 는 셋 중 아무것도 직접 부르지 않는다.
 - hteam 은 horch 를 늘 `--home <프로젝트>/.herdr-team/state/horch` 로 부른다. 찾는 순서는 `HERDR_ORCH_BIN` → 형제 `../herdr-orch/bin/horch` → `installed_plugins.json`(테스트는 `HTEAM_PLUGINS_JSON`). Task 8 이 마지막 단계를 이 프로젝트에 맞는 범위·projectPath 와 `HORCH_MIN = "0.1.2"` 이상으로 고른다.
 - 모든 명령은 stdout 에 JSON 한 개를 쓴다: 성공 `{"ok": true, ...}`, 실패 `{"ok": false, "error": {"code", "message", "hint"}, ...}`(오류의 `data` 는 최상위에 합친다). 출력 뒤 처리(`_after`)는 출력한 다음에만 한다. 예외: `scripts/codex-run.sh` 는 JSON 을 stdout 에 쓰지 않고 실행 폴더의 `status.json` 에 쓴다(stderr 는 사람이 읽는 한 줄).
 - exit 코드는 horch 와 같다: 0 성공, 1 실패·확인 불가, 2 입력 오류, 3 상태 충돌, 4 대기 시간 초과, 5 권한 없음, 12 의존 프로그램 없음. `--root` 는 하위 명령 앞에 둔다. `scripts/codex-run.sh` 의 exit 는 설계 12장대로 0, 10(시간 초과), 11(진행 신호 없음), 12(codex 없음), 1, 2(인자 오류, status.json 없음), 130(중단)이다.
@@ -47,6 +47,8 @@ herdr-team/
     cli.py         COMMAND_MODULES 에 "lint"(Task 1), "image"(Task 3)
     compose.py     리뷰 디자인 절 design_section(Task 2), 수정 블록의 coord_note·round_requests(Task 6)
     config.py      CODEX_BYPASS(Task 2)
+    browser.py     새로: 리뷰어 서버 이름 hteam-browser, 사용자 chrome-devtools 끄기 user_off(Task 2)
+    dispatch.py    codex 디스패치에 사용자 chrome-devtools 끄기 인자(Task 2)
     setup.py       scaffold FILES 에 design-rules.md(Task 1)·roles/director.md(Task 4), doctor codex_browser(Task 2)·codex_wrapper(Task 3),
                    horch 찾기에 프로젝트 루트(Task 8)
     approval.py    proposals·supplement_needed·view 의 supplement·directors·supplement_needed 오류(Task 6),
@@ -89,7 +91,7 @@ herdr-team/
     test_coord.py           attention·error hint·fix_next(Task 9), CLI wait·사양 한 번(Task 10)
     test_hooks.py           context 거부(Task 9)
     test_plan.py            covers_tree·packed-refs·index.lock 단언(Task 10)
-    test_start.py           wait_gone·adopt next(Task 10)
+    test_start.py           디스패치의 chrome-devtools 끄기(Task 2), wait_gone·adopt next(Task 10)
     test_interview.py       확정 답 뒤 ack 전 중단(Task 10)
     test_harness.py         환경 변수·거두기(Task 10)
     helpers.py              DROP_ENV·_reap·wait_gone(Task 10)
@@ -111,7 +113,7 @@ docs/superpowers/specs/2026-11-05-herdr-team-design.md   동작을 바꾼 태스
 - `state/attention.json`(Task 9): 모양은 그대로다. `reported` 는 지금 보는 Dispatch 만 남고, `since` 는 Dispatch 의 `created_at` 부터 센다.
 - 실행 폴더(Task 3, 저장소 밖): `prompt.txt`, `result.txt`, `events.jsonl`, `progress.log`, `status.json`(`profile`, `state`, `pid`, `cwd`, `codex_version`, `started_at`, `last_event_at`, `silence_secs`, `terminal_event`, `raw_exit`, `exit`).
 - 보고서 형식(직무 문서, Task 4·5): 이번 라운드 `## rN` 절 안의 `### 시스템 추가 제안`(Task 6 의 `approval.proposals` 가 읽는다), `### 금지 목록 점검`, `### 확인한 화면`(글로만), `### 이미지`. 확인용 스크린숏은 어디에도 커밋하지 않는다(리뷰어가 직접 렌더한다, Task 2). 시스템이 없는 프로젝트의 화면 `notes.md` 에 `## 확정 값`(Task 5).
-- 설정: 기본 `[agents.codex].args` 의 `hteam-browser` 정의 한 쌍(Task 2). init 이 승인하면 `--dangerously-bypass-approvals-and-sandbox` 가 더해진다(템플릿에는 없다). `hteam image` 는 정의와 우회 플래그를 빼고, 사용자 Codex 에 `chrome-devtools` 가 켜져 있으면 그것만 꺼서 래퍼에 넘긴다(Task 3).
+- 설정: 기본 `[agents.codex].args` 의 `hteam-browser` 정의 한 쌍(Task 2). init 이 승인하면 `--dangerously-bypass-approvals-and-sandbox` 가 더해진다(템플릿에는 없다). codex 디스패치(워커·리뷰어)는 `hteam-browser` 정의가 있으면 사용자 Codex 의 켜진 `chrome-devtools` 를 끄는 `-c` 한 쌍을 args 뒤에 더한다(Task 2, horch 의 Dispatch `agent_args` 에 남는다). `hteam image` 는 정의와 우회 플래그를 빼고 같은 끄기 인자를 더해 래퍼에 넘긴다(Task 3).
 
 ## 태스크 순서와 의존
 
@@ -663,18 +665,22 @@ Expected: `git grep` 출력 없음, 커밋 성공. 구현자는 여기서 멈춘
 
 우회 플래그 목록은 `config.CODEX_BYPASS`(herdr-orch `agents._BYPASS` 와 같은 넷)로 둔다. doctor 와 Task 3 의 이미지 인자 정리가 같이 쓴다(setup 이 image 를 가져오므로 image 가 setup 을 가져오지 않게 config 에 둔다).
 
+hteam 이 띄우는 codex 에서는 사용자·플러그인의 같은 일을 하는 `chrome-devtools` 도 끈다(Codex 계획 r2 추가 수정. 이 환경의 것은 `npx -y chrome-devtools-mcp@1.10.1` 고정 프로필이라 우회가 승인되면 리뷰어가 승인 없이 쓸 수 있다). hteam 이 실행 인자를 직접 만든다(`dispatch.launch` 가 `h.argv("worker-start", …, *agent_args(args))`)므로 horch 를 고치지 않고 hteam 이 덧붙인다(horch 는 받은 인자를 그대로 쓴다). 새 모듈 `browser.py` 가 리뷰어 서버 이름(`BROWSER_SERVER`·`BROWSER_KEY`, setup 에서 옮겼다)과 끄기 판정을 둔다: `browser.user_off(root)` 가 읽기 전용 `codex mcp get chrome-devtools --json`(`QUERY_TIMEOUT` 15초, 프로세스 안에서 프로젝트마다 한 번, 캐시)으로 보고, 켜져 있으면 transport 키 하나 + `enabled=false` 한 쌍을, 정의가 없거나 꺼져 있으면 빈 목록을, 조회 실패·시간 초과·codex 없음·모르는 모양이면 빈 목록과 경고 한 줄을 낸다. `dispatch.launch` 는 agent 가 codex 이고 args 에 `hteam-browser` 정의가 있을 때만(워커·리뷰어, fresh·retry. 이어 붙이기(adopt)는 띄우지 않으므로 해당 없다) 그것을 args 뒤에 더하고 경고는 `warnings` 에 남긴다(디스패치를 막지 않는다). Task 3 의 이미지 실행도 같은 함수를 쓴다(image 가 browser 를 가져오고 browser 는 아무것도 가져오지 않아 순환이 없다). 모듈 경계: codex 를 부르는 파이썬 모듈은 setup·image·browser 셋이 된다(browser 는 읽기 전용 조회 하나).
+
 **Files:**
-- Create: `herdr-team/templates/review-design.md`
-- Modify: `herdr-team/lib/hteam/compose.py`(`design_section`, `review_prompt`), `herdr-team/templates/review-prompt.md`(`{{design}}`), `herdr-team/templates/config.toml`(`[agents.codex].args`), `herdr-team/lib/hteam/config.py`(`CODEX_BYPASS`), `herdr-team/lib/hteam/setup.py`(`BROWSER_KEY`, `_codex_browser`, `doctor`), `herdr-team/skills/init/SKILL.md`(2단계 경고, 4단계 Codex 권한 행, 바꾸는 곳 문장), `docs/superpowers/specs/2026-11-05-herdr-team-design.md`(4장 예시·4.1·6.2·9.1·9.2·14장)
-- Test: `herdr-team/tests/test_review.py`(`DesignSectionTest`, `NoDirectorDesignTest`), `herdr-team/tests/test_setup.py`(`TemplateContractTest`, `CodexBrowserDoctorTest`)
+- Create: `herdr-team/templates/review-design.md`, `herdr-team/lib/hteam/browser.py`
+- Modify: `herdr-team/lib/hteam/compose.py`(`design_section`, `review_prompt`), `herdr-team/templates/review-prompt.md`(`{{design}}`), `herdr-team/templates/config.toml`(`[agents.codex].args`), `herdr-team/lib/hteam/config.py`(`CODEX_BYPASS`), `herdr-team/lib/hteam/setup.py`(`_codex_browser`, `doctor`), `herdr-team/lib/hteam/dispatch.py`(`launch` 의 끄기 인자), `herdr-team/skills/init/SKILL.md`(2단계 경고, 4단계 Codex 권한 행, 바꾸는 곳 문장), `docs/superpowers/specs/2026-11-05-herdr-team-design.md`(4장 예시·4.1·6.2·9.1·9.2·14장)
+- Test: `herdr-team/tests/test_review.py`(`DesignSectionTest`, `NoDirectorDesignTest`), `herdr-team/tests/test_setup.py`(`TemplateContractTest`, `CodexBrowserDoctorTest`), `herdr-team/tests/test_start.py`(`BrowserOffTest`)
 
 **Interfaces:**
-- Consumes: Task 1 의 `lint.DESIGN_ROLES`, `lint.design_lint(root, files)`. `util.fill(text, **values)`, `compose._template(name)`, `config.load(p).args(agent)`, `setup._check(name, ok, detail, level)`(기존). herdr-orch `horch.agents.build`·`agents._BYPASS`(테스트만 읽는다)
+- Consumes: Task 1 의 `lint.DESIGN_ROLES`, `lint.design_lint(root, files)`. `util.fill(text, **values)`, `compose._template(name)`, `config.load(p).args(agent)`, `setup._check(name, ok, detail, level)`, `dispatch.launch(..., agent, args, ...)` 의 `warnings`(기존). herdr-orch `horch.agents.build`·`agents._BYPASS`(테스트만 읽는다)
 - Produces:
   - `compose.design_section(p, cfg, spec, files: list[str]) -> str`: 디자인 절(`## 디자인 기준` … 자동 검사 목록, 끝에 빈 줄 하나) 또는 `""`
   - 템플릿 `review-design.md` 의 자리 `{{lint}}`. `review-prompt.md` 의 자리 `{{design}}`(기준 목록 뒤, `## REVIEW_FILE 형식` 앞. 비면 프롬프트가 2단계와 같다)
   - `config.CODEX_BYPASS: tuple[str, ...]`: `--dangerously-bypass-approvals-and-sandbox`·`--yolo`·`--full-auto`·`--approve-for-me`. Task 3 의 `image.codex_args` 가 쓴다
-  - `setup.BROWSER_SERVER = "hteam-browser"`, `setup.BROWSER_KEY = "mcp_servers.hteam-browser"`, `setup._codex_browser(root: Path) -> dict`(점검 `codex_browser`, 늘 `level: warning`. 설정 파일이 아직 없으면 ok)
+  - `browser.BROWSER_SERVER = "hteam-browser"`, `browser.BROWSER_KEY = "mcp_servers.hteam-browser"`, `browser.USER_BROWSER = "chrome-devtools"`, `browser.QUERY_TIMEOUT = 15`, `browser.defines(args) -> bool`, `browser.user_off(root) -> (끄는 인자 목록, 경고 | None)`(캐시 `browser._cache`). Task 3 의 image 가 쓴다
+  - `setup._codex_browser(root: Path) -> dict`(점검 `codex_browser`, 늘 `level: warning`. 설정 파일이 아직 없으면 ok)
+  - `dispatch.launch`: codex 이고 `browser.defines(args)` 면 `browser.user_off` 의 인자를 args 뒤에, 경고를 `warnings` 에
   - 기본 설정 `[agents.codex].args` 의 `hteam-browser` 정의 한 쌍. Task 3 이 이미지 실행에서 빼고, Task 11 이 실물을 본다
 
 - [ ] **Step 1: 실패하는 테스트 작성**
@@ -822,7 +828,7 @@ from hteam import config
         self.assertNotIn("never", argv)
         init = (ROOT / "skills/init/SKILL.md").read_text(encoding="utf-8")
         for needle in ("Codex 권한(샌드박스 우회)", "`--dangerously-bypass-approvals-and-sandbox`", "코드로만 본다",
-                       "변조 검사가 잡지 못한다", "`codex_browser`"):
+                       "변조 검사가 잡지 못한다", "`codex_browser`", "다른 MCP 서버도 승인 없이 쓸 수 있다"):
             self.assertIn(needle, init)
 
     def test_cleanup_rules_in_docs(self):
@@ -885,10 +891,142 @@ class CodexBrowserDoctorTest(TeamCase):
 ```
 
 
+**Edit** `herdr-team/tests/test_start.py`
+
+```python
+
+from tests.helpers import BASE_CONFIG, TeamCase
+from hteam import compose, config, dispatch, horch, launch, procs, specs, state, tasks
+from hteam.errors import HteamError
+```
+
+```python
+
+from tests.helpers import BASE_CONFIG, HORCH_FAKES, TeamCase
+from hteam import browser, compose, config, dispatch, horch, launch, procs, specs, state, tasks
+from hteam.errors import HteamError
+```
+
+**Edit** `herdr-team/tests/test_start.py`
+
+```python
+        self.assertEqual(self.task_state("T-002")["status"], "pending")
+        self.assertEqual(len(self.horch_tasks()), 1)
+
+
+```
+
+```python
+        self.assertEqual(self.task_state("T-002")["status"], "pending")
+        self.assertEqual(len(self.horch_tasks()), 1)
+
+
+# `codex mcp get` 만 맡는 가짜 codex(FAKE_MCP: stdio | url | off | none | fail, 부른 것을 FAKE_MCP_LOG 에). 나머지는 horch 의 가짜로
+FAKE_MCP_CODEX = r'''#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+if args[:2] == ["mcp", "get"]:
+    with open(os.environ["FAKE_MCP_LOG"], "a") as fh:
+        fh.write(json.dumps(args) + "\n")
+    mode = os.environ.get("FAKE_MCP", "none")
+    if mode == "none":
+        print("Error: No MCP server named 'chrome-devtools' found.", file=sys.stderr); sys.exit(1)
+    if mode == "fail":
+        print("Error: failed to load bootstrap configuration", file=sys.stderr); sys.exit(1)
+    transport = ({"type": "streamable_http", "url": "http://127.0.0.1:9/mcp"} if mode == "url"
+                 else {"type": "stdio", "command": "npx", "args": ["-y", "chrome-devtools-mcp@1.10.1"]})
+    print(json.dumps({"name": "chrome-devtools", "enabled": mode != "off", "transport": transport})); sys.exit(0)
+os.execv(sys.executable, [sys.executable, os.environ["FAKE_MCP_NEXT"], *args])
+'''
+
+
+class BrowserOffTest(StartCase):
+    """디스패치(워커·리뷰어)도 사용자 Codex 의 chrome-devtools 를 끈다(Codex 계획 r2 추가 수정): agent 가 codex 이고 args 에
+    hteam-browser 정의가 있을 때만 읽기 전용 `codex mcp get` 으로 보고, 켜져 있으면 끄는 인자를 args 뒤에 더한다."""
+
+    DEFINE = 'mcp_servers.hteam-browser={command="npx",args=["-y","chrome-devtools-mcp@1.10.1"]}'
+    OFF = {"stdio": 'mcp_servers.chrome-devtools={command="npx",enabled=false}',
+           "url": 'mcp_servers.chrome-devtools={url="http://127.0.0.1:9/mcp",enabled=false}'}
+
+    def setUp(self):
+        super().setUp()
+        self.base = ["--disable=hooks", "-c", self.DEFINE]
+        (self.team / "config.toml").write_text(
+            BASE_CONFIG.replace('args = ["--disable=hooks"]', f"args = {json.dumps(self.base)}"))
+        bin_dir = self.tmp / "mcpbin"
+        bin_dir.mkdir()
+        (bin_dir / "codex").write_text(FAKE_MCP_CODEX)
+        (bin_dir / "codex").chmod(0o755)
+        self.log = self.tmp / "mcp.jsonl"
+        self.env.update({"PATH": f"{bin_dir}{os.pathsep}{self.env['PATH']}", "FAKE_MCP_LOG": str(self.log),
+                         "FAKE_MCP_NEXT": str(HORCH_FAKES / "codex")})
+
+    def queries(self):
+        return self.log.read_text().splitlines() if self.log.exists() else []
+
+    def start(self, mode, worker="codex", tid="T-001"):
+        self.make_task(tid, owns=f"src/{tid.lower()}/**")
+        code, out = self.hteam("start", tid, "--worker", worker, env={"FAKE_MCP": mode})
+        self.assertEqual(code, 0, out)
+        return out, json.loads(self.dispatch_row(out["dispatch"])["agent_args"])
+
+    def test_worker_dispatch_per_answer(self):
+        for n, (mode, extra, warned) in enumerate((("stdio", ["-c", self.OFF["stdio"]], False),
+                                                   ("url", ["-c", self.OFF["url"]], False),
+                                                   ("off", [], False), ("none", [], False), ("fail", [], True))):
+            with self.subTest(mode=mode):
+                out, args = self.start(mode, tid=f"T-00{n + 1}")
+                self.assertEqual(args, self.base + extra)
+                warnings = [w for w in out["warnings"] if "chrome-devtools" in w]
+                self.assertEqual(bool(warnings), warned, out["warnings"])
+                if warned:
+                    self.assertIn("끄지 않았다", warnings[0])
+        self.assertEqual(len(self.queries()), 5)  # 명령(프로세스)마다 한 번
+
+    def test_reviewer_dispatch_is_covered(self):
+        # claude 워커는 조회하지 않고, 그 리뷰어(codex)는 끈다
+        self.make_task("T-001")
+        code, out = self.hteam("start", "T-001", "--worker", "claude", env={"FAKE_MCP": "stdio"})
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.queries(), [])
+        self.assertEqual(self.act_work("T-001")[0], 0)
+        code, out = self.hteam("review", "T-001", env={"FAKE_MCP": "stdio"})
+        self.assertEqual((code, out.get("status")), (0, "reviewing"), out)
+        self.assertEqual(json.loads(self.dispatch_row(out["dispatch"])["agent_args"]), self.base + ["-c", self.OFF["stdio"]])
+        self.assertEqual(len(self.queries()), 1)
+
+    def test_no_query_without_hteam_browser(self):
+        (self.team / "config.toml").write_text(BASE_CONFIG)
+        out, args = self.start("stdio")
+        self.assertEqual((args, self.queries()), (["--disable=hooks"], []))
+
+    def test_query_is_cached_and_bounded(self):
+        calls = []
+
+        def run(argv, **kw):
+            calls.append(kw.get("timeout"))
+            raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
+        browser._cache.clear()
+        self.addCleanup(browser._cache.clear)
+        with mock.patch.object(browser.shutil, "which", return_value="/x/codex"), \
+                mock.patch.object(browser.subprocess, "run", side_effect=run):
+            for _ in range(2):
+                off, warning = browser.user_off(self.proj)
+                self.assertEqual(off, [])
+                self.assertIn("끝나지 않았다", warning)
+        self.assertEqual(calls, [browser.QUERY_TIMEOUT])  # 한 번만, 시간 제한을 두고
+        browser._cache.clear()
+        with mock.patch.object(browser.shutil, "which", return_value=None):
+            self.assertIn("codex 가 PATH 에 없다", browser.user_off(self.proj)[1])
+
+
+```
+
+
 - [ ] **Step 2: 실패 확인**
 
-Run: `bash herdr-team/tests/run.sh -k DesignSectionTest -k NoDirectorDesignTest -k TemplateContractTest -k CodexBrowserDoctorTest`
-Expected: FAIL·ERROR — designer·developer 프롬프트에 `## 디자인 기준` 이 없다(`AssertionError: '## 디자인 기준' not found`), 렌더링 절차가 없다(`'`new_page`' not found`), 템플릿 `[agents.codex].args` 가 `['--disable=hooks']` 뿐이다(`Lists differ`), init 에 바뀐 제약 문장이 없다, `setup._codex_browser` 가 없다(`AttributeError`). `NoDirectorDesignTest`·`test_other_roles_have_no_design_section` 과 나머지 `TemplateContractTest` 는 이미 통과한다(디자인 절이 없다).
+Run: `bash herdr-team/tests/run.sh -k DesignSectionTest -k NoDirectorDesignTest -k TemplateContractTest -k CodexBrowserDoctorTest -k BrowserOffTest`
+Expected: FAIL·ERROR — designer·developer 프롬프트에 `## 디자인 기준` 이 없다(`AssertionError: '## 디자인 기준' not found`), 렌더링 절차가 없다(`'`new_page`' not found`), 템플릿 `[agents.codex].args` 가 `['--disable=hooks']` 뿐이다(`Lists differ`), init 에 바뀐 제약 문장이 없다, `setup._codex_browser` 가 없다(`AttributeError`), `tests.test_start` 를 불러오지 못한다(`ImportError: cannot import name 'browser' from 'hteam'`). `NoDirectorDesignTest`·`test_other_roles_have_no_design_section` 과 나머지 `TemplateContractTest` 는 이미 통과한다(디자인 절이 없다).
 
 - [ ] **Step 3: 구현**
 
@@ -992,6 +1130,117 @@ CODEX_BYPASS = ("--dangerously-bypass-approvals-and-sandbox", "--yolo", "--full-
 ```
 
 
+**Create** `herdr-team/lib/hteam/browser.py`
+
+```python
+"""Codex 의 브라우저 MCP 서버(설계 4.1·6.2·12장·14장).
+
+리뷰어의 서버는 herdr-team 전용 이름 `hteam-browser` 다(기본 `[agents.codex].args` 의 서버 테이블 한 쌍). 사용자 Codex(설정·
+플러그인)에 같은 일을 하는 `chrome-devtools` 서버가 켜져 있으면, hteam 이 띄우는 codex(디스패치의 워커·리뷰어, 이미지)에서만
+그 정의를 통째로 꺼서 준다: transport 키 하나와 `enabled=false`. 일부 키만(`.enabled=false`) 주면 플러그인 정의에서
+`invalid transport`, url 정의에 command 를 주면 `url is not supported for stdio` 로 codex 가 시작하지 못한다(codex-cli 0.166).
+사용자 설정 파일은 고치지 않는다. 다른 이름의 사용자 서버는 범위 밖이다.
+
+이 모듈은 codex 를 읽기 전용 `codex mcp get chrome-devtools --json` 으로만 부른다. 프로세스 안에서 프로젝트마다 한 번만
+조회하고(캐시), QUERY_TIMEOUT 초를 넘기면 끄지 않는다. 조회 실패·시간 초과·codex 없음은 끄지 않고 경고 한 줄을 낸다
+(부른 쪽이 warnings 에 남기고 하던 일을 계속한다)."""
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
+BROWSER_SERVER = "hteam-browser"  # Codex 리뷰어의 chrome-devtools MCP 서버 이름(사용자·플러그인의 chrome-devtools 와 나눈다)
+BROWSER_KEY = f"mcp_servers.{BROWSER_SERVER}"
+USER_BROWSER = "chrome-devtools"  # 사용자·플러그인이 흔히 쓰는 같은 일의 서버 이름. hteam 이 띄우는 codex 에서만 끈다
+QUERY_TIMEOUT = 15  # `codex mcp get` 상한(초)
+_cache: dict[str, tuple[list[str], str | None]] = {}
+
+
+def defines(args: list[str]) -> bool:
+    """args 에 hteam-browser 정의(`mcp_servers.hteam-browser=…` 또는 `mcp_servers.hteam-browser.…`)가 있나."""
+    return any(a.startswith((BROWSER_KEY + "=", BROWSER_KEY + ".")) for a in args)
+
+
+def user_off(root: Path) -> tuple[list[str], str | None]:
+    """(끄는 `-c` 한 쌍 또는 빈 목록, 경고 또는 None). 프로세스 안에서 root 마다 한 번만 조회한다."""
+    key = str(root)
+    if key not in _cache:
+        _cache[key] = _query(root)
+    off, warning = _cache[key]
+    return list(off), warning
+
+
+def _skip(why: str) -> tuple[list[str], str]:
+    return [], f"사용자 Codex 의 {USER_BROWSER} 서버를 확인하지 못해 끄지 않았다({why})"
+
+
+def _query(root: Path) -> tuple[list[str], str | None]:
+    if not shutil.which("codex"):
+        return _skip("codex 가 PATH 에 없다")
+    try:
+        proc = subprocess.run(["codex", "mcp", "get", USER_BROWSER, "--json"], capture_output=True, text=True,
+                              timeout=QUERY_TIMEOUT, stdin=subprocess.DEVNULL, cwd=root)
+    except subprocess.TimeoutExpired:
+        return _skip(f"`codex mcp get` 이 {QUERY_TIMEOUT}초 안에 끝나지 않았다")
+    except OSError as exc:
+        return _skip(f"`codex mcp get` 을 부르지 못했다: {exc}")
+    if proc.returncode != 0:
+        if "No MCP server named" in proc.stderr + proc.stdout:
+            return [], None  # 정의가 없다. 끌 것이 없다
+        tail = (proc.stderr.strip() or proc.stdout.strip())[-200:]
+        return _skip(f"`codex mcp get` exit {proc.returncode}: {tail}")
+    try:
+        info = json.loads(proc.stdout)
+    except ValueError:
+        return _skip("`codex mcp get` 출력이 JSON 이 아니다")
+    if not isinstance(info, dict) or not isinstance(info.get("transport"), dict):
+        return _skip("`codex mcp get` 출력의 모양이 다르다")
+    if info.get("enabled") is not True:
+        return [], None  # 이미 꺼져 있다
+    kind = info["transport"].get("type")
+    field = {"stdio": "command", "streamable_http": "url"}.get(kind)
+    value = info["transport"].get(field) if field else None
+    if not isinstance(value, str) or not value:
+        return _skip(f"모르는 transport({kind})")
+    return ["-c", f"mcp_servers.{USER_BROWSER}={{{field}={json.dumps(value, ensure_ascii=False)},enabled=false}}"], None
+```
+
+
+**Edit** `herdr-team/lib/hteam/dispatch.py`
+
+```python
+
+from . import procs, state
+from .errors import CONFLICT, FAIL, MISSING, HteamError
+```
+
+```python
+
+from . import browser, procs, state
+from .errors import CONFLICT, FAIL, MISSING, HteamError
+```
+
+**Edit** `herdr-team/lib/hteam/dispatch.py`
+
+```python
+                "warnings": warnings}
+    opts = []
+```
+
+```python
+                "warnings": warnings}
+    if agent == "codex" and browser.defines(args):
+        # 사용자 Codex 의 같은 일을 하는 chrome-devtools 를 이 codex 에서만 끈다(설계 14장). 조회하지 못하면 끄지 않고 알린다
+        off, warning = browser.user_off(p.root)
+        args = [*args, *off]
+        if warning:
+            warnings.append(warning)
+    opts = []
+```
+
+
 **Edit** `herdr-team/templates/config.toml`
 
 ```toml
@@ -1017,16 +1266,27 @@ args = ["--disable=hooks",
 **Edit** `herdr-team/lib/hteam/setup.py`
 
 ```python
+
+from . import config, coord, gitio, herdr, outbox, roles
+from .errors import CONFLICT, DENIED, FAIL, TIMEOUT, USAGE, HteamError
+```
+
+```python
+
+from . import browser, config, coord, gitio, herdr, outbox, roles
+from .browser import BROWSER_SERVER
+from .errors import CONFLICT, DENIED, FAIL, TIMEOUT, USAGE, HteamError
+```
+
+**Edit** `herdr-team/lib/hteam/setup.py`
+
+```python
     return False
 
 ```
 
 ```python
     return False
-
-
-BROWSER_SERVER = "hteam-browser"  # Codex 리뷰어의 chrome-devtools MCP 서버 이름(사용자·플러그인의 chrome-devtools 와 나눈다)
-BROWSER_KEY = f"mcp_servers.{BROWSER_SERVER}"
 
 
 def _codex_browser(root: Path) -> dict:
@@ -1039,7 +1299,7 @@ def _codex_browser(root: Path) -> dict:
         args = config.load(p).args("codex")
     except HteamError as exc:
         return _check("codex_browser", False, f"설정을 읽지 못했다: {exc.message}", "warning")
-    if not any(a.startswith((BROWSER_KEY + "=", BROWSER_KEY + ".")) for a in args):
+    if not browser.defines(args):
         return _check("codex_browser", False, f"[agents.codex].args 에 {BROWSER_SERVER}(chrome-devtools) 정의가 없다(리뷰어는 "
                       "화면을 코드로만 본다)", "warning")
     if not shutil.which("npx"):
@@ -1092,7 +1352,7 @@ def _codex_browser(root: Path) -> dict:
 
 ```markdown
 - Claude 권한 모드(`[agents.claude].args`): 워커는 사람 없이 돌므로 `--permission-mode=bypassPermissions` 가 필요할 수 있다. `[agents.claude].args` 는 워커·리뷰어뿐 아니라 코디네이터에도 붙는다. 넣으면 워커·리뷰어·코디네이터가 확인 없이 사용자의 git·클라우드 자격 증명과 셸 환경을 그대로 쓴다는 위험을 표에 적는다. 사용자가 승인했을 때만 넣는다.
-- Codex 권한(샌드박스 우회): `[agents.codex].args` 에 `--dangerously-bypass-approvals-and-sandbox` 를 더하자고 제안한다. 무엇을 하는지: Codex 워커·리뷰어가 샌드박스·승인 없이 돈다. 리뷰어가 기본 설정의 `hteam-browser`(chrome-devtools, 헤드리스·격리) 서버로 화면을 렌더하고 개발 서버를 띄울 수 있다(우회가 없으면 `-a never` 때문에 브라우저 도구 호출이 거부되고 리뷰어는 화면을 코드로만 본다). 위험을 표에 적는다: Codex 가 사용자 권한·자격 증명·네트워크를 그대로 쓴다, 리뷰어가 읽는 워커 코드·웹 페이지의 글이 명령을 실행시킬 수 있다, 저장소 밖 변경은 변조 검사가 잡지 못한다. 사용자가 승인했을 때만 넣는다.
+- Codex 권한(샌드박스 우회): `[agents.codex].args` 에 `--dangerously-bypass-approvals-and-sandbox` 를 더하자고 제안한다. 무엇을 하는지: Codex 워커·리뷰어가 샌드박스·승인 없이 돈다. 리뷰어가 기본 설정의 `hteam-browser`(chrome-devtools, 헤드리스·격리) 서버로 화면을 렌더하고 개발 서버를 띄울 수 있다(우회가 없으면 `-a never` 때문에 브라우저 도구 호출이 거부되고 리뷰어는 화면을 코드로만 본다). 위험을 표에 적는다: Codex 가 사용자 권한·자격 증명·네트워크를 그대로 쓴다, 리뷰어가 읽는 워커 코드·웹 페이지의 글이 명령을 실행시킬 수 있다, 저장소 밖 변경은 변조 검사가 잡지 못한다, 사용자 Codex 설정의 다른 MCP 서버도 승인 없이 쓸 수 있다(hteam 은 같은 일을 하는 `chrome-devtools` 만 hteam 이 띄우는 codex 에서 끈다. 다른 이름은 범위 밖이다). 사용자가 승인했을 때만 넣는다.
 - AskUserQuestion 한 번으로 승인받는다. 선택지 "전부 승인 (추천)", "바꾸지 않고 진행". 일부 제외는 Other 로 받는다.
 - 승인된 항목을 적용한다. 실패해도 멈추지 않고 결과를 표에 남긴다.
 - 바꾸는 곳은 이 프로젝트 안뿐이다. 사용자 전역 설정(`~/.claude/`, `~/.claude.json`, `~/.codex/`)을 고치지 않는다. Codex 의 폴더 신뢰를 한꺼번에 허용하는 설정("Trust all" 류)이나 전역 샌드박스·승인 우회 설정을 쓰지 않는다(우회는 이 프로젝트의 `[agents.codex].args` 에, 위 표로 승인받았을 때만).
@@ -1102,7 +1362,7 @@ def _codex_browser(root: Path) -> dict:
 
 - [ ] **Step 4: 통과 확인**
 
-Run: `bash herdr-team/tests/run.sh -k DesignSectionTest -k NoDirectorDesignTest -k TemplateContractTest -k CodexBrowserDoctorTest -k DoctorTest -k test_review_prompt_shows_the_round_request -k test_approve_flow -k test_agents_section`
+Run: `bash herdr-team/tests/run.sh -k DesignSectionTest -k NoDirectorDesignTest -k TemplateContractTest -k CodexBrowserDoctorTest -k BrowserOffTest -k test_start -k DoctorTest -k test_review_prompt_shows_the_round_request -k test_approve_flow -k test_agents_section`
 Expected: OK. 디자인 절이 없는 프롬프트는 2단계와 한 글자도 다르지 않다(`4. …다뤘는가.\n\n## REVIEW_FILE 형식`).
 
 - [ ] **Step 5: 설계 동기화**
@@ -1132,7 +1392,7 @@ args = ["--disable=hooks",
 
 ```markdown
 - `[agents.<에이전트>].args`: 그 에이전트를 띄울 때마다(작업·리뷰·코디네이터) horch `--agent-arg` 로 넘기는 인자(코디네이터는 `hc run` 인자). horch 는 우회 플래그를 스스로 넣지 않으므로 권한 모드는 여기서 정한다. Claude 의 `--permission-mode=bypassPermissions` 는 init 이 위험을 설명하고 사용자가 승인했을 때만 넣는다(9.1).
-- `[agents.codex].args` 기본 `--disable=hooks`: Codex 의 hook 검토 창과, 검토하지 않은 hook 이 셸 명령을 막는 문제를 피한다(herdr-orch 실환경 확인 결과). 기본에 chrome-devtools MCP 서버 정의도 있다(herdr-team 전용 이름 `hteam-browser`, 서버 테이블 한 쌍 `-c mcp_servers.hteam-browser={command="npx",args=[…],startup_timeout_sec=60}`: `npx -y chrome-devtools-mcp@1.10.1 --headless=true --isolated=true`, 시작 제한 60초). 사용자의 Codex 에 브라우저 서버가 없어도 리뷰어가 화면을 렌더하고, 헤드리스·격리 프로필이라 사용자 Chrome 의 쿠키·로그인을 쓰지 않는다(6.2). 사용자·플러그인의 `chrome-devtools` 를 같은 이름으로 덮지 않는다: `-c` 는 기존 정의와 합쳐지므로(테이블 통째로 줘도 그렇다) 그 정의가 url 이면 `url is not supported for stdio` 로, 플러그인 정의에 일부 키만 주면 `invalid transport` 로 Codex 가 시작하지 못한다(codex-cli 0.166 에서 `codex mcp get` 으로 확인). 승인 정책(`-a never`) 아래에서는 MCP 도구 호출이 거부되므로 리뷰어가 실제로 쓰려면 init 이 승인받은 샌드박스·승인 우회(`--dangerously-bypass-approvals-and-sandbox`)가 필요하다(9.1, 14장. 우회 플래그는 기본에 넣지 않는다).
+- `[agents.codex].args` 기본 `--disable=hooks`: Codex 의 hook 검토 창과, 검토하지 않은 hook 이 셸 명령을 막는 문제를 피한다(herdr-orch 실환경 확인 결과). 기본에 chrome-devtools MCP 서버 정의도 있다(herdr-team 전용 이름 `hteam-browser`, 서버 테이블 한 쌍 `-c mcp_servers.hteam-browser={command="npx",args=[…],startup_timeout_sec=60}`: `npx -y chrome-devtools-mcp@1.10.1 --headless=true --isolated=true`, 시작 제한 60초). 사용자의 Codex 에 브라우저 서버가 없어도 리뷰어가 화면을 렌더하고, 헤드리스·격리 프로필이라 사용자 Chrome 의 쿠키·로그인을 쓰지 않는다(6.2). 사용자·플러그인의 `chrome-devtools` 를 같은 이름으로 덮지 않는다: `-c` 는 기존 정의와 합쳐지므로(테이블 통째로 줘도 그렇다) 그 정의가 url 이면 `url is not supported for stdio` 로, 플러그인 정의에 일부 키만 주면 `invalid transport` 로 Codex 가 시작하지 못한다(codex-cli 0.166 에서 `codex mcp get` 으로 확인). 대신 hteam 이 띄우는 codex(디스패치의 워커·리뷰어, 이미지)에는 사용자 `chrome-devtools` 가 켜져 있을 때만 그 정의를 통째로 끄는 인자를 덧붙인다(14장). 승인 정책(`-a never`) 아래에서는 MCP 도구 호출이 거부되므로 리뷰어가 실제로 쓰려면 init 이 승인받은 샌드박스·승인 우회(`--dangerously-bypass-approvals-and-sandbox`)가 필요하다(9.1, 14장. 우회 플래그는 기본에 넣지 않는다).
 - `owns`: 비면 안 된다. 태스크 front matter(와 tasks.toml)로 좁힐 수 있고 넓힐 수는 없다. 판정은 보수적이다: 같은 glob, 직무의 고정 경로와 같거나 그 아래인 고정 경로, 직무 glob 이 `**` 이거나 `<고정 접두사>/**` 일 때 고정 접두사가 그것으로 시작하는 glob·경로만 안으로 본다. 와일드카드 없는 경로는 git pathspec 처럼 그 아래 전체를 뜻하므로 `src/a.py` 는 `src/*.py` 안이 아니다. 판단할 수 없으면 거부한다(`plan check`, `start` 가 exit 2). owns 값에는 `[ ] { } , \`, 빈·`.`·`..` 마디, 앞뒤 `/`, 마디 일부인 `**` 를 쓰지 않는다(git 과 다르게 읽히거나 front matter 에서 갈라진다. 어기면 `plan check`·`task new`·사양 검사·설정 검사가 거부한다).
 ```
 
@@ -1160,7 +1420,7 @@ args = ["--disable=hooks",
 
 ```markdown
 3. `hteam scaffold --description-file <임시 파일>`: `.herdr-team/` 일체(설정, 직무 문서, 코디네이터 사용법, 디자인 규칙, shim, `project.md`, `tasks/`), `CLAUDE.md` 에 `<!-- herdr-team -->` 절(메인 규칙, 역할 판별 안내), `AGENTS.md` 에 같은 표시의 절(Codex 워커·리뷰어 규칙), `.gitignore` 에 `.herdr-team/state/`. 있는 파일은 덮어쓰지 않는다(`CLAUDE.md`·`AGENTS.md`·`.gitignore` 는 덧붙이기만 한다). `state/plugin-root` 를 만들고, `state/setup-done` 이 없을 때만 `state/setup-mode` 를 만든다(출력 `setup_mode`). 세팅을 마친 프로젝트를 다시 세팅하려면 `state/setup-done` 을 지우고 scaffold 를 다시 한다.
-4. 판단이 필요한 한 단계: 표 하나로 제안하고 AskUserQuestion 한 번으로 승인받는다. 직무별 owns, 추가 직무, 필요한 도구(Chrome DevTools MCP 등), Claude 권한 모드(`[agents.claude].args`. bypass 는 사람 없이 돌 때 필요하지만 워커가 사용자 자격 증명을 그대로 쓴다는 위험을 적는다), Codex 권한(`[agents.codex].args` 의 `--dangerously-bypass-approvals-and-sandbox`: Codex 워커·리뷰어가 샌드박스·승인 없이 돌아 리뷰어가 chrome-devtools 로 화면을 렌더하고 개발 서버를 띄울 수 있다. 위험: 사용자 권한·자격 증명·네트워크를 그대로 쓴다, 리뷰어가 읽는 워커 코드·웹 페이지의 글이 명령을 실행시킬 수 있다, 저장소 밖 변경은 변조 검사가 잡지 못한다. 승인하지 않으면 리뷰어는 화면을 코드로만 본다).
+4. 판단이 필요한 한 단계: 표 하나로 제안하고 AskUserQuestion 한 번으로 승인받는다. 직무별 owns, 추가 직무, 필요한 도구(Chrome DevTools MCP 등), Claude 권한 모드(`[agents.claude].args`. bypass 는 사람 없이 돌 때 필요하지만 워커가 사용자 자격 증명을 그대로 쓴다는 위험을 적는다), Codex 권한(`[agents.codex].args` 의 `--dangerously-bypass-approvals-and-sandbox`: Codex 워커·리뷰어가 샌드박스·승인 없이 돌아 리뷰어가 chrome-devtools 로 화면을 렌더하고 개발 서버를 띄울 수 있다. 위험: 사용자 권한·자격 증명·네트워크를 그대로 쓴다, 리뷰어가 읽는 워커 코드·웹 페이지의 글이 명령을 실행시킬 수 있다, 저장소 밖 변경은 변조 검사가 잡지 못한다, 사용자 Codex 설정의 다른 MCP 서버도 승인 없이 쓸 수 있다(hteam 은 같은 일을 하는 `chrome-devtools` 만 끄고 다른 이름은 범위 밖이다). 승인하지 않으면 리뷰어는 화면을 코드로만 본다).
 5. `hteam up --wait-run 180` 과 백그라운드 `hteam watch`.
 ```
 
@@ -1174,7 +1434,7 @@ Python 3.11 이상, git(없으면 `git init` 과 빈 커밋을 권함), `horch` 
 
 ```markdown
 
-Python 3.11 이상, git(없으면 `git init` 과 빈 커밋을 권함), `horch` 찾기와 `horch doctor`(hc·herdr-app 포함), 이 터미널이 Herdr 터미널인가(`$HC_TERMINAL_ID`), `claude` 존재, `codex` 존재와 `codex login status`, Codex 래퍼 실행 가능, `codex features` 의 `image_generation`(경고만), Chrome DevTools MCP 설정 여부(경고만), Codex 리뷰어의 브라우저(`codex_browser`, 경고만: 설정의 `[agents.codex].args` 에 `hteam-browser` 정의(`mcp_servers.hteam-browser=` 또는 `mcp_servers.hteam-browser.`)가 없거나, 있는데 `npx` 가 PATH 에 없거나, 샌드박스·승인 우회가 없어 도구 호출이 거부될 때).
+Python 3.11 이상, git(없으면 `git init` 과 빈 커밋을 권함), `horch` 찾기와 `horch doctor`(hc·herdr-app 포함), 이 터미널이 Herdr 터미널인가(`$HC_TERMINAL_ID`), `claude` 존재, `codex` 존재와 `codex login status`, Codex 래퍼 실행 가능, `codex features` 의 `image_generation`(경고만), Chrome DevTools MCP 설정 여부(경고만), Codex 리뷰어의 브라우저(`codex_browser`, 경고만: 설정의 `[agents.codex].args` 에 `hteam-browser` 정의(`mcp_servers.hteam-browser=` 또는 `mcp_servers.hteam-browser.`)가 없거나, 있는데 `npx` 가 PATH 에 없거나, 샌드박스·승인 우회가 없어 도구 호출이 거부될 때). doctor 는 사용자 Codex 의 MCP 서버를 조회하지 않는다: 디스패치가 띄울 때 `chrome-devtools` 만 읽기 전용으로 보고 끈다(14장). 우회를 승인하면 사용자 Codex 설정의 다른 MCP 서버도 승인 없이 쓸 수 있다(범위 밖).
 
 ```
 
@@ -1187,7 +1447,7 @@ Python 3.11 이상, git(없으면 `git init` 과 빈 커밋을 권함), `horch` 
 
 ```markdown
 - 워커는 사람 없이 돈다. 권한 우회(`[agents.claude].args` 의 bypass, Codex 샌드박스 우회)를 넣으면 워커가 사용자의 git·클라우드 자격 증명과 셸 환경을 그대로 쓴다. init 이 위험을 적고 승인받았을 때만 넣는다.
-- Codex 샌드박스·승인 우회(`--dangerously-bypass-approvals-and-sandbox`)를 넣으면 Codex 리뷰어가 chrome-devtools 로 아무 URL(http(s) 포함)을 열 수 있고 페이지의 스크립트·요청이 돈다. 리뷰어가 읽는 워커 코드·웹 페이지의 글이 명령을 실행시킬 수 있고(프롬프트 주입), 저장소 밖 변경은 변조 검사가 잡지 못한다. 그래서 기본에 넣지 않고 init 이 승인받는다. 리뷰어의 브라우저 서버(`hteam-browser`)는 `--isolated=true`(임시 프로필)·`--headless=true` 로 정의해 사용자 Chrome 의 쿠키·로그인을 쓰지 않는다(사용자·플러그인이 따로 정의한 브라우저 서버는 리뷰어 프롬프트가 쓰지 말라고 한다. 실수 방지일 뿐이다). 첫 실행에 npm 패키지를 내려받는다(버전 고정 `chrome-devtools-mcp@1.10.1`).
+- Codex 샌드박스·승인 우회(`--dangerously-bypass-approvals-and-sandbox`)를 넣으면 Codex 리뷰어가 chrome-devtools 로 아무 URL(http(s) 포함)을 열 수 있고 페이지의 스크립트·요청이 돈다. 리뷰어가 읽는 워커 코드·웹 페이지의 글이 명령을 실행시킬 수 있고(프롬프트 주입), 저장소 밖 변경은 변조 검사가 잡지 못한다. 그래서 기본에 넣지 않고 init 이 승인받는다. 리뷰어의 브라우저 서버(`hteam-browser`)는 `--isolated=true`(임시 프로필)·`--headless=true` 로 정의해 사용자 Chrome 의 쿠키·로그인을 쓰지 않는다. 사용자·플러그인의 같은 일을 하는 `chrome-devtools`(이 환경에서는 격리하지 않은 고정 프로필)는 hteam 이 띄우는 codex(디스패치의 워커·리뷰어 fresh·retry, 이미지)에서만 끈다: agent 가 codex 이고 args 에 `hteam-browser` 정의가 있을 때 읽기 전용 `codex mcp get chrome-devtools --json`(프로세스 안에서 한 번, 15초 상한)으로 보고, 켜져 있으면 정의를 통째로(transport 키 하나 + `enabled=false`) args 뒤에 더한다. 조회 실패·시간 초과·codex 없음이면 끄지 않고 warnings 에 남긴다(디스패치를 막지 않는다). 우회를 승인하면 사용자 Codex 설정의 다른 MCP 서버도 승인 없이 쓸 수 있다. hteam 은 같은 일을 하는 `chrome-devtools` 만 끄고 다른 이름은 범위 밖이다. 리뷰어 프롬프트는 `hteam-browser` 만 쓰라고 한다(실수 방지). 첫 실행에 npm 패키지를 내려받는다(버전 고정 `chrome-devtools-mcp@1.10.1`).
 - 이미지 생성의 `codex exec` 는 orca-team 과 같이 샌드박스 우회로 돈다(`image_gen` 결과 파일을 읽으려고). 프롬프트는 이미지 생성만 하게 하고, 결과 파일만 복사한다.
 ```
 
@@ -1197,15 +1457,17 @@ Python 3.11 이상, git(없으면 `git init` 과 빈 커밋을 권함), `horch` 
 ```bash
 git grep -n -I -P '/[U]sers/|/private/[t]mp|~[/]Workspace' -- . ':!.codex-reviews' || true
 git add -- herdr-team/templates/review-design.md herdr-team/templates/review-prompt.md herdr-team/lib/hteam/compose.py \
-  herdr-team/lib/hteam/config.py herdr-team/templates/config.toml herdr-team/lib/hteam/setup.py \
-  herdr-team/skills/init/SKILL.md herdr-team/tests/test_review.py herdr-team/tests/test_setup.py \
+  herdr-team/lib/hteam/config.py herdr-team/lib/hteam/browser.py herdr-team/lib/hteam/dispatch.py \
+  herdr-team/templates/config.toml herdr-team/lib/hteam/setup.py herdr-team/skills/init/SKILL.md \
+  herdr-team/tests/test_review.py herdr-team/tests/test_setup.py herdr-team/tests/test_start.py \
   docs/superpowers/specs/2026-11-05-herdr-team-design.md
-git commit -m "feat(herdr-team): 리뷰 디자인 절, Codex 리뷰어의 브라우저 서버(hteam-browser) 정의와 codex_browser 점검
+git commit -m "feat(herdr-team): 리뷰 디자인 절, Codex 리뷰어의 브라우저 서버(hteam-browser) 정의, 사용자 chrome-devtools 끄기, codex_browser 점검
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/templates/review-design.md \
   herdr-team/templates/review-prompt.md herdr-team/lib/hteam/compose.py herdr-team/lib/hteam/config.py \
-  herdr-team/templates/config.toml herdr-team/lib/hteam/setup.py herdr-team/skills/init/SKILL.md \
-  herdr-team/tests/test_review.py herdr-team/tests/test_setup.py docs/superpowers/specs/2026-11-05-herdr-team-design.md
+  herdr-team/lib/hteam/browser.py herdr-team/lib/hteam/dispatch.py herdr-team/templates/config.toml \
+  herdr-team/lib/hteam/setup.py herdr-team/skills/init/SKILL.md herdr-team/tests/test_review.py \
+  herdr-team/tests/test_setup.py herdr-team/tests/test_start.py docs/superpowers/specs/2026-11-05-herdr-team-design.md
 ```
 
 Expected: `git grep` 출력 없음, 커밋 성공. 구현자는 여기서 멈춘다.
@@ -1217,7 +1479,7 @@ Expected: `git grep` 출력 없음, 커밋 성공. 구현자는 여기서 멈춘
 
 `hteam image` 는 이미지마다 실행 폴더 하나(저장소 밖 캐시)와 래퍼 호출 하나를 쓴다. 래퍼는 `--timeout` + `GRACE`(30초, `HTEAM_IMAGE_GRACE`. 래퍼 자신의 여유는 버전 조회 10초 + 그룹 정리 5초 + 감시 주기다) 안에 끝나야 한다(넘기면 TERM, `STOP_WAIT` 15초 뒤 KILL, 그 이미지의 실패). 결과는 `result.txt` 마지막 줄의 일반 파일만 받는다(심볼릭 링크면 실패). 읽을 때도 `O_NOFOLLOW|O_NONBLOCK` 으로 열고 `fstat` 으로 일반 파일인지 다시 본다(검사 뒤 FIFO 로 바뀌어도 열기에서 기다리지 않고 실패한다. 옛 계획은 시간 제한 밖에서 영원히 멈출 수 있었다). PNG 는 모든 청크의 길이·CRC 를 `IEND` 까지 확인하고(첫 청크 `IHDR`, `IDAT` 하나 이상), 이은 `IDAT` 를 풀어 그 길이가 `IHDR`(너비·높이·비트 깊이·색 형식·인터레이스, `image.raw_size`)로 계산한 길이와 같아야 PNG 로 본다(CRC 만 맞고 풀리지 않는 PNG 를 성공으로 게시하던 것, Codex 계획 r2). 아니면 실행 폴더에서 `sips` 로 PNG 로 다시 쓰고, 그래도 아니면 그 이미지의 실패다(복사하지 않는다). `--transparent` 인데 투명이 빠졌으면 네 모서리 색을 크로마키로 지운다(8비트 RGB·RGBA PNG 를 zlib·struct 로 직접 읽고 쓴다. 바이트에서 하고 게시한 파일을 다시 쓰지 않는다). `--out` 경로가 심볼릭 링크면(프로젝트 안이면 루트 아래 모든 단계, 밖이면 마지막 폴더) 사용 오류다. 검사한 뒤 그 폴더를 `O_DIRECTORY|O_NOFOLLOW` 로 열어 fd 를 쥐고, 게시는 모두 그 fd 기준이다: 같은 폴더의 새 임시 파일(`os.open(이름, O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW, 0o666, dir_fd=…)`, 이름이 있으면 다음 번호)에 다 쓰고 `os.link(…, src_dir_fd=…, dst_dir_fd=…, follow_symlinks=False)` 로 게시한 뒤 임시 파일을 `os.unlink(…, dir_fd=…)` 로 지운다. 이미 있는 이름은 끊어진 링크까지 `FileExistsError` 라 덮어쓰지도 따라가지도 않고 `-v2` … 로 간다(병렬 실행도 같은 이름을 잡지 않는다). 실행 중 폴더 이름이 링크로 바뀌어도 그 폴더에 쓴다. 이미지 codex 는 샌드박스 밖에서 돌아 무엇이든 바꿀 수 있으므로 실행 중 바꿔치기는 위협 모델 밖이다(설계 14장. fd 고정은 실수 방지다, Codex 계획 r2 P1). `dir_fd` 를 받지 않는 플랫폼이면 그 이미지의 실패다. 이미지 하나의 예상 가능한 오류(`OSError`, 변환 시간 초과 등 `SubprocessError`, `ValueError`, `zlib.error`, `struct.error`)는 그 이미지의 실패로 모으고 나머지를 계속한다. 중단(`KeyboardInterrupt`)이면 래퍼를 끝내고 지금까지의 결과를 exit 1 `image_interrupted` 로 낸다. 실행 중 래퍼가 exit 12(codex 없음)면 `codex_missing`(exit 12) 그대로 멈추되 지금까지의 결과(`images`·`count`·`out`)를 붙이고 남은 이미지는 하지 않는다(옛 계획은 앞서 만든 이미지 목록을 버렸다, Codex 계획 r2). 거절(`turn.failed`·`error`)과 실패는 자동으로 다시 하지 않는다. `--background` 는 스킬만 받는다(Bash 백그라운드로 돌릴지 정한다). 대신 `hteam image --timeout` 이 이미지 하나의 시간 제한이다. 스킬은 `--n 1` 만 포그라운드로 돌리고 `--timeout 450` 을 준다: 최악 시간 = 사전 점검 30 + 450 + `GRACE` 30 + `STOP_WAIT` 15 + sips 60 = 585초 ≤ Bash 600초. 두 장부터는 이 합이 600초를 넘을 수 있어 백그라운드다(옛 계획의 `540 / n` 은 이미지마다 붙는 여유를 빠뜨려 두 장이면 660초를 넘을 수 있었다, Codex 계획 r2).
 
-이미지 실행에 넘기는 `[agents.codex].args` 는 `image.codex_args` 로 거른다(사용자 결정: Q4 C 의 4번). Task 2 의 chrome-devtools 정의(`-c`·`--config` 의 `mcp_servers.…`)는 뺀다: 이미지에 브라우저가 필요 없고 npx 서버 시작을 이미지마다 치르지 않는다. 우회 플래그(`config.CODEX_BYPASS`)도 뺀다: 래퍼가 늘 붙이고, codex-cli 0.166 은 같은 플래그를 두 번 주면 `the argument '--dangerously-bypass-approvals-and-sandbox' cannot be used multiple times` 로 exit 2 다(`--yolo` 와 함께여도 같다). init 이 우회를 승인하면 이미지가 모두 실패했을 것이다. 사용자 Codex(설정·플러그인)에 같은 이름 `chrome-devtools` 서버가 켜져 있으면(사전 점검 뒤 읽기 전용 `codex mcp get chrome-devtools --json`) 이미지 실행에만 그 정의를 통째로 꺼서 준다: transport 키 하나와 `enabled=false`(`{command="npx",enabled=false}` 또는 `{url="…",enabled=false}`, `image.browser_off`). 일부 키만(`.enabled=false`) 주면 플러그인 정의에서 `invalid transport`, url 정의에 command 를 주면 `url is not supported for stdio` 로 codex 가 시작하지 못한다(임시 `CODEX_HOME` 의 url·stdio 정의와 사용자 환경의 플러그인 정의에서 읽기 전용으로 확인했다). 조회가 실패하면(정의 없음) 아무것도 더하지 않는다. 다른 이름의 사용자 서버는 범위 밖이다(설계 12장).
+이미지 실행에 넘기는 `[agents.codex].args` 는 `image.codex_args` 로 거른다(사용자 결정: Q4 C 의 4번). Task 2 의 chrome-devtools 정의(`-c`·`--config` 의 `mcp_servers.…`)는 뺀다: 이미지에 브라우저가 필요 없고 npx 서버 시작을 이미지마다 치르지 않는다. 우회 플래그(`config.CODEX_BYPASS`)도 뺀다: 래퍼가 늘 붙이고, codex-cli 0.166 은 같은 플래그를 두 번 주면 `the argument '--dangerously-bypass-approvals-and-sandbox' cannot be used multiple times` 로 exit 2 다(`--yolo` 와 함께여도 같다). init 이 우회를 승인하면 이미지가 모두 실패했을 것이다. 사용자 Codex(설정·플러그인)에 같은 이름 `chrome-devtools` 서버가 켜져 있으면(사전 점검 뒤 읽기 전용 `codex mcp get chrome-devtools --json`) 이미지 실행에만 그 정의를 통째로 꺼서 준다: transport 키 하나와 `enabled=false`(`{command="npx",enabled=false}` 또는 `{url="…",enabled=false}`, Task 2 의 `browser.user_off` 를 디스패치와 함께 쓴다. 확인하지 못하면 끄지 않고 결과 `warnings` 에 남긴다). 일부 키만(`.enabled=false`) 주면 플러그인 정의에서 `invalid transport`, url 정의에 command 를 주면 `url is not supported for stdio` 로 codex 가 시작하지 못한다(임시 `CODEX_HOME` 의 url·stdio 정의와 사용자 환경의 플러그인 정의에서 읽기 전용으로 확인했다). 조회가 실패하면(정의 없음) 아무것도 더하지 않는다. 다른 이름의 사용자 서버는 범위 밖이다(설계 12장).
 
 래퍼 테스트는 시스템 전체(`pgrep`)를 보지 않는다. 가짜 codex 가 자기 PID·PGID·자식 PID 를 파일에 쓰고(파일이 생기면 준비 신호), 테스트는 `os.killpg(pgid, 0)` 로 그 그룹만 끝났는지 본다. 시간 판정은 여유 있는 값으로 흔들리지 않게 한다: 진행 신호 없음은 heartbeat 2초·timeout 60초, 시간 초과는 0.5초마다 이벤트를 내며 heartbeat 6초·timeout 8초. PATH 의 가짜 `codex` 는 셸 대역이다: 멈추는 `--version` 은 셸이 바로 준비 신호를 쓰고 멈추며(파이썬 시작을 기다리지 않는다) 나머지는 파이썬 대역을 exec 한다. 버전 조회 시험은 준비 신호를 본 뒤부터 잰다(옛 계획은 파이썬 시작이 1초 대기보다 길면 준비 전에 끝나 흔들렸다, Codex 계획 r2. 1.5초 늦게 시작하는 대역으로 재현했다).
 
@@ -1227,11 +1489,11 @@ Expected: `git grep` 출력 없음, 커밋 성공. 구현자는 여기서 멈춘
 - Test: `herdr-team/tests/test_image.py`(새로), `herdr-team/tests/test_setup.py`(`DoctorTest`, `ReviewFixDoctorTest`)
 
 **Interfaces:**
-- Consumes: `config.load(p)`, `Config.image_choice() -> (model, effort)`, `Config.args("codex")`(기존), Task 2 의 `config.CODEX_BYPASS`, `paths.PLUGIN_ROOT`, `paths.TEMPLATES`, `util.fill`, `util.write_atomic`
+- Consumes: `config.load(p)`, `Config.image_choice() -> (model, effort)`, `Config.args("codex")`(기존), Task 2 의 `config.CODEX_BYPASS`·`browser.user_off(root)`, `paths.PLUGIN_ROOT`, `paths.TEMPLATES`, `util.fill`, `util.write_atomic`
 - Produces:
   - `scripts/codex-run.sh --profile image --prompt-file F --run-dir D [--cwd C] [--model M] [--effort E] [--image F]... [--codex-arg=A]... [--timeout S] [--heartbeat S]`: 실행 폴더에 `result.txt`, `events.jsonl`, `progress.log`, `status.json`. exit 0·10·11·12·1·2·130. 환경 `HTEAM_CODEX_VERSION_WAIT`(초, 기본 10)
-  - `image.WRAPPER`(Path), `image.N_MAX = 8`, `image.PNG_SIG`, `image.GRACE = 30`, `image.STOP_WAIT = 15`, `image.USER_BROWSER = "chrome-devtools"`, `image.preflight()`, `image.browser_off(root) -> list[str]`, `image.slug(prompt)`, `image.codex_args(args) -> list[str]`, `image.raw_size(w, h, depth, ctype, interlace) -> int | None`, `image.png_info(data: bytes) -> (w, h, depth, ctype) | None`(풀린 IDAT 길이까지), `image.read_rgba(data) -> (w, h, bytearray) | None`, `image.write_rgba(w, h, rgba) -> bytes`, `image._paeth(a, b, c)`, `image.transparency(data: bytes) -> (방식, bytes)`(방식 `"native" | "chroma" | "unsupported" | "no_key"`), `image.out_folder(p, out) -> Path`, `image.open_out(folder) -> int`, `image._publish(data, dfd, stem) -> 이름`, `image._read(src) -> bytes`, `image.one(..., out, dfd, ..., extra)`, `image.image(...)`
-  - 명령 `hteam image [--n N] [--out DIR] [--ar W:H] [--transparent] [--ref F]... [--timeout S] -- <프롬프트>` → `{"images": [{"i", "status": "ok"|"refused"|"failed", "path", "source", "width", "height", "alpha", "transparent", "run_dir", "exit", "terminal_event", "warnings", "reason", "result", "progress"}], "count", "out", "hint"}`. 하나라도 못 만들면 exit 1 `image_failed`, 중단이면 exit 1 `image_interrupted`, 실행 중 codex 가 없어지면 exit 12 `codex_missing`(셋 다 같은 data). codex·image_generation·래퍼가 없으면 exit 12(`codex_missing`·`no_image_generation`·`wrapper_missing`), 인자 오류(`--out` 의 심볼릭 링크 포함) exit 2. 환경 `HTEAM_IMAGE_GRACE`(초)
+  - `image.WRAPPER`(Path), `image.N_MAX = 8`, `image.PNG_SIG`, `image.GRACE = 30`, `image.STOP_WAIT = 15`, `image.preflight()`, `image.slug(prompt)`, `image.codex_args(args) -> list[str]`, `image.raw_size(w, h, depth, ctype, interlace) -> int | None`, `image.png_info(data: bytes) -> (w, h, depth, ctype) | None`(풀린 IDAT 길이까지), `image.read_rgba(data) -> (w, h, bytearray) | None`, `image.write_rgba(w, h, rgba) -> bytes`, `image._paeth(a, b, c)`, `image.transparency(data: bytes) -> (방식, bytes)`(방식 `"native" | "chroma" | "unsupported" | "no_key"`), `image.out_folder(p, out) -> Path`, `image.open_out(folder) -> int`, `image._publish(data, dfd, stem) -> 이름`, `image._read(src) -> bytes`, `image.one(..., out, dfd, ..., extra)`, `image.image(...)`
+  - 명령 `hteam image [--n N] [--out DIR] [--ar W:H] [--transparent] [--ref F]... [--timeout S] -- <프롬프트>` → `{"images": [{"i", "status": "ok"|"refused"|"failed", "path", "source", "width", "height", "alpha", "transparent", "run_dir", "exit", "terminal_event", "warnings", "reason", "result", "progress"}], "count", "out", "warnings", "hint"}`(최상위 `warnings` 는 사용자 `chrome-devtools` 를 확인하지 못했을 때의 경고). 하나라도 못 만들면 exit 1 `image_failed`, 중단이면 exit 1 `image_interrupted`, 실행 중 codex 가 없어지면 exit 12 `codex_missing`(셋 다 같은 data). codex·image_generation·래퍼가 없으면 exit 12(`codex_missing`·`no_image_generation`·`wrapper_missing`), 인자 오류(`--out` 의 심볼릭 링크 포함) exit 2. 환경 `HTEAM_IMAGE_GRACE`(초)
   - doctor 의 `codex_wrapper` 점검(오류 단계), 스킬 `/herdr-team:image`
 
 - [ ] **Step 1: 실패하는 테스트 작성**
@@ -1818,6 +2080,8 @@ class PublishTest(unittest.TestCase):
 class ImageLoopTest(TeamCase):
     """이미지 하나의 예상 가능한 오류는 그 이미지의 실패다. 앞의 결과를 지키고 나머지를 계속한다(설계 12장)."""
 
+    warn = None
+
     def setUp(self):
         super().setUp()
         self.init_project()
@@ -1826,7 +2090,7 @@ class ImageLoopTest(TeamCase):
     def run_image(self, effects):
         ok = {"status": "ok", "path": str(self.proj / "assets/a.png"), "warnings": []}
         side = [dict(ok, i=n + 1) if e == "ok" else e for n, e in enumerate(effects)]
-        with mock.patch.object(image, "preflight"), mock.patch.object(image, "browser_off", return_value=[]), \
+        with mock.patch.object(image, "preflight"), mock.patch.object(image.browser, "user_off", return_value=([], self.warn)), \
                 mock.patch.object(image, "one", side_effect=side) as one:
             try:
                 return image.image(self.p, "x", n=len(effects), out=str(self.proj / "assets"), ar=None,
@@ -1851,6 +2115,12 @@ class ImageLoopTest(TeamCase):
         self.assertEqual((exc.code, exc.exit_code, one.call_count), ("codex_missing", 12, 2))
         self.assertEqual(([x["status"] for x in exc.data["images"]], exc.data["count"]), (["ok"], 1))
         self.assertEqual(exc.data["out"], str(self.proj / "assets"))
+
+    def test_browser_query_warning_is_kept(self):
+        # 사용자 chrome-devtools 를 확인하지 못하면 끄지 않고 결과 warnings 에 남긴다(이미지는 계속 만든다)
+        self.warn = "사용자 Codex 의 chrome-devtools 서버를 확인하지 못해 끄지 않았다(시간 초과)"
+        result, one = self.run_image(["ok"])
+        self.assertEqual((result["count"], result["warnings"]), (1, [self.warn]))
 
     def test_interrupt_returns_what_was_made(self):
         exc, one = self.run_image(["ok", KeyboardInterrupt(), "ok"])
@@ -2229,8 +2499,8 @@ PNG 만). 다 된 바이트를 --out 폴더(검사한 뒤 fd 로 연다) 안 임
 `codex_missing` 에 지금까지의 결과를 붙여 멈춘다. 거절(turn.failed·error)과 실패는 자동으로 다시 하지 않는다(부른
 워커가 정한다).
 
-이 모듈은 codex 를 사전 점검(`codex features list`, 사용자 브라우저 서버 조회 `codex mcp get chrome-devtools --json`)과
-래퍼(scripts/codex-run.sh, `codex exec` 는 래퍼만 부른다)로만 부르고, PNG 가 아닌 결과를 바꿀 때만 `sips` 를 부른다. hc·horch·git 은 부르지 않는다. 실행 폴더는 저장소 밖(`${XDG_CACHE_HOME:-~/.cache}/herdr-team/images/<프로젝트 폴더 이름>/`)이다(codex 출력이 그대로
+이 모듈은 codex 를 사전 점검(`codex features list`)과 래퍼(scripts/codex-run.sh, `codex exec` 는 래퍼만 부른다)로만
+부르고(사용자 `chrome-devtools` 서버를 끌지는 디스패치와 같은 browser.user_off 가 정한다), PNG 가 아닌 결과를 바꿀 때만 `sips` 를 부른다. hc·horch·git 은 부르지 않는다. 실행 폴더는 저장소 밖(`${XDG_CACHE_HOME:-~/.cache}/herdr-team/images/<프로젝트 폴더 이름>/`)이다(codex 출력이 그대로
 담긴다).
 """
 from __future__ import annotations
@@ -2247,7 +2517,7 @@ import time
 import zlib
 from pathlib import Path
 
-from . import config
+from . import browser, config
 from .errors import FAIL, MISSING, USAGE, HteamError
 from .paths import PLUGIN_ROOT, TEMPLATES, find_project
 from .util import fill, write_atomic
@@ -2260,7 +2530,6 @@ AR_RE = re.compile(r"[1-9]\d{0,3}:[1-9]\d{0,3}")
 KEY_TOLERANCE = 40  # 크로마키: 모서리 색과 채널마다 이만큼 안이면 배경으로 본다
 GRACE = 30  # 래퍼 상한 = timeout + 이만큼(버전 조회 10초 + 그룹 정리 5초 + 감시 주기의 여유). HTEAM_IMAGE_GRACE 로 바꾼다
 STOP_WAIT = 15  # 상한을 넘긴 래퍼에 TERM 을 보낸 뒤 KILL 까지 기다리는 초(래퍼의 trap 이 codex 그룹을 끝낼 시간)
-USER_BROWSER = "chrome-devtools"  # 사용자·플러그인이 흔히 쓰는 브라우저 서버 이름. 이미지 실행에서만 끈다(설계 12장)
 CHANNELS = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}  # PNG 색 형식 → 채널 수
 DEPTHS = {0: (1, 2, 4, 8, 16), 2: (8, 16), 3: (1, 2, 4, 8), 4: (8, 16), 6: (8, 16)}
 ADAM7 = ((0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8), (2, 0, 4, 4), (0, 2, 2, 4), (1, 0, 2, 2), (0, 1, 1, 2))  # (x0, y0, dx, dy)
@@ -2320,27 +2589,6 @@ def codex_args(args: list[str]) -> list[str]:
             out.append(a)
         i += 1
     return out
-
-
-def browser_off(root: Path) -> list[str]:
-    """사용자 Codex(설정·플러그인)에 USER_BROWSER 서버가 켜져 있으면 이미지 실행에서만 끄는 `-c` 한 쌍, 아니면 빈 목록.
-    정의를 통째로(그 서버의 transport 키 하나 + enabled=false) 준다: 일부 키만 주면 플러그인 정의에 `invalid transport`,
-    url 정의에 command 를 주면 `url is not supported for stdio` 로 codex 가 시작하지 못한다(codex-cli 0.166). 조회가
-    실패하거나 모르는 transport 면 아무것도 더하지 않는다. 다른 이름의 사용자 서버는 건드리지 않는다(설계 12장)."""
-    try:
-        proc = subprocess.run(["codex", "mcp", "get", USER_BROWSER, "--json"], capture_output=True, text=True,
-                              timeout=30, stdin=subprocess.DEVNULL, cwd=root)
-        info = json.loads(proc.stdout) if proc.returncode == 0 else None
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return []
-    if not isinstance(info, dict) or info.get("enabled") is not True or not isinstance(info.get("transport"), dict):
-        return []
-    kind = info["transport"].get("type")
-    key = {"stdio": "command", "streamable_http": "url"}.get(kind)
-    value = info["transport"].get(key) if key else None
-    if not isinstance(value, str) or not value:
-        return []
-    return ["-c", f"mcp_servers.{USER_BROWSER}={{{key}={json.dumps(value, ensure_ascii=False)},enabled=false}}"]
 
 
 def raw_size(width: int, height: int, depth: int, ctype: int, interlace: int) -> int | None:
@@ -2608,7 +2856,7 @@ def _run(argv: list[str], limit: int) -> tuple[int | None, str, bool]:
 def one(p, cfg, prompt: str, *, i: int, out: Path, dfd: int, ar, transparent: bool, refs: list[str], timeout: int,
         extra: list[str] = ()) -> dict:
     """이미지 하나: 실행 폴더, 프롬프트 파일, 래퍼 한 번(상한 timeout + 여유), 결과 검사·게시(out 의 fd dfd 기준).
-    extra 는 [agents.codex].args 뒤에 붙일 Codex 인자다(browser_off)."""
+    extra 는 [agents.codex].args 뒤에 붙일 Codex 인자다(browser.user_off)."""
     name = slug(prompt)
     folder = run_dir(p, name, i)
     folder.mkdir(parents=True, exist_ok=True)
@@ -2683,8 +2931,9 @@ def out_folder(p, out: str) -> Path:
     return folder
 
 
-def _summary(items: list[dict], folder: Path) -> dict:
+def _summary(items: list[dict], folder: Path, warnings: list[str] = ()) -> dict:
     return {"images": items, "count": sum(x["status"] == "ok" for x in items), "out": str(folder),
+            "warnings": list(warnings),
             "hint": "Read 로 이미지를 직접 열어 보고 채택한 파일만 커밋한다. 거절·실패는 자동으로 다시 하지 않았다"}
 
 
@@ -2710,7 +2959,8 @@ def image(p, prompt: str, *, n: int, out: str, ar: str | None, transparent: bool
     except OSError as exc:
         raise HteamError("usage", f"--out 폴더를 만들거나 열 수 없다: {exc}", USAGE) from None
     try:
-        extra = browser_off(p.root)
+        extra, warning = browser.user_off(p.root)  # 사용자 chrome-devtools 를 이미지 실행에서만 끈다(조회 실패면 경고만)
+        notes = [warning] if warning else []
         refs = [str(Path(r).resolve()) for r in refs]
         items: list[dict] = []
         for i in range(1, n + 1):
@@ -2720,16 +2970,16 @@ def image(p, prompt: str, *, n: int, out: str, ar: str | None, transparent: bool
             except KeyboardInterrupt:
                 raise HteamError("image_interrupted", f"중단했다(이미지 {n}개 가운데 {i - 1}개까지 끝냈다)", FAIL,
                                  "images 에 끝낸 것까지 있다. 남은 것은 다시 부른다",
-                                 data=_summary(items, folder)) from None
+                                 data=_summary(items, folder, notes)) from None
             except HteamError as exc:  # 실행 중 codex 가 없어졌다 등: 그 오류 그대로 멈추되 지금까지의 결과를 붙인다
-                exc.data = {**exc.data, **_summary(items, folder)}
+                exc.data = {**exc.data, **_summary(items, folder, notes)}
                 raise
             except (OSError, subprocess.SubprocessError, ValueError, zlib.error, struct.error) as exc:
                 items.append({"i": i, "status": "failed", "path": None, "warnings": [],
                               "reason": f"이미지 처리 중 오류: {type(exc).__name__}: {exc}"})
     finally:
         os.close(dfd)
-    result = _summary(items, folder)
+    result = _summary(items, folder, notes)
     if result["count"] < n:
         raise HteamError("image_failed", f"이미지 {n}개 가운데 {n - result['count']}개를 만들지 못했다", FAIL,
                          "items 의 reason·progress 를 본다. 거절이면 프롬프트를 바꾼다. 시간 초과·멈춤은 한 번 다시 해 볼 수 있다",
@@ -2774,14 +3024,14 @@ def register(sub) -> None:
 
 ```python
 
-from . import config, coord, gitio, herdr, outbox, roles
-from .errors import CONFLICT, DENIED, FAIL, TIMEOUT, USAGE, HteamError
+from . import browser, config, coord, gitio, herdr, outbox, roles
+from .browser import BROWSER_SERVER
 ```
 
 ```python
 
-from . import config, coord, gitio, herdr, image, outbox, roles
-from .errors import CONFLICT, DENIED, FAIL, TIMEOUT, USAGE, HteamError
+from . import browser, config, coord, gitio, herdr, image, outbox, roles
+from .browser import BROWSER_SERVER
 ```
 
 **Edit** `herdr-team/lib/hteam/setup.py`
@@ -2900,7 +3150,7 @@ Expected: OK(약 1분. 시간 초과·진행 신호 없음·버전 조회·중�
 ```markdown
 - 디자인 워커(Claude)가 자기 pane 에서 부른다. 직무가 아니고 pane 도 따로 띄우지 않는다. Codex 가 만들고 부른 Claude 가 결과를 보고 검토한다.
 - 인자: `--n 1–8`, `--out <폴더>`(기본 `./generated/`), `--ar`, `--transparent`, `--ref <이미지>`, `--background`, 프롬프트. `--background` 는 스킬만 받는다(Bash 백그라운드로 돌릴지 정한다). `hteam image` 는 대신 `--timeout <초>`(이미지 하나의 시간 제한, 기본 900)를 받는다. 스킬은 `--n 1` 만 포그라운드로 돌리고 `--timeout 450` 을 준다: 최악 시간 = 사전 점검 30 + `--timeout` 450 + 래퍼 여유 30 + TERM 뒤 KILL 까지 15 + PNG 변환 60 = 585초로 Bash 최대 600초 안에 든다. 두 장부터는 이 합이 600초를 넘을 수 있어 백그라운드다.
-- 사전 점검: `codex features` 의 `image_generation`. 없으면 exit 12. 그다음 사용자 Codex(설정·플러그인)의 `chrome-devtools` 서버를 `codex mcp get chrome-devtools --json` 으로 본다(읽기만 한다).
+- 사전 점검: `codex features` 의 `image_generation`. 없으면 exit 12. 그다음 사용자 Codex(설정·플러그인)의 `chrome-devtools` 서버를 `codex mcp get chrome-devtools --json` 으로 본다(읽기만 한다. 디스패치와 같은 조회, 14장). 확인하지 못하면(실패·시간 초과·codex 없음) 끄지 않고 결과 `warnings` 에 남긴다.
 - 이미지마다 실행 폴더 하나(저장소 밖 `${XDG_CACHE_HOME:-~/.cache}/herdr-team/images/<프로젝트 폴더 이름>/`, codex 출력이 그대로 담긴다), 호출 하나에 이미지 하나. `scripts/codex-run.sh --profile image` 로 `codex exec` 를 부른다. 프롬프트(`templates/image-prompt.md`)는 Codex 내장 `image_gen` 도구를 쓰고 마지막 줄에 PNG 절대 경로를 쓰게 한다.
 - Codex 인자: `[agents.codex].args` 에서 MCP 서버 정의(`-c`·`--config` 의 `mcp_servers.…`)와 샌드박스·승인 우회 플래그를 빼고 넘긴다. 이미지에 브라우저가 필요 없고 서버 시작을 이미지마다 치르지 않는다. 우회 플래그는 래퍼가 늘 붙이므로 두 번 주면 `codex exec` 가 exit 2 로 끝난다. 사용자 Codex 의 `chrome-devtools` 가 켜져 있으면 이미지 실행에만 그 정의를 통째로 꺼서 준다(`-c mcp_servers.chrome-devtools={command=…,enabled=false}`, url 정의면 `{url=…,enabled=false}`. 일부 키만 주면 플러그인 정의에 `invalid transport`, url 정의에 command 를 주면 `url is not supported for stdio` 로 codex 가 시작하지 못한다). 사용자 설정 파일은 고치지 않는다. 다른 이름의 사용자 MCP 서버는 이 계약의 범위 밖이다(이미지 실행에서도 그대로 뜬다).
 - 결과: `result.txt` 마지막 줄의 일반 파일만 받는다(심볼릭 링크면 그 이미지의 실패). 읽을 때도 링크를 따라가지 않고 막히지 않게 열어(`O_NOFOLLOW|O_NONBLOCK`) 일반 파일인지 다시 본다(FIFO 로 바뀌었으면 기다리지 않고 실패). PNG 는 모든 청크의 CRC 를 `IEND` 까지 확인하고(첫 청크 `IHDR`, `IDAT` 하나 이상), 이은 `IDAT` 가 zlib 으로 풀리고 풀린 길이가 `IHDR`(너비·높이·비트 깊이·색 형식·인터레이스)로 계산한 길이와 같아야 PNG 로 보고 크기·알파를 본다. 아니면 `sips` 로 PNG 로 다시 쓰고, 그래도 아니면 그 이미지의 실패다(복사하지 않는다). 다 된 바이트를 `--out` 폴더(검사한 뒤 fd 로 열어 둔다) 안 새 임시 파일에 쓰고 같은 fd 기준 하드 링크로 게시한다(실행 중 폴더 이름이 링크로 바뀌어도 그 폴더에 쓴다): 이미 있는 이름(끊어진 링크 포함)은 덮어쓰지도 따라가지도 않고 `-v2` 등으로 간다. `--out` 경로(프로젝트 안이면 루트 아래 모든 단계, 밖이면 마지막 폴더)가 심볼릭 링크면 사용 오류다. `--transparent` 인데 투명 배경이 빠졌으면 크로마키로 지운다: 프롬프트가 투명이 안 되면 배경을 `#00FF00` 한 색으로 칠하게 하고, 네 모서리 색이 같으면 그 색을 지운다(8비트 RGB·RGBA PNG). 판정은 `status.json` 의 `terminal_event` 가 먼저다: `turn.failed`·`error` 는 거절이고 자동으로 다시 시도하지 않는다. 다른 실패도 hteam 은 다시 하지 않는다(부른 워커가 한 번 다시 할지 정한다).
@@ -2928,13 +3178,13 @@ Expected: OK(약 1분. 시간 초과·진행 신호 없음·버전 조회·중�
 **Edit** `docs/superpowers/specs/2026-11-05-herdr-team-design.md`
 
 ```markdown
-- Codex 샌드박스·승인 우회(`--dangerously-bypass-approvals-and-sandbox`)를 넣으면 Codex 리뷰어가 chrome-devtools 로 아무 URL(http(s) 포함)을 열 수 있고 페이지의 스크립트·요청이 돈다. 리뷰어가 읽는 워커 코드·웹 페이지의 글이 명령을 실행시킬 수 있고(프롬프트 주입), 저장소 밖 변경은 변조 검사가 잡지 못한다. 그래서 기본에 넣지 않고 init 이 승인받는다. 리뷰어의 브라우저 서버(`hteam-browser`)는 `--isolated=true`(임시 프로필)·`--headless=true` 로 정의해 사용자 Chrome 의 쿠키·로그인을 쓰지 않는다(사용자·플러그인이 따로 정의한 브라우저 서버는 리뷰어 프롬프트가 쓰지 말라고 한다. 실수 방지일 뿐이다). 첫 실행에 npm 패키지를 내려받는다(버전 고정 `chrome-devtools-mcp@1.10.1`).
+- Codex 샌드박스·승인 우회(`--dangerously-bypass-approvals-and-sandbox`)를 넣으면 Codex 리뷰어가 chrome-devtools 로 아무 URL(http(s) 포함)을 열 수 있고 페이지의 스크립트·요청이 돈다. 리뷰어가 읽는 워커 코드·웹 페이지의 글이 명령을 실행시킬 수 있고(프롬프트 주입), 저장소 밖 변경은 변조 검사가 잡지 못한다. 그래서 기본에 넣지 않고 init 이 승인받는다. 리뷰어의 브라우저 서버(`hteam-browser`)는 `--isolated=true`(임시 프로필)·`--headless=true` 로 정의해 사용자 Chrome 의 쿠키·로그인을 쓰지 않는다. 사용자·플러그인의 같은 일을 하는 `chrome-devtools`(이 환경에서는 격리하지 않은 고정 프로필)는 hteam 이 띄우는 codex(디스패치의 워커·리뷰어 fresh·retry, 이미지)에서만 끈다: agent 가 codex 이고 args 에 `hteam-browser` 정의가 있을 때 읽기 전용 `codex mcp get chrome-devtools --json`(프로세스 안에서 한 번, 15초 상한)으로 보고, 켜져 있으면 정의를 통째로(transport 키 하나 + `enabled=false`) args 뒤에 더한다. 조회 실패·시간 초과·codex 없음이면 끄지 않고 warnings 에 남긴다(디스패치를 막지 않는다). 우회를 승인하면 사용자 Codex 설정의 다른 MCP 서버도 승인 없이 쓸 수 있다. hteam 은 같은 일을 하는 `chrome-devtools` 만 끄고 다른 이름은 범위 밖이다. 리뷰어 프롬프트는 `hteam-browser` 만 쓰라고 한다(실수 방지). 첫 실행에 npm 패키지를 내려받는다(버전 고정 `chrome-devtools-mcp@1.10.1`).
 - 이미지 생성의 `codex exec` 는 orca-team 과 같이 샌드박스 우회로 돈다(`image_gen` 결과 파일을 읽으려고). 프롬프트는 이미지 생성만 하게 하고, 결과 파일만 복사한다.
 - 리뷰어가 제품 파일을 고치면 변조 검사로 판정을 무효로 한다.
 ```
 
 ```markdown
-- Codex 샌드박스·승인 우회(`--dangerously-bypass-approvals-and-sandbox`)를 넣으면 Codex 리뷰어가 chrome-devtools 로 아무 URL(http(s) 포함)을 열 수 있고 페이지의 스크립트·요청이 돈다. 리뷰어가 읽는 워커 코드·웹 페이지의 글이 명령을 실행시킬 수 있고(프롬프트 주입), 저장소 밖 변경은 변조 검사가 잡지 못한다. 그래서 기본에 넣지 않고 init 이 승인받는다. 리뷰어의 브라우저 서버(`hteam-browser`)는 `--isolated=true`(임시 프로필)·`--headless=true` 로 정의해 사용자 Chrome 의 쿠키·로그인을 쓰지 않는다(사용자·플러그인이 따로 정의한 브라우저 서버는 리뷰어 프롬프트가 쓰지 말라고 한다. 실수 방지일 뿐이다). 첫 실행에 npm 패키지를 내려받는다(버전 고정 `chrome-devtools-mcp@1.10.1`).
+- Codex 샌드박스·승인 우회(`--dangerously-bypass-approvals-and-sandbox`)를 넣으면 Codex 리뷰어가 chrome-devtools 로 아무 URL(http(s) 포함)을 열 수 있고 페이지의 스크립트·요청이 돈다. 리뷰어가 읽는 워커 코드·웹 페이지의 글이 명령을 실행시킬 수 있고(프롬프트 주입), 저장소 밖 변경은 변조 검사가 잡지 못한다. 그래서 기본에 넣지 않고 init 이 승인받는다. 리뷰어의 브라우저 서버(`hteam-browser`)는 `--isolated=true`(임시 프로필)·`--headless=true` 로 정의해 사용자 Chrome 의 쿠키·로그인을 쓰지 않는다. 사용자·플러그인의 같은 일을 하는 `chrome-devtools`(이 환경에서는 격리하지 않은 고정 프로필)는 hteam 이 띄우는 codex(디스패치의 워커·리뷰어 fresh·retry, 이미지)에서만 끈다: agent 가 codex 이고 args 에 `hteam-browser` 정의가 있을 때 읽기 전용 `codex mcp get chrome-devtools --json`(프로세스 안에서 한 번, 15초 상한)으로 보고, 켜져 있으면 정의를 통째로(transport 키 하나 + `enabled=false`) args 뒤에 더한다. 조회 실패·시간 초과·codex 없음이면 끄지 않고 warnings 에 남긴다(디스패치를 막지 않는다). 우회를 승인하면 사용자 Codex 설정의 다른 MCP 서버도 승인 없이 쓸 수 있다. hteam 은 같은 일을 하는 `chrome-devtools` 만 끄고 다른 이름은 범위 밖이다. 리뷰어 프롬프트는 `hteam-browser` 만 쓰라고 한다(실수 방지). 첫 실행에 npm 패키지를 내려받는다(버전 고정 `chrome-devtools-mcp@1.10.1`).
 - 이미지 생성의 `codex exec` 는 orca-team 과 같이 샌드박스 우회로 돈다(`image_gen` 결과 파일을 읽으려고). 프롬프트는 이미지 생성만 하게 하고, 결과는 검사한 PNG 바이트만 `--out` 에 새 이름으로 게시한다(링크를 따라가지 않고 덮어쓰지 않는다). 그 codex 는 샌드박스 밖에서 돌아 실행 중 출력 폴더나 결과 파일을 바꿔치기할 수 있으므로 그런 경합은 위협 모델 밖이다. 폴더 fd 고정과 비차단 읽기는 실수(멈춤·잘못된 곳에 쓰기) 방지다.
 - 리뷰어가 제품 파일을 고치면 변조 검사로 판정을 무효로 한다.
 ```
@@ -6632,7 +6882,7 @@ Expected: OK. 서브모듈 밖(`vendor`, 어느 진행 중 태스크의 owns 아
 bash herdr-team/tests/run.sh && bash herdr-orch/tests/run.sh
 ```
 
-Expected: herdr-team 641개 안팎 OK, herdr-orch 203개 OK.
+Expected: herdr-team 646개 안팎 OK, herdr-orch 203개 OK.
 
 ```bash
 git grep -n -I -P '/[U]sers/|/private/[t]mp|~[/]Workspace' -- . ':!.codex-reviews' || true
@@ -6737,7 +6987,7 @@ Expected(설계 10장, 2단계와 같다): 기획자가 `ask-user` 로 한 번�
 
 Expected(설계 11.2·11.4·12장):
 - designer 가 `design_system_url` 의 시스템으로 화면을 만들고 보고서 `## r1` 에 `- 아티팩트:`·`- 화면:`·`- 디자인 시스템:` 줄과 `### 시스템 추가 제안`·`### 금지 목록 점검`·`### 확인한 화면`(글로만)을 둔다. 확인용 스크린숏이 어디에도 커밋되지 않았다(`git ls-files '*.png'` 이 `assets/` 밖에 없다). 보고서에 DevTools 출력 제목이 그대로 붙지 않았다. designer 리뷰어(Codex)도 디렉터 리뷰처럼 렌더했는지 본다.
-- 목록 화면 designer 가 `.herdr-team/bin/hteam image … --out assets/<화면> -- "<프롬프트>"` 로 실제 Codex image_gen 을 부른다. 출력의 `images[0].status` 가 `ok`, `assets/<화면>/*.png`, 실행 폴더 `~/.cache/herdr-team/images/repo/…/status.json` 의 `terminal_event` 가 `turn.completed`, 보고서 `### 이미지`. 실패·거절이면 출력 JSON 과 `progress.log` 를 기록한다(래퍼 계약을 실물로 확인하는 첫 실행이다. 실물 이벤트 이름이 `turn.completed` 가 아니면 결함으로 고친다). 설정에 우회 플래그가 있어도 exit 2(`cannot be used multiple times`)가 아니다(`image.codex_args` 가 빼고 래퍼가 한 번 붙인다). 이미지 실행이 브라우저 서버를 띄우지 않는다(`progress.log` 에 `hteam-browser`·`chrome-devtools` 서버 시작이 없다. 이 사용자 환경에는 플러그인이 준 `chrome-devtools` 가 있으므로 `image.browser_off` 가 이미지 실행에만 끈다).
+- 목록 화면 designer 가 `.herdr-team/bin/hteam image … --out assets/<화면> -- "<프롬프트>"` 로 실제 Codex image_gen 을 부른다. 출력의 `images[0].status` 가 `ok`, `assets/<화면>/*.png`, 실행 폴더 `~/.cache/herdr-team/images/repo/…/status.json` 의 `terminal_event` 가 `turn.completed`, 보고서 `### 이미지`. 실패·거절이면 출력 JSON 과 `progress.log` 를 기록한다(래퍼 계약을 실물로 확인하는 첫 실행이다. 실물 이벤트 이름이 `turn.completed` 가 아니면 결함으로 고친다). 설정에 우회 플래그가 있어도 exit 2(`cannot be used multiple times`)가 아니다(`image.codex_args` 가 빼고 래퍼가 한 번 붙인다). 이미지 실행이 브라우저 서버를 띄우지 않는다(`progress.log` 에 `hteam-browser`·`chrome-devtools` 서버 시작이 없다. 이 사용자 환경에는 플러그인이 준 `chrome-devtools` 가 있으므로 `browser.user_off` 가 이미지 실행에만 끈다).
 - 모든 designer 가 awaiting_user 가 되면 코디네이터가 `design-review` 를 부른다. 보고서에 시스템 추가 제안이 있으면 exit 3 `supplement_needed` → 코디네이터가 `task new --role director --title "디자인 시스템 보강: …"`(owns `docs/design/system/**`, `docs/design/direction.md`) → UI 기반(`plan_key: ui-foundation`)이 시작 전이면 그 사양 `depends_on` 에 보강 태스크, 시작했으면 토큰 갱신 태스크와 화면 구현 사양들의 `depends_on`(`spec:` 커밋과 `status` 의 대기 사유 `deps` 로 본다) → 보강 → accept → 제안한 화면마다 `fix --supplement <보강>` → 다시 승인 → `design-review`. 화면 구현이 토큰 갱신(또는 보강을 읽은 UI 기반)보다 먼저 시작하지 않았는지 커밋 순서로 본다. 제안이 하나도 없으면 이 경로는 나오지 않는다(테스트로만 확인된 것으로 기록한다).
 
 - [ ] **Step 7: 일괄 승인 → 구현 → 끝**
@@ -7094,7 +7344,7 @@ main 에 병합하지 않는다(컨트롤러가 0.1.0 병합을 한다). 사용�
 ---
 ## 자체 검토: 설계 대응표(15.3 3번)
 
-계획의 코드는 이 저장소(b1f517b)를 새로 복사한 작업 트리에 Task 1–10 을 실제로 구현·커밋하고(태스크마다 하나), 계획의 Create·Edit 블록을 그 커밋들의 diff 에서 만들었다. 그다음 b1f517b 를 다시 새로 복사한 트리에 계획의 편집 163개를 차례로 적용했다: 찾을 내용은 모두 그 시점의 파일에서 정확히 한 번 맞았고, 결과 트리는 구현 트리와 바이트까지 같았다(52개 파일. 실행 비트는 Task 3 Step 3 의 `chmod +x`). 사용자 결정과 Codex 계획 리뷰 r1(P1 4, P2 8)·r2(P1 3, P2 8)를 반영할 때마다 같은 방법으로 다시 했다(지적마다 그 구현 트리에서 재현 테스트가 옛 코드에서 실패하는 것을 먼저 봤다). 태스크마다 앞 태스크의 코드에 그 태스크의 테스트만 얹어 Step 2 명령을 돌려 적힌 대로 실패하는 것을, Step 4 명령이 통과하는 것을 확인했다. Python 3.11 문법 검사(`ast.parse(..., feature_version=(3, 11))`, 바뀐 모든 .py 와 진입점, 3.12 의 f-string 문법을 쓰지 않았는지 토큰 검사)와 `/bin/bash`(3.2)의 `bash -n scripts/codex-run.sh` 도 했다. 마지막에 두 테스트 모음 전체: herdr-team 641, herdr-orch 203, 모두 OK(2단계 끝은 535·202).
+계획의 코드는 이 저장소(b1f517b)를 새로 복사한 작업 트리에 Task 1–10 을 실제로 구현·커밋하고(태스크마다 하나), 계획의 Create·Edit 블록을 그 커밋들의 diff 에서 만들었다. 그다음 b1f517b 를 다시 새로 복사한 트리에 계획의 편집 169개를 차례로 적용했다: 찾을 내용은 모두 그 시점의 파일에서 정확히 한 번 맞았고, 결과 트리는 구현 트리와 바이트까지 같았다(54개 파일. 실행 비트는 Task 3 Step 3 의 `chmod +x`). 사용자 결정과 Codex 계획 리뷰 r1(P1 4, P2 8)·r2(P1 3, P2 8)를 반영할 때마다 같은 방법으로 다시 했다(지적마다 그 구현 트리에서 재현 테스트가 옛 코드에서 실패하는 것을 먼저 봤다). 태스크마다 앞 태스크의 코드에 그 태스크의 테스트만 얹어 Step 2 명령을 돌려 적힌 대로 실패하는 것을, Step 4 명령이 통과하는 것을 확인했다. Python 3.11 문법 검사(`ast.parse(..., feature_version=(3, 11))`, 바뀐 모든 .py 와 진입점, 3.12 의 f-string 문법을 쓰지 않았는지 토큰 검사)와 `/bin/bash`(3.2)의 `bash -n scripts/codex-run.sh` 도 했다. 마지막에 두 테스트 모음 전체: herdr-team 646, herdr-orch 203, 모두 OK(2단계 끝은 535·202).
 
 | 설계 | 내용 | 태스크 |
 |---|---|---|
@@ -7175,16 +7425,18 @@ r1 의 P1-2·P2-1·P2-2·P2-5 는 닫혔다는 판정이라 다시 건드리지 
 | P2 | 실행 중 `codex_missing` 이 앞의 결과를 버린다 | 사실(재현: `data` 에 `images` 가 없었다) | Task 3: 이미지 처리 시작 뒤의 `HteamError` 에 `images`·`count`·`out` 을 붙이고 남은 이미지는 하지 않는다(코드·exit 그대로) |
 | P2 | director 없는 UI 기반에 공통 컴포넌트 책임이 없다 | 사실(문서) | Task 5: developer·planner·designer·설계 11.2·11.3 의 시스템 없는 분기에 "화면 원본·`notes.md` 에서 공통 컴포넌트를 만든다" 와 문서 시험 needle |
 | P2 | 손상된 문자열 값이 horch 후보 탐색을 멈춘다 | 사실(재현: `"1.2.²"` 에서 `ValueError`, 없는 사용자의 `~이름` 에서 `RuntimeError`) | Task 8: `VERSION_RE`(ASCII 숫자), 경로 해석 오류를 항목별 제외 사유로 |
-| P2 | 이미지 실행에서 사용자 전역의 같은 이름 서버가 다시 켜진다 | 사실(이 환경의 `chrome-devtools` 는 플러그인 정의다. 읽기 전용 `codex mcp get` 이 켜진 npx 서버를 냈다) | Task 3: `image.browser_off` 가 조회해 켜져 있으면 transport 키 하나와 `enabled=false` 로 통째로 끈다. 일부 키(`.enabled=false`)는 플러그인 정의에서 `invalid transport`, url 정의에 command 는 `url is not supported for stdio` 라 쓰지 않는다. url·stdio(임시 `CODEX_HOME`)·플러그인(사용자 환경, 읽기만) 셋에서 꺼지고 파싱됐다. 정의가 없으면 아무것도 더하지 않는다. 다른 이름 서버는 범위 밖(설계 12장) |
+| P2 | 이미지 실행에서 사용자 전역의 같은 이름 서버가 다시 켜진다 | 사실(이 환경의 `chrome-devtools` 는 플러그인 정의다. 읽기 전용 `codex mcp get` 이 켜진 npx 서버를 냈다) | Task 3: 이미지 실행이 조회해 켜져 있으면 transport 키 하나와 `enabled=false` 로 통째로 끈다(추가 수정에서 Task 2 의 `browser.user_off` 로 옮겨 디스패치와 함께 쓴다). 일부 키(`.enabled=false`)는 플러그인 정의에서 `invalid transport`, url 정의에 command 는 `url is not supported for stdio` 라 쓰지 않는다. url·stdio(임시 `CODEX_HOME`)·플러그인(사용자 환경, 읽기만) 셋에서 꺼지고 파싱됐다. 정의가 없으면 아무것도 더하지 않는다. 다른 이름 서버는 범위 밖(설계 12장) |
 | P2 | 포그라운드 600초 예산 | 사실(계획 원문: 두 장 × (270 + 60) = 660초) | Task 3: `GRACE` 30, 스킬은 `--n 1` 만 포그라운드 `--timeout 450`(30 + 450 + 30 + 15 + 60 = 585), 두 장부터 백그라운드. 식을 스킬·설계 12장에 |
 | P2 | 준비 전에 만료하는 타이머 시험 | 사실(재현: 1.5초 늦게 시작하는 대역에서 버전 시험이, 첫 `git add` 를 0.6초 늦춘 대역에서 index.lock 시험 둘이 실패했다) | Task 3: 멈추는 `--version` 은 셸 대역이 바로 준비 신호를 쓰고 시험은 준비 뒤부터 잰다. Task 10: index.lock 시험은 `gitio.time` 을 가짜 시계로 바꿔 재시도 횟수·잠을 정확히 본다(0.5초 타이머·0.3초 실제 마감을 쓰지 않는다) |
+
+추가 수정(r2 뒤 컨트롤러 지시): 위 P2 의 사용자 `chrome-devtools` 끄기를 이미지만이 아니라 codex 디스패치(워커·리뷰어, fresh·retry)에도 한다. 처음 보고는 "horch 코드 변경이 든다" 고 했으나 틀렸다: hteam 의 `dispatch.launch` 가 worker-start 인자를 직접 만들므로 hteam 이 덧붙인다. 끄기 판정은 새 `browser.py` 의 `user_off` 하나를 디스패치와 이미지가 함께 쓴다(15초 상한, 프로세스 캐시, 실패·시간 초과·codex 없음이면 끄지 않고 warnings). 시험: 가짜 codex 의 응답(켜짐 stdio·켜짐 url·꺼짐·없음·실패)마다 Dispatch 의 `agent_args`·warnings, claude 워커와 `hteam-browser` 없는 args 에서는 조회하지 않음, 리뷰어 디스패치, 캐시·시간 제한·codex 없음(Task 2 `BrowserOffTest`). 설계 9.1·9.2·14장과 init 위험 문장에 "우회를 승인하면 사용자 Codex 설정의 다른 MCP 서버도 승인 없이 쓸 수 있다. hteam 은 같은 일을 하는 `chrome-devtools` 만 끄고 다른 이름은 범위 밖" 을 적었다.
 
 ### 설계에서 정하지 않아 계획이 정한 것(사용자 질문이 아닌 것)
 
 - `codex-run.sh` 의 프로필은 `image` 하나다(설계가 래퍼를 쓰는 곳은 이미지뿐이다). 감시 주기는 1초(이미지 한 장은 수십 초–몇 분이라 비용이 작고 테스트가 빠르다). Codex 인자는 `--codex-arg=<인자>` 로 받는다(래퍼는 설정을 읽지 않는다). effort 값은 검사하지 않는다(설계 4.2 "내용은 그대로 넘긴다"). `codex --version` 은 10초(`HTEAM_CODEX_VERSION_WAIT`) 안에 안 끝나면 버전 없이 간다(버전은 기록용이다).
-- `hteam image` 는 `[agents.codex].args` 에서 `mcp_servers.…` 정의(`-c`·`--config` 쌍과 붙여 쓴 꼴)와 `config.CODEX_BYPASS` 를 빼고 넘긴다. 이미지에 브라우저가 필요 없고, 우회 플래그는 래퍼가 늘 붙여 두 번이면 codex exec 가 exit 2 다(codex-cli 0.166 에서 확인). 사용자 Codex 의 `chrome-devtools` 가 켜져 있으면 이미지 실행에만 transport 키 하나와 `enabled=false` 로 통째로 꺼서 준다(`image.browser_off`). 다른 이름의 사용자 서버는 그대로 둔다(범위 밖).
+- `hteam image` 는 `[agents.codex].args` 에서 `mcp_servers.…` 정의(`-c`·`--config` 쌍과 붙여 쓴 꼴)와 `config.CODEX_BYPASS` 를 빼고 넘긴다. 이미지에 브라우저가 필요 없고, 우회 플래그는 래퍼가 늘 붙여 두 번이면 codex exec 가 exit 2 다(codex-cli 0.166 에서 확인). 사용자 Codex 의 `chrome-devtools` 가 켜져 있으면 이미지 실행에만 transport 키 하나와 `enabled=false` 로 통째로 꺼서 준다(`browser.user_off`, 디스패치와 같은 함수). 다른 이름의 사용자 서버는 그대로 둔다(범위 밖).
 - `hteam image` 의 래퍼 상한은 `--timeout` + 30초, 넘기면 TERM 뒤 15초에 KILL. 실행 중 `codex_missing` 에도 지금까지의 결과를 붙인다. 이미지 하나의 예상 가능한 오류(`OSError`·`SubprocessError`·`ValueError`·`zlib.error`·`struct.error`)는 그 이미지의 실패, 중단은 지금까지의 결과를 `image_interrupted` 로 낸다. 결과 파일이 심볼릭 링크면 따라가지 않고 실패, 읽을 때 일반 파일이 아니면(FIFO 등) 기다리지 않고 실패, PNG 는 IDAT 를 풀어 길이까지 맞아야 하고 못 바꾸면 실패(옛 계획은 원래 확장자로 복사했다). `--out` 의 심볼릭 링크는 프로젝트 안이면 루트 아래 모든 단계, 밖이면 마지막 폴더를 본다(사용 오류). 게시는 검사한 폴더의 fd 기준 `os.link` 라 하드 링크를 못 만드는 파일 시스템이나 `dir_fd` 를 받지 않는 플랫폼에서는 그 이미지가 실패한다(로컬 APFS·ext4 의 macOS·Linux 는 된다).
-- Codex 리뷰어의 chrome-devtools 서버 이름은 herdr-team 전용 `hteam-browser` 다(사용자·플러그인의 `chrome-devtools` 를 같은 이름으로 덮으면 `-c` 가 기존 정의와 합쳐져 url 정의·플러그인 정의에서 Codex 가 시작하지 못한다. r2 에서 바꿨다), 버전 `1.10.1` 고정, `startup_timeout_sec=60`, 서버 테이블 한 쌍. 사용자의 다른 브라우저 서버는 리뷰어 프롬프트가 쓰지 말라고 한다. 확인용 스크린숏은 리뷰어도 워커도 파일로 남기지 않는다.
+- Codex 리뷰어의 chrome-devtools 서버 이름은 herdr-team 전용 `hteam-browser` 다(사용자·플러그인의 `chrome-devtools` 를 같은 이름으로 덮으면 `-c` 가 기존 정의와 합쳐져 url 정의·플러그인 정의에서 Codex 가 시작하지 못한다. r2 에서 바꿨다), 버전 `1.10.1` 고정, `startup_timeout_sec=60`, 서버 테이블 한 쌍. 사용자·플러그인의 같은 일을 하는 `chrome-devtools` 는 hteam 이 띄우는 codex(디스패치·이미지)에서 끄고(`browser.user_off`, 읽기 전용 조회 15초 상한·프로세스 캐시), 다른 브라우저 서버는 리뷰어 프롬프트가 쓰지 말라고 한다. 확인용 스크린숏은 리뷰어도 워커도 파일로 남기지 않는다.
 - `hteam image --timeout <초>` 를 더했다(이미지 하나의 시간 제한, 기본 900). Bash 도구 최대 600초 안에 끝나게 스킬은 `--n 1` 만 포그라운드로 `--timeout 450` 을 준다(사전 점검 30 + 450 + `GRACE` 30 + `STOP_WAIT` 15 + sips 60 = 585). 두 장부터는 백그라운드다. 시간 제한이 300초 이하이면 진행 신호 한도는 그보다 1초 짧다(래퍼는 같거나 큰 값을 거부한다). `--background` 는 스킬만 받는다.
 - 이미지 실행 폴더는 저장소 밖 캐시(`${XDG_CACHE_HOME:-~/.cache}/herdr-team/images/<프로젝트 폴더 이름>/…`). codex 출력이 그대로 담기므로 저장소에 두지 않는다(디렉터의 레퍼런스 캡처와 같은 곳).
 - 크로마키: 프롬프트가 투명을 못 하면 배경을 `#00FF00` 한 색으로 칠하게 하고, 네 모서리 색이 채널마다 40 안에서 같으면 그 색을 지운다. 8비트·인터레이스 없는 RGB·RGBA PNG 만 직접 읽는다(다른 형식이면 `unsupported` 경고). PNG 가 아니면 `sips` 로 바꾸고, 못 바꾸면 그 이미지의 실패다.
