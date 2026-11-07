@@ -1016,12 +1016,12 @@ class SupplementTest(DecisionCase):
 
     def test_direct_supplement_on_a_dependent_waits_for_its_predecessor(self):
         # 둘 다 제안해 선행부터 fix --supplement 한다. 의존 화면은 이미 대기 라운드가 있고(중복 없음), 그 화면에 직접 한 fix
-        # 는 선행이 다시 승인되지 않았으니 바로 띄우지 않고 대기로 둔다
+        # 는 그 대기 라운드에 메모를 더한다(새 라운드 없음, 선행이 다시 승인되지 않았으니 바로 띄우지 않는다)
         self.screens()
         self.assertEqual(self.hteam("fix", "T-001", "--supplement", "T-009", "--note=A")[0], 0)
         self.assertEqual(self.rounds("T-002", "T-003"), [("T-002", "launch_failed", 2), ("T-003", "launch_failed", 2)])
         code, out = self.hteam("fix", "T-002", "--supplement", "T-009", "--note=상세의 제안")
-        self.assertEqual((code, out["round"], out["status"], out["queued"]), (0, 3, "launch_failed", True), out)
+        self.assertEqual((code, out["round"], out["status"], out["queued"]), (0, 2, "launch_failed", True), out)
         self.assertEqual(self.task_state("T-002")["rounds"][-1]["supplement"], "T-009")
         self.assertIn("상세의 제안", self.work("T-002"))
         self.assertEqual(self.task_state("T-003")["round"], 2)  # 간접 의존 화면의 대기 라운드를 다시 만들지 않는다
@@ -1043,6 +1043,53 @@ class SupplementTest(DecisionCase):
         code, out = self.hteam("fix", "T-001", "--supplement", "T-009")
         self.assertEqual((code, out["error"]["code"]), (3, "decision_pending"), out)
         self.assertEqual(self.task_state("T-001")["round"], 1)  # 아무것도 바꾸지 않았다
+
+    def test_decision_recorded_between_check_and_dependent_fix_keeps_the_user_request(self):
+        # 사전 검사 뒤 의존 화면을 고치기 전에 그 화면의 사용자 수정 결정이 기록됐다. 보강 대기 라운드가 그 라운드를 바꾸면
+        # 결정 재실행이 round_changed 로 건너뛰어 사용자 요청이 사라진다: 잠금 안에서 다시 보고 그 화면은 결정이 고친다
+        self.task("T-001", "awaiting_user")
+        self.task("T-002", "awaiting_user", depends="T-001")
+        self.task("T-009", "done", role="director")
+        self.review()
+        gate = self.tmp / "gate-sup"
+        proc = self.hteam_bg("fix", "T-001", "--supplement", "T-009",
+                             env={"HTEAM_TEST_PAUSE_AT": "supplement_followers_found", "HTEAM_TEST_PAUSE_FILE": str(gate)})
+        reached = Path(str(gate) + ".reached")
+        deadline = time.monotonic() + 30
+        while not reached.exists():
+            self.assertIsNone(proc.poll())
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.05)
+        code, _ = self.decide("out-0001", {"T-002": "버튼을 크게"}, env={"HTEAM_TEST_DIE_AT": "decision_recorded"})
+        self.assertEqual(code, 137)  # 결정이 T-002 를 고치기로 기록만 했다
+        gate.touch()
+        code, out = self.finish(proc)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["followers"], [])
+        self.assertTrue(any("T-002" in w and "결정" in w for w in out["warnings"]), out)
+        self.assertEqual(self.rounds("T-002"), [("T-002", "awaiting_user", 1)])  # 보강이 그 화면을 바꾸지 않았다
+        self.assertEqual(self.decide("out-0001")[0], 0)  # 결정을 마저 한다: 사용자 요청이 그대로 반영된다
+        rd = self.task_state("T-002")["rounds"][-1]
+        self.assertEqual((rd["round"], rd["note"], rd.get("from_user"), rd["supplement"]), (2, "버튼을 크게", True, None))
+
+    def test_supplement_on_a_screen_with_its_waiting_round_reuses_that_round(self):
+        # max_rounds 3: 의존 화면이 r2 awaiting_user 라 선행 보강이 만든 대기 라운드가 r3 다. 그 화면 자신의 제안을 fix
+        # --supplement 로 넘겨도 새 라운드(r4)를 만들지 않고 그 라운드에 메모를 더한다
+        self.task("T-001", "awaiting_user")
+        self.task("T-002", "awaiting_user", depends="T-001", rnd=2)
+        self.task("T-009", "done", role="director")
+        self.assertEqual(self.hteam("fix", "T-001", "--supplement", "T-009", "--note=A")[0], 0)
+        self.assertEqual(self.rounds("T-002"), [("T-002", "launch_failed", 3)])
+        code, out = self.hteam("fix", "T-002", "--supplement", "T-009", "--note=상세의 제안")
+        self.assertEqual((code, out["round"], out["status"], out["reused"]), (0, 3, "launch_failed", True), out)
+        self.assertEqual(self.rounds("T-002"), [("T-002", "launch_failed", 3)])
+        rd = self.task_state("T-002")["rounds"][-1]
+        self.assertEqual(rd["supplement"], "T-009")
+        self.assertIn("상세의 제안", rd["note"])
+        self.assertIn("선행 T-001", rd["note"])  # 선행 보강이 남긴 메모도 그대로
+        self.assertIn("상세의 제안", self.work("T-002"))
+        self.assertEqual(self.hteam("fix", "T-002", "--supplement", "T-009", "--note=상세의 제안")[1]["round"], 3)  # 쌓이지 않는다
+        self.assertEqual(self.task_state("T-002")["rounds"][-1]["note"].count("상세의 제안"), 1)
 
     def test_unreadable_report_stops_design_review(self):
         self.task("T-001", "awaiting_user")

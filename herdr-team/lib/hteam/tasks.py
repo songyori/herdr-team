@@ -566,7 +566,7 @@ def _closing(p, tid: str, seen: dict) -> Iterator[dict]:
 
 def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: bool, cli: dict,
         expect_round: int | None = None, queue: bool = False, from_user: bool = False,
-        extra_from: tuple[str, ...] = ()) -> dict:
+        extra_from: tuple[str, ...] = (), follower: bool = False) -> dict:
     """새 라운드(설계 6.4). 입력(사양·owns·잠금)을 먼저 검사하고, 이전 라운드들의 작업·리뷰 Dispatch 를 모두 정리한
     뒤에만 새 라운드를 쓰고 띄운다(이전 워커와 새 워커가 같은 폴더에서 함께 일하지 않게). 일하는 중인 워커는
     abandon --kill 뒤 release.
@@ -586,6 +586,11 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
         _check_supplement(p, supplement)
         if not queue:
             followers = _supplement_followers(p, cfg, tid, supplement)  # 바꾸기 전에 거부할 것을 모두 본다
+            die_at("supplement_followers_found")  # 테스트: 사전 검사 뒤 의존 태스크를 고치기 전에 결정이 끼는 순서
+            kept = _reuse_queued(p, cfg, spec, tid, supplement, note, expect_round)
+            if kept is not None:  # 이미 같은 보강의 대기 라운드가 있다. 새 라운드 없이 메모만 더한다(라운드 상한을 쓰지 않는다)
+                kept["followers"], kept["warnings"] = _queue_followers(p, followers, supplement, tid) if followers else ([], [])
+                return kept
             # 선행 승인 태스크가 아직 다시 승인되지 않았으면(보강 라운드가 도는 중) 바로 띄우지 않고 대기로 둔다. 띄우면
             # 선행의 옛 라운드를 basis 로 남겨 선행이 다시 승인된 뒤 approval_stale 이 된다(설계 11.4)
             defer = cfg.is_approval(spec.role) and not deps_met(p, cfg, spec)
@@ -608,13 +613,13 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
     allowed(state.require(p, tid))
     owns = checked_owns(cfg, spec)  # 입력 검사(owns·잠금)는 이전 워커를 정리하기 전에 한다
     _check_locks(p, cfg, spec, owns)
-    if not queue:  # 끝나지 않은 결정이 고치는 태스크면 워커를 죽이거나 라운드를 닫기 전에 거부한다(_closing 에서 다시 본다)
+    if not queue or follower:  # 끝나지 않은 결정이 고치는 태스크면 워커를 죽이거나 라운드를 닫기 전에 거부한다(_closing 에서 다시 본다)
         _start_gate(p, cfg, spec, check_deps=False)
     seen: dict = {}
     _close_round(p, h, tid, kill=True, check=allowed, seen=seen)
     with _closing(p, tid, seen) as st:
         _check_locks(p, cfg, spec, owns)
-        if not queue:  # 결정 밖의 fix 는 끝나지 않은 결정이 고치는 태스크를 띄우지 않는다(결정 자신의 fix 는 queue 다)
+        if not queue or follower:  # 결정 밖의 fix 는 끝나지 않은 결정이 고치는 태스크를 띄우지 않는다(결정 자신의 fix 는 queue 다)
             _start_gate(p, cfg, spec, check_deps=False)
         old = st["status"]
         prior = state.current_round(st) or {}
@@ -646,14 +651,16 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
         st["owns"] = owns
         st["note"] = note
         _begin(p, st, rd, text, "fix", previous=old, force_round=force_round)
-    fixed = _queue_followers(p, followers, supplement, tid) if followers else []
+    fixed, skipped = _queue_followers(p, followers, supplement, tid) if followers else ([], [])
     if queue or defer:  # 띄우지 않는다. start-ready 의 의존 검사가 선행이 다시 승인된 뒤에 띄운다(설계 11.4)
         return {"task": tid, "round": rd["round"], "status": "launch_failed", "queued": True, "followers": fixed,
-                "next": [SHIM, "start-ready"],
+                "warnings": skipped, "next": [SHIM, "start-ready"],
                 "hint": "수정 라운드를 만들었다. start-ready 가 선행이 끝난(승인 직무는 awaiting_user) 뒤에 띄운다"}
     res = run_work(p, cfg, h, tid)
-    if fixed:
+    if followers:
         res["followers"] = fixed
+    if skipped:
+        res["warnings"] = [*(res.get("warnings") or []), *skipped]
     return res
 
 
@@ -682,22 +689,52 @@ def _supplement_followers(p, cfg, tid: str, sup: str) -> list[dict]:
     return found
 
 
-def _queue_followers(p, followers: list[dict], sup: str, tid: str) -> list[dict]:
+def _reuse_queued(p, cfg, spec, tid: str, sup: str, note: str | None, expect_round: int | None) -> dict | None:
+    """tid 에 아직 띄우지 않은 같은 보강(sup)의 대기 라운드가 있으면(선행의 `fix --supplement` 가 만들었다) 새 라운드를 만들지
+    않고 그 라운드에 메모만 더한다(라운드 수 그대로, max_rounds 를 쓰지 않는다). 없으면 None. 프로젝트 잠금 → 태스크 잠금
+    아래에서 다시 확인하고, 끝나지 않은 결정이 고치는 태스크면 exit 3 으로 아무것도 바꾸지 않는다."""
+    from . import approval  # approval 이 tasks 를 쓴다. 불러오는 순서가 꼬이지 않게 여기서 가져온다
+    with state.project_lock(p):
+        with state.edit(p, tid) as st:
+            rd = state.current_round(st) or {}
+            if not (approval.unlaunched(st) and rd.get("supplement") == sup):
+                return None
+            _start_gate(p, cfg, spec, check_deps=False)
+            _expect_round(tid, st, expect_round)
+            if note:
+                key = "coord_note" if rd.get("from_user") else "note"
+                parts = (rd.get(key) or "").split(" / ") + [note]
+                rd[key] = " / ".join(dict.fromkeys(x for x in parts if x))
+                if key == "note":
+                    st["note"] = rd[key]
+            write_atomic(_spec_file(p, tid, rd["round"]), compose.work_spec(p, cfg, spec, rd, st.get("owns") or checked_owns(cfg, spec)))
+            return {"task": tid, "round": rd["round"], "status": st["status"], "queued": True, "reused": True,
+                    "next": [SHIM, "start-ready"],
+                    "hint": "같은 보강의 대기 라운드에 메모를 더했다(새 라운드 없음). start-ready 가 선행이 다시 승인된 뒤 띄운다"}
+
+
+def _queue_followers(p, followers: list[dict], sup: str, tid: str) -> tuple[list[dict], list[str]]:
     """_supplement_followers 가 고른 태스크마다 보강 라운드를 대기(queued)로 만든다. 선행 tid 의 새 라운드가 다시 승인되면
     start-ready 가 띄우고 그때 basis 가 선행의 새 라운드를 적는다."""
     from . import approval  # approval 이 tasks 를 쓴다. 불러오는 순서가 꼬이지 않게 여기서 가져온다
     note = f"선행 {tid} 가 디렉터 보강 {sup} 를 반영해 고쳐졌다. 이 화면도 그 결과를 반영한다"
-    done = []
+    done: list[dict] = []
+    skipped: list[str] = []
     for f in followers:
         try:
+            # follower: 결정 소유자가 아니다. 끝나지 않은 결정이 고치는 태스크는 잠금 안에서 다시 보고 바꾸지 않는다
             res = fix(p, f["task"], note=note, supplement=sup, force_round=True, cli={}, expect_round=f["round"], queue=True,
-                      extra_from=approval.DEPENDENT_FROM)
+                      extra_from=approval.DEPENDENT_FROM, follower=True)
         except HteamError as exc:
+            if exc.code == "decision_pending":  # 그 태스크는 결정이 고친다(사용자 요청을 지킨다)
+                skipped.append(f"{f['task']} 는 끝나지 않은 일괄 승인 결정 {(exc.data or {}).get('pending')} 이 고치므로 보강 "
+                               "대기 라운드를 만들지 않았다(결정이 고친 뒤 그 화면의 보강은 fix --supplement 로 따로 한다)")
+                continue
             if exc.code not in ("round_changed", "task_closed"):
                 raise
             continue
         done.append({"task": f["task"], "round": res["round"]})
-    return done
+    return done, skipped
 
 
 def _check_supplement(p, sup: str) -> None:
