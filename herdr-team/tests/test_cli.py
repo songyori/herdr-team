@@ -46,6 +46,10 @@ class CliTest(TeamCase):
         entry = [p for p in market["plugins"] if p["name"] == "herdr-team"][0]
         self.assertEqual({VERSION, plugin["version"], entry["version"]}, {"0.1.0"})
         self.assertEqual(entry["source"], "./herdr-team")
+        # hteam 이 설치 기록에서 받는 가장 낮은 herdr-orch 는 함께 배포하는 herdr-orch 와 같다(성공 봉투 고침, 0.1.2)
+        from hteam.horch import HORCH_MIN
+        orch = [p for p in market["plugins"] if p["name"] == "herdr-orch"][0]
+        self.assertEqual(HORCH_MIN, orch["version"])
 
 
 if __name__ == "__main__":

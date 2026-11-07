@@ -89,7 +89,7 @@ def _horch_checks(root: Path) -> list[dict]:
         if not home.exists():
             temp = tempfile.mkdtemp(prefix="hteam-doctor-")
             home = Path(temp)
-        h = Horch(home)
+        h = Horch(home, project=root)  # 임시 홈이어도 이 프로젝트 범위의 설치를 고른다
         code, data = h.call("doctor")
     except HteamError as exc:
         return [_check("horch", False, exc.message)]

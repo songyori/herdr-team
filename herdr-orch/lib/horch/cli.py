@@ -195,11 +195,14 @@ def main(argv: list[str]) -> int:
             sys.stdout.write(skill_text(resolve_home(args.home)))
             return 0
         result = _dispatch(args)
+        # 성공 봉투도 try 안에서 직렬화한다. dict 가 아니거나 JSON 으로 못 바꾸면 internal 오류로 알린다(hteam 과 같다)
+        line = json.dumps({"ok": True, **result}, ensure_ascii=False)
     except HorchError as exc:
         _emit(exc.to_json())
         return exc.exit_code
     except Exception as exc:  # 버그도 JSON 으로 알린다
         _emit({"ok": False, "error": {"code": "internal", "message": f"{type(exc).__name__}: {exc}", "hint": ""}})
         return FAIL
-    _emit({"ok": True, **result})
+    sys.stdout.write(line + "\n")
+    sys.stdout.flush()
     return 0

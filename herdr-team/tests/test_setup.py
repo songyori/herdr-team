@@ -678,7 +678,7 @@ class ReviewFixDoctorTest(unittest.TestCase):
         class FakeHorch:
             bin = "horch"
 
-            def __init__(self, home):
+            def __init__(self, home, project=None):
                 pass
 
             def call(self, *args):

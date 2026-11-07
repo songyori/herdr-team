@@ -104,6 +104,103 @@ class HorchClientTest(TeamCase):
                 with self.assertRaises(HteamError):
                     horch_mod.find_horch()
 
+    def install(self, name, version):
+        """가짜 herdr-orch 설치 폴더(bin/horch 와 plugin.json)."""
+        root = self.tmp / "cache" / name
+        (root / "bin").mkdir(parents=True)
+        (root / "bin" / "horch").write_text("")
+        (root / ".claude-plugin").mkdir()
+        (root / ".claude-plugin" / "plugin.json").write_text(json.dumps({"version": version}))
+        return root
+
+    def registry(self, entries, key="herdr-orch@herdr-team"):
+        path = self.tmp / "installed.json"
+        path.write_text(json.dumps({"version": 2, "plugins": {key: entries}}))
+        return path
+
+    def test_registry_picks_scope_project_and_version(self):
+        old = self.install("old", "0.1.1")
+        user = self.install("user", "0.1.2")
+        other = self.install("other", "0.1.9")
+        mine = self.install("mine", "0.1.2")
+        local = self.install("local", "0.1.3")
+        env = {k: v for k, v in os.environ.items() if k != "HERDR_ORCH_BIN"}
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(horch_mod, "PLUGIN_ROOT", self.tmp / "x" / "herdr-team"):
+            entries = [{"scope": "user", "installPath": str(old), "version": "0.1.1"},
+                       {"scope": "project", "projectPath": str(self.tmp / "elsewhere"), "installPath": str(other)},
+                       {"scope": "user", "installPath": str(user)}]
+            os.environ["HTEAM_PLUGINS_JSON"] = str(self.registry(entries))
+            self.assertEqual(horch_mod.find_horch(self.proj), (user / "bin/horch").resolve())  # 다른 프로젝트 것은 쓰지 않는다
+            entries.append({"scope": "project", "projectPath": str(self.proj), "installPath": str(mine)})
+            self.registry(entries)
+            self.assertEqual(horch_mod.find_horch(self.proj / "sub"), (mine / "bin/horch").resolve())  # 하위 폴더도 그 프로젝트
+            self.assertEqual(horch_mod.find_horch(None), (user / "bin/horch").resolve())  # 프로젝트를 모르면 user 범위만
+            entries.append({"scope": "local", "projectPath": str(self.proj), "installPath": str(local)})
+            self.registry(entries)
+            self.assertEqual(horch_mod.find_horch(self.proj), (local / "bin/horch").resolve())  # local 이 project 보다 앞선다
+            h = horch_mod.Horch(self.proj / ".herdr-team" / "state" / "horch")  # 홈에서 프로젝트를 찾는다
+            self.assertEqual(h.bin, (local / "bin/horch").resolve())
+            self.registry([{"scope": "user", "installPath": str(old)}])
+            with self.assertRaises(HteamError) as ctx:
+                horch_mod.find_horch(self.proj)
+            self.assertEqual(ctx.exception.exit_code, 12)
+            self.assertIn("쓰지 않은 설치: herdr-orch@herdr-team user 0.1.1(0.1.2 보다 낮다)", ctx.exception.message)
+
+    def test_corrupt_registry_entries_are_skipped(self):
+        # 손상된 설치 기록 하나(자료형이 틀린 scope·projectPath·version·installPath)가 TypeError 로 고르기를 멈추지 않는다.
+        # 그 항목만 이유와 함께 빼고 뒤의 정상 후보를 고른다
+        good = self.install("good", "0.1.2")
+        env = {k: v for k, v in os.environ.items() if k != "HERDR_ORCH_BIN"}
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(horch_mod, "PLUGIN_ROOT", self.tmp / "x" / "herdr-team"):
+            entries = [{"scope": [], "installPath": str(good)},
+                       {"scope": "project", "projectPath": ["x"], "installPath": str(good)},
+                       {"scope": "user", "installPath": str(good), "version": [0, 1, 2]},
+                       {"scope": "user", "installPath": 7},
+                       {"scope": "user", "installPath": str(good)}]
+            os.environ["HTEAM_PLUGINS_JSON"] = str(self.registry(entries))
+            self.assertEqual(horch_mod.find_horch(self.proj), (good / "bin/horch").resolve())
+            path, skipped = horch_mod._from_registry(self.proj)
+            self.assertEqual(len([s for s in skipped if "손상된 설치 기록" in s]), 4, skipped)
+            self.registry(entries[:4])
+            with self.assertRaises(HteamError) as ctx:
+                horch_mod.find_horch(self.proj)
+            self.assertEqual(ctx.exception.exit_code, 12)
+            self.assertIn("손상된 설치 기록(scope)", ctx.exception.message)
+
+    def test_bad_values_in_registry_entries_are_skipped(self):
+        # Codex 계획 r2: 자료형은 맞지만 값이 손상된 항목("1.2.²" 는 isdigit 가 참이라 int() 가 실패, 없는 사용자의 ~경로는
+        # expanduser 가 RuntimeError)도 그 항목만 까닭과 함께 빼고 뒤의 정상 후보를 고른다
+        good = self.install("good", "0.1.2")
+        odd = self.install("odd", "1.2.²")
+        env = {k: v for k, v in os.environ.items() if k != "HERDR_ORCH_BIN"}
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(horch_mod, "PLUGIN_ROOT", self.tmp / "x" / "herdr-team"):
+            entries = [{"scope": "user", "installPath": str(odd), "version": "1.2.²"},
+                       {"scope": "user", "installPath": "~hteam-no-such-user-x/plugin"},
+                       {"scope": "project", "projectPath": "~hteam-no-such-user-y/proj", "installPath": str(good)},
+                       {"scope": "user", "installPath": str(good)}]
+            os.environ["HTEAM_PLUGINS_JSON"] = str(self.registry(entries))
+            self.assertEqual(horch_mod.find_horch(self.proj), (good / "bin/horch").resolve())
+            path, skipped = horch_mod._from_registry(self.proj)
+            self.assertIn("herdr-orch@herdr-team user 버전 모름", skipped)
+            self.assertEqual(len([s for s in skipped if "경로를 해석하지 못했다" in s]), 2, skipped)
+        # Codex 계획 r3: 아주 긴 숫자(int 변환 상한을 넘는다)도 그 항목만 빼고 뒤의 정상 후보를 고른다
+        huge = "9" * 4301 + ".0.0"
+        long = self.install("long", huge)
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(horch_mod, "PLUGIN_ROOT", self.tmp / "x" / "herdr-team"):
+            os.environ["HTEAM_PLUGINS_JSON"] = str(self.registry([{"scope": "user", "installPath": str(long), "version": huge},
+                                                                 {"scope": "user", "installPath": str(good)}]))
+            self.assertEqual(horch_mod.find_horch(self.proj), (good / "bin/horch").resolve())
+        self.assertIsNone(horch_mod.version_tuple(huge))
+        self.assertIsNone(horch_mod.version_tuple("1234567.0.0"))  # 숫자 조각은 6자리까지
+        self.assertEqual(horch_mod.version_tuple("123456.0.0"), (123456, 0, 0))
+        self.assertIsNone(horch_mod.version_tuple("1.2.²"))
+        self.assertIsNone(horch_mod.version_tuple("０.1.2"))  # 전각 숫자
+        self.assertEqual(horch_mod.version_tuple(" 0.1.12 "), (0, 1, 12))
+
     def test_call_ok_and_failure(self):
         with mock.patch.dict(os.environ, self.env, clear=True):
             h = horch_mod.Horch(self.horch_home)

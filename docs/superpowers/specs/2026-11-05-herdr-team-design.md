@@ -52,7 +52,7 @@ herdr-team/          (새로)
   tests/
 ```
 
-`hteam` 이 `horch` 를 찾는 순서: 환경 변수 `HERDR_ORCH_BIN` → herdr-team 플러그인 루트의 형제 `../herdr-orch/bin/horch` → Claude Code `installed_plugins.json` 의 herdr-orch 설치 경로. 못 찾으면 exit 12. hteam 은 horch 를 늘 `--home <프로젝트>/.herdr-team/state/horch` 로 부른다.
+`hteam` 이 `horch` 를 찾는 순서: 환경 변수 `HERDR_ORCH_BIN` → herdr-team 플러그인 루트의 형제 `../herdr-orch/bin/horch` → Claude Code `installed_plugins.json` 의 herdr-orch 설치 경로. 설치 기록은 이 프로젝트에 맞는 것만 쓴다: project·local 범위는 `projectPath` 가 프로젝트 루트(또는 그 위)일 때만, user 범위는 늘. 그 가운데 herdr-orch 0.1.2 이상(기록의 `version`, 없으면 설치 폴더의 `plugin.json`)만 고르고, 좁은 범위(local → project → user), herdr-team 마켓플레이스, 높은 버전 순으로 앞선다. 자료형이 틀린 기록(`scope`·`projectPath`·`version`·`installPath`)과 값을 읽지 못하는 기록(ASCII 숫자 1–6자리 조각 셋 `X.Y.Z` 가 아닌 버전은 버전 모름, 해석하지 못하는 경로: 없는 사용자의 `~이름` 등)은 그 항목만 빼고(못 찾았을 때 오류에 까닭을 적는다) 나머지를 계속 본다. 못 찾으면 exit 12(낮은 버전이라 뺀 설치를 알린다). hteam 은 horch 를 늘 `--home <프로젝트>/.herdr-team/state/horch` 로 부른다.
 
 ### 3.2 실행 주체
 
