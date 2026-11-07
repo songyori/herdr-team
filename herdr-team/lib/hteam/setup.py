@@ -12,7 +12,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import browser, config, coord, gitio, herdr, outbox, roles
+from . import browser, config, coord, gitio, herdr, image, outbox, roles
 from .browser import BROWSER_SERVER
 from .errors import CONFLICT, DENIED, FAIL, TIMEOUT, USAGE, HteamError
 from .horch import Horch
@@ -124,9 +124,8 @@ def _codex_checks(codex: str) -> list[dict]:
 
 
 def doctor(root: Path) -> dict:
-    """설계 9.2. 필수 점검이 실패하면 exit 1(checks 포함).
-
-    설계 9.2 의 "Codex 래퍼 실행 가능" 점검은 래퍼(scripts/codex-run.sh)가 들어오는 3단계에서 더한다."""
+    """설계 9.2. 필수 점검이 실패하면 exit 1(checks 포함). Codex 래퍼(scripts/codex-run.sh)는 플러그인 파일이라
+    없거나 실행할 수 없으면 설치가 깨진 것이다(오류)."""
     checks = [_check("python", sys.version_info >= (3, 11), platform.python_version())]
     git = shutil.which("git")
     checks.append(_check("git", git, git or "PATH 에 없다"))
@@ -143,6 +142,9 @@ def doctor(root: Path) -> dict:
     checks.append(_check("codex", codex, codex or "PATH 에 없다(리뷰어·Codex 워커에 쓴다)"))
     if codex:
         checks += _codex_checks(codex)
+    wrapper = os.access(image.WRAPPER, os.X_OK)
+    checks.append(_check("codex_wrapper", wrapper, str(image.WRAPPER) if wrapper else
+                         f"{image.WRAPPER} 가 없거나 실행할 수 없다(hteam image 가 쓴다). herdr-team 을 다시 설치한다"))
     checks.append(_check("chrome_devtools_mcp", _chrome_mcp(root), "디렉터 레퍼런스 캡처에 쓴다(없으면 링크만 남긴다)",
                          "warning"))
     checks.append(_codex_browser(root))

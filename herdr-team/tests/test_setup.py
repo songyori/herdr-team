@@ -68,7 +68,8 @@ class DoctorTest(TeamCase):
         code, out = self.hteam("doctor", as_="main")
         self.assertEqual(code, 0, out)
         checks = {c["name"]: c for c in out["checks"]}
-        for name in ("python", "git", "horch", "horch_doctor", "herdr_terminal", "claude", "codex", "codex_login"):
+        for name in ("python", "git", "horch", "horch_doctor", "herdr_terminal", "claude", "codex", "codex_login",
+                     "codex_wrapper"):
             self.assertTrue(checks[name]["ok"], checks[name])
         self.assertEqual(checks["codex_image_generation"]["level"], "warning")
         self.assertFalse(checks["chrome_devtools_mcp"]["ok"])
@@ -719,6 +720,15 @@ class ReviewFixDoctorTest(unittest.TestCase):
         self.assertEqual(len(horch), 1, out["checks"])
         self.assertFalse(horch[0]["ok"])
         self.assertEqual(out.get("error"), "unhealthy")
+
+    def test_missing_codex_wrapper_is_an_error(self):
+        from hteam import setup
+        checks = {c["name"]: c for c in self.doctor(self.ok_run)["checks"]}
+        self.assertEqual((checks["codex_wrapper"]["ok"], checks["codex_wrapper"]["level"]), (True, "error"))
+        with mock.patch.object(setup.image, "WRAPPER", Path("/nonexistent/codex-run.sh")):
+            out = self.doctor(self.ok_run)
+        checks = {c["name"]: c for c in out["checks"]}
+        self.assertEqual((out.get("error"), checks["codex_wrapper"]["ok"]), ("unhealthy", False))
 
 
 class CodexBrowserDoctorTest(TeamCase):

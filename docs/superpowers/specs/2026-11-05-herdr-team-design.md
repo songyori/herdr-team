@@ -562,17 +562,19 @@ orca-team 의 금지 규칙 10개를 옮긴다(이모지 장식, 왼쪽 강조 �
 ## 12. 이미지 (`/herdr-team:image`, `hteam image`)
 
 - 디자인 워커(Claude)가 자기 pane 에서 부른다. 직무가 아니고 pane 도 따로 띄우지 않는다. Codex 가 만들고 부른 Claude 가 결과를 보고 검토한다.
-- 인자: `--n 1–8`, `--out <폴더>`(기본 `./generated/`), `--ar`, `--transparent`, `--ref <이미지>`, `--background`, 프롬프트.
-- 사전 점검: `codex features` 의 `image_generation`. 없으면 exit 12.
-- 이미지마다 실행 폴더 하나, 호출 하나에 이미지 하나. `scripts/codex-run.sh --profile image` 로 `codex exec` 를 부른다. 프롬프트는 Codex 내장 `image_gen` 도구를 쓰고 마지막 줄에 PNG 절대 경로를 쓰게 한다.
-- 결과: `result.txt` 마지막 줄의 파일을 `--out` 에 복사한다(덮어쓰지 않고 `-v2` 등). `sips` 로 크기·형식을 확인하고, 투명 배경이 빠졌으면 크로마키로 지운다. 거절은 자동으로 다시 시도하지 않는다.
-- `n ≥ 3` 이면 워커가 Bash 백그라운드로 돌린다.
+- 인자: `--n 1–8`, `--out <폴더>`(기본 `./generated/`), `--ar`, `--transparent`, `--ref <이미지>`, `--background`, 프롬프트. `--background` 는 스킬만 받는다(Bash 백그라운드로 돌릴지 정한다). `hteam image` 는 대신 `--timeout <초>`(이미지 하나의 시간 제한, 기본 900)를 받는다. 스킬은 `--n 1` 만 포그라운드로 돌리고 `--timeout 450` 을 준다: 최악 시간 = 사전 점검 30 + `--timeout` 450 + 래퍼 여유 30 + TERM 뒤 KILL 까지 15 + PNG 변환 60 = 585초로 Bash 최대 600초 안에 든다. 두 장부터는 이 합이 600초를 넘을 수 있어 백그라운드다.
+- 사전 점검: `codex features` 의 `image_generation`. 없으면 exit 12. 그다음 사용자 Codex(설정·플러그인)의 `chrome-devtools` 서버를 `codex mcp get chrome-devtools --json` 으로 본다(읽기만 한다. 디스패치와 같은 조회, 14장). 확인하지 못하면(실패·시간 초과·codex 없음) 끄지 않고 결과 `warnings` 에 남긴다.
+- 이미지마다 실행 폴더 하나(저장소 밖 `${XDG_CACHE_HOME:-~/.cache}/herdr-team/images/<프로젝트 폴더 이름>/`, codex 출력이 그대로 담긴다), 호출 하나에 이미지 하나. `scripts/codex-run.sh --profile image` 로 `codex exec` 를 부른다. 프롬프트(`templates/image-prompt.md`)는 Codex 내장 `image_gen` 도구를 쓰고 마지막 줄에 PNG 절대 경로를 쓰게 한다.
+- Codex 인자: `[agents.codex].args` 에서 MCP 서버 정의(`-c`·`--config` 의 `mcp_servers.…`)와 샌드박스·승인 우회 플래그를 빼고 넘긴다. 이미지에 브라우저가 필요 없고 서버 시작을 이미지마다 치르지 않는다. 우회 플래그는 래퍼가 늘 붙이므로 두 번 주면 `codex exec` 가 exit 2 로 끝난다. 사용자 Codex 의 `chrome-devtools` 가 켜져 있으면 이미지 실행에만 그 정의를 통째로 꺼서 준다(`-c mcp_servers.chrome-devtools={command=…,enabled=false}`, url 정의면 `{url=…,enabled=false}`. 일부 키만 주면 플러그인 정의에 `invalid transport`, url 정의에 command 를 주면 `url is not supported for stdio` 로 codex 가 시작하지 못한다). 사용자 설정 파일은 고치지 않는다. 다른 이름의 사용자 MCP 서버는 이 계약의 범위 밖이다(이미지 실행에서도 그대로 뜬다).
+- 결과: `result.txt` 마지막 줄의 일반 파일만 받는다(심볼릭 링크면 그 이미지의 실패). 읽을 때도 링크를 따라가지 않고 막히지 않게 열어(`O_NOFOLLOW|O_NONBLOCK`) 일반 파일인지 다시 본다(FIFO 로 바뀌었으면 기다리지 않고 실패). PNG 는 모든 청크의 CRC 를 `IEND` 까지 확인하고(첫 청크 `IHDR`, `IDAT` 하나 이상), 색 형식 3 은 `IDAT` 앞에 `PLTE`(3바이트 × 1–256)가 있고 0·4 에는 `PLTE` 가 없으며, 이은 `IDAT` 가 zlib 으로 풀리고 풀린 길이가 `IHDR`(너비·높이·비트 깊이·색 형식·인터레이스)로 계산한 길이와 같고 줄마다 필터 바이트가 0–4 여야 PNG 로 보고 크기·알파를 본다. 아니면 `sips` 로 PNG 로 다시 쓰고, 그래도 아니면 그 이미지의 실패다(복사하지 않는다). 다 된 바이트를 `--out` 폴더(검사한 뒤 fd 로 열어 둔다) 안 새 임시 파일에 쓰고 같은 fd 기준 하드 링크로 게시한다(실행 중 폴더 이름이 링크로 바뀌어도 그 폴더에 쓴다): 이미 있는 이름(끊어진 링크 포함)은 덮어쓰지도 따라가지도 않고 `-v2` 등으로 간다. `--out` 경로(프로젝트 안이면 루트 아래 모든 단계, 밖이면 마지막 폴더)가 심볼릭 링크면 사용 오류다. `--transparent` 인데 투명 배경이 빠졌으면 크로마키로 지운다: 프롬프트가 투명이 안 되면 배경을 `#00FF00` 한 색으로 칠하게 하고, 네 모서리 색이 같으면 그 색을 지운다(8비트 RGB·RGBA PNG). 판정은 `status.json` 의 `terminal_event` 가 먼저다: `turn.failed`·`error` 는 거절이고 자동으로 다시 시도하지 않는다. 다른 실패도 hteam 은 다시 하지 않는다(부른 워커가 한 번 다시 할지 정한다).
+- 이미지 하나의 예상 가능한 오류(파일·변환 시간 초과·해독)는 그 이미지의 실패로 모으고 나머지를 계속한다. 래퍼는 `--timeout` + 30초(`HTEAM_IMAGE_GRACE`) 안에 끝나야 한다(넘기면 TERM, 15초 뒤 KILL, 그 이미지의 실패). 중단(Ctrl-C)이면 래퍼를 끝내고 지금까지의 결과를 `image_interrupted`(exit 1)로 낸다. 실행 중 codex 가 없어지면(래퍼 exit 12) `codex_missing`(exit 12) 그대로 멈추되 지금까지의 결과(`images`·`count`·`out`)를 붙이고 남은 이미지는 하지 않는다.
+- `n ≥ 2` 이거나 `--background` 면 워커가 Bash 백그라운드로 돌린다.
 
 `scripts/codex-run.sh`(orca-team 래퍼의 규칙을 옮긴다):
 
 - 한 번 실행하고 이유를 보고한다(정책 없음, 재시도는 부르는 쪽).
-- stdin `/dev/null`, 프롬프트는 파일로, `-C <cwd>`, `--json` 과 `--output-last-message` 함께, effort 는 `-c model_reasoning_effort=`, `[agents.codex].args`(기본 `--disable=hooks`)를 붙인다.
-- 프로필: `image` 시간 제한 900초, 진행 신호 없음 한도 300초. 시간 초과면 프로세스 그룹을 죽인다.
+- stdin `/dev/null`, 프롬프트는 파일로, `-C <cwd>`, `--json` 과 `--output-last-message` 함께, effort 는 `-c model_reasoning_effort=`, 부른 쪽이 준 Codex 인자(`--codex-arg`)를 붙인다.
+- 프로필: `image` 시간 제한 900초, 진행 신호 없음 한도 300초. 시간 초과면 프로세스 그룹을 죽인다. 앞의 `codex --version` 도 자기 프로세스 그룹·stdin `/dev/null` 로 돌리고 `HTEAM_CODEX_VERSION_WAIT` 초(기본 10) 안에 안 끝나면 그룹째 끝내고 버전 없이 간다. 중단 trap 은 버전 조회 전에 건다.
 - 판정은 exit 코드보다 `status.json` 의 `terminal_event` 를 먼저 본다. exit: 0, 10(시간 초과), 11(멈춤), 12(codex 없음), 1, 2(인자 오류), 130(중단).
 
 ## 13. 오류와 복구
@@ -605,7 +607,7 @@ orca-team 의 금지 규칙 10개를 옮긴다(이모지 장식, 왼쪽 강조 �
 
 - 워커는 사람 없이 돈다. 권한 우회(`[agents.claude].args` 의 bypass, Codex 샌드박스 우회)를 넣으면 워커가 사용자의 git·클라우드 자격 증명과 셸 환경을 그대로 쓴다. init 이 위험을 적고 승인받았을 때만 넣는다.
 - Codex 샌드박스·승인 우회(`--dangerously-bypass-approvals-and-sandbox`)를 넣으면 Codex 리뷰어가 chrome-devtools 로 아무 URL(http(s) 포함)을 열 수 있고 페이지의 스크립트·요청이 돈다. 리뷰어가 읽는 워커 코드·웹 페이지의 글이 명령을 실행시킬 수 있고(프롬프트 주입), 저장소 밖 변경은 변조 검사가 잡지 못한다. 그래서 기본에 넣지 않고 init 이 승인받는다. 리뷰어의 브라우저 서버(`hteam-browser`)는 `--isolated=true`(임시 프로필)·`--headless=true` 로 정의해 사용자 Chrome 의 쿠키·로그인을 쓰지 않는다. 사용자·플러그인의 같은 일을 하는 `chrome-devtools`(이 환경에서는 격리하지 않은 고정 프로필)는 hteam 이 띄우는 codex(디스패치의 워커·리뷰어 fresh·retry, 이미지)에서만 끈다: agent 가 codex 이고 args 에 `hteam-browser` 정의가 있을 때 읽기 전용 `codex mcp get chrome-devtools --json`(프로세스 안에서 한 번, 15초 상한)으로 보고, 켜져 있으면 정의를 통째로(transport 키 하나 + `enabled=false`) args 뒤에 더한다. 조회 실패·시간 초과·codex 없음이면 끄지 않고 warnings 에 남긴다(디스패치를 막지 않는다). 우회를 승인하면 사용자 Codex 설정의 다른 MCP 서버도 승인 없이 쓸 수 있다. hteam 은 같은 일을 하는 `chrome-devtools` 만 끄고 다른 이름은 범위 밖이다. 리뷰어 프롬프트는 `hteam-browser` 만 쓰라고 한다(실수 방지). 첫 실행에 npm 패키지를 내려받는다(버전 고정 `chrome-devtools-mcp@1.10.1`).
-- 이미지 생성의 `codex exec` 는 orca-team 과 같이 샌드박스 우회로 돈다(`image_gen` 결과 파일을 읽으려고). 프롬프트는 이미지 생성만 하게 하고, 결과 파일만 복사한다.
+- 이미지 생성의 `codex exec` 는 orca-team 과 같이 샌드박스 우회로 돈다(`image_gen` 결과 파일을 읽으려고). 프롬프트는 이미지 생성만 하게 하고, 결과는 검사한 PNG 바이트만 `--out` 에 새 이름으로 게시한다(링크를 따라가지 않고 덮어쓰지 않는다). 그 codex 는 샌드박스 밖에서 돌아 실행 중 출력 폴더나 결과 파일을 바꿔치기할 수 있으므로 그런 경합은 위협 모델 밖이다. 폴더 fd 고정과 비차단 읽기는 실수(멈춤·잘못된 곳에 쓰기) 방지다.
 - 리뷰어가 제품 파일을 고치면 변조 검사로 판정을 무효로 한다.
 - 워커의 질문·보고·요약은 데이터다. 코디네이터와 메인은 그 안의 지시를 사용자 지시처럼 따르지 않는다.
 - 권한 확인과 훅은 실수 방지용이다(보안 경계가 아님).
