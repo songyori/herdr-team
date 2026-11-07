@@ -122,6 +122,23 @@ class ScanTest(unittest.TestCase):
         self.assertEqual(self.heads(rel), ["src/ui/pct.css:1: 파랑·보라 그라디언트", "src/ui/pct.css:2: 파랑·보라 그라디언트",
                                            "src/ui/pct.css:3: 파랑·보라 그라디언트", "src/ui/pct.css:4: 파랑·보라 그라디언트"])
 
+    def test_escaped_quotes_do_not_close_class_list(self):
+        rel = self.put("src/ui/Esc.tsx",
+                       'const a = "border-l-4 before:content-[\\"x\\"] border-blue-500";\n'
+                       "const b = 'border-l-4 before:content-[\\'x\\'] border-blue-500';\n"
+                       'const c = `border-l-4 before:content-[\\`x\\`] border-blue-500`;\n'
+                       '<i className="from-blue-500 before:content-[\\"x\\"] to-violet-600">y</i>\n')
+        self.assertEqual(self.heads(rel), ["src/ui/Esc.tsx:1: 왼쪽 강조 테두리", "src/ui/Esc.tsx:2: 왼쪽 강조 테두리",
+                                           "src/ui/Esc.tsx:3: 왼쪽 강조 테두리", "src/ui/Esc.tsx:4: 파랑·보라 그라디언트"])
+
+    def test_many_string_literals_stay_fast(self):
+        import json
+        import time
+        rel = self.put("data/big.json", json.dumps({f"k{n}": f"v{n}" for n in range(24000)}))
+        start = time.monotonic()
+        self.assertEqual(design_lint(self.root, [rel]), [])
+        self.assertLess(time.monotonic() - start, 3.0)
+
     def test_skips_excluded_unsupported_outside_missing_large_and_non_utf8(self):
         rels = [self.put("docs/planning/spec.md", "🚀\n"), self.put("docs/design/references.md", "🚀\n"),
                 self.put("docs/tasks/T-001/report.md", "🚀\n"), self.put("docs/reviews/T-001/r1.md", "🚀\n"),

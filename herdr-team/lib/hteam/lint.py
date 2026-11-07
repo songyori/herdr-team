@@ -51,9 +51,10 @@ _GRADIENT = re.compile(r"\b(?:repeating-)?(?:linear|radial|conic)-gradient\(", r
 _COLOR = re.compile(r"#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?|oklch)\([^()]*\)|\b[a-z]+\b", re.I)
 # Tailwind 클래스 목록: class·className 속성 값(여러 줄 가능, `{"…"}` 포함), `@apply` 문, 그 밖의 문자열 리터럴(`cn("…")`).
 # 앞의 것이 차지한 자리는 뒤의 것이 다시 보지 않는다.
-_CLASS_ATTR = re.compile(r"\b(?:class|className)\s*=\s*\{?\s*([\"'`])(.*?)\1", re.S)
+# 문자열 안의 `\"` 같은 이스케이프는 닫는 따옴표가 아니다.
+_CLASS_ATTR = re.compile(r"\b(?:class|className)\s*=\s*\{?\s*([\"'`])((?:\\.|(?!\1)[^\\])*)\1", re.S)
 _APPLY = re.compile(r"@apply\b([^;}]*)")
-_LITERAL = re.compile(r"\"([^\"\n]*)\"|'([^'\n]*)'|`([^`]*)`")
+_LITERAL = re.compile(r"\"((?:\\.|[^\"\\\n])*)\"|'((?:\\.|[^'\\\n])*)'|`((?:\\.|[^`\\])*)`")
 # oklch(L C H [/ alpha]). L 은 % 또는 0~1, C 는 숫자(또는 %: 100% = 0.4), H 는 도(deg 생략 가능).
 _OKLCH = re.compile(r"oklch\(\s*(\d*\.?\d+)(%?)\s+(\d*\.?\d+)(%?)\s+(\d*\.?\d+)(?:deg)?\s*(?:/\s*\d*\.?\d+%?\s*)?\)")
 _BLUE_NAMES = frozenset({"blue", "royalblue", "dodgerblue", "deepskyblue", "cornflowerblue", "steelblue", "navy",
@@ -113,13 +114,16 @@ def tailwind_left_border(classes: str) -> bool:
 def class_lists(text: str) -> list[tuple[int, str]]:
     """(시작 위치, 클래스 목록 글) 들. class·className 속성 값(여러 줄 가능), @apply 문, 그 밖의 문자열 리터럴 순으로
     찾고, 이미 찾은 자리와 겹치는 것은 버린다."""
-    taken: list[tuple[int, int]] = []
+    starts: list[int] = []  # 차지한 자리들(서로 겹치지 않는다)의 시작·끝. 시작 순으로 정렬해 bisect 로 겹침을 본다
+    ends: list[int] = []
     out: list[tuple[int, str]] = []
     for rx, grp in ((_CLASS_ATTR, 2), (_APPLY, 1), (_LITERAL, 0)):
         for m in rx.finditer(text):
-            if any(m.start() < e and s < m.end() for s, e in taken):
+            i = bisect.bisect_right(starts, m.start())
+            if (i and ends[i - 1] > m.start()) or (i < len(starts) and starts[i] < m.end()):
                 continue
-            taken.append((m.start(), m.end()))
+            starts.insert(i, m.start())
+            ends.insert(i, m.end())
             if grp:
                 out.append((m.start(grp), m.group(grp)))
             else:
