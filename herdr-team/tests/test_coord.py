@@ -137,6 +137,20 @@ class WaitTest(CoordCase):
             self.assertEqual(run(), [])  # 생성 120초 전이어도 다시 들어왔으니 지금부터 센다
             self.assertEqual(json.loads((self.state_dir / "attention.json").read_text())["reported"], {})
 
+    def test_no_status_after_launching_counts_from_creation(self):
+        # launching 은 상태 보고가 있는 정상 관측이 아니다: 첫 no_status 는 생성 시각부터 센다
+        import time
+        from unittest import mock
+        from hteam import coord
+        self.started()
+        old = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 120))
+        row = {"id": "dsp-x", "attention": "launching", "created_at": old}
+        states = state.all_states(self.p)
+        with mock.patch.object(coord.dispatch, "slot_row", lambda rows, slot: row):
+            self.assertEqual(coord.attention(self.p, [], 60, states=states), [])
+            row["attention"] = "no_status"
+            self.assertEqual(len(coord.attention(self.p, [], 60, states=states)), 1)
+
     def test_reported_keeps_only_current_dispatches(self):
         self.started()
         did = self.work_dispatch("T-001")
@@ -162,6 +176,13 @@ class WaitTest(CoordCase):
         self.assertIn("send 로 이어간다", hint)
         out = coord.annotate(self.p, msg, [], "HORCH", cfg=config.load(self.p))["hteam"]
         self.assertEqual(out.get("next"), None)
+        # 상한에 닿은 작업이 이미 reviewing 으로 넘어간 뒤 온 옛 error 는 ack 만 안내한다(끝난 워커에 send 하라고 하지 않는다)
+        from hteam import state
+        with state.edit(self.p, "T-001") as st:
+            st["status"] = "reviewing"
+        out = coord.annotate(self.p, msg, [], "HORCH", cfg=config.load(self.p))["hteam"]
+        self.assertIn("이미 reviewing 다", out["hint"])
+        self.assertNotIn("send", out["hint"])
         # 이어 붙인 작업 워커의 next 도 같은 판정(tasks.fix_next)이다
         self.assertIs(coord._fix, tasks.fix_next)
         nxt, why = tasks._adopted_next(config.load(self.p), "T-001", 1,
