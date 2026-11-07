@@ -7,8 +7,8 @@ import sys
 import unittest
 from unittest import mock
 
-from tests.helpers import BASE_CONFIG, TeamCase
-from hteam import compose, config, dispatch, horch, launch, procs, specs, state, tasks
+from tests.helpers import BASE_CONFIG, HORCH_FAKES, TeamCase
+from hteam import browser, compose, config, dispatch, horch, launch, procs, specs, state, tasks
 from hteam.errors import HteamError
 from hteam.paths import Project
 
@@ -249,6 +249,122 @@ class StartTest(StartCase):
         self.assertIn("T-001.json", out["error"]["message"])
         self.assertEqual(self.task_state("T-002")["status"], "pending")
         self.assertEqual(len(self.horch_tasks()), 1)
+
+
+# `codex mcp get` 만 맡는 가짜 codex(FAKE_MCP: stdio | url | off | none | fail, 부른 것을 FAKE_MCP_LOG 에). 나머지는 horch 의 가짜로
+FAKE_MCP_CODEX = r'''#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+if args[:2] == ["mcp", "get"]:
+    with open(os.environ["FAKE_MCP_LOG"], "a") as fh:
+        fh.write(json.dumps(args) + "\n")
+    mode = os.environ.get("FAKE_MCP", "none")
+    if mode == "none":
+        print("Error: No MCP server named 'chrome-devtools' found.", file=sys.stderr); sys.exit(1)
+    if mode == "fail":
+        print("Error: failed to load bootstrap configuration", file=sys.stderr); sys.exit(1)
+    transport = ({"type": "streamable_http", "url": "http://127.0.0.1:9/mcp"} if mode == "url"
+                 else {"type": "stdio", "command": "npx", "args": ["-y", "chrome-devtools-mcp@1.10.1"]})
+    print(json.dumps({"name": "chrome-devtools", "enabled": mode != "off", "transport": transport})); sys.exit(0)
+os.execv(sys.executable, [sys.executable, os.environ["FAKE_MCP_NEXT"], *args])
+'''
+
+
+class BrowserOffTest(StartCase):
+    """디스패치(워커·리뷰어)도 사용자 Codex 의 chrome-devtools 를 끈다(Codex 계획 r2 추가 수정): agent 가 codex 이고 args 에
+    hteam-browser 정의가 있을 때만 읽기 전용 `codex mcp get` 으로 보고, 켜져 있으면 끄는 인자를 args 뒤에 더한다."""
+
+    DEFINE = 'mcp_servers.hteam-browser={command="npx",args=["-y","chrome-devtools-mcp@1.10.1"]}'
+    OFF = {"stdio": 'mcp_servers.chrome-devtools={command="npx",enabled=false}',
+           "url": 'mcp_servers.chrome-devtools={url="http://127.0.0.1:9/mcp",enabled=false}'}
+
+    def setUp(self):
+        super().setUp()
+        self.base = ["--disable=hooks", "-c", self.DEFINE]
+        (self.team / "config.toml").write_text(
+            BASE_CONFIG.replace('args = ["--disable=hooks"]', f"args = {json.dumps(self.base)}"))
+        bin_dir = self.tmp / "mcpbin"
+        bin_dir.mkdir()
+        (bin_dir / "codex").write_text(FAKE_MCP_CODEX)
+        (bin_dir / "codex").chmod(0o755)
+        self.log = self.tmp / "mcp.jsonl"
+        self.env.update({"PATH": f"{bin_dir}{os.pathsep}{self.env['PATH']}", "FAKE_MCP_LOG": str(self.log),
+                         "FAKE_MCP_NEXT": str(HORCH_FAKES / "codex")})
+
+    def queries(self):
+        return self.log.read_text().splitlines() if self.log.exists() else []
+
+    def start(self, mode, worker="codex", tid="T-001"):
+        self.make_task(tid, owns=f"src/{tid.lower()}/**")
+        code, out = self.hteam("start", tid, "--worker", worker, env={"FAKE_MCP": mode})
+        self.assertEqual(code, 0, out)
+        return out, json.loads(self.dispatch_row(out["dispatch"])["agent_args"])
+
+    def test_worker_dispatch_per_answer(self):
+        for n, (mode, extra, warned) in enumerate((("stdio", ["-c", self.OFF["stdio"]], False),
+                                                   ("url", ["-c", self.OFF["url"]], False),
+                                                   ("off", [], False), ("none", [], False), ("fail", [], True))):
+            with self.subTest(mode=mode):
+                out, args = self.start(mode, tid=f"T-00{n + 1}")
+                self.assertEqual(args, self.base + extra)
+                warnings = [w for w in out["warnings"] if "chrome-devtools" in w]
+                self.assertEqual(bool(warnings), warned, out["warnings"])
+                if warned:
+                    self.assertIn("끄지 않았다", warnings[0])
+        self.assertEqual(len(self.queries()), 5)  # 명령(프로세스)마다 한 번
+
+    def test_reviewer_dispatch_is_covered(self):
+        # claude 워커는 조회하지 않고, 그 리뷰어(codex)는 끈다
+        self.make_task("T-001")
+        code, out = self.hteam("start", "T-001", "--worker", "claude", env={"FAKE_MCP": "stdio"})
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.queries(), [])
+        self.assertEqual(self.act_work("T-001")[0], 0)
+        code, out = self.hteam("review", "T-001", env={"FAKE_MCP": "stdio"})
+        self.assertEqual((code, out.get("status")), (0, "reviewing"), out)
+        self.assertEqual(json.loads(self.dispatch_row(out["dispatch"])["agent_args"]), self.base + ["-c", self.OFF["stdio"]])
+        self.assertEqual(len(self.queries()), 1)
+
+    def test_no_query_without_hteam_browser(self):
+        (self.team / "config.toml").write_text(BASE_CONFIG)
+        out, args = self.start("stdio")
+        self.assertEqual((args, self.queries()), (["--disable=hooks"], []))
+
+    def test_each_config_form_gets_the_off_args(self):
+        # Codex 계획 r3: 분리형(`-c X`·`--config X`)과 붙인 형(`-cX`·`-c=X`·`--config=X`) 모두 같은 파서로 읽는다
+        forms = (["-c", self.DEFINE], ["--config", self.DEFINE], ["-c" + self.DEFINE], ["-c=" + self.DEFINE],
+                 ["--config=" + self.DEFINE])
+        for n, form in enumerate(forms):
+            with self.subTest(form=form[0][:9]):
+                base = ["--disable=hooks", *form]
+                (self.team / "config.toml").write_text(
+                    BASE_CONFIG.replace('args = ["--disable=hooks"]', f"args = {json.dumps(base)}"))
+                self.make_task(f"T-00{n + 1}", owns=f"src/t-00{n + 1}/**")
+                code, out = self.hteam("start", f"T-00{n + 1}", "--worker", "codex", env={"FAKE_MCP": "stdio"})
+                self.assertEqual(code, 0, out)
+                self.assertEqual(json.loads(self.dispatch_row(out["dispatch"])["agent_args"]),
+                                 base + ["-c", self.OFF["stdio"]])
+        self.assertEqual(browser.config_items(["-c", "a=1", "--config", "b=2", "-cc=3", "-c=d=4", "--config=e=5", "-c"]),
+                         [(0, 2, "a=1"), (2, 4, "b=2"), (4, 5, "c=3"), (5, 6, "d=4"), (6, 7, "e=5")])
+
+    def test_query_is_cached_and_bounded(self):
+        calls = []
+
+        def run(argv, **kw):
+            calls.append(kw.get("timeout"))
+            raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
+        browser._cache.clear()
+        self.addCleanup(browser._cache.clear)
+        with mock.patch.object(browser.shutil, "which", return_value="/x/codex"), \
+                mock.patch.object(browser.subprocess, "run", side_effect=run):
+            for _ in range(2):
+                off, warning = browser.user_off(self.proj)
+                self.assertEqual(off, [])
+                self.assertIn("끝나지 않았다", warning)
+        self.assertEqual(calls, [browser.QUERY_TIMEOUT])  # 한 번만, 시간 제한을 두고
+        browser._cache.clear()
+        with mock.patch.object(browser.shutil, "which", return_value=None):
+            self.assertIn("codex 가 PATH 에 없다", browser.user_off(self.proj)[1])
 
 
 class LaunchRaceTest(StartCase):

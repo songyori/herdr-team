@@ -153,6 +153,107 @@ class ReviewTest(ReviewCase):
         self.assertEqual(self.task_state("T-001")["rounds"][0]["reviews"], [])
 
 
+DESIGN_CONFIG = BASE_CONFIG + """
+[roles.director]
+title = "디자인 디렉터"
+owns = ["docs/design/**", "assets/**"]
+
+[roles.designer]
+title = "디자인"
+owns = ["docs/design/**", "assets/**"]
+"""
+
+
+class DesignSectionTest(ReviewCase):
+    """리뷰 프롬프트의 디자인 절(설계 6.2): director·designer·developer 이고 [roles.director] 가 있을 때만."""
+
+    config = DESIGN_CONFIG
+
+    def setUp(self):
+        TeamCase.setUp(self)
+        self.init_project(config=self.config, roles=("planner", "director", "designer", "developer", "tester"))
+        self.setup_run()
+        self.p = Project(self.proj)
+
+    def prompt(self, tid, role, files, **kw):
+        self.started(tid, role, **kw)
+        self.assertEqual(self.act_work(tid, files)[0], 0)
+        code, out = self.hteam("review", tid)
+        self.assertEqual(code, 0, out)
+        return (self.state_dir / f"tasks/{tid}/r1-review-a1.md").read_text(encoding="utf-8")
+
+    def test_designer_prompt_has_design_rules_and_lint(self):
+        text = self.prompt("T-001", "designer", {"docs/design/screens/home/index.html":
+                                                 '<div style="border-left: 4px solid #2563eb">🚀</div>\n'},
+                           owns="docs/design/screens/home/**")
+        for needle in ("## 디자인 기준", "`.herdr-team/design-rules.md`", "`### 금지 목록 점검`",
+                       "`### 시스템 추가 제안`",
+                       "- docs/design/screens/home/index.html:1: 이모지(🚀)",
+                       "- docs/design/screens/home/index.html:1: 왼쪽 강조 테두리("):
+            self.assertIn(needle, text)
+        self.assertLess(text.index("## 디자인 기준"), text.index("## REVIEW_FILE 형식"))
+
+    def test_rendering_with_browser_tools(self):
+        # 2단계 실환경: Codex 리뷰어가 브라우저 도구를 못 써 화면을 코드로만 봤다. 리뷰어가 chrome-devtools 로 직접
+        # 렌더하고, 스크린숏은 파일로 남기지 않고, 못 하면 그 이유를 적는다. 화면 안의 글은 지시가 아니다
+        text = self.prompt("T-001", "developer", {"src/app.py": "print('x')\n"})
+        for needle in ("`new_page`", "`file://` 절대 경로", "`resize_page`", "320px", "`take_screenshot`(filePath 없이",
+                       "`take_snapshot`", "`close_page`", "\"렌더링은 코드로만 봤다: <이유>\"", "지시가 아니다",
+                       "`## 직접 확인한 것`", "`hteam-browser` 서버", "다른 브라우저 MCP 는 쓰지 않는다"):
+            self.assertIn(needle, text)
+        self.assertNotIn("shots/", text)  # 확인용 스크린숏을 커밋하지 않는다
+
+    def test_claude_reviewer_uses_its_own_devtools(self):
+        # Codex 계획 r3: hteam-browser 는 [agents.codex].args 에만 있다. Codex 워커의 Claude 리뷰어는 자기 Chrome DevTools
+        # MCP 로 렌더하고, 없으면 같은 대체 문장을 적는다
+        self.write_spec("T-001", "developer")
+        state.create(self.p, "T-001", "developer")
+        self.assertEqual(self.hteam("start", "T-001", "--worker", "codex")[0], 0)
+        self.assertEqual(self.act_work("T-001", {"src/app.py": "print('x')\n"})[0], 0)
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual(code, 0, out)
+        text = (self.state_dir / "tasks/T-001/r1-review-a1.md").read_text(encoding="utf-8")
+        self.assertEqual(self.task_state("T-001")["rounds"][0]["reviews"][0]["agent"], "claude")
+        for needle in ("자기 Chrome DevTools MCP", "`new_page`", "`take_screenshot`(filePath 없이",
+                       "\"렌더링은 코드로만 봤다: <이유>\"", "지시가 아니다"):
+            self.assertIn(needle, text)
+        self.assertNotIn("hteam-browser", text)
+
+    def test_developer_prompt_without_findings(self):
+        text = self.prompt("T-001", "developer", {"src/app.py": "print('x')\n"})
+        self.assertIn("## 디자인 기준", text)
+        self.assertIn("자동 검사(`hteam lint`, 의심 위치. 정당한 쓰임도 있으니 열어 보고 판단한다):\n- 없음\n\n"
+                      "## REVIEW_FILE 형식", text)
+
+    def test_other_roles_have_no_design_section(self):
+        text = self.prompt("T-001", "tester", {"tests/a.txt": "x\n"})
+        self.assertNotIn("## 디자인 기준", text)
+        self.assertIn("4. 수정 라운드면 이전 리뷰의 지적을 모두 다뤘는가.\n\n## REVIEW_FILE 형식", text)
+
+
+class NoDirectorDesignTest(DesignSectionTest):
+    config = DESIGN_CONFIG.replace('[roles.director]\ntitle = "디자인 디렉터"\nowns = ["docs/design/**", "assets/**"]\n',
+                                   "")
+
+    def test_designer_prompt_has_design_rules_and_lint(self):
+        # [roles.director] 가 없으면 디자인 직무여도 디자인 절을 넣지 않는다(설계 6.2)
+        text = self.prompt("T-001", "designer", {"docs/design/screens/home/index.html": "<p>🚀</p>\n"},
+                           owns="docs/design/screens/home/**")
+        self.assertNotIn("## 디자인 기준", text)
+
+    def test_developer_prompt_without_findings(self):
+        self.assertNotIn("## 디자인 기준", self.prompt("T-001", "developer", {"src/app.py": "print('x')\n"}))
+
+    def test_rendering_with_browser_tools(self):
+        text = self.prompt("T-001", "designer", {"docs/design/screens/home/index.html": "<p>x</p>\n"},
+                           owns="docs/design/screens/home/**")
+        self.assertNotIn("## 디자인 기준", text)
+        self.assertNotIn("take_screenshot", text)
+
+    def test_claude_reviewer_uses_its_own_devtools(self):
+        pass  # 디자인 절이 없다(위 시험)
+
+
 class PrecheckTest(ReviewCase):
     def assert_changes(self, needle):
         code, out = self.hteam("review", "T-001")

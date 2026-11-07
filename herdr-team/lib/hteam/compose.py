@@ -1,6 +1,7 @@
 """워커 사양 조립(설계 5.5)과 리뷰 프롬프트 조립(6.2). horch 프리앰블이 이 사양 앞에 붙는다."""
 from __future__ import annotations
 
+from . import lint
 from .errors import USAGE, HteamError
 from .paths import SHIM, TEMPLATES, report_rel, review_rel
 from .util import fill, show
@@ -66,9 +67,28 @@ def work_spec(p, cfg, spec, rd: dict, owns: list[str]) -> str:
     return "\n".join(parts).rstrip() + "\n"
 
 
+BROWSER_TOOLS = {  # 리뷰어 에이전트마다 렌더링에 쓸 브라우저 도구(설계 6.2)
+    "codex": "`hteam-browser` 서버의 chrome-devtools 도구로 직접 연다(헤드리스·격리 프로필. 사용자 Chrome 프로필을 쓸 수 "
+             "있는 다른 브라우저 MCP 는 쓰지 않는다)",
+    "claude": "자기 Chrome DevTools MCP(chrome-devtools 도구)로 직접 연다",
+}
+
+
+def design_section(p, cfg, spec, files: list[str], agent: str = "codex") -> str:
+    """리뷰 프롬프트의 디자인 절(설계 6.2): director·designer·developer 태스크이고 설정에 `[roles.director]` 가 있을
+    때만 디자인 기준(11장)과 자동 검사 경고(11.6, files 는 시도 기록의 바뀐 파일)를 넣는다. 아니면 빈 문자열. 렌더링에
+    쓸 도구는 리뷰어 에이전트(agent)에 따라 다르다(BROWSER_TOOLS: Codex 는 hteam-browser, Claude 는 자기 DevTools MCP)."""
+    if spec.role not in lint.DESIGN_ROLES or "director" not in cfg.roles:
+        return ""
+    found = lint.design_lint(p.root, files)
+    return fill(_template("review-design.md"), browser=BROWSER_TOOLS.get(agent, BROWSER_TOOLS["claude"]),
+                lint="\n".join(f"- {show(x)}" for x in found) or "- 없음").rstrip() + "\n\n"
+
+
 def review_prompt(p, cfg, spec, rd: dict, att: dict) -> str:
     """리뷰 프롬프트(설계 6.2). 입력(대상 커밋, 바뀐 파일)은 시도 기록에 저장된 것을 쓴다. 이번 라운드에 요청(사용자
-    요청·코디네이터 메모)이 있으면 그 요청과 그 라운드 작업 사양을 보이고 기준에 한 줄을 더한다(없으면 그대로)."""
+    요청·코디네이터 메모)이 있으면 그 요청과 그 라운드 작업 사양을 보이고 기준에 한 줄을 더한다(없으면 그대로).
+    디자인 직무 태스크면 디자인 절을 더한다(design_section)."""
     tid, n = spec.id, rd["round"]
     prior = [review_rel(tid, r) for r in range(1, n) if (p.root / review_rel(tid, r)).is_file()]
     commits = att["inputs"]["commits"]
@@ -84,6 +104,6 @@ def review_prompt(p, cfg, spec, rd: dict, att: dict) -> str:
                 round=str(n), attempt=str(att["attempt"]), title=spec.title, review_file=att["file"],
                 spec_path=f".herdr-team/tasks/{tid}.md", role_doc=f".herdr-team/roles/{spec.role}.md",
                 report=report_rel(tid), prior=", ".join(f"`{x}`" for x in prior) or "없음", request=request,
-                request_rule=request_rule,
+                request_rule=request_rule, design=design_section(p, cfg, spec, files, att.get("agent") or "codex"),
                 commits="\n".join(f"- {c['sha'][:10]} {c['subject']}" for c in commits) or "- 없음",
                 files="\n".join(f"- `{show(f)}`" for f in files) or "- 없음").rstrip() + "\n"

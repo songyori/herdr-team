@@ -12,7 +12,8 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import config, coord, gitio, herdr, outbox, roles
+from . import browser, config, coord, gitio, herdr, outbox, roles
+from .browser import BROWSER_SERVER
 from .errors import CONFLICT, DENIED, FAIL, TIMEOUT, USAGE, HteamError
 from .horch import Horch
 from .paths import PLUGIN_ROOT, SHIM, TEMPLATES, Project, find_project
@@ -55,6 +56,28 @@ def _chrome_mcp(root: Path) -> bool:
         except (OSError, UnicodeDecodeError):
             continue
     return False
+
+
+def _codex_browser(root: Path) -> dict:
+    """Codex 리뷰어가 chrome-devtools 로 화면을 렌더할 수 있나(경고만, 설계 6.2·9.2). 설정이 아직 없으면(init 의 scaffold 전)
+    보지 않는다. 정의가 없거나, npx 가 없거나, 샌드박스·승인 우회가 없으면(도구 호출이 -a never 로 거부된다) 경고다."""
+    p = Project(root)
+    if not p.config.exists():
+        return _check("codex_browser", True, "설정이 아직 없다(scaffold 뒤 doctor 가 다시 본다)", "warning")
+    try:
+        args = config.load(p).args("codex")
+    except HteamError as exc:
+        return _check("codex_browser", False, f"설정을 읽지 못했다: {exc.message}", "warning")
+    if not browser.defines(args):
+        return _check("codex_browser", False, f"[agents.codex].args 에 {BROWSER_SERVER}(chrome-devtools) 정의가 없다(리뷰어는 "
+                      "화면을 코드로만 본다)", "warning")
+    if not shutil.which("npx"):
+        return _check("codex_browser", False, "npx 가 PATH 에 없어 chrome-devtools 서버를 띄우지 못한다(Node.js 설치)",
+                      "warning")
+    if not any(a.split("=", 1)[0] in config.CODEX_BYPASS for a in args):
+        return _check("codex_browser", False, "Codex 리뷰어의 브라우저 도구는 승인 정책으로 거부된다(코드로만 본다). 쓰려면 "
+                      "init 4단계의 Codex 권한(샌드박스 우회)을 승인한다", "warning")
+    return _check("codex_browser", True, f"{BROWSER_SERVER} 정의·npx·샌드박스 우회가 있다", "warning")
 
 
 def _horch_checks(root: Path) -> list[dict]:
@@ -122,6 +145,7 @@ def doctor(root: Path) -> dict:
         checks += _codex_checks(codex)
     checks.append(_check("chrome_devtools_mcp", _chrome_mcp(root), "디렉터 레퍼런스 캡처에 쓴다(없으면 링크만 남긴다)",
                          "warning"))
+    checks.append(_codex_browser(root))
     if not all(c["ok"] for c in checks if c["level"] == "error"):
         raise HteamError("unhealthy", "필수 점검이 실패했다", FAIL, data={"checks": checks})
     return {"healthy": True, "checks": checks}

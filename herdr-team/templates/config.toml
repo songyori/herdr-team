@@ -19,8 +19,13 @@ codex_effort = "high"
 # 띄울 때마다 horch --agent-arg 로 넘기는 인자. 권한 모드는 여기서 정한다(init 이 위험을 설명하고 승인받는다).
 [agents.claude]
 args = []
+# Codex 는 리뷰어가 화면을 렌더하도록 chrome-devtools MCP 서버를 herdr-team 전용 이름 hteam-browser 로, 헤드리스·격리
+# 프로필로 정의한다(사용자 Chrome 의 쿠키·로그인을 쓰지 않는다). 사용자·플러그인의 chrome-devtools 와 이름을 나눈다(같은
+# 이름을 덮으면 -c 가 기존 정의와 합쳐져 url 정의면 Codex 가 시작하지 못한다). 승인 정책(-a never) 아래에서는 도구 호출이
+# 거부되므로, 쓰려면 init 이 위험을 설명하고 승인받아 "--dangerously-bypass-approvals-and-sandbox" 를 더한다(설계 9.1·14장).
 [agents.codex]
-args = ["--disable=hooks"]
+args = ["--disable=hooks",
+        "-c", 'mcp_servers.hteam-browser={command="npx",args=["-y","chrome-devtools-mcp@1.10.1","--headless=true","--isolated=true"],startup_timeout_sec=60}']
 
 [image]
 codex_model = "gpt-6.1-sol"

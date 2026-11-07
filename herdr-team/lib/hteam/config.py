@@ -12,6 +12,8 @@ AGENTS = ("claude", "codex")
 CLAUDE_ONLY = ("director", "designer")  # Claude Design 을 쓰는 직무(설계 4.2, 11장)
 ROLE_RE = re.compile(r"[a-z][a-z0-9-]*")
 MODEL_KEYS = tuple(f"{a}_{k}" for a in AGENTS for k in ("model", "effort"))  # [defaults]·[roles.*] 의 모델·effort
+# Codex 의 샌드박스·승인 우회 플래그(herdr-orch agents._BYPASS 와 같은 목록. horch 는 이것이 있으면 -s·-a 를 뺀다)
+CODEX_BYPASS = ("--dangerously-bypass-approvals-and-sandbox", "--yolo", "--full-auto", "--approve-for-me")
 
 
 def other(agent: str) -> str:
