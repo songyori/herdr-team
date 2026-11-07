@@ -151,6 +151,24 @@ class WaitTest(CoordCase):
             row["attention"] = "no_status"
             self.assertEqual(len(coord.attention(self.p, [], 60, states=states)), 1)
 
+    def test_no_status_after_each_attention_word(self):
+        # 실제 상태 보고가 있던 관측(없음·idle·blocked·error)뒤의 no_status 는 유예를 새로 센다. 미확인 상태 뒤는 생성 시각부터
+        import time
+        from unittest import mock
+        from hteam import coord
+        self.started()
+        old = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 120))
+        states = state.all_states(self.p)
+        cases = [(None, 0), ("idle", 0), ("blocked", 0), ("error", 0),
+                 ("launching", 1), ("unverifiable", 1), ("exited_without_done", 1), ("lost_without_done", 1)]
+        for word, expect in cases:
+            (self.state_dir / "attention.json").unlink(missing_ok=True)
+            row = {"id": "dsp-x", "attention": word, "created_at": old}
+            with mock.patch.object(coord.dispatch, "slot_row", lambda rows, slot: row):
+                self.assertEqual(coord.attention(self.p, [], 60, states=states), [], word)
+                row["attention"] = "no_status"
+                self.assertEqual(len(coord.attention(self.p, [], 60, states=states)), expect, word)
+
     def test_reported_keeps_only_current_dispatches(self):
         self.started()
         did = self.work_dispatch("T-001")

@@ -17,6 +17,10 @@ MAIN_REPLY_RE = re.compile(r"\[main\] reply (out-\d+)")
 STARTING_S = 180  # 띄운 지 이 시간 안이면 starting(설계 9.3)
 LIVE = ("launching", "active")
 CANCELED_HINT = "앞선 fix·drop 이 끝나지 않았다(실행 키가 취소됐다). 같은 명령을 다시 한다"
+# horch.workers._attention 이 내는 값 가운데 실제 상태 보고를 본 것이 아닌 상태: 시작 전·확인 불가·워커가 죽음.
+# 이 상태는 정상 관측(attention.json 의 ok)으로 치지 않는다
+UNCONFIRMED = frozenset({"no_status", "launching", "launch_failed", "unverifiable",
+                         "exited_without_done", "lost_without_done"})
 _LOAD = object()  # annotate 의 cfg 를 주지 않았다: 필요할 때 읽는다
 
 
@@ -328,7 +332,7 @@ def attention(p, rows: list[dict], grace: float, *, states: list[dict] | None = 
                     continue
                 did, word = row["id"], row.get("attention")
                 current.add(did)
-                if word is None:  # 실제 상태 보고가 있는 정상. launching 같은 미확인 상태는 넣지 않는다
+                if word not in UNCONFIRMED:  # 실제 상태 보고가 있는 관측(없음·idle·blocked·error 등)
                     ok.add(did)
                 if word not in ("no_status", "launch_failed") or reported.get(did) == word:
                     continue
