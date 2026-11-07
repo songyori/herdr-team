@@ -42,6 +42,10 @@ class DirectorDocTest(unittest.TestCase):
                        "${XDG_CACHE_HOME:-$HOME/.cache}/herdr-team/refs/<프로젝트 폴더 이름>/", "커밋하지 않는다",
                        "스타일 묶음 3–4개", "`docs/design/board/`", "`docs/design/references.md`", "캡처 불가"):
             self.assertIn(needle, ref)
+        # MCP 는 filePath 를 자체 허용 목록(시스템 임시 경로) 안에만 저장한다: 임시 폴더에 찍고 캐시로 옮긴다
+        for needle in ("tempfile.gettempdir()", "herdr-team-refs-<프로젝트 폴더 이름>", "`mv`", "`filePath` 없이"):
+            self.assertIn(needle, ref)
+        self.assertIn("임시 폴더의 파일로(뒤에 캐시로 옮긴다)", section(self.text, "도구"))
         system = section(self.text, "단계 ③ 디자인 시스템")
         for needle in ("Design System 타입", "`docs/design/system/`", "`tokens.json`", "`README.md`", "`components/`",
                        "4.5:1", "Lucide·Phosphor·Tabler", "`design_system_url: <URL>`", "밝은 테마 필수"):

@@ -13,7 +13,7 @@
 | 일 | 도구 |
 |---|---|
 | 레퍼런스 조사 | WebSearch, WebFetch |
-| 레퍼런스 화면 캡처 | Chrome DevTools MCP: `new_page`(URL) → `take_screenshot`(캡처 폴더의 파일로) → `close_page` |
+| 레퍼런스 화면 캡처 | Chrome DevTools MCP: `new_page`(URL) → `take_screenshot`(임시 폴더의 파일로(뒤에 캐시로 옮긴다)) → `close_page` |
 | 레퍼런스 보드, 톤 시안 | Claude Design 의 Design 타입. Artifact 도구를 `action: "quickstart"`, `intent: "design"` 으로 불러 찾은 `type_url` 로 만든다 |
 | 디자인 시스템 | Claude Design 의 Design System 타입. Artifact 도구를 `action: "quickstart"`, `intent: "other"` 로 불러 찾는다. 없으면 `action: "list"`, `scope: "types"` 로 다시 찾는다 |
 
@@ -24,8 +24,11 @@
 
 ## 단계 ① 레퍼런스
 1. **조사.** WebSearch·WebFetch 로 같은 분야의 상용 서비스와 인접 분야에서 완성도가 높은 서비스를 6–9개 고른다. 기준은 서비스 성격, 사용자층, 정보 밀도, 플랫폼(웹·모바일)이다. 국내 서비스면 국내 레퍼런스를 넣는다. `interview.md` 에 사용자가 말한 레퍼런스나 브랜드 자산이 있으면 먼저 반영한다.
-2. **캡처.** Chrome DevTools MCP 로 각 서비스의 실제 화면을 연다. 캡처는 저장소 밖 `${XDG_CACHE_HOME:-$HOME/.cache}/herdr-team/refs/<프로젝트 폴더 이름>/<서비스>-<화면>.png` 에 두고 커밋하지 않는다(폴더는 `mkdir -p` 로 먼저 만든다).
+2. **캡처.** Chrome DevTools MCP 로 각 서비스의 실제 화면을 연다. 최종 위치는 저장소 밖 `${XDG_CACHE_HOME:-$HOME/.cache}/herdr-team/refs/<프로젝트 폴더 이름>/<서비스>-<화면>.png` 이고 커밋하지 않는다. 그러나 MCP 서버는 `take_screenshot` 의 `filePath` 를 자체 허용 목록(시스템 임시 경로) 안에만 저장하므로, 임시 폴더에 찍고 캐시로 옮긴다.
+   - 먼저 셸로 임시 폴더를 만든다: `python3 -c 'import tempfile; print(tempfile.gettempdir())'` 가 찍는 경로 아래 `herdr-team-refs-<프로젝트 폴더 이름>`(`mkdir -p`).
+   - `take_screenshot` 의 `filePath` 를 그 임시 폴더의 절대 경로 파일(`<서비스>-<화면>.png`)로 준다. 끝나면 셸로 최종 폴더를 `mkdir -p` 한 뒤 `mv` 로 옮긴다.
    - `new_page` 로 연 페이지에서만 `take_screenshot` 을 하고, 끝나면 그 페이지를 `close_page` 로 닫는다. 사용자나 다른 워커가 연 페이지는 찍거나 닫지 않는다.
+   - 그래도 `filePath` 저장이 거부되면 `filePath` 없이 찍어(화면을 직접 본다) 판단에 쓰고, 보드에는 링크만 두고 그 사실을 보고서에 적는다.
    - 저장한 PNG 를 Read 로 열어 보고, 덜 떴으면 다시 찍는다.
    - 로그인이 필요하거나 막히면 공개된 대표 이미지나 링크만 쓰고 보드에 "캡처 불가" 라고 적는다. 멈추지 않는다.
    - Chrome DevTools MCP 가 없거나 실패하면 링크와 설명만으로 보드를 만들고 보고서에 적는다.

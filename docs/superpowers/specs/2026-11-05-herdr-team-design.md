@@ -526,7 +526,7 @@ orca-team 0.3 의 인터뷰를 옮긴다. 직무 문서 `roles/planner.md` 가 �
 
 세 단계를 한 태스크 안에서 차례로 하고, 단계마다 `hteam ask-user` 로 사용자에게 고르게 한다(header 기본 "디자인").
 
-1. **레퍼런스**: 실제 상용·인접 서비스 6–9개를 WebSearch·WebFetch 로 고른다. 화면은 Chrome DevTools MCP 로 연다(새 페이지 → 스크린샷 → 닫기, 자기가 연 페이지만 닫는다). 캡처는 저장소 밖 `~/.cache/herdr-team/refs/<프로젝트>/` 에 둔다. MCP 가 없거나 막히면 링크만 남긴다. 스타일 묶음 3–4개로 Claude Design 레퍼런스 보드를 만들고, `references.md` 와 `board/` 에 원본을 둔다. 사용자가 묶음을 고른다.
+1. **레퍼런스**: 실제 상용·인접 서비스 6–9개를 WebSearch·WebFetch 로 고른다. 화면은 Chrome DevTools MCP 로 연다(새 페이지 → 스크린샷 → 닫기, 자기가 연 페이지만 닫는다). 캡처는 저장소 밖 `~/.cache/herdr-team/refs/<프로젝트>/` 에 둔다(MCP 는 `filePath` 를 시스템 임시 경로 안에만 저장하므로 임시 폴더에 찍고 캐시로 옮긴다. 저장이 거부되면 `filePath` 없이 보고 링크만 남긴다). MCP 가 없거나 막히면 링크만 남긴다. 스타일 묶음 3–4개로 Claude Design 레퍼런스 보드를 만들고, `references.md` 와 `board/` 에 원본을 둔다. 사용자가 묶음을 고른다.
 2. **톤 시안**: 서로 다른 톤 3안(색·글꼴·밀도·모서리·그림자 중 2가지 이상 다름) × 대표 화면 3개(대표·조밀·입력) = 9프레임을 한 캔버스에. 원본은 `pilots/`. 세부 수정 피드백이면 수정안 1개("확정 / 다시 수정"), 방향 전환이면 새 3안. 확정까지 반복하고 피드백과 결정은 `direction.md` 에.
 3. **디자인 시스템**: Claude Design 의 Design System 타입(Artifact `quickstart`·`list scope: types` 로 찾는다). 토큰(밝은 테마 필수), 상태별 미리보기가 있는 컴포넌트(기본·hover·focus·disabled·error), 아이콘 세트(Lucide·Phosphor·Tabler 중 하나)를 담은 README, 대비 4.5:1·3:1. Codex 가 claude.ai 를 볼 수 없으므로 `docs/design/system/`(`tokens.json`, `README.md`, `components/`)에 사본을 둔다. 확정되면 `direction.md` 에 `design_system_url: <URL>` 줄.
 
