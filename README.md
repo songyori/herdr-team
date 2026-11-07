@@ -39,9 +39,9 @@ Herdr(herdr-app 창 + herdr-core `hc`) 위에서 멀티 에이전트를 조정�
 
 scaffold 는 있는 파일을 덮어쓰지 않는다. 1·2단계에서 세팅한 프로젝트는 새 기능을 손으로 옮겨야 하고, 옮기지 않으면 조용히 빠진다(예: `[roles.director]` 가 없으면 디자인 디렉터 단계와 시스템 보강이 없다).
 
-1. 새 파일은 `hteam scaffold` 를 다시 하면 생긴다: `.herdr-team/design-rules.md`, `.herdr-team/roles/director.md`.
+1. 새 파일은 프로젝트 루트에서 scaffold 를 다시 하면 생긴다: `.herdr-team/bin/hteam scaffold --description-file .herdr-team/project.md`(설명 파일은 필수 인자다. 있는 `project.md` 는 그대로 둔다). 생기는 것: `.herdr-team/design-rules.md`, `.herdr-team/roles/director.md`, 1단계 프로젝트면 `.herdr-team/roles/designer.md` 도.
 2. 손으로 합칠 것(`herdr-team/templates/` 의 같은 이름 파일과 비교한다)
-   - `.herdr-team/config.toml`: `[roles.director]` 절과 `[agents.codex].args` 의 `hteam-browser` 한 쌍(`"-c", 'mcp_servers.hteam-browser={…}'`). Codex 리뷰어가 브라우저를 쓰게 하려면 `--dangerously-bypass-approvals-and-sandbox` 도 넣는다(위 보안 주의를 읽고 정한다).
+   - `.herdr-team/config.toml`: `[roles.director]` 절과 `[agents.codex].args` 의 `hteam-browser` 한 쌍(`"-c", 'mcp_servers.hteam-browser={…}'`). Codex 리뷰어가 브라우저를 쓰게 하려면 `--dangerously-bypass-approvals-and-sandbox` 도 넣는다(위 보안 주의를 읽고 정한다). 1단계에서 세팅한 화면 프로젝트는 `[roles.designer]` 절도 더하고 `user_approval_roles` 에 `"designer"` 를 넣는다(1단계 설정은 `[roles.designer]` 가 없고 `user_approval_roles = []` 라 designer 태스크가 `unknown_role` 로 실패하고 일괄 승인도 걸리지 않는다).
    - `.herdr-team/roles/designer.md`: `## 시작`, `## 도구`, `## 시스템 적용 규칙`, `## 시스템이 없을 때`, `## 확인한 화면`.
    - `.herdr-team/roles/developer.md`: `## 화면 규칙`.
    - `.herdr-team/roles/planner.md`: `ui-foundation`·`design-direction` 태스크를 두라는 줄.
