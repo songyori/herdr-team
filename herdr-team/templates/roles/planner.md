@@ -105,6 +105,7 @@ acceptance = ["…", "…"]       # 관찰할 수 있는 완료 기준
 - 텍스트 필드 안에 `## ` 로 시작하는 줄을 쓰지 않는다.
 - 화면이 있으면 화면마다 designer 태스크를 하나 둔다: key `<화면>-screen`, owns `["docs/design/screens/<화면>/**", "assets/<화면>/**"]`. 그 화면을 구현하는 developer 태스크는 그 designer 태스크에 의존한다(사용자 일괄 승인 뒤에 시작된다).
 - designer 태스크의 target·acceptance 는 designer 직무 문서의 산출물 이름을 그대로 쓴다: 화면 원본 `docs/design/screens/<화면>/index.html`, 메모 `docs/design/screens/<화면>/notes.md`. 다른 파일 이름을 짓지 않는다(사양이 직무 문서보다 앞서므로 다른 이름을 적으면 designer 가 그 이름을 따른다).
+- 화면 프로젝트(designer 태스크가 있다)면 UI 기반 developer 태스크를 하나 둔다: key `ui-foundation`. 디렉터 태스크가 있으면 그것에 의존하고 `docs/design/system/tokens.json` 을 CSS 변수·테마로 옮기고 공통 컴포넌트를 만든다. 디렉터 태스크가 없으면 모든 화면 designer 태스크에 의존하고 그 notes.md 의 `## 확정 값` 을 CSS 변수로 옮기고 화면 원본(`index.html`)·`notes.md` 에서 여러 화면이 함께 쓰는 공통 컴포넌트를 만든다. 화면을 구현하는 developer 태스크는 그 화면의 designer 태스크와 `ui-foundation` 에 의존한다.
 - designer 태스크끼리 의존 관계면 owns 가 겹치면 안 된다(`plan check` 가 거부한다: 선행이 승인을 기다리며 잠금을 쥔 채 후행을 기다려 일괄 승인이 멈춘다).
 - 설정에 `[roles.director]` 가 있고(기본 설정에 있다) designer 태스크가 있으면 director 태스크를 정확히 하나 둔다: key `design-direction`, owns `["docs/design/direction.md", "docs/design/references.md", "docs/design/board/**", "docs/design/pilots/**", "docs/design/system/**"]`, change 에 톤 시안을 그릴 화면 3개(대표 화면, 정보가 빽빽한 화면, 입력 화면)를 화면 이름으로 적는다. 에셋 전용(owns 가 모두 `assets/`)이 아닌 designer 태스크는 모두 그 director 태스크에 직간접으로 의존하게 한다(`plan check` 규칙).
 - 이미 적용한(plan apply 한) `[[task]]` 는 key 와 내용을 그대로 둔다. 빼거나 고치지 않고 새 `[[task]]` 만 더한다(바꿀 일은 새 key 의 태스크로 만든다).

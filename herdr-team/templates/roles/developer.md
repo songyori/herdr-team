@@ -5,6 +5,15 @@
 
 ## 입력
 - `docs/planning/`(spec.md, contracts.md), 선행 태스크 보고서 `docs/tasks/<T>/report.md`
+- 화면을 구현하면: 디자인 시스템이 있으면(설정에 `[roles.director]` 가 있다) `docs/design/system/`(디자인 시스템 사본 `tokens.json`·`README.md`·`components/`, 시스템 URL 은 `docs/design/direction.md` 의 `design_system_url:` 줄), 없으면 화면 notes.md 의 `## 확정 값`. 그리고 `docs/design/screens/<화면>/`(화면 원본과 notes.md. 아티팩트 URL 은 디자인 태스크 보고서), `assets/<화면>/`, `.herdr-team/design-rules.md`
+
+## 화면 규칙
+- UI 기반 태스크(tasks.toml key `ui-foundation`), 디자인 시스템이 있을 때: `docs/design/system/tokens.json` 을 프로젝트의 CSS 변수나 프레임워크 테마로 옮기고, 시스템 컴포넌트(README 와 `components/`)를 공통 컴포넌트로 만든다. 토큰 이름은 시스템 이름을 그대로 쓴다.
+- UI 기반 태스크, 시스템이 없을 때: 모든 화면 `docs/design/screens/*/notes.md` 의 `## 확정 값` 을 CSS 변수로 옮기고(이름은 notes.md 그대로), 화면 원본(`index.html`)·`notes.md` 에서 여러 화면이 함께 쓰는 공통 컴포넌트를 만든다(버튼·입력·목록 항목·카드 등, 시스템이 있을 때의 공통 컴포넌트와 같은 무게). 컴포넌트 이름과 상태(기본·hover·focus·disabled·error)를 보고서에 적는다. 화면끼리 같은 이름에 다른 값이나 같은 요소의 다른 모양이 있으면 고르지 말고 프리앰블의 ask 명령으로 코디네이터에게 묻는다.
+- 화면 태스크: `ui-foundation` 이 만든 토큰(CSS 변수)과 공통 컴포넌트만 쓴다. 색·글꼴 크기·간격·모서리·그림자 값을 코드에 직접 쓰지 않는다. 필요한 토큰이나 컴포넌트가 없으면 만들지 말고 프리앰블의 ask 명령으로 코디네이터에게 묻는다.
+- 토큰 갱신 태스크(디렉터 보강 뒤): 바뀐 `tokens.json`·컴포넌트를 CSS 변수·공통 컴포넌트에 옮긴다.
+- 아이콘은 디자인 시스템이 정한 아이콘 세트만 쓴다(시스템이 없으면 `## 확정 값` 의 세트). `.herdr-team/design-rules.md` 를 지킨다.
+- 화면을 바꾼 태스크는 보고서 이번 라운드 절에 `### 금지 목록 점검`(항목마다 지켰는지, 예외와 근거)과 `### 확인한 화면`(글로만 적는다: 구현한 상태를 실제로 렌더해 본 페이지·상태·폭, 확인 방법, 확인하지 못한 상태와 이유)을 둔다. 확인용 스크린숏을 커밋하지 않는다. DevTools 출력 제목(`## Network requests` 등)을 붙이지 않는다.
 
 ## 산출물
 - owns 안의 코드와 그 단위 테스트
@@ -18,4 +27,4 @@
 - 단위 테스트는 owns 안에서만 쓴다. `tests/` 는 tester 의 것이다.
 
 ## 하지 않는 것
-- 요구사항 바꾸기(필요하면 프리앰블의 ask 명령으로 묻는다). owns 밖 파일 고치기.
+- 요구사항·디자인 바꾸기(필요하면 프리앰블의 ask 명령으로 묻는다), 디자인 시스템 토큰 값 바꾸기. owns 밖 파일 고치기.
