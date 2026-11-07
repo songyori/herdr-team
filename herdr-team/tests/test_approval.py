@@ -1189,6 +1189,83 @@ class SupplementTest(DecisionCase):
         self.assertIsNone(approval.proposals(self.p, {"id": "T-404", "round": 1}))  # 보고서가 없다
 
 
+class QuestionWordingTest(DecisionCase):
+    """일괄 승인 질문 문구는 묶음의 직무 이름과 승인한 리뷰어로 쓴다(최종 리뷰 M6)."""
+
+    config = APPROVAL.replace('user_approval_roles = ["designer"]', 'user_approval_roles = ["designer", "tester"]')
+
+    def approved_by(self, tid, agent):
+        with state.edit(self.p, tid) as st:
+            st["rounds"][-1]["reviews"] = [{"attempt": 1, "agent": agent, "result": "APPROVE"}]
+
+    def test_role_title_and_reviewer(self):
+        self.task("T-001", "awaiting_user", role="tester", title="통합 시험")
+        self.approved_by("T-001", "claude")
+        code, out = self.review()
+        self.assertEqual(code, 0, out)
+        render = self.outbox_items()[0]["render"]
+        self.assertEqual(render["header"], "테스트 승인")
+        self.assertTrue(render["context"].startswith("리뷰(Claude)가 승인한 테스트 1개다."), render["context"])
+        self.assertEqual(render["question"].split("\n")[0], "테스트 1개를 승인할까요?")
+        self.assertEqual(render["options"][0]["description"], "추천 사유: 리뷰(Claude)가 모두 승인했다")
+
+    def test_mixed_roles(self):
+        self.task("T-001", "awaiting_user")  # designer, 리뷰 기록이 없으면 작업 에이전트(claude)의 반대쪽
+        self.task("T-002", "awaiting_user", role="tester")
+        self.approved_by("T-002", "claude")
+        self.assertEqual(self.review()[0], 0)
+        render = self.outbox_items()[0]["render"]
+        self.assertEqual(render["header"], "결과 승인")
+        self.assertTrue(render["context"].startswith("리뷰(Codex·Claude)가 승인한 결과 2개다."), render["context"])
+
+
+class StaleQuestionTest(DecisionCase):
+    """결정이 답 전의 다른 묶음 태스크를 다시 고치면 메인에 알린다(최종 리뷰 M5)."""
+
+    def test_decision_tells_main_about_another_open_question(self):
+        self.task("T-001", "awaiting_user")
+        self.assertEqual(self.review()[1]["id"], "out-0001")
+        self.task("T-002", "awaiting_user", depends="T-001")
+        self.task("T-003", "awaiting_user")
+        code, out = self.review()
+        self.assertEqual((code, out["id"], [t["task"] for t in out["tasks"]]), (0, "out-0002", ["T-002", "T-003"]), out)
+        code, out = self.decide("out-0001", {"T-001": "버튼을 크게"}, env={"HTEAM_TEST_DIE_AT": "decision_notified"})
+        self.assertEqual(code, 137)
+        self.assertEqual(self.decide("out-0001")[0], 0)  # 알린 뒤 done 전에 죽었다. 다시 해도 한 번만 알린다
+        notes = [e for e in self.outbox_items() if e.get("stale_question")]
+        self.assertEqual([(e["type"], e["stale_question"], e["by"]) for e in notes], [("progress", "out-0002", "out-0001")])
+        self.assertIn("T-002 는 out-0001 의 수정 요청으로 다시 고친다", notes[0]["body"])
+        self.assertIn("`모두 승인 (추천)` 은 그대로인 T-003 만 승인한다", notes[0]["body"])
+        self.assertEqual(self.rounds("T-002"), [("T-002", "launch_failed", 2)])
+        self.assertIn("out-0002", [q["id"] for q in outbox.open_questions(self.p)])  # 질문은 그대로다(답을 잃지 않는다)
+
+    def test_notice_matches_what_the_answer_does(self):
+        # 알림은 _compute 대로다: `모두 승인` 은 그대로인 태스크만 승인하고, 다시 고친 태스크를 지목한 수정 요청은 그
+        # 태스크의 지금 라운드에 더해진다(r2 위에 r3)
+        self.task("T-001", "awaiting_user")
+        self.review()
+        self.task("T-002", "awaiting_user", depends="T-001")
+        self.review()
+        self.assertEqual(self.decide("out-0001", {"T-001": "버튼을 크게"})[0], 0)
+        [note] = [e for e in self.outbox_items() if e.get("stale_question")]
+        for needle in ("`모두 승인 (추천)` 은 아무 태스크도 승인하지 않는다", "다시 고친 T-002 는 다시 승인된 뒤 새로 묻는다",
+                       "그 태스크를 지목한 `수정 요청` 은 그 태스크의 지금 라운드에 더해진다"):
+            self.assertIn(needle, note["body"])
+        code, out = self.decide("out-0002", {"T-002": "색을 바꿔"})
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.rounds("T-002"), [("T-002", "launch_failed", 3)])
+        self.assertIn("색을 바꿔", self.task_state("T-002")["rounds"][-1]["note"])
+
+    def test_answered_question_is_not_noticed(self):
+        self.task("T-001", "awaiting_user")
+        self.review()
+        self.task("T-002", "awaiting_user", depends="T-001")
+        self.review()
+        self.answered("out-0002", "모두 승인 (추천)")
+        self.assertEqual(self.decide("out-0001", {"T-001": "버튼을 크게"})[0], 0)
+        self.assertEqual([e for e in self.outbox_items() if e.get("stale_question")], [])
+
+
 class ApprovalCloseTest(DecisionCase):
     """2단계 마감 리뷰: 띄운 적 없는 queued 라운드와 dropped 선행, 답이 온 질문의 안내, 답 없는 결정, skipped 겹침."""
 

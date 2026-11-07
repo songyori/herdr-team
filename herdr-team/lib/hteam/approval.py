@@ -38,7 +38,8 @@ BATCH_RE = re.compile(r"dr-\d{4,}")
 OUT_RE = re.compile(r"out-\d{4,}")
 CONTEXT_MAX = 4000
 TITLE_MAX = 60
-HEADER = "디자인 승인"
+HEADER = "승인"  # 기록의 render 에 header 가 없을 때만 쓰는 기본값(render 가 직무 이름으로 정한다)
+AGENT_NAMES = {"claude": "Claude", "codex": "Codex"}
 APPROVE = "모두 승인 (추천)"
 REVISE = "수정 요청"
 
@@ -394,10 +395,31 @@ def _tail(rest: list[str]) -> str:
     return f"\n- 그 밖 {len(rest)}개(링크는 각 보고서): " + ", ".join(rest) if rest else ""
 
 
+def reviewer(st: dict) -> str:
+    """그 태스크를 승인한 리뷰어 에이전트: 판정이 APPROVE 인 마지막 리뷰 시도의 에이전트. 기록이 없으면 지금 라운드
+    작업 에이전트의 반대쪽(리뷰는 늘 반대쪽이다)."""
+    for rd in reversed(st.get("rounds") or []):
+        for att in reversed(rd.get("reviews") or []):
+            if att.get("result") == "APPROVE" and att.get("agent"):
+                return att["agent"]
+    return config.other((state.current_round(st) or {}).get("agent") or "claude")
+
+
+def _words(cfg, sts: list[dict]) -> tuple[str, str, str]:
+    """질문 문구의 (무엇, 누가, header). 무엇은 묶음 직무의 title(여럿이면 "결과"), 누가는 승인한 리뷰어들, header 는
+    `<무엇> 승인`(12자를 넘으면 "승인")."""
+    titles = list(dict.fromkeys(cfg.role_title(st["role"]) for st in sts))
+    what = titles[0] if len(titles) == 1 else "결과"
+    who = "·".join(dict.fromkeys(AGENT_NAMES.get(r, r) for r in map(reviewer, sts)))
+    header = f"{what} 승인"
+    return what, who, header if len(header) <= 12 else HEADER
+
+
 def render(p, cfg, sts: list[dict]) -> dict:
     """approval 질문(설계 7.4 형식). context 는 태스크마다 한 줄과 링크다. 4000자를 넘으면 뒤 태스크는 ID 만 적는다
-    (남은 ID 줄이 들어갈 자리를 늘 남긴다)."""
-    head = f"리뷰(Codex)가 승인한 디자인 {len(sts)}개다. 링크를 열어 보고 한 번에 답한다.\n"
+    (남은 ID 줄이 들어갈 자리를 늘 남긴다). 문구는 묶음의 직무 이름과 승인한 리뷰어로 쓴다(_words)."""
+    what, who, header = _words(cfg, sts)
+    head = f"리뷰({who})가 승인한 {what} {len(sts)}개다. 링크를 열어 보고 한 번에 답한다.\n"
     ids = [st["id"] for st in sts]
     lines: list[str] = []
     for i, st in enumerate(sts):
@@ -408,13 +430,13 @@ def render(p, cfg, sts: list[dict]) -> dict:
     context = head + "\n".join(lines) + _tail(ids[len(lines):])
     if len(context) > CONTEXT_MAX:  # ID 만으로도 넘친다(태스크가 수백 개)
         context = context[:CONTEXT_MAX - 1] + "…"
-    obj = {"header": HEADER,
-           "question": f"디자인 {len(sts)}개를 승인할까요?\n예: 모두 승인이면 이 디자인에 의존하는 개발이 이어서 시작된다",
+    obj = {"header": header,
+           "question": f"{what} {len(sts)}개를 승인할까요?\n예: 모두 승인이면 이 {what}에 의존하는 작업이 이어서 시작된다",
            "context": context,
-           "options": [{"label": APPROVE, "description": "추천 사유: 리뷰(Codex)가 모두 승인했다"},
+           "options": [{"label": APPROVE, "description": f"추천 사유: 리뷰({who})가 모두 승인했다"},
                        {"label": REVISE, "description": "고칠 태스크와 내용을 이어서 알려 준다"}],
            "multiSelect": False}
-    return outbox.validate_render(obj, HEADER)
+    return outbox.validate_render(obj, header)
 
 
 def _write(p, data: dict, b: dict) -> None:
@@ -657,6 +679,8 @@ def _apply(p, oid: str, d: dict) -> dict:
             if exc.code not in ("round_changed", "task_closed"):
                 raise _stopped(exc, oid)
             passed.append(e["task"])
+    _notify_stale_questions(p, oid, d)
+    die_at("decision_notified")  # 테스트: 알린 뒤 done 전에 죽고 다시 해도 한 번만 알린다
     with state.project_lock(p):
         data = load(p)
         b = next(x for x in data["batches"] if x.get("id") == oid)
@@ -665,6 +689,41 @@ def _apply(p, oid: str, d: dict) -> dict:
     die_at("decision_done")  # 여기서 죽으면 다시 온 답의 안내가 --decide 재호출이다(applied 만 적는다)
     outbox.mark_applied(p, oid)
     return {"fixed": fixed, "accepted": accepted, "passed": passed}
+
+
+def _notify_stale_questions(p, oid: str, d: dict) -> None:
+    """이 결정이 다시 고치는 태스크가 아직 답이 오지 않은 다른 묶음 질문에도 있으면 메인에 알린다(progress). 그 질문을
+    물을 때 사용자가 이미 바뀐 디자인을 승인하지 않게 한다. 묶음 질문마다 한 번만 쓴다(다시 해도 같은 항목을 찾는다).
+    문구는 그 질문의 답을 _compute 가 처리하는 대로 지금 상태 전체로 쓴다(앞선 결정이 고친 것도 든다): `모두 승인` 은
+    물은 라운드 그대로 awaiting_user 인 태스크만 승인하고, 다시 고친 태스크를 지목한 수정 요청은 그 태스크의 지금 라운드에
+    더해진다. 끝난 태스크는 바꿀 수 없다."""
+    fixed = {e["task"] for e in d["fix"]}
+    by_id = {s["id"]: s for s in state.all_states(p)}
+    for b in load(p)["batches"]:
+        if b.get("id") in (None, oid) or b.get("decision") or outbox.answer_of(p, b["id"]) is not None:
+            continue
+        hit = [t["task"] for t in b["tasks"] if t["task"] in fixed]
+        if not hit:
+            continue
+        live, again, closed = [], [], []
+        for t in b["tasks"]:
+            st = by_id.get(t["task"]) or {}
+            if st.get("status") == "awaiting_user" and st.get("round") == t["round"]:
+                live.append(t["task"])
+            elif st.get("status") in state.CLOSED:
+                closed.append(t["task"])
+            else:
+                again.append(t["task"])
+        body = (f"일괄 승인 질문 {b['id']} 의 {', '.join(hit)} 는 {oid} 의 수정 요청으로 다시 고친다. 그 질문을 물을 때(이미 "
+                "물었으면 지금) 사용자에게 함께 알린다: "
+                + (f"`{APPROVE}` 은 그대로인 {', '.join(live)} 만 승인한다. " if live else
+                   f"`{APPROVE}` 은 아무 태스크도 승인하지 않는다. ")
+                + (f"다시 고친 {', '.join(again)} 는 다시 승인된 뒤 새로 묻는다. 그 태스크를 지목한 `{REVISE}` 은 그 태스크의 "
+                   "지금 라운드에 더해진다." if again else "")
+                + (f" {', '.join(closed)} 는 이미 끝나 바꿀 수 없다." if closed else ""))
+        fields = {"type": "progress", "from": "coordinator", "body": body, "stale_question": b["id"], "by": oid}
+        outbox.append(p, fields, reuse=lambda entries, q=b["id"]: next(
+            (e for e in entries if e.get("stale_question") == q and e.get("by") == oid), None))
 
 
 def decide(p, oid: str, text: str | None) -> dict:
