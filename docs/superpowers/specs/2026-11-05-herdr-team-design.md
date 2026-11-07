@@ -387,7 +387,7 @@ Codex 리뷰어에게는 `AGENTS.md` 의 리뷰어 규칙도 적용된다(9.1). 
 
 선택지는 2–4개이고 추천안이 맨 앞이다. `notify --json` 과 `ask-user` 가 검사한다(어기면 exit 2).
 
-메인은 `context` 를 그대로 보여 준 뒤 AskUserQuestion 을 `render` 로 부르고, 답을 `hteam answer <out-id> "<답>"` 로 보낸다.
+메인은 `context` 를 답변 글로 그대로 보여 준 뒤 AskUserQuestion 을 `render` 로 부르고(보여 주지 않으면 훅이 거부한다, 9.4), 답을 `hteam answer <out-id> "<답>"` 로 보낸다.
 
 - `ask` 항목(7.5): 답 파일 `state/answers/<out-id>.json` 을 원자적으로 만든다(`os.link`). 두 번째 답은 exit 3.
 - `question`·`approval` 항목: 답을 먼저 `state/answers/<out-id>.json` 에 남긴 뒤 `horch send --to run:R --subject "[main] reply <out-id>" --body "<답>"`. 보내기가 끊겨 다시 실행하면 같은 답을 다시 보낸다(적어도 한 번). 코디네이터는 답에 따른 일을 마친 뒤 `hteam applied <out-id>` 로 적용을 기록한다(`state/applied.json`). `hteam wait` 는 이미 적용된 `out-id` 의 답만 `duplicate: true` 로 표시한다. 그래서 처리하기 전에 코디네이터가 죽으면 다시 전달된 답(ack 하지 않은 Delivery)은 중복이 아니고 다시 처리된다. 같은 답이 두 번 와서 둘 다 적용 전이면: 한 Delivery 안이면 `hteam wait` 가 뒤 메시지를 `duplicate: true` 로 표시하고, Delivery 가 다르면 둘 다 `duplicate: false` 이므로 코디네이터는 같은 `out-id` 를 한 번만 처리하고 `applied` 를 기록한 뒤 나머지를 무시한다. 일괄 승인 답은 결정 기록(11.4)이 두 번 처리하지 않게 한다.
@@ -419,7 +419,7 @@ Codex 리뷰어에게는 `AGENTS.md` 의 리뷰어 규칙도 적용된다(9.1). 
 
 ### 8.2 루프와 `hteam wait`
 
-코디네이터는 `hteam wait` 를 늘 하나 백그라운드로 띄운다. `hteam wait [--ack <delivery>]` 는 `horch check --wait --timeout-ms <T> [--ack …]` 를 부르고, 받은 메시지마다 `hteam` 필드를 붙여 출력한다. `hteam wait` 는 전체 대기 시간(기본 3600초) 안에서 `horch check --wait` 를 60초씩 나눠 부르고, 그 사이마다 horch `worker-list` 를 본다. 메시지가 오면 바로 돌려준다. 메시지가 없어도 손볼 일이 생기면 `reason: attention` 으로 돌려준다: `no_status` 가 60초 넘게 이어진 행, `launch_failed` 행. 단 hteam 이 아직 끝내지 않은 태스크(`done`·`dropped` 가 아님)의 현재 라운드·현재 시도 Dispatch 만 센다(버린 태스크나 지난 시도의 실패 행은 알리지 않는다). 그래서 대기 중에 새로 띄운 워커가 시작 확인 창에서 멈춰도(상태 보고가 없어 메시지가 오지 않는다) 늦어도 2분 안에 알 수 있다. 전체 시간이 지나면 `reason: timeout`.
+코디네이터는 `hteam wait` 를 늘 하나 백그라운드로 띄운다. `hteam wait [--ack <delivery>]` 는 `horch check --wait --timeout-ms <T> [--ack …]` 를 부르고, 받은 메시지마다 `hteam` 필드를 붙여 출력한다. `hteam wait` 는 전체 대기 시간(기본 3600초) 안에서 `horch check --wait` 를 60초씩 나눠 부르고, 그 사이마다 horch `worker-list` 를 본다. 메시지가 오면 바로 돌려준다. 메시지가 없어도 손볼 일이 생기면 `reason: attention` 으로 돌려준다: `no_status` 가 Dispatch 를 만든 때부터 60초 넘게 이어진 행, `launch_failed` 행(한 번 알린 행은 다시 알리지 않고, 그 기록은 지금 보는 Dispatch 만 남긴다). 단 hteam 이 아직 끝내지 않은 태스크(`done`·`dropped` 가 아님)의 현재 라운드·현재 시도 Dispatch 만 센다(버린 태스크나 지난 시도의 실패 행은 알리지 않는다). 그래서 대기 중에 새로 띄운 워커가 시작 확인 창에서 멈춰도(상태 보고가 없어 메시지가 오지 않는다) 늦어도 2분 안에 알 수 있다. 전체 시간이 지나면 `reason: timeout`.
 
 ```json
 {"delivery": 12, "count": 1, "reason": "message",
@@ -503,7 +503,7 @@ Python 3.11 이상, git(없으면 `git init` 과 빈 커밋을 권함), `horch` 
 |---|---|
 | SessionStart | `state/plugin-root` 기록. 메인이면 "너는 메인이다, `/herdr-team:up` 을 실행한다" 와 열린 질문 수를 넣는다. Herdr 터미널 밖(`$HC_TERMINAL_ID` 없음)이면 tell·watch·answer 가 되지 않으니 Herdr 안에서 다시 열라는 안내도 넣는다 |
 | PreToolUse (Edit·Write·MultiEdit·NotebookEdit) | 경로는 `..`·심볼릭 링크를 실제 경로로 푼 뒤 본다. 누구나 `state/` 를 고칠 수 없다. 코디네이터는 `.herdr-team/` 밖(프로젝트 밖 포함)을 고칠 수 없다. 메인은 `setup-mode` 가 아니면 제품 파일(`.herdr-team/`·`.claude/`·`docs/superpowers/`·`CLAUDE.md`·`AGENTS.md`·`.gitignore` 밖의 프로젝트 파일)을 고칠 수 없다. 프로젝트 밖은 메인에게 제품 파일이 아니다. 풀 수 없는 경로는 코디네이터·메인 모두 거부한다 |
-| PreToolUse (AskUserQuestion) | 코디네이터 → 거부하고 `hteam notify --json` 안내. planner·director 워커 → `hteam ask-user` 안내. 다른 워커 → `horch ask` 안내. 메인 → outbox 질문의 `context` 를 먼저 보여 주지 않았으면 그 질문에 한해 한 번 거부 |
+| PreToolUse (AskUserQuestion) | 코디네이터 → 거부하고 `hteam notify --json` 안내. planner·director 워커 → `hteam ask-user` 안내. 다른 워커 → `horch ask` 안내. 메인 → outbox 질문의 `context` 를 먼저 보여 주지 않았으면 보일 때까지 거부한다(메인의 답변 글 끝부분에 정규화한 `context` 앞 80자가 있어야 보인 것이다). 같은 질문은 세 번까지만 거부하고 그 뒤는 통과시킨다(탈출구: 메인이 끝내 보여 주지 못해도 질문이 막히지 않는다. 2단계 실환경에서 메인이 `context` 를 생각 줄에만 남긴 일이 5건 중 2건 있었다) |
 | PreToolUse (Bash) | 메인이 `horch` 를 직접 부르면 거부(`hteam tell` 안내) |
 | Stop | 메인이고 코디네이터가 있는데 watch 가 없으면 턴을 끝내지 못하게 하고 watch 를 다시 띄우라고 한다. Herdr 터미널 밖(`$HC_TERMINAL_ID` 없음)의 메인은 watch 를 띄울 수 없어(exit 5) 막지 않는다 |
 

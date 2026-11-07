@@ -271,8 +271,8 @@ class GuardTest(HookCase):
             out, err = proc.communicate(timeout=30)
             self.assertEqual(proc.returncode, 0, err)
             self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "deny")
-        ids = json.loads((self.state_dir / "context-denied.json").read_text())["ids"]
-        self.assertEqual(len(set(ids)), 2, ids)
+        denied = json.loads((self.state_dir / "context-denied.json").read_text())["denied"]
+        self.assertEqual(sorted(denied.values()), [1, 1], denied)
 
     def test_worker_ask_hints(self):
         planner = self.worker_terminal("T-001", "planner")
@@ -297,7 +297,25 @@ class GuardTest(HookCase):
         out = self.hook("guard", payload, terminal=MAIN)
         self.assertEqual(self.decision(out), "deny")
         self.assertIn("계획 요약", out["hookSpecificOutput"]["permissionDecisionReason"])
-        self.assertIsNone(self.hook("guard", payload, terminal=MAIN))  # 같은 질문은 한 번만 거부
+        self.assertIn("보여 줄 때까지 거부한다", out["hookSpecificOutput"]["permissionDecisionReason"])
+        # 실환경(2단계): 한 번 거부해도 메인이 다시 보이지 않고 물었다. 보일 때까지 거부하되 세 번까지만(탈출구)
+        out = self.hook("guard", payload, terminal=MAIN)
+        self.assertEqual(self.decision(out), "deny")
+        out = self.hook("guard", payload, terminal=MAIN)
+        self.assertIn("이번이 마지막 거부다", out["hookSpecificOutput"]["permissionDecisionReason"])
+        self.assertIsNone(self.hook("guard", payload, terminal=MAIN))
+        self.assertEqual(json.loads((self.state_dir / "context-denied.json").read_text())["denied"], {"out-0001": 3})
+
+    def test_context_guard_reads_the_old_record(self):
+        text, ctx = self.ask_with_context(1)
+        (self.state_dir / "context-denied.json").write_text(json.dumps({"ids": ["out-0001"]}))  # 옛 형식: 한 번 거부했다
+        transcript = self.tmp / "t.jsonl"
+        transcript.write_text("")
+        payload = {"tool_name": "AskUserQuestion", "transcript_path": str(transcript),
+                   "tool_input": {"questions": [{"question": text}]}}
+        self.assertEqual(self.decision(self.hook("guard", payload, terminal=MAIN)), "deny")
+        self.assertEqual(self.decision(self.hook("guard", payload, terminal=MAIN)), "deny")
+        self.assertIsNone(self.hook("guard", payload, terminal=MAIN))
 
 
 class StopTest(HookCase):

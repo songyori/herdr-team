@@ -208,6 +208,19 @@ class AskUserTest(LinkCase):
         self.assertEqual(out["history"][0]["answer"], "서버 DB")
         self.assertTrue(out["history"][0]["acked"])
 
+    def test_corrupt_ack_record_is_not_overwritten(self):
+        # 손상된 반영 기록을 빈 기록으로 읽으면 ack 한 번이 기록 전체를 덮어써 --pending 이 반영한 답을 다시 낸다
+        self.ask()
+        self.assertEqual(self.hteam("answer", "out-0001", "서버 DB", as_="main")[0], 0)
+        path = self.state_dir / "ask-acks.json"
+        path.write_text("{", encoding="utf-8")
+        for args in (("--pending",), ("--history",)):
+            code, out = self.hteam("ask-user", "--task", "T-001", *args, as_=None)
+            self.assertEqual((code, out["error"]["code"]), (1, "bad_side_file"), out)
+        code, out = self.hteam("ask-user", "--task", "T-001", "--ack", "out-0001", as_=None, terminal=self.term)
+        self.assertEqual((code, out["error"]["code"]), (1, "bad_side_file"), out)
+        self.assertEqual(path.read_text(encoding="utf-8"), "{")
+
     def test_answer_arrives_while_waiting(self):
         self.env["HTEAM_ASK_TIMEOUT"] = "20"
         proc = self.hteam_bg("ask-user", "--task", "T-001", "--json", "-", as_=None, terminal=self.term,

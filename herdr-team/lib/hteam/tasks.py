@@ -244,6 +244,17 @@ def run_work(p, cfg, h, tid: str) -> dict:
     return out
 
 
+def fix_next(cfg, tid: str, rnd: int, note: str) -> tuple[list[str] | None, str | None]:
+    """다음 명령으로 fix 를 권하되 라운드 상한(max_rounds)에 닿았으면 권하지 않고 그 까닭을 준다: fix 가 --force-round 없이
+    exit 3 로 거부하고 상한은 사용자가 정한다(설계 13장). cfg 가 None(설정을 읽지 못했다)이면 상한을 보지 않는다.
+    coord 의 wait 주석·status next 와 이어 붙인 작업 워커의 next(_adopted_next)가 같이 쓴다."""
+    limit = cfg.max_rounds if cfg else None
+    if limit is not None and rnd >= limit:
+        return None, (f"max_rounds({limit}) 에 닿았다. fix 는 --force-round 없이 exit 3 로 거부한다. 메인에 묻고, 사용자가 "
+                      f"계속하라고 하면 {SHIM} fix {tid} --force-round --note …")
+    return [SHIM, "fix", tid, "--note", note], None
+
+
 def _adopted_next(cfg, tid: str, rnd: int, res: dict) -> tuple[list[str] | None, str | None]:
     """이어 붙인 작업 Dispatch 가 이미 끝났으면(done 뒤 settled·retained·released) 다음 명령. 그 worker_done 은 태스크가
     launch_failed 일 때 와서(그때 next 는 start) 다시 오지 않으므로 여기서 준다(아니면 wait 가 시간 초과까지 기다린다)."""
@@ -251,11 +262,8 @@ def _adopted_next(cfg, tid: str, rnd: int, res: dict) -> tuple[list[str] | None,
         return None, None
     if res.get("outcome") == "succeeded":
         return [SHIM, "review", tid], "이어 붙인 작업 워커가 이미 성공으로 끝났다"
-    if rnd >= cfg.max_rounds:
-        return None, (f"이어 붙인 작업 워커가 실패로 끝났고 max_rounds({cfg.max_rounds}) 에 닿았다. 메인에 묻고, 사용자가 "
-                      f"계속하라고 하면 {SHIM} fix {tid} --force-round --note …")
-    return ([SHIM, "fix", tid, "--note", f"작업 실패: {(res.get('summary') or '')[:200]}"],
-            "이어 붙인 작업 워커가 이미 실패로 끝났다")
+    nxt, why = fix_next(cfg, tid, rnd, f"작업 실패: {(res.get('summary') or '')[:200]}")
+    return nxt, "이어 붙인 작업 워커가 이미 실패로 끝났다" + (f". {why}" if why else "")
 
 
 def start(p, tid: str, cli: dict, cfg=None, h=None, cap: Capacity | None = None) -> dict:

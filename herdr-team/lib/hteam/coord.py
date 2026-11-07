@@ -37,14 +37,7 @@ def _config(p):
         return None
 
 
-def _fix(cfg, tid: str, rnd: int, note: str) -> tuple[list[str] | None, str | None]:
-    """fix 를 권하되 라운드 상한(max_rounds)에 닿았으면 권하지 않는다. tasks.fix 가 --force-round 없이 exit 3 로 거부하고,
-    상한은 사용자가 정한다(설계 13장)."""
-    limit = cfg.max_rounds if cfg else None
-    if limit is not None and rnd >= limit:
-        return None, (f"max_rounds({limit}) 에 닿았다. fix 는 --force-round 없이 exit 3 로 거부한다. 메인에 묻고, 사용자가 "
-                      f"계속하라고 하면 {SHIM} fix {tid} --force-round --note …")
-    return H("fix", tid, "--note", note), None
+_fix = tasks.fix_next  # fix 를 권하되 라운드 상한이면 권하지 않는다(이어 붙인 워커의 next 와 같은 판정)
 
 
 def _round_canceled(rd: dict | None) -> bool:
@@ -251,8 +244,11 @@ def annotate(p, m: dict, rows: list[dict] | None, horch_cmd: str, *, cfg=_LOAD,
             info["hint"] = (f"done 없이 턴을 마쳤다. `{horch_cmd} worker-show --dispatch {did} --lines 40` 로 보고 "
                             f"`{horch_cmd} send --to dispatch:{did} --body \"…\"` 로 이어가게 하거나 done 을 요구한다")
         elif kind == "error":
-            info["hint"] = (f"`{horch_cmd} worker-show --dispatch {did} --lines 80` 으로 보고 send 로 이어가거나 "
-                            f"`{SHIM} fix {tid}`")
+            if cfg is _LOAD:
+                cfg = _config(p)
+            again, why = _fix(cfg, tid, loc["round"], "워커 오류") if work else (None, None)
+            tail = f"`{SHIM} fix {tid}`" if again else (why or "메인에 묻는다")
+            info["hint"] = f"`{horch_cmd} worker-show --dispatch {did} --lines 80` 으로 보고 send 로 이어가거나 {tail}"
         elif kind == "blocked":
             info["hint"] = (f"`{horch_cmd} worker-show --dispatch {did} --lines 80` 으로 화면을 보고 메인에 질문으로 "
                             "올린다. 키를 누르지 않는다")
@@ -299,9 +295,11 @@ def attention(p, rows: list[dict], grace: float, *, states: list[dict] | None = 
     """메시지 없이도 손볼 행(설계 8.2): grace 초 넘게 이어진 no_status, launch_failed. 끝나지 않은 태스크의 현재 라운드·
     현재 시도 Dispatch 만 본다.
 
-    state/attention.json = {"reported": {Dispatch: 알린 단어}, "since": {Dispatch: no_status 를 처음 본 시각(epoch)}}.
-    한 번 알린 것은 다시 알리지 않는다. 처음 본 시각을 파일에 남기므로 wait 호출이 바뀌어도(메시지가 계속 와서 wait 가
-    자주 돌아와도) 이어 센다. no_status 가 풀리면 그 시각을 지운다(다시 no_status 가 되면 처음부터 센다).
+    state/attention.json = {"reported": {Dispatch: 알린 단어}, "since": {Dispatch: no_status 를 센 시작 시각(epoch)}}.
+    한 번 알린 것은 다시 알리지 않는다. reported 는 지금 보는 Dispatch(끝나지 않은 태스크의 현재 라운드·시도)만 남긴다
+    (끝난 Dispatch 가 쌓이지 않게. 다시 볼 일이 없다). no_status 는 Dispatch 를 만든 시각(worker-list 의 created_at)부터
+    센다(처음 본 시각부터 세면 wait 이 늦게 돌면 최악 2배를 기다린다). 그 시각을 읽지 못하면 처음 본 시각이다. 시각을
+    파일에 남기므로 wait 호출이 바뀌어도 이어 센다. no_status 가 풀리면 지운다(다시 no_status 가 되면 그때부터 센다).
     horch_cmd: 힌트에 넣을 horch 명령(--home 포함, Horch.cmd)."""
     if states is None:
         states = state.all_states(p)
@@ -312,20 +310,22 @@ def attention(p, rows: list[dict], grace: float, *, states: list[dict] | None = 
         reported, since = dict(_dict(data.get("reported"))), dict(_dict(data.get("since")))
         before = (dict(reported), dict(since))
         now = time.time()
-        watching = set()
+        watching, current = set(), set()
         for st in states:
             for slot, loc in _current_slots(st):
                 row = dispatch.slot_row(rows, slot)  # 기록된 Task 의 최신 시도, 기록 전이면 실행 키(제목)로 찾은 것
                 if row is None:
                     continue
                 did, word = row["id"], row.get("attention")
+                current.add(did)
                 if word not in ("no_status", "launch_failed") or reported.get(did) == word:
                     continue
                 if word == "no_status":
                     watching.add(did)
                     first = since.get(did)
                     if not isinstance(first, (int, float)):
-                        first = since[did] = now
+                        age = age_seconds(row.get("created_at"))
+                        first = since[did] = now - age if age is not None and age > 0 else now
                     if now - first < grace:
                         continue
                     hint = (f"시작 확인 창에서 멈췄을 수 있다. `{horch_cmd} worker-show --dispatch {did} --lines 80` 으로 "
@@ -339,6 +339,7 @@ def attention(p, rows: list[dict], grace: float, *, states: list[dict] | None = 
                 found.append(item)
                 reported[did] = word
         since = {d: at for d, at in since.items() if d in watching}
+        reported = {d: w for d, w in reported.items() if d in current}
         if (reported, since) != before:
             write_json(p.attention, {"reported": reported, "since": since})
     return found

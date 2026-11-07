@@ -107,6 +107,47 @@ class WaitTest(CoordCase):
         out = self.wait()
         self.assertEqual((out["reason"], out["attention"][0]["next"]), ("attention", [H, "start", "T-002"]))
 
+    def test_no_status_counts_from_dispatch_creation(self):
+        # 유예 시간은 Dispatch 를 만든 때부터 센다(처음 본 때부터 세면 wait 가 늦게 돌면 2배를 기다린다)
+        import sqlite3
+        self.env["HTEAM_NO_STATUS_GRACE"] = "30"
+        self.started()
+        did = self.work_dispatch("T-001")
+        conn = sqlite3.connect(self.horch_home / "orch.db")
+        with conn:
+            conn.execute("UPDATE dispatches SET created_at='2000-01-01T00:00:00Z' WHERE id=?", (did,))
+        conn.close()
+        out = self.wait(timeout="1")
+        self.assertEqual((out["reason"], out["attention"][0]["dispatch"]), ("attention", did), out)
+
+    def test_reported_keeps_only_current_dispatches(self):
+        self.started()
+        did = self.work_dispatch("T-001")
+        self.assertEqual(self.wait()["reason"], "attention")
+        attention = self.state_dir / "attention.json"
+        self.assertEqual(json.loads(attention.read_text())["reported"], {did: "no_status"})
+        self.assertEqual(self.hteam("drop", "T-001", "--force")[0], 0)
+        self.assertEqual(self.wait(timeout="0.5")["reason"], "timeout")
+        self.assertEqual(json.loads(attention.read_text())["reported"], {})  # 끝난 Dispatch 는 쌓지 않는다
+
+    def test_observed_error_hint_respects_round_limit(self):
+        from hteam import config, coord, tasks
+        self.started()
+        did = self.work_dispatch("T-001")
+        msg = {"id": 1, "type": "observed", "body": json.dumps({"kind": "error", "dispatch": did})}
+        hint = coord.annotate(self.p, msg, [], "HORCH", cfg=config.load(self.p))["hteam"]["hint"]
+        self.assertIn("`.herdr-team/bin/hteam fix T-001`", hint)
+        (self.team / "config.toml").write_text(BASE_CONFIG.replace("max_rounds = 3", "max_rounds = 1"))
+        hint = coord.annotate(self.p, msg, [], "HORCH", cfg=config.load(self.p))["hteam"]["hint"]
+        self.assertNotIn("hteam fix T-001`", hint)
+        self.assertIn("max_rounds(1) 에 닿았다", hint)
+        # 이어 붙인 작업 워커의 next 도 같은 판정(tasks.fix_next)이다
+        self.assertIs(coord._fix, tasks.fix_next)
+        nxt, why = tasks._adopted_next(config.load(self.p), "T-001", 1,
+                                       {"mode": "adopt", "state": "settled", "outcome": "failed", "summary": "x"})
+        self.assertIsNone(nxt)
+        self.assertEqual(why, "이어 붙인 작업 워커가 이미 실패로 끝났다. " + tasks.fix_next(config.load(self.p), "T-001", 1, "")[1])
+
     def test_wait_is_coordinator_only(self):
         code, out = self.hteam("wait", "--timeout", "0.1", as_="main")
         self.assertEqual(code, 5)

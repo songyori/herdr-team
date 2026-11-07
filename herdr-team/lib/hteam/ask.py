@@ -8,7 +8,7 @@ from . import outbox, state
 from .errors import CONFLICT, DENIED, TIMEOUT, USAGE, HteamError
 from .horch import Horch
 from .paths import SHIM, find_project
-from .util import env_float, flock, now, read_json, write_json
+from .util import bad_side_file, env_float, flock, now, read_json_strict, write_json
 
 ASK_ROLES = {"planner": "기획", "director": "디자인"}  # 직무 → 기본 header
 
@@ -25,7 +25,12 @@ def _entry(p, tid: str, oid: str) -> dict:
 
 
 def _acks(p) -> dict:
-    return read_json(p.ask_acks, {}) or {}
+    """반영 기록(out-id → 시각). 없으면 {}. 읽지 못하면 bad_side_file 이다: 빈 기록으로 보면 ack 한 번이 기록 전체를 덮어써
+    `--pending` 이 반영한 답을 다시 내고 워커가 다시 반영한다."""
+    data = read_json_strict(p.ask_acks, {})
+    if not isinstance(data, dict):
+        raise bad_side_file(p.ask_acks, "JSON 객체가 아니다")
+    return data
 
 
 def _check_caller(p, st: dict) -> None:

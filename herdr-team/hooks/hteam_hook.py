@@ -30,6 +30,7 @@ SESSION_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 CACHED_RE = re.compile(r"^(main|reviewer|worker(:[a-z][a-z0-9-]*)?)$")
 NOISE_RE = re.compile(r"[\s#*_>|\-`]+")
 FINGERPRINT = 80  # 정규화한 render.context 앞 80자가 메인 텍스트에 있으면 보여 준 것으로 본다
+CONTEXT_DENY_MAX = 3  # 같은 질문을 context 없이 물으면 보일 때까지 거부하되 이만큼만(그 뒤는 통과시킨다: 탈출구)
 TAIL_BYTES = 1 << 20
 
 # 메인 Bash 의 horch 거부(horch_denied). brief 의 낱말 규칙 그대로다
@@ -230,14 +231,23 @@ def _transcript_text(path) -> str | None:
     return "\n".join(texts)
 
 
-def _denied_ids(p) -> list:
+def _denied(p) -> dict:
+    """context-denied.json = {"denied": {out-id: 거부한 횟수}}. 옛 형식 {"ids": [...]} 는 한 번씩 거부한 것으로 읽는다.
+    읽지 못하면 빈 기록이다(한 번 더 거부할 뿐이다)."""
     data = read_json(p.context_denied, {})
-    ids = data.get("ids") if isinstance(data, dict) else None
-    return ids if isinstance(ids, list) else []
+    if not isinstance(data, dict):
+        return {}
+    found = {i: 1 for i in data.get("ids") or [] if isinstance(i, str)} if isinstance(data.get("ids"), list) else {}
+    counts = data.get("denied")
+    if isinstance(counts, dict):
+        found.update({k: v for k, v in counts.items() if isinstance(k, str) and isinstance(v, int)
+                      and not isinstance(v, bool)})
+    return found
 
 
 def context_guard(p, payload: dict, tool_input: dict):
-    """메인이 render.context 를 먼저 보여 주지 않고 그 질문을 물으면 그 질문에 한해 한 번 거부한다."""
+    """메인이 render.context 를 먼저 보여 주지 않고 그 질문을 물으면 보일 때까지 거부한다. 같은 질문은 CONTEXT_DENY_MAX
+    번까지만 거부하고 그 뒤는 통과시킨다(메인이 끝내 보여 주지 못해도 질문이 막히지 않는다)."""
     questions = tool_input.get("questions")
     asked = {q["question"].strip() for q in questions if isinstance(q, dict) and isinstance(q.get("question"), str)} \
         if isinstance(questions, list) else set()
@@ -248,10 +258,10 @@ def context_guard(p, payload: dict, tool_input: dict):
 
 
 def _context_guard_locked(p, payload: dict, asked: set):
-    denied = _denied_ids(p)
+    denied = _denied(p)
     die_at("context_denied_read")  # 테스트: 읽은 뒤 멈춰 겹친 호출을 재현한다
     items = [q for q in outbox.open_questions(p)
-             if q["id"] not in denied and isinstance(q.get("render"), dict)
+             if denied.get(q["id"], 0) < CONTEXT_DENY_MAX and isinstance(q.get("render"), dict)
              and isinstance(q["render"].get("context"), str) and NOISE_RE.sub("", q["render"]["context"])
              and q["render"].get("question", "").strip() in asked]
     if not items:
@@ -263,10 +273,16 @@ def _context_guard_locked(p, payload: dict, asked: set):
     unshown = [q for q in items if NOISE_RE.sub("", q["render"]["context"])[:FINGERPRINT] not in shown]
     if not unshown:
         return None
-    write_json(p.context_denied, {"ids": [*denied, *(q["id"] for q in unshown)]})  # 임시 파일 + os.replace
+    for q in unshown:
+        denied[q["id"]] = denied.get(q["id"], 0) + 1
+    write_json(p.context_denied, {"denied": denied})  # 임시 파일 + os.replace
     blocks = "\n\n".join(f"[{q['id']}]\n{q['render']['context']}" for q in unshown)
-    return deny("이 질문에는 먼저 보여 줄 `render.context` 가 있다. 아래 내용을 요약하거나 바꾸지 말고 평문으로 그대로 "
-                f"출력한 뒤 같은 render 로 AskUserQuestion 을 다시 부른다([out-id] 줄은 출력하지 않는다).\n\n{blocks}")
+    last = [q["id"] for q in unshown if denied[q["id"]] >= CONTEXT_DENY_MAX]
+    tail = (f"\n\n({', '.join(last)}: 이번이 마지막 거부다. 다음에는 확인하지 않고 통과시킨다. 그래도 먼저 보여 준다.)"
+            if last else "")
+    return deny("이 질문에는 먼저 보여 줄 `render.context` 가 있다. 아래 내용을 요약하거나 바꾸지 말고 답변 글(텍스트)로 "
+                "그대로 출력한 뒤 같은 render 로 AskUserQuestion 을 다시 부른다([out-id] 줄은 출력하지 않는다). 생각·도구 설명 "
+                f"줄에 넣으면 사용자에게 보이지 않는다. 보여 줄 때까지 거부한다.\n\n{blocks}{tail}")
 
 
 def guard(p, payload: dict):
