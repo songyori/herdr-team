@@ -1600,6 +1600,10 @@ class ApprovalDocsTest(unittest.TestCase):
         main = (ROOT / "templates" / "CLAUDE.section.md").read_text(encoding="utf-8")
         self.assertIn("`수정 요청: <태스크 ID 와 고칠 내용>`", main)
         self.assertIn("디자인 `docs/design/`", main)
+        # 실환경(3단계): context 를 보인 뒤 턴을 끝내고 사용자의 다른 말을 기다렸다. 같은 응답에서 이어서 묻는다
+        self.assertIn("같은 응답에서 이어서 AskUserQuestion 을 부른다", main)
+        self.assertIn("턴을 끝내지 않는다", main)
+        self.assertNotIn("사용자에게 보이지 않는다", main)
 
     def test_design_review_answer_is_applied_by_decide(self):
         coord = (ROOT / "templates" / "coordinator.md").read_text(encoding="utf-8")

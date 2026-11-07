@@ -298,6 +298,12 @@ class GuardTest(HookCase):
         self.assertEqual(self.decision(out), "deny")
         self.assertIn("계획 요약", out["hookSpecificOutput"]["permissionDecisionReason"])
         self.assertIn("보여 줄 때까지 거부한다", out["hookSpecificOutput"]["permissionDecisionReason"])
+        # 실환경(3단계): 진행 설명 줄(생각 요약)은 화면에 보이지만 원문이 아니고, 거부 뒤 메인이 글만 쓰고 턴을 끝내
+        # 사용자가 "선택 창 띄워 줘" 를 보내야 했다. 같은 응답에서 이어서 묻고 턴을 끝내지 않게 안내한다
+        reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertIn("같은 응답에서 이어서 AskUserQuestion 을 부른다", reason)
+        self.assertIn("턴을 끝내지 않는다", reason)
+        self.assertNotIn("사용자에게 보이지 않는다", reason)
         # 실환경(2단계): 한 번 거부해도 메인이 다시 보이지 않고 물었다. 보일 때까지 거부하되 세 번까지만(탈출구)
         out = self.hook("guard", payload, terminal=MAIN)
         self.assertEqual(self.decision(out), "deny")

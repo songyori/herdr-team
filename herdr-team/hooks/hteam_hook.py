@@ -282,7 +282,9 @@ def _context_guard_locked(p, payload: dict, asked: set):
             if last else "")
     return deny("이 질문에는 먼저 보여 줄 `render.context` 가 있다. 아래 내용을 요약하거나 바꾸지 말고 답변 글(텍스트)로 "
                 "그대로 출력한 뒤 같은 render 로 AskUserQuestion 을 다시 부른다([out-id] 줄은 출력하지 않는다). 생각·도구 설명 "
-                f"줄에 넣으면 사용자에게 보이지 않는다. 보여 줄 때까지 거부한다.\n\n{blocks}{tail}")
+                "줄(화면에 짧은 진행 설명으로 보이는 줄 포함)은 원문이 아니라 요약으로 보이고 훅도 보인 것으로 세지 않는다. 글을 "
+                "쓴 뒤 같은 응답에서 이어서 AskUserQuestion 을 부른다. 턴을 끝내지 않는다(사용자의 다른 말을 기다리지 않는다). "
+                f"보여 줄 때까지 거부한다.\n\n{blocks}{tail}")
 
 
 def guard(p, payload: dict):

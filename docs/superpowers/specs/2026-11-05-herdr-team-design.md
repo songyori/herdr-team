@@ -387,7 +387,7 @@ Codex 리뷰어에게는 `AGENTS.md` 의 리뷰어 규칙도 적용된다(9.1). 
 
 선택지는 2–4개이고 추천안이 맨 앞이다. `notify --json` 과 `ask-user` 가 검사한다(어기면 exit 2).
 
-메인은 `context` 를 답변 글로 그대로 보여 준 뒤 AskUserQuestion 을 `render` 로 부르고(보여 주지 않으면 훅이 거부한다, 9.4), 답을 `hteam answer <out-id> "<답>"` 로 보낸다.
+메인은 `context` 를 답변 글로 그대로 보여 준 뒤 같은 응답에서 이어서 AskUserQuestion 을 `render` 로 부르고(턴을 끝내고 사용자의 다른 말을 기다리지 않는다. 보여 주지 않으면 훅이 거부한다, 9.4), 답을 `hteam answer <out-id> "<답>"` 로 보낸다.
 
 - `ask` 항목(7.5): 답 파일 `state/answers/<out-id>.json` 을 원자적으로 만든다(`os.link`). 두 번째 답은 exit 3.
 - `question`·`approval` 항목: 답을 먼저 `state/answers/<out-id>.json` 에 남긴 뒤 `horch send --to run:R --subject "[main] reply <out-id>" --body "<답>"`. 보내기가 끊겨 다시 실행하면 같은 답을 다시 보낸다(적어도 한 번). 코디네이터는 답에 따른 일을 마친 뒤 `hteam applied <out-id>` 로 적용을 기록한다(`state/applied.json`). `hteam wait` 는 이미 적용된 `out-id` 의 답만 `duplicate: true` 로 표시한다. 그래서 처리하기 전에 코디네이터가 죽으면 다시 전달된 답(ack 하지 않은 Delivery)은 중복이 아니고 다시 처리된다. 같은 답이 두 번 와서 둘 다 적용 전이면: 한 Delivery 안이면 `hteam wait` 가 뒤 메시지를 `duplicate: true` 로 표시하고, Delivery 가 다르면 둘 다 `duplicate: false` 이므로 코디네이터는 같은 `out-id` 를 한 번만 처리하고 `applied` 를 기록한 뒤 나머지를 무시한다. 일괄 승인 답은 결정 기록(11.4)이 두 번 처리하지 않게 한다.

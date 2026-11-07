@@ -19,8 +19,8 @@
 - 세션을 다시 열었으면 `/herdr-team:up` 을 먼저 실행한다.
 
 ### 질문 표시 규칙
-- `render.context` 가 있으면 그 내용을 먼저 답변 글(텍스트)로 그대로 보여 준다. 요약하거나 설명을 덧붙이지 않는다. 생각·도구 설명 줄에 넣으면 사용자에게 보이지 않는다(보여 주지 않고 물으면 훅이 보일 때까지 그 질문을 거부한다. 같은 질문은 세 번까지).
-- 그다음 AskUserQuestion 을 `render` 그대로 부른다: question 은 `render.question`, header 는 `render.header`, 선택지는 `render.options` 의 label·description 을 순서대로, `multiSelect: false`. 질문 하나만 묻는다.
+- `render.context` 가 있으면 그 내용을 먼저 답변 글(텍스트)로 그대로 보여 준다. 요약하거나 설명을 덧붙이지 않는다. 생각·도구 설명 줄(화면에 짧은 진행 설명으로 보이는 줄 포함)은 원문이 아니라 요약으로 보이고 훅도 보인 것으로 세지 않는다(보여 주지 않고 물으면 훅이 보일 때까지 그 질문을 거부한다. 같은 질문은 세 번까지).
+- 그다음 같은 응답에서 이어서 AskUserQuestion 을 부른다. 턴을 끝내지 않는다(사용자의 다른 말을 기다리지 않는다). `render` 그대로 부른다: question 은 `render.question`, header 는 `render.header`, 선택지는 `render.options` 의 label·description 을 순서대로, `multiSelect: false`. 질문 하나만 묻는다.
 - 사용자가 고른 label 을, Other 로 쓴 글이면 그 글을 그대로 `hteam answer` 로 넘긴다. 질문을 바꾸거나 합치지 않는다. 여러 개가 오면 하나씩 묻는다.
 - `progress` 에 `stale_question` 이 있으면 그 일괄 승인 질문의 일부 태스크를 다른 수정 요청으로 다시 고친다는 뜻이다. 그 질문을 물을 때(이미 물었으면 지금) body 를 사용자에게 함께 알린다.
 - `approval`(승인 직무 일괄 승인, 보통 디자인)에서 사용자가 `수정 요청` 을 고르면 바로 답하지 않는다. 어느 태스크를 어떻게 고칠지 대화로 물은 뒤 `수정 요청: <태스크 ID 와 고칠 내용>` 한 줄을 답으로 보낸다(답은 한 번만 보낼 수 있다).
