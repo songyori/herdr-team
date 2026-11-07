@@ -388,6 +388,11 @@ def _submodule_changes(top: str, exec_bit: bool) -> str:
     요약. 없으면 빈 문자열, 있으면 `+` 와 그 항목들의 해시다(HEAD 가 같아도 안에서 바뀔 때마다 값이 달라진다)."""
     import hashlib
     work, index = changed_entries(top, exec_bit, top=top)
+    for x in [x for x, e in work.items() if e is not None and e.startswith("160000:") and e == index.get(x)
+              and e == tree_entry(top, "HEAD", x)]:
+        # 안의 서브모듈이 작업 트리·인덱스·HEAD 가 모두 같다(diff.ignoreSubmodules=none 이면 미추적 산출물만으로도 git diff 가
+        # 그 경로를 낸다). 추적 항목이 바뀐 것이 없으므로 요약에 넣지 않는다
+        del work[x]
     if not work:
         return ""
     items = repr(sorted((x, work[x], index[x]) for x in work))

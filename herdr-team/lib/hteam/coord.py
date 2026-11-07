@@ -5,7 +5,7 @@ import json
 import re
 import time
 
-from . import approval, config, dispatch, herdr, outbox, roles, specs, state, tasks
+from . import approval, config, dispatch, herdr, outbox, roles, state, tasks
 from .errors import USAGE, HteamError
 from .horch import Horch
 from .paths import SHIM, find_project
@@ -621,10 +621,8 @@ def status(p) -> dict:
             warnings.append(f"일괄 승인 기록: {exc.message}")
     by_id, graph = {s["id"]: s for s in states}, approval.Graph(p)
     for st in states:
-        try:
-            title = specs.load(p, st["id"]).title
-        except HteamError:
-            title = None
+        spec = graph.spec(st["id"])  # dropped 선행을 볼 때 같은 사양을 다시 읽지 않는다
+        title = spec.title if spec is not None else None
         gone = None  # 영영 시작하지 못하게 하는 dropped 선행(직간접). start-ready 로 띄울 태스크만 본다
         if st["status"] == "pending" or approval.unlaunched(st):
             gone = tasks.dropped_blockers(graph, st["id"], by_id.get)

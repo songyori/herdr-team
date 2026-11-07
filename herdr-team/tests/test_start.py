@@ -153,6 +153,7 @@ class StartTest(StartCase):
         self.assertEqual(st["status"], "launch_failed")
         self.assertIsNotNone(st["rounds"][0]["work"]["launched"])
         self.assertEqual(self.horch_tasks(), [])  # 자식은 바이트를 못 받아 horch 를 실행하지 않았다
+        self.wait_gone(st["rounds"][0]["work"]["launched"])  # 복구가 시작 장벽 자식의 종료 시점에 기대지 않게 한다
         self.commit("src/other.py", "x\n", "other")  # 그 사이 HEAD 가 움직여도 base 는 그대로다
         code, out = self.hteam("start", "T-001")
         self.assertEqual((code, out["mode"]), (0, "fresh"), out)
@@ -186,6 +187,24 @@ class StartTest(StartCase):
         # 그 worker_done 은 launch_failed 때 왔다(next 는 start). 다시 오지 않으므로 start 가 다음 명령을 준다
         out = self.adopt_finished("T-001", "succeeded")
         self.assertEqual(out["next"], [".herdr-team/bin/hteam", "review", "T-001"])
+
+    def test_adopted_review_next_runs_to_the_verdict(self):
+        # 이어 붙인 워커의 next(review)를 그대로 따라가면 리뷰가 뜨고 판정까지 간다
+        self.make_task("T-001")
+        self.assertEqual(self.hteam("start", "T-001", env={"HTEAM_TEST_DIE_AT": "after_launch"})[0], 137)
+        [row] = self.horch_tasks()
+        rel = "docs/tasks/T-001/report.md"
+        code, res = self.act(row["id"], {"write": {"src/app.py": "print(1)\n"}, "report": "## r1\n", "report_path": rel,
+                                         "commit": "[T-001] r1 작업",
+                                         "done": {"outcome": "succeeded", "summary": "끝", "report_path": rel}})
+        self.assertEqual(code, 0, res)
+        code, out = self.hteam("start", "T-001")
+        self.assertEqual((code, out["mode"], out["next"]), (0, "adopt", [".herdr-team/bin/hteam", "review", "T-001"]), out)
+        code, res = self.hteam(*out["next"][1:])
+        self.assertEqual((code, res.get("status")), (0, "reviewing"), res)
+        self.assertEqual(self.act_review("T-001", "APPROVE")[0], 0)
+        code, res = self.hteam("review-finish", "T-001")
+        self.assertEqual((code, res.get("verdict"), res.get("status")), (0, "APPROVE", "approved"), res)
 
     def test_adopting_failed_worker_points_to_fix(self):
         out = self.adopt_finished("T-001", "failed")

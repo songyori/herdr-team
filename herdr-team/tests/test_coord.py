@@ -84,6 +84,37 @@ class WaitTest(CoordCase):
         info = self.wait()["messages"][0]["hteam"]
         self.assertTrue(info["duplicate"])
 
+    def test_cli_wait_with_corrupt_applied_record(self):
+        # 적용 기록이 손상돼도 wait 는 끝까지 돌고, 그 답은 처리하지 말라고(duplicate: null) 알린다
+        self.hteam("notify", "--type", "question", "--json", "-", stdin=json.dumps({
+            "question": "계속할까요?\n예: 한 번 더 고친다", "options": [
+                {"label": "계속 (추천)", "description": "추천 사유: 지적이 작다"}, {"label": "중단", "description": "버린다"}]}))
+        self.assertEqual(self.hteam("answer", "out-0001", "계속 (추천)", as_="main")[0], 0)
+        (self.state_dir / "applied.json").write_text("{broken")
+        out = self.wait()
+        info = out["messages"][0]["hteam"]
+        self.assertEqual((out["reason"], info["kind"], info["reply_to"], info["duplicate"]),
+                         ("message", "main", "out-0001", None))
+        self.assertIn("이 답을 처리하지 않고 applied 도 적지 않는다", info["hint"])
+        self.assertEqual((self.state_dir / "applied.json").read_text(), "{broken")
+
+    def test_status_reads_each_spec_once(self):
+        from unittest import mock
+        from hteam import coord, specs
+        self.write_spec("T-001")
+        state.create(self.p, "T-001", "developer")
+        calls = []
+        real = specs.load
+
+        def load(p, tid):
+            calls.append(tid)
+            return real(p, tid)
+        with mock.patch.dict(os.environ, self._env("coordinator", None, None), clear=True), \
+                mock.patch.object(specs, "load", load):
+            out = coord.status(self.p)
+        self.assertEqual(out["tasks"][0]["title"], "앱 만들기")
+        self.assertEqual(calls, ["T-001"])  # 제목과 dropped 선행 검사가 같은 사양을 다시 읽지 않는다
+
     def test_observed_exited_work_suggests_fix(self):
         self.started()
         term = self.calm()

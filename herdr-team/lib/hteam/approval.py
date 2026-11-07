@@ -154,21 +154,24 @@ class Graph:
 
     def __init__(self, p):
         self.p = p
-        self._deps: dict[str, list[str]] = {}
-        self._roles: dict[str, str | None] = {}
+        self._specs: dict[str, object] = {}
+
+    def spec(self, tid: str):
+        """사양(한 번만 읽는다). 읽지 못하면 None."""
+        if tid not in self._specs:
+            try:
+                self._specs[tid] = specs.load(self.p, tid)
+            except HteamError:
+                self._specs[tid] = None
+        return self._specs[tid]
 
     def deps(self, tid: str) -> list[str]:
-        if tid not in self._deps:
-            try:
-                spec = specs.load(self.p, tid)
-                self._deps[tid], self._roles[tid] = list(spec.depends_on), spec.role
-            except HteamError:
-                self._deps[tid], self._roles[tid] = [], None
-        return self._deps[tid]
+        spec = self.spec(tid)
+        return list(spec.depends_on) if spec is not None else []
 
     def role(self, tid: str) -> str | None:
-        self.deps(tid)
-        return self._roles[tid]
+        spec = self.spec(tid)
+        return spec.role if spec is not None else None
 
     def ancestors(self, tid: str) -> set[str]:
         """직간접 선행(순환이 있어도 끝난다)."""

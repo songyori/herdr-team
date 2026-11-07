@@ -1,6 +1,7 @@
 """교차 리뷰(설계 6.1–6.3): 사전 검사, 기준점, 리뷰어 실행·복구, 변조 검사, 판정, 자동 재시도, --retry."""
 import json
 import os
+import subprocess
 import time
 import unittest
 from pathlib import Path
@@ -665,6 +666,109 @@ class TamperEntryTest(ReviewCase):
         self.reviewing()
         (self.proj / "sub" / "a.txt").write_text("evil\n")
         self.assertEqual(self.assert_tamper("sub")["tamper"]["paths"], ["sub"])
+
+    def test_submodule_under_other_tasks_owns_is_not_tamper(self):
+        # Codex a478d38 P2: 서브모듈 tests 를 owns(tests/**)로 가진 진행 중 T-002 가 안의 파일을 고친다. 안의 변경은
+        # gitlink 하나로 요약되지만 그 아래를 덮는 제외 경로가 있으므로 T-001 리뷰의 변조가 아니다
+        self.submodule("tests")
+        self.write_spec("T-002", "tester")
+        state.create(self.p, "T-002", "tester")
+        self.assertEqual(self.hteam("start", "T-002")[0], 0)  # 기준점에 진행 중
+        self.reviewing()
+        (self.proj / "tests" / "a.txt").write_text("T-002 의 일\n")
+        self.act_review("T-001", "APPROVE")
+        code, out = self.finish()
+        self.assertEqual((code, out.get("status")), (0, "approved"), out)
+
+    def test_submodule_outside_excluded_owns_is_still_tamper(self):
+        self.submodule("vendor")
+        self.write_spec("T-002", "tester")
+        state.create(self.p, "T-002", "tester")
+        self.assertEqual(self.hteam("start", "T-002")[0], 0)
+        self.reviewing()
+        (self.proj / "vendor" / "a.txt").write_text("evil\n")
+        self.assertEqual(self.assert_tamper("vendor")["tamper"]["paths"], ["vendor"])
+
+    def start_tester(self, owns=None):
+        self.write_spec("T-002", "tester", owns=owns)
+        state.create(self.p, "T-002", "tester")
+        self.assertEqual(self.hteam("start", "T-002")[0], 0)  # 기준점에 진행 중
+
+    def test_submodule_partly_under_other_tasks_owns_is_tamper(self):
+        # Codex 계획 r1 P1: T-002 가 서브모듈의 일부(tests/docs/**)만 가지면 서브모듈 전체 변경을 빼지 않는다
+        # (안의 어느 파일이 바뀌었는지 gitlink 하나로는 모른다. 거짓 양성은 review --retry 로 푼다)
+        self.submodule("tests")
+        self.start_tester(owns="tests/docs/**")
+        self.reviewing()
+        (self.proj / "tests" / "a.txt").write_text("evil\n")
+        self.assertEqual(self.assert_tamper("tests")["tamper"]["paths"], ["tests"])
+
+    def test_submodule_deleted_or_swapped_is_tamper_even_under_owns(self):
+        # Codex 계획 r1 P1: 서브모듈 자체의 삭제·심볼릭 링크나 파일로 바꾸기는 그 아래(`tests/**`)를 가진 태스크가 있어도
+        # 변조다(gitlink 가 gitlink 로 남은 커밋 이동·안의 변경만 뺀다)
+        self.submodule("tests")
+        self.start_tester()
+        self.reviewing()
+        import shutil
+        shutil.rmtree(self.proj / "tests")
+        self.assertEqual(self.assert_tamper("tests")["tamper"]["paths"], ["tests"])
+        self.tearDown()
+        self.setUp()
+        self.submodule("tests")
+        self.start_tester()
+        self.reviewing()
+        shutil.rmtree(self.proj / "tests")
+        (self.proj / "tests").symlink_to(self.tmp)
+        self.assertEqual(self.assert_tamper("tests")["tamper"]["paths"], ["tests"])
+        self.tearDown()
+        self.setUp()
+        self.submodule("tests")
+        self.start_tester()
+        self.reviewing()
+        shutil.rmtree(self.proj / "tests")
+        (self.proj / "tests").write_text("파일로 바꿨다\n")
+        self.assertEqual(self.assert_tamper("tests")["tamper"]["paths"], ["tests"])
+
+    def test_submodule_path_itself_under_owns_is_excluded_like_files(self):
+        # Codex 계획 r2 P1(일부 사실, 동작은 그대로): 다른 진행 중 태스크의 owns 가 서브모듈 경로 자체를 덮으면(그 경로·윗
+        # 폴더·`**`) 일반 파일처럼 뺀다. 그 태스크가 자기 서브모듈을 지울 수 있다(설계 6.3 의 기존 규칙, 파일과 같다)
+        self.submodule("tests/vendor")
+        self.start_tester(owns="tests/vendor")
+        self.reviewing()
+        import shutil
+        shutil.rmtree(self.proj / "tests" / "vendor")
+        self.act_review("T-001", "APPROVE")
+        code, out = self.finish()
+        self.assertEqual((code, out.get("status")), (0, "approved"), out)
+
+    def test_untracked_artifact_in_nested_submodule_is_not_tamper(self):
+        # Codex a478d38 P2: 중첩 서브모듈 + diff.ignoreSubmodules=none 이면 가장 안쪽의 미추적 산출물만으로도 git diff 가
+        # 안쪽 gitlink 를 낸다. 추적 항목이 그대로면 요약에 넣지 않는다
+        env = {**self.env, "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "protocol.file.allow",
+               "GIT_CONFIG_VALUE_0": "always"}
+
+        def git(root, *args):
+            subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True, env=env)
+        inner, outer = self.tmp / "inner-src", self.tmp / "outer-src"
+        for repo, name in ((inner, "a.txt"), (outer, "b.txt")):
+            repo.mkdir()
+            (repo / name).write_text("x\n")
+            git(repo, "init", "-q", "-b", "main")
+            git(repo, "add", name)
+            git(repo, "commit", "-q", "-m", name)
+        git(outer, "submodule", "add", "-q", str(inner), "inner")
+        git(outer, "commit", "-q", "-m", "inner")
+        git(self.proj, "submodule", "add", "-q", str(outer), "sub")
+        git(self.proj, "submodule", "update", "-q", "--init", "--recursive")
+        git(self.proj, "commit", "-q", "-m", "sub", "--", ".gitmodules", "sub")
+        git(self.proj / "sub", "config", "diff.ignoreSubmodules", "none")
+        self.reviewing()
+        (self.proj / "sub" / "inner" / "build.log").write_text("테스트 산출물\n")
+        self.act_review("T-001", "APPROVE")
+        code, out = self.finish()
+        self.assertEqual((code, out.get("status")), (0, "approved"), out)
+        (self.proj / "sub" / "inner" / "a.txt").write_text("evil\n")  # 추적 파일을 고치면 그대로 변조다
+        self.assertEqual(gitio.worktree_entries(self.proj, ["sub"])["sub"].count("+"), 1)
 
     def test_newline_in_path_is_shown_escaped_in_commit_body(self):
         # 경로의 줄바꿈이 목록 한 줄을 둘로 나누지 않는다. JSON 값은 그대로다

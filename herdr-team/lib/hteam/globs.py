@@ -106,6 +106,14 @@ def _overlaps(a: str, b: str) -> bool:
     return pa.startswith(pb) or pb.startswith(pa)
 
 
+def covers_tree(path: str, patterns) -> bool:
+    """patterns 가운데 고정 경로 path 의 아래 전체(path/…)를 확실히 덮는 glob 이 있나(within, 보수적). 변조 검사가
+    서브모듈(gitlink)을 볼 때 쓴다: 안의 변경은 gitlink 항목 하나로 요약돼 어느 파일이 바뀌었는지 모르므로, 일부만
+    덮는 glob(`vendor/docs/**`, `vendor/*.md`)은 세지 않는다(그 밖의 변경을 놓친다). `vendor/**`·`vendor`·그 위 폴더는
+    센다."""
+    return any(within(f"{path}/**", p) or (literal_prefix(p) == p and matches(path, p)) for p in patterns)
+
+
 def any_overlap(xs, ys) -> list[tuple[str, str]]:
     return [(x, y) for x in xs for y in ys if overlaps(x, y)]
 

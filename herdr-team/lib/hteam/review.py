@@ -17,7 +17,7 @@ from typing import Iterator
 
 from . import compose, config, dispatch, gitio, plan, procs, roles, specs, state
 from .errors import CONFLICT, FAIL, HteamError
-from .globs import matches_any
+from .globs import covers_tree, matches_any
 from .horch import Horch
 from .paths import SHIM, find_project, review_rel
 from .util import die_at, now, show, write_atomic
@@ -160,7 +160,11 @@ def tamper_check(p, tid: str, base: dict) -> tuple[dict | None, list[str]]:
     견주는 값은 git 항목 `모드:객체 ID` 다: 내용이 같아도 심볼릭 링크로 바꾸거나 실행 비트를 바꾸면 변조다. 트리·인덱스의
     모드는 그대로 견주고, 작업 트리의 실행 비트는 기준점 때의 core.fileMode 로 본다(false 면 인덱스의 모드). 프로젝트 안의
     숨김 플래그(assume-unchanged·skip-worktree, core.ignoreStat) 파일과 서브모듈은 git diff 가 보지 않아도 작업 트리를
-    직접 해시해 견준다(서브모듈은 HEAD 와 안의 커밋하지 않은 변경). 값이 객체 ID 뿐인 옛 기준점(이 형식 전)에 기록된
+    직접 해시해 견준다(서브모듈은 HEAD 와 안의 커밋하지 않은 변경). 서브모듈 안의 변경은 항목 하나로 요약된다. 제외
+    경로가 서브모듈 경로 자체를 덮으면(그 경로·윗 폴더의 고정 경로나 glob·`**`, _covered) 일반 파일처럼 뺀다(삭제·교체도:
+    그 태스크의 일일 수 있다). 그 아래만 덮을 때(`vendor/**`, globs.covers_tree)는 서브모듈로 남은 변경(커밋 이동·안의
+    변경, _gitlink_move)만 빼고 삭제·심볼릭 링크나 파일로 바꾸기·모드 변경은 변조다. 일부만 덮으면(`vendor/docs/**`)
+    빼지 않는다(거짓 양성은 review --retry 로 푼다). 값이 객체 ID 뿐인 옛 기준점(이 형식 전)에 기록된
     경로는 지금 값과 늘 달라 보인다: 기준점 때 커밋하지 않은 추적 파일 변경이 있었으면 그 경로가 프로젝트 안·제외 경로
     밖일 때 변조로 멈추고(프로젝트 밖이면 경고), 깨끗한 트리에서 만든 옛 기준점은 그대로 끝난다."""
     states = {s["id"]: s for s in state.all_states(p)}
@@ -212,6 +216,9 @@ def tamper_check(p, tid: str, base: dict) -> tuple[dict | None, list[str]]:
             before = base["index"][path] if path in base["index"] else tree(base["head"])
             after = now_index[path] if path in now_index else tree(head)
             moved = before != after
+        recorded = [d[path] for d in (base["dirty"], base.get("index", {}), now_dirty, now_index) if path in d]
+        if moved and _gitlink_move(before, after, *recorded) and covers_tree(path, patterns):
+            continue  # 서브모듈 안의 변경은 항목 하나로 요약된다. 그 아래 전체를 가진 다른 태스크의 일일 수 있다
         if moved:
             (outside if _outside(path) else bad).add(path)
     fresh = {u for u in set(gitio.untracked(p.root)) - set(base["untracked"]) if not excluded(u)}
@@ -219,6 +226,12 @@ def tamper_check(p, tid: str, base: dict) -> tuple[dict | None, list[str]]:
     if bad:
         return {**record, "reason": "리뷰 동안 제외 경로 밖 추적 파일이 바뀌었다", "paths": sorted(bad)}, warnings
     return None, warnings
+
+
+def _gitlink_move(*entries) -> bool:
+    """서브모듈이 서브모듈로 남은 채 바뀌었나(커밋 이동·안의 변경): 견준 전·후와 기록된 항목이 모두 gitlink(모드
+    160000)다. 하나라도 없거나(삭제) 다른 모드(심볼릭 링크·파일)면 아니다."""
+    return bool(entries) and all(isinstance(e, str) and e.startswith("160000:") for e in entries)
 
 
 def _launch_attempt(p, cfg, h, tid: str, k: int) -> dict:

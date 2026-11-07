@@ -78,6 +78,14 @@ hello 를 출력한다.
 """
 
 
+# 테스트가 물려받지 않는 환경 변수: 바깥 세션의 역할·Herdr·horch 값과 git 의 저장소·설정 위치, 죽음·멈춤 재현 지점,
+# 캐시 폴더(hteam image 의 실행 폴더가 사용자 캐시에 쌓이지 않게. HOME 은 임시 폴더다)
+DROP_ENV = ("HC_TERMINAL_ID", "CODEX_SANDBOX", "HERDR_ORCH_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "HTEAM_ROLE",
+            "HTEAM_LAUNCH", "HERDR_ORCH_BIN", "HERDR_TEAM_PLUGIN_ROOT", "CLAUDE_PROJECT_DIR", "HTEAM_TEST_DIE_AT",
+            "HORCH_TEST_DIE_AT", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+            "GIT_CONFIG_GLOBAL", "HTEAM_TEST_PAUSE_AT", "HTEAM_TEST_PAUSE_FILE")
+
+
 class TeamCase(unittest.TestCase):
     """가짜 hc 상태 파일 형식은 herdr-orch/tests/helpers.py 의 HorchCase 와 같다."""
 
@@ -90,9 +98,7 @@ class TeamCase(unittest.TestCase):
         self.hcdir.mkdir()
         (self.tmp / "home").mkdir()
         self.set_hc_state({"next": 200, "terminals": {}, "fail": {}, "screens": {}, "sent": []})
-        drop = ("HC_TERMINAL_ID", "CODEX_SANDBOX", "HERDR_ORCH_HOME", "XDG_STATE_HOME", "HTEAM_ROLE", "HTEAM_LAUNCH",
-                "HERDR_ORCH_BIN", "HERDR_TEAM_PLUGIN_ROOT", "CLAUDE_PROJECT_DIR", "HTEAM_TEST_DIE_AT", "GIT_DIR",
-                "GIT_WORK_TREE", "HTEAM_TEST_PAUSE_AT", "HTEAM_TEST_PAUSE_FILE")
+        drop = DROP_ENV
         self.env = {k: v for k, v in os.environ.items() if k not in drop}
         self.env.update({
             "PATH": f"{FAKES}{os.pathsep}{HORCH_FAKES}{os.pathsep}{os.environ['PATH']}",
@@ -133,7 +139,7 @@ class TeamCase(unittest.TestCase):
 
     def submodule(self, rel: str = "sub") -> str:
         """프로젝트 안에 서브모듈 rel(추적 파일 a.txt 하나)을 더해 커밋한다. 서브모듈의 HEAD 를 낸다."""
-        src = self.tmp / f"{rel}-src"
+        src = self.tmp / f"{rel.replace('/', '-')}-src"  # rel 이 하위 폴더(`tests/vendor`)여도 된다
         src.mkdir()
         (src / "a.txt").write_text("a\n")
         for args in (("init", "-q", "-b", "main"), ("add", "a.txt"), ("commit", "-q", "-m", "a")):
@@ -292,8 +298,26 @@ class TeamCase(unittest.TestCase):
             proc.stdin.write(stdin)
         proc.stdin.close()
         proc.stdin = None  # finish() 의 communicate() 가 닫힌 stdin 을 flush 하지 않게(Python 3.11)
-        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        self.addCleanup(self._reap, proc)
         return proc
+
+    @staticmethod
+    def _reap(proc: subprocess.Popen) -> None:
+        """남은 백그라운드 hteam 을 끝내고 거둔다(좀비·열린 파이프를 남기지 않는다)."""
+        if proc.poll() is None:
+            proc.kill()
+        proc.communicate(timeout=30)
+
+    def wait_gone(self, rec, limit: float = 10.0) -> None:
+        """시작 장벽 자식이 끝날 때까지 기다린다. 실행자가 시작 바이트 전에 죽으면 자식은 stdin 의 EOF 를 보고 스스로
+        끝나지만 그 시점은 정해져 있지 않다. 살아 있는 동안의 복구는 launching(exit 3)이라 기다린 뒤에 복구한다."""
+        import time
+        from hteam import procs
+        deadline = time.monotonic() + limit
+        while procs.record_alive(rec):
+            if time.monotonic() >= deadline:
+                self.fail(f"{limit}초 안에 시작 장벽 자식(pid {rec.get('pid')})이 끝나지 않았다")
+            time.sleep(0.05)
 
     @staticmethod
     def finish(proc: subprocess.Popen, timeout: float = 60) -> tuple[int, dict]:

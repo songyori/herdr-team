@@ -44,6 +44,16 @@ def toml(tasks):
 
 
 class GlobTest(unittest.TestCase):
+    def test_covers_tree_needs_the_whole_subtree(self):
+        # 변조 검사가 서브모듈 vendor 의 변경을 빼려면 그 아래 전체를 확실히 덮어야 한다(Codex 계획 r1 P1)
+        for patterns in (["vendor/**"], ["vendor"], ["third/**"], ["**"]):
+            with self.subTest(patterns=patterns):
+                path = "third/vendor" if patterns == ["third/**"] else "vendor"
+                self.assertTrue(globs.covers_tree(path, patterns))
+        for patterns in (["vendor/docs/**"], ["vendor/*.md"], ["**/*.md"], ["vendor-x/**"], ["vend*/**"], []):
+            with self.subTest(patterns=patterns):
+                self.assertFalse(globs.covers_tree("vendor", patterns))
+
     def test_matches(self):
         self.assertTrue(matches("src/a/b.py", "src/**"))
         self.assertTrue(matches("src/a.py", "src/*.py"))
@@ -697,6 +707,14 @@ class GitioTest(TeamCase):
         with mock.patch.dict(os.environ, self.env, clear=True):
             self.assertTrue(gitio._ref_present(wt, "refs/heads/broken"))
 
+    def test_ref_present_reads_packed_refs(self):
+        # 느슨한 ref 파일이 없어도 packed-refs 에 있으면 있는 것이다(git 2.43 미만의 has_head 가 기대는 경로)
+        self.git("pack-refs", "--all")
+        self.assertFalse((self.proj / ".git/refs/heads/main").exists())
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            self.assertTrue(gitio._ref_present(self.proj, "refs/heads/main"))
+            self.assertFalse(gitio._ref_present(self.proj, "refs/heads/nope"))
+
     def test_worktree_entries_see_submodule_content(self):
         # 서브모듈은 HEAD 와 안의 커밋하지 않은 변경(작업 트리·인덱스)으로 본다. HEAD 가 같아도 안에서 바뀌면 값이 다르다
         head = self.submodule()
@@ -775,28 +793,59 @@ class GitioTest(TeamCase):
         self.assertEqual(gitio.commit_files(self.proj, sha), ["a[1].txt"])
         self.assertEqual(gitio.untracked(self.proj), ["a1.txt"])
 
+    class FakeTime:
+        """gitio 의 시계·잠을 시험이 쥔다: 잘 때만 시간이 간다(실행 속도와 상관없이 재시도 횟수가 정해진다. Codex 계획 r2)."""
+
+        def __init__(self, on_sleep=None):
+            self.now, self.sleeps, self.on_sleep = 0.0, [], on_sleep
+
+        def monotonic(self):
+            return self.now
+
+        def sleep(self, secs):
+            self.sleeps.append(secs)
+            self.now += secs
+            if self.on_sleep:
+                self.on_sleep(len(self.sleeps))
+
+    def counted_adds(self):
+        real, adds = subprocess.run, []
+
+        def git(argv, **kw):
+            if "add" in argv:
+                adds.append(argv)
+            return real(argv, **kw)
+        return git, adds
+
     def test_commit_paths_waits_for_index_lock(self):
-        # 같은 폴더의 워커 커밋이 index.lock 을 쥔 순간이면 잠깐 기다렸다 다시 한다
-        import threading
+        # 같은 폴더의 워커 커밋이 index.lock 을 쥔 순간이면 잠깐 기다렸다 다시 한다. 잠금은 두 번째 잠 뒤에 풀린다
         lock = self.proj / ".git" / "index.lock"
         (self.proj / "a.txt").write_text("a\n")
         lock.write_text("")
-        timer = threading.Timer(0.5, lock.unlink)
-        timer.start()
-        self.addCleanup(timer.cancel)
-        with mock.patch.dict(os.environ, {**self.env, "HTEAM_GIT_LOCK_WAIT": "10"}, clear=True):
+        clock = self.FakeTime(on_sleep=lambda n: n == 2 and lock.unlink())
+        git, adds = self.counted_adds()
+        with mock.patch.dict(os.environ, {**self.env, "HTEAM_GIT_LOCK_WAIT": "10"}, clear=True), \
+                mock.patch("hteam.gitio.subprocess.run", side_effect=git), mock.patch.object(gitio, "time", clock):
             sha = gitio.commit_paths(self.proj, ["a.txt"], "a")
         self.assertEqual(gitio.commit_files(self.proj, sha), ["a.txt"])
+        self.assertEqual((len(adds), clock.sleeps), (3, [0.2, 0.2]))  # 잠금이 풀릴 때까지 0.2초마다 다시 했다
 
     def test_commit_paths_gives_up_on_stale_index_lock(self):
+        # 마감 0.3초: 0초·0.2초에 다시 하고 0.4초에 멈춘다(시계는 시험이 쥔다)
         (self.proj / "a.txt").write_text("a\n")
-        (self.proj / ".git" / "index.lock").write_text("")
-        with mock.patch.dict(os.environ, {**self.env, "HTEAM_GIT_LOCK_WAIT": "0.3"}, clear=True):
+        lock = self.proj / ".git" / "index.lock"
+        lock.write_text("")
+        clock = self.FakeTime()
+        git, adds = self.counted_adds()
+        with mock.patch.dict(os.environ, {**self.env, "HTEAM_GIT_LOCK_WAIT": "0.3"}, clear=True), \
+                mock.patch("hteam.gitio.subprocess.run", side_effect=git), mock.patch.object(gitio, "time", clock):
             with self.assertRaises(HteamError) as cm:
                 gitio.commit_paths(self.proj, ["a.txt"], "a")
         self.assertEqual((cm.exception.code, cm.exception.data.get("index_lock")), ("git_failed", True))
         self.assertIn("index.lock", cm.exception.hint)
         self.assertIn("직접 지우지 않는다", cm.exception.hint)
+        self.assertEqual((len(adds), clock.sleeps), (3, [0.2, 0.2]))
+        self.assertTrue(lock.exists())  # 남의 잠금 파일은 지우지 않는다
 
     def test_index_lock_permission_error_is_not_retried(self):
         # git 의 index.lock 메시지가 File exists(다른 git 이 쥐고 있다)일 때만 기다린다. 권한 오류는 기다려도 풀리지 않는다
@@ -841,14 +890,17 @@ class GitioTest(TeamCase):
 
     def test_index_lock_error_without_the_lock_file_is_not_retried(self):
         # 번역됐든 아니든 `File exists` 가 없고 실패 직후 잠금 파일도 없으면(권한 오류 등) 기다리지 않는다
-        real, adds = subprocess.run, []
+        real, adds, queries = subprocess.run, [], []
 
         def git(argv, **kw):
             if "add" in argv:
                 adds.append(argv)
                 return subprocess.CompletedProcess(argv, 128, "", "fatal: Unable to create '/x/.git/index.lock': "
                                                                  "Permission denied\n")
-            return real(argv, **kw)  # 잠금 파일 조회는 실제 git 이 한다
+            proc = real(argv, **kw)  # 잠금 파일 조회는 실제 git 이 한다
+            if "--git-path" in argv:
+                queries.append(proc.returncode)
+            return proc
 
         (self.proj / "a.txt").write_text("a\n")
         with mock.patch.dict(os.environ, {**self.env, "HTEAM_GIT_LOCK_WAIT": "5"}, clear=True), \
@@ -857,6 +909,7 @@ class GitioTest(TeamCase):
                 gitio.commit_paths(self.proj, ["a.txt"], "a")
         self.assertEqual(len(adds), 1)
         self.assertFalse((cm.exception.data or {}).get("index_lock"))
+        self.assertEqual(queries, [0])  # 잠금 파일 조회를 실제로 했고 성공했다(조회 실패로 False 가 된 것이 아니다)
 
     def test_commit_paths_shares_one_lock_deadline(self):
         # add 와 commit 이 마감 하나를 나눠 쓴다. 따로 쓰면 add 가 쓴 시간 뒤로 HTEAM_GIT_LOCK_WAIT 를 다시 기다린다

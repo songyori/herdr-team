@@ -106,5 +106,33 @@ class FixRoundQuestionTest(TeamCase):
         self.assertEqual((code, out.get("answer")), (0, "파일 (추천)"), out)
 
 
+    def test_confirmed_answer_before_ack_is_pending_in_the_next_round(self):
+        # 확정 질문의 답을 받은 뒤 ack 전에 r1 워커가 끝났다. r2 의 기획자는 --pending 으로 그 답을 보고 반영한다(다시 묻지 않는다)
+        confirm = {"header": "기획 확정", "question": "이 계획으로 확정할까요?\n예: 확정하면 디자인이 시작된다",
+                   "context": "## 계획 핵심\n- 할 일 앱",
+                   "options": [{"label": "확정 (추천)", "description": "추천 사유: 빠진 항목이 없다"},
+                               {"label": "수정할 부분 있음", "description": "고칠 곳을 알려 준다"}]}
+        self.write_spec("T-001", "planner")
+        state.create(self.p, "T-001", "planner")
+        self.assertEqual(self.hteam("start", "T-001")[0], 0)
+        term = self.dispatch_row(self.work_dispatch("T-001"))["terminal"]
+        code, out = self.hteam("ask-user", "--task", "T-001", "--json", "-", as_=None, terminal=term,
+                               stdin=json.dumps(confirm))
+        self.assertEqual((code, out.get("id")), (4, "out-0001"), out)
+        self.assertEqual(self.hteam("answer", "out-0001", "확정 (추천)", as_="main")[0], 0)
+        self.act_work("T-001", {"docs/planning/spec.md": "초안\n"}, outcome="failed")  # ack 전에 끝났다
+        self.assertEqual(self.hteam("fix", "T-001", "--note=확정 답을 반영한다")[0], 0)
+        work = (self.state_dir / "tasks/T-001/r2-work.md").read_text(encoding="utf-8")
+        self.assertIn("`.herdr-team/bin/hteam ask-user --task T-001 --pending`", work)
+        code, out = self.hteam("ask-user", "--task", "T-001", "--pending", as_=None)
+        self.assertEqual([(i["id"], i["answer"], i["round"]) for i in out["pending"]], [("out-0001", "확정 (추천)", 1)])
+        code, out = self.hteam("ask-user", "--task", "T-001", "--history", as_=None)
+        self.assertEqual([o["label"] for o in out["history"][0]["render"]["options"]], ["확정 (추천)", "수정할 부분 있음"])
+        self.assertEqual(outbox.open_questions(self.p), [])  # 답이 왔으므로 열린 질문이 아니다
+        term = self.dispatch_row(self.work_dispatch("T-001"))["terminal"]
+        self.assertEqual(self.hteam("ask-user", "--task", "T-001", "--ack", "out-0001", as_=None, terminal=term)[0], 0)
+        self.assertEqual(self.hteam("ask-user", "--task", "T-001", "--pending", as_=None)[1]["pending"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

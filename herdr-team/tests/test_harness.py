@@ -36,5 +36,24 @@ class HarnessTest(TeamCase):
         self.assertEqual(self.dispatch_row(out["dispatch"])["state"], "active")
 
 
+    def test_outer_git_and_death_points_do_not_leak_into_tests(self):
+        import os
+        from unittest import mock
+        outer = {k: "/outer" for k in ("GIT_INDEX_FILE", "GIT_CONFIG_GLOBAL", "GIT_OBJECT_DIRECTORY",
+                                       "HORCH_TEST_DIE_AT", "HTEAM_TEST_DIE_AT", "XDG_CACHE_HOME")}
+        with mock.patch.dict(os.environ, outer):
+            case = TeamCase("run")
+            case.setUp()
+            self.addCleanup(case.tearDown)
+        self.assertEqual([k for k in outer if k in case.env], [])
+        self.assertEqual(case.git("rev-parse", "--is-inside-work-tree").strip(), "true")
+
+    def test_background_hteam_is_reaped(self):
+        self.init_project()
+        proc = self.hteam_bg("wait", "--timeout", "30")
+        self._reap(proc)
+        self.assertIsNotNone(proc.returncode)  # 죽였고 거뒀다
+
+
 if __name__ == "__main__":
     unittest.main()

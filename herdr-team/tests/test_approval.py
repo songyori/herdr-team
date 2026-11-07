@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from tests.helpers import BASE_CONFIG, ROOT, TeamCase
-from hteam import approval, config, dispatch, outbox, procs, roles, state
+from hteam import approval, config, dispatch, outbox, roles, state
 from hteam.paths import Project
 
 APPROVAL = BASE_CONFIG.replace("user_approval_roles = []", 'user_approval_roles = ["designer"]') + """
@@ -49,16 +49,6 @@ class ApprovalCase(TeamCase):
         with state.edit(self.p, tid) as st:
             st["round"] = rnd
             st["history"].append({"at": at, "from": st["status"], "to": st["status"], "event": "fix", "round": rnd})
-
-    def wait_gone(self, rec, limit=10.0):
-        """시작 장벽 자식이 끝날 때까지 기다린다. 실행자가 시작 바이트 전에 죽으면 자식은 stdin 의 EOF 를 보고 스스로
-        끝나지만 그 시점은 정해져 있지 않다. 살아 있는 동안의 복구는 launching(exit 3)이라 기다린 뒤에 복구한다."""
-        import time  # 머리 import 는 뒤 태스크의 찾을 내용이라 그대로 둔다
-        deadline = time.monotonic() + limit
-        while procs.record_alive(rec):
-            if time.monotonic() >= deadline:
-                self.fail(f"{limit}초 안에 시작 장벽 자식(pid {rec.get('pid')})이 끝나지 않았다")
-            time.sleep(0.05)
 
     def restart_after_predecessor_refix(self, die_at):
         """T-002 가 T-001 r3 을 보고 뜨다가 die_at 에서 실행자가 죽었다. 그 사이 T-001 이 결정 밖에서 r4 로 고쳐져 다시
@@ -1351,6 +1341,19 @@ class ApprovalCloseTest(DecisionCase):
         self.assertIn(f"{H} drop T-003", w["hint"])
         [w] = [w for w in out["waiting"] if w["task"] == "T-006"]
         self.assertEqual((w["detail"], w.get("dropped"), w.get("hint")), ("T-005(working)", None, None), w)
+
+    def test_task_behind_a_queued_round_with_a_dropped_predecessor_says_so(self):
+        # T-003 → T-002(띄운 적 없는 queued r2) → T-001(dropped): start-ready 가 T-002 를 띄우지 못하므로 T-003 도 그렇다
+        self.queued_pair()
+        self.task("T-003", "pending", role="developer", depends="T-002")
+        self.assertEqual(self.hteam("drop", "T-001", "--force")[0], 0)
+        task = self.statuses()["T-003"]
+        self.assertIsNone(task["next"])
+        for needle in ("선행 T-001", "T-002 의 선행", "`.herdr-team/tasks/T-002.md`"):
+            self.assertIn(needle, task["hint"])
+        code, out = self.hteam("start-ready")
+        [w] = [w for w in out["waiting"] if w["task"] == "T-003"]
+        self.assertEqual((w["reason"], w.get("dropped")), ("deps", ["T-001"]), w)
 
     def test_queued_round_behind_a_predecessor_in_revision_leaves_the_blocker_on_the_predecessor(self):
         self.queued_pair()
