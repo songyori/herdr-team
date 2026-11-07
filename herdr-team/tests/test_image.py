@@ -80,7 +80,8 @@ if args[:2] == ["features", "list"]:
     if os.environ.get("FAKE_BAD_PROVIDER") and any(a.startswith("model_provider") for a in args):
         print("Error: Model provider image_backend not found", file=sys.stderr); sys.exit(1)
     print("hooks  stable  true")
-    on = ("features.image_generation=true" in args or "--enable=image_generation" in args
+    args = [x.replace(" ", "") for x in args]
+    on = ("features.image_generation=true" in args or "features={image_generation=true}" in args or "--enable=image_generation" in args
           or any(a == "--enable" and args[k + 1] == "image_generation" for k, a in enumerate(args[:-1])))
     off = "features.image_generation=false" in args or "--disable=image_generation" in args
     print("image_generation  stable  " + ("false" if (os.environ.get("FAKE_NO_IMAGE") and not on) or off else "true")); sys.exit(0)
@@ -468,12 +469,19 @@ class PreflightTest(FakeCodexMixin, unittest.TestCase):
             image.preflight([])
         self.assertEqual(ctx.exception.code, "no_image_generation")
         for args in (["--enable=image_generation"], ["--enable", "image_generation"],
-                     ["-c", "features.image_generation=true"], ["-cfeatures.image_generation=true"]):
+                     ["-c", "features.image_generation=true"], ["-cfeatures.image_generation=true"],
+                     ["-c", "features={image_generation=true}"], ["--config= features ={image_generation=true}"]):
             with self.subTest(args=args):
                 image.preflight(args)
         os.environ.pop("FAKE_NO_IMAGE")
         with self.assertRaises(HteamError):
             image.preflight(["--disable=image_generation"])
+
+    def test_features_table_key_is_forwarded(self):
+        # Codex b0a717b P2: 키가 정확히 `features`(테이블 값)인 -c 도 기능 인자다. 앞뒤 공백은 뗀다
+        self.assertEqual(image.feature_args(["-c", "features={image_generation=true}", "-c", "featuresx=1", "-c", "feature.a=1"]),
+                         ["-c", "features={image_generation=true}"])
+        self.assertEqual(image.feature_args(["--config= features ={a=true}"]), ["-c", " features ={a=true}"])
 
     def test_profile_skips_the_check_with_a_warning(self):
         # Codex 3300643 P2: `codex features list` 는 프로필을 받지 않는다(--help). 프로필에만 있는 설정(provider 등)에 기대는

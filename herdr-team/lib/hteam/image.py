@@ -52,10 +52,11 @@ ADAM7 = ((0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8), (2, 0, 4, 4), (0, 2, 2, 4), (
 
 
 def feature_args(args: list[str]) -> list[str]:
-    """실행 인자(codex_args 로 거른 것) 가운데 기능에 영향을 주는 것만: `--enable`·`--disable` 과 키가 `features.` 로 시작하는
+    """실행 인자(codex_args 로 거른 것) 가운데 기능에 영향을 주는 것만: `--enable`·`--disable` 과 키가 `features` 이거나 `features.` 로 시작하는
     `-c`·`--config`(browser.key_of). 사전 조회(`codex features list`)가 실행과 같은 기능 상태를 읽게 한다. 그 밖의 `-c`
     (프로필 전용 model_provider 등)는 조회가 모를 수 있어 넘기지 않는다."""
-    out = [x for _, _, v in browser.config_items(args) if browser.key_of(v).startswith("features.") for x in ("-c", v)]
+    out = [x for _, _, v in browser.config_items(args)
+           if browser.key_of(v) == "features" or browser.key_of(v).startswith("features.") for x in ("-c", v)]
     k = 0
     while k < len(args):
         a = args[k]
