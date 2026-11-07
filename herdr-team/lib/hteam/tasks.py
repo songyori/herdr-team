@@ -111,10 +111,15 @@ def _begin(p, st: dict, rd: dict, text: str, event: str, **info) -> None:
     write_atomic(_spec_file(p, st["id"], rd["round"]), text)
 
 
-def _new_round(st: dict, n: int, head: str, choice, note=None, supplement=None) -> dict:
-    return {"round": n, "round_base": head, "agent": choice.worker, "model": choice.model, "effort": choice.effort,
-            "note": note, "supplement": supplement, "work": dispatch.new_slot(roles.work_title(st["id"], n)),
-            "reviews": [], "verdict": None}
+def _new_round(st: dict, n: int, head: str, choice, note=None, supplement=None, coord_note=None) -> dict:
+    """note 는 사용자 요청 라운드(from_user)면 사용자 요청, 아니면 코디네이터 메모다. coord_note 는 사용자 요청 라운드를
+    잇는 일반 fix 의 코디네이터 메모다(사용자 요청과 섞지 않는다)."""
+    rd = {"round": n, "round_base": head, "agent": choice.worker, "model": choice.model, "effort": choice.effort,
+          "note": note, "supplement": supplement, "work": dispatch.new_slot(roles.work_title(st["id"], n)),
+          "reviews": [], "verdict": None}
+    if coord_note:
+        rd["coord_note"] = coord_note
+    return rd
 
 
 LIVE = ("launching", "active")
@@ -569,15 +574,14 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
     일괄 승인 결정(설계 11.4)이 부를 때: queue 면 새 라운드를 쓰고 띄우지 않는다(launch_failed, queued. start-ready 가
     의존이 풀린 뒤 띄운다). from_user 면 사용자 요청 라운드다(결정만 준다. awaiting_user 에서의 다른 fix, 예를 들어
     --supplement 는 사용자 요청이 아니다). 다만 일반 fix 가 아직 사용자에게 다시 보이지 않은 사용자 요청 라운드(워커 실패
-    등)를 닫으면 그 요청을 --note 와 합쳐 잇고 사용자 요청 라운드로 둔다(요청을 잃지 않는다). extra_from 은 FIX_FROM 밖에서 더 받을 상태다(결정이 고치는 의존 태스크는
+    등)를 닫으면 그 요청을 --note 와 합쳐 잇고 사용자 요청 라운드로 둔다(요청을 잃지 않는다). 보강 라운드(--supplement)가
+    다시 승인되지 못한 채 닫히면 --supplement 없는 fix 도 그 보강 ID 를 잇는다(awaiting_user 에서 연 fix 는 잇지 않는다). extra_from 은 FIX_FROM 밖에서 더 받을 상태다(결정이 고치는 의존 태스크는
     리뷰 중·승인됨이어도 다시 만든다)."""
     cfg = config.load(p)
     spec = specs.check(p, cfg, tid)
     choice = config.resolve(cfg, spec.role, spec.front, cli)
     if supplement is not None:
-        state.check_id(supplement)
-        if not p.spec_path(supplement).is_file():
-            raise HteamError("unknown_task", f"--supplement {supplement} 사양이 없다", USAGE)
+        _check_supplement(p, supplement)
     h = Horch(p.horch_home)
 
     allowed_from = FIX_FROM + tuple(extra_from)
@@ -607,12 +611,18 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
             _start_gate(p, cfg, spec, check_deps=False)
         old = st["status"]
         prior = state.current_round(st) or {}
+        coord_note = None
         if not from_user and prior.get("from_user") and prior.get("note") and old != "awaiting_user":
-            # 결정이 연 사용자 요청 라운드가 사용자에게 다시 보이지 못한 채 닫힌다(워커 실패 등). 그 요청을 잇는다
-            from . import approval  # approval 이 tasks 를 쓴다. 불러오는 순서가 꼬이지 않게 여기서 가져온다
-            note, from_user = approval._merge([note] if note else [], prior["note"], []), True
+            # 결정이 연 사용자 요청 라운드가 사용자에게 다시 보이지 못한 채 닫힌다(워커 실패, 리뷰 수정 요청 뒤 changes 등).
+            # 그 요청을 그대로 잇고 코디네이터 메모는 따로 적는다(워커·리뷰어가 메모를 사용자 요청으로 읽지 않게)
+            note, coord_note, from_user = prior["note"], note, True
+        if supplement is None and prior.get("supplement") and old != "awaiting_user":
+            # 보강 라운드가 다시 승인되지 못한 채 닫힌다(작업 실패, 리뷰 수정 요청 등). 끝나지 않은 보강을 잇는다
+            # (수정 블록이 보강 결과를 계속 보이고, 다시 승인된 뒤 그 라운드의 제안을 보강 대상으로 보지 않는다)
+            supplement = prior["supplement"]
         st["role"] = spec.role  # 첫 실행과 같이 워커가 뜨는 사양의 직무로 맞춘다. planner 하나 검사가 저장된 직무를 본다
-        rd = _new_round(st, st["round"] + 1, gitio.head(p.root), choice, note=note, supplement=supplement)
+        rd = _new_round(st, st["round"] + 1, gitio.head(p.root), choice, note=note, supplement=supplement,
+                        coord_note=coord_note)
         if from_user:
             rd["from_user"] = True  # 사용자 일괄 승인의 수정 요청(설계 11.4). 수정 블록이 사용자 요청으로 적는다
             # 마지막으로 실제 리뷰된 라운드의 판정(그 뒤 라운드는 띄우지 않았거나 판정 전에 닫혔다). 수정 요청이면 그 지적도
@@ -631,6 +641,20 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
                 "next": [SHIM, "start-ready"],
                 "hint": "수정 라운드를 만들었다. start-ready 가 선행이 끝난(승인 직무는 awaiting_user) 뒤에 띄운다"}
     return run_work(p, cfg, h, tid)
+
+
+def _check_supplement(p, sup: str) -> None:
+    """--supplement 는 끝난(done) 디렉터 보강 태스크만 받는다(설계 11.4: 보강이 끝나면 제안한 화면을 고친다)."""
+    state.check_id(sup)
+    if not p.spec_path(sup).is_file():
+        raise HteamError("unknown_task", f"--supplement {sup} 사양이 없다", USAGE)
+    role = specs.load(p, sup).role
+    if role != "director":
+        raise HteamError("bad_supplement", f"--supplement {sup} 는 {role} 태스크다(디렉터 보강 태스크만 준다)", USAGE)
+    st = state.load(p, sup)
+    if st is None or st["status"] != "done":
+        raise HteamError("supplement_not_done", f"보강 태스크 {sup} 가 아직 끝나지 않았다({(st or {}).get('status', '상태 없음')})",
+                         CONFLICT, "보강 태스크를 accept 해 done 이 된 뒤 fix --supplement 한다")
 
 
 def _last_review(st: dict) -> tuple[str | None, int | None]:

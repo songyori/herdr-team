@@ -91,6 +91,12 @@ class ApprovalCase(TeamCase):
 
 
 class DesignReviewTest(ApprovalCase):
+    def test_proposals_do_not_block_without_director_role(self):
+        # [roles.director] 가 없으면 보강할 디렉터가 없다. 시스템 추가 제안이 있어도 그대로 묻는다(설계 11.4)
+        self.task("T-001", "awaiting_user")
+        self.commit("docs/tasks/T-001/report.md", "## r1\n### 시스템 추가 제안\n- 배지 색\n", "[T-001] r1")
+        self.assertEqual(self.review()[0], 0)
+
     def test_batches_every_waiting_task(self):
         self.task("T-001", "awaiting_user", title="로그인 화면")
         self.task("T-002", "awaiting_user", title="목록 화면")
@@ -811,7 +817,7 @@ class ApprovalFollowupTest(DecisionCase):
 
     def test_supplement_fix_from_awaiting_user_is_not_a_user_request(self):
         self.task("T-001", "awaiting_user")
-        self.write_spec("T-009", "designer", owns="docs/design/system/**", commit=False)
+        self.task("T-009", "done", role="director")  # --supplement 는 끝난 디렉터 보강 태스크만 받는다
         code, out = self.hteam("fix", "T-001", "--supplement", "T-009", "--note=보강을 반영한다")
         self.assertEqual(code, 0, out)
         self.assertNotIn("from_user", self.task_state("T-001")["rounds"][-1])
@@ -862,9 +868,114 @@ class ApprovalFollowupTest(DecisionCase):
         code, out = self.hteam("fix", "T-001", "--note=이전 워커가 done 없이 끝남")
         self.assertEqual((code, self.task_state("T-001")["round"]), (0, 3), out)
         self.assertTrue(self.task_state("T-001")["rounds"][-1].get("from_user"))  # 다음 결정·fix 도 이 요청을 잇는다
+        rd = self.task_state("T-001")["rounds"][-1]
+        # 코디네이터 메모는 사용자 요청과 섞지 않고 따로 적는다(워커가 메모를 사용자 요구로 읽지 않게)
+        self.assertEqual((rd["note"], rd["coord_note"]), ("버튼을 크게", "이전 워커가 done 없이 끝남"))
         work = self.work("T-001")
-        self.assertIn("버튼을 크게", work)
-        self.assertIn("이전 워커가 done 없이 끝남", work)
+        self.assertIn("사용자 요청: 버튼을 크게\n", work)
+        self.assertIn("코디네이터 메모: 이전 워커가 done 없이 끝남\n", work)
+        self.assertNotIn("사용자 요청: 이전 워커", work)
+
+
+DIRECTOR_CONFIG = APPROVAL + """
+[roles.director]
+title = "디자인 디렉터"
+owns = ["docs/design/**", "assets/**"]
+"""
+
+
+class SupplementTest(DecisionCase):
+    """디렉터 보강(설계 11.4 첫 항목): 시스템 추가 제안이 있으면 묻기 전에 보강한다."""
+
+    config = DIRECTOR_CONFIG
+
+    def work(self, tid):
+        rnd = self.task_state(tid)["round"]
+        return (self.state_dir / f"tasks/{tid}/r{rnd}-work.md").read_text(encoding="utf-8")
+
+    def report(self, tid, text):
+        self.commit(f"docs/tasks/{tid}/report.md", text, f"[{tid}] 보고서")
+
+    def hints(self):
+        return {t["id"]: t for t in self.hteam("status")[1]["tasks"]}
+
+    def test_proposals_hold_the_batch_until_the_supplement_round(self):
+        self.task("T-001", "awaiting_user", title="목록 화면")
+        self.task("T-002", "awaiting_user", title="통계 화면")
+        self.report("T-001", "## r1\n- 아티팩트: 없음\n\n### 시스템 추가 제안\n- 진한 강조색 단계(목록 배지): 대비가 모자라다\n\n"
+                             "### 금지 목록 점검\n- 1–10 지켰다\n")
+        self.report("T-002", "## r1\n### 시스템 추가 제안\n없음\n")
+        code, out = self.review()
+        self.assertEqual((code, out["error"]["code"]), (3, "supplement_needed"), out)
+        self.assertEqual(out["proposals"], [{"task": "T-001", "round": 1,
+                                             "proposal": "- 진한 강조색 단계(목록 배지): 대비가 모자라다"}])
+        self.assertEqual((out["directors"], self.outbox_items()), ([], []))  # 묻지 않았다
+        for tid in ("T-001", "T-002"):
+            task = self.hints()[tid]
+            self.assertIsNone(task["next"])
+            self.assertIn("디렉터 보강 태스크를 만들고", task["hint"])
+        self.task("T-005", "working", role="director")  # 보강 태스크가 도는 중이다
+        self.assertEqual(self.review()[1]["directors"], [{"task": "T-005", "status": "working"}])
+        self.assertIn("보강 중인 director 태스크 T-005(working)", self.hints()["T-001"]["hint"])
+        code, out = self.hteam("fix", "T-001", "--supplement", "T-005", "--note=진한 강조색을 쓴다")
+        self.assertEqual((code, out["error"]["code"]), (3, "supplement_not_done"), out)
+        self.move("T-005", "done")
+        code, out = self.hteam("fix", "T-001", "--supplement", "T-005", "--note=진한 강조색을 쓴다")
+        self.assertEqual((code, out["round"]), (0, 2), out)
+        work = self.work("T-001")
+        for needle in ("디렉터 보강 태스크 T-005 의 결과(`docs/tasks/T-005/report.md`, `docs/design/system/`)를 반영한다",
+                       "코디네이터 메모: 진한 강조색을 쓴다"):
+            self.assertIn(needle, work)
+        self.move("T-001", "awaiting_user")  # 보강 라운드가 리뷰를 거쳐 다시 승인됐다
+        self.report("T-001", "## r1\n### 시스템 추가 제안\n- 진한 강조색\n\n## r2\n### 시스템 추가 제안\n- 더 진한 단계도\n")
+        code, out = self.review()  # 보강 라운드는 제안을 다시 보지 않는다
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["tasks"], [{"task": "T-001", "round": 2}, {"task": "T-002", "round": 1}])
+
+    def test_unfinished_supplement_round_keeps_its_supplement(self):
+        # 보강 라운드가 리뷰 수정 요청(또는 작업 실패)으로 끝난 뒤의 일반 fix 도 보강을 잇는다: 보강 참조가 남고, 다시
+        # 승인된 뒤 그 라운드의 제안을 다시 보강 대상으로 보지 않는다
+        self.task("T-001", "awaiting_user")
+        self.task("T-005", "done", role="director")
+        self.report("T-001", "## r1\n### 시스템 추가 제안\n- 진한 강조색\n")
+        code, out = self.hteam("fix", "T-001", "--supplement", "T-005", "--note=진한 강조색을 쓴다")
+        self.assertEqual((code, out["round"]), (0, 2), out)
+        self.move("T-001", "changes")
+        code, out = self.hteam("fix", "T-001", "--note=리뷰 지적: 배지 대비")
+        self.assertEqual((code, out["round"]), (0, 3), out)
+        self.assertEqual(self.task_state("T-001")["rounds"][-1]["supplement"], "T-005")
+        self.assertIn("디렉터 보강 태스크 T-005 의 결과", self.work("T-001"))
+        self.move("T-001", "awaiting_user")
+        self.report("T-001", "## r1\n### 시스템 추가 제안\n- 진한 강조색\n\n## r3\n### 시스템 추가 제안\n- 더 진한 단계\n")
+        code, out = self.review()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["tasks"], [{"task": "T-001", "round": 3}])
+        code, out = self.hteam("fix", "T-001", "--note=사용자와 다시 본다")  # awaiting_user 뒤의 새 수정은 잇지 않는다
+        self.assertEqual((code, out["round"]), (0, 4), out)
+        self.assertIsNone(self.task_state("T-001")["rounds"][-1]["supplement"])
+
+    def test_supplement_must_be_a_director_task(self):
+        self.task("T-001", "awaiting_user")
+        self.task("T-003", "done")  # designer
+        code, out = self.hteam("fix", "T-001", "--supplement", "T-003")
+        self.assertEqual((code, out["error"]["code"]), (2, "bad_supplement"), out)
+        self.assertEqual(self.task_state("T-001")["round"], 1)
+
+    def test_proposals_read_the_current_round_section(self):
+        cases = [("## r1\n### 시스템 추가 제안\n- 없음\n", None),
+                 ("## r1\n- 시스템 추가 제안: 배지 색 하나\n", "배지 색 하나"),  # 2단계 형식의 줄
+                 ("## r1\n- 시스템 추가 제안: 없음\n", None),
+                 ("## r10\n### 시스템 추가 제안\n- 다른 라운드\n", None),
+                 ("## r1\n### 시스템 추가 제안\n- 간격 20px\n### 금지 목록 점검\n- 지켰다\n## r2\n### 시스템 추가 제안\n- r2\n",
+                  "- 간격 20px"),
+                 ("## r2\n### 시스템 추가 제안\n- r2 것\n", None)]
+        path = self.proj / "docs/tasks/T-001/report.md"
+        path.parent.mkdir(parents=True)
+        for text, want in cases:
+            with self.subTest(text=text):
+                path.write_text(text, encoding="utf-8")
+                self.assertEqual(approval.proposals(self.p, {"id": "T-001", "round": 1}), want)
+        self.assertIsNone(approval.proposals(self.p, {"id": "T-404", "round": 1}))  # 보고서가 없다
 
 
 class ApprovalCloseTest(DecisionCase):
@@ -1203,6 +1314,23 @@ class ApprovalDocsTest(unittest.TestCase):
         coord = (ROOT / "templates" / "coordinator.md").read_text(encoding="utf-8")
         self.assertIn("일괄 승인 답은 `hteam design-review --decide` 가 applied 를 적는다. 그 답에는 `hteam applied` 를 하지 "
                       "않는다", coord)
+
+    def test_supplement_flow_in_coordinator_doc(self):
+        coord = (ROOT / "templates" / "coordinator.md").read_text(encoding="utf-8")
+        for needle in ("## 디자인 시스템 보강", "exit 3 `supplement_needed`", "--role director", "--supplement <보강 태스크>",
+                       "`plan_key: ui-foundation`", "토큰 갱신", "`directors`"):
+            self.assertIn(needle, coord)
+        # 보강된 토큰이 화면 구현보다 먼저 들어간다: UI 기반이 시작 전이면 보강에 의존하게, 시작했으면 토큰 갱신 태스크를
+        # 만들어 화면 구현 태스크가 그것에 의존하게 한다(시작한 화면 구현이 있으면 멈춘다)
+        sup = coord[coord.index("## 디자인 시스템 보강"):coord.index("## 요청 처리")]
+        for needle in ("`pending`(아직 시작하지 않았다): 그 사양의 `depends_on` 에 보강 태스크를 더한다",
+                       "--depends-on <보강 태스크>,<UI 기반 태스크>",
+                       "UI 기반 태스크에 의존하는(사양 `depends_on` 에 그 ID 가 있는) 태스크마다 사양 `depends_on` 에 토큰 갱신 태스크를 더한다",
+                       "(토큰 갱신 태스크 자신은 빼고)",
+                       "시작한 것이 있으면 사양을 고치지 않고 멈춰 메인에 알린다", "`dropped`: 메인에 알린다",
+                       "아직 시작하지 않는다(3 을 먼저 한다)", "(보강 ID 를 잇는다)"):
+            self.assertIn(needle, sup)
+        self.assertNotIn("아직 `done` 이 아니면", sup)
 
     def test_fix_and_accept_are_held_by_an_unfinished_decision(self):
         coord = (ROOT / "templates" / "coordinator.md").read_text(encoding="utf-8")

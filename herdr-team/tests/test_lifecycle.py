@@ -250,7 +250,12 @@ class FixTest(LifeCase):
         self.assertEqual((code, out["error"]["code"]), (2, "unknown_task"))
         code, out = self.hteam("fix", "T-001", "--supplement", "../x")
         self.assertEqual((code, out["error"]["code"]), (2, "bad_task_id"))
-        self.write_spec("T-002", commit=False)
+        self.write_spec("T-002", "director", commit=False)  # --supplement 는 끝난 디렉터 보강 태스크만 받는다
+        state.create(self.p, "T-002", "director")
+        code, out = self.hteam("fix", "T-001", "--supplement", "T-002")
+        self.assertEqual((code, out["error"]["code"]), (3, "supplement_not_done"), out)
+        with state.edit(self.p, "T-002") as st:
+            state.move(st, "done", "test")
         code, out = self.hteam("fix", "T-001", "--supplement", "T-002", "--note", "사용자 수정 요청")
         self.assertEqual((code, out["round"]), (0, 2), out)
         self.assertEqual(self.task_state("T-001")["rounds"][1]["supplement"], "T-002")

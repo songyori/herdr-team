@@ -64,7 +64,23 @@ def work_spec(p, cfg, spec, rd: dict, owns: list[str]) -> str:
             parts.append(f"디렉터 보강 태스크 {sup} 의 결과(`{report_rel(sup)}`, `docs/design/system/`)를 반영한다.")
         if rd.get("note"):
             parts.append(f"{'사용자 요청' if rd.get('from_user') else '코디네이터 메모'}: {rd['note']}")
+        if rd.get("coord_note"):  # 사용자 요청 라운드를 잇는 fix 의 코디네이터 메모(사용자 요청과 섞지 않는다)
+            parts.append(f"코디네이터 메모: {rd['coord_note']}")
     return "\n".join(parts).rstrip() + "\n"
+
+
+def round_requests(p, rd: dict) -> list[tuple[str, str]]:
+    """이번 라운드의 요청 (이름, 글): 사용자 요청 또는 코디네이터 메모(note), 따로 적은 코디네이터 메모(coord_note),
+    디렉터 보강(supplement). work_spec 의 수정 블록과 같은 이름이다."""
+    found = []
+    if rd.get("note"):
+        found.append(("사용자 요청" if rd.get("from_user") else "코디네이터 메모", rd["note"]))
+    if rd.get("coord_note"):
+        found.append(("코디네이터 메모", rd["coord_note"]))
+    if rd.get("supplement"):
+        sup = rd["supplement"]
+        found.append(("디렉터 보강", f"{sup} 의 결과(`{report_rel(sup)}`, `docs/design/system/`)를 반영한다"))
+    return found
 
 
 BROWSER_TOOLS = {  # 리뷰어 에이전트마다 렌더링에 쓸 브라우저 도구(설계 6.2)
@@ -87,18 +103,20 @@ def design_section(p, cfg, spec, files: list[str], agent: str = "codex") -> str:
 
 def review_prompt(p, cfg, spec, rd: dict, att: dict) -> str:
     """리뷰 프롬프트(설계 6.2). 입력(대상 커밋, 바뀐 파일)은 시도 기록에 저장된 것을 쓴다. 이번 라운드에 요청(사용자
-    요청·코디네이터 메모)이 있으면 그 요청과 그 라운드 작업 사양을 보이고 기준에 한 줄을 더한다(없으면 그대로).
+    요청·코디네이터 메모·디렉터 보강, round_requests)이 있으면 그 요청과 그 라운드 작업 사양을 보이고 기준에 한 줄을 더한다
+    (없으면 그대로).
     디자인 직무 태스크면 디자인 절을 더한다(design_section)."""
     tid, n = spec.id, rd["round"]
     prior = [review_rel(tid, r) for r in range(1, n) if (p.root / review_rel(tid, r)).is_file()]
     commits = att["inputs"]["commits"]
     files = att["inputs"]["files"]
     request, request_rule = "", ""
-    if rd.get("note"):
-        label = "사용자 요청" if rd.get("from_user") else "코디네이터 메모"  # work_spec 과 같은 이름
+    asks = round_requests(p, rd)
+    if asks:
+        labels = "·".join(dict.fromkeys(label for label, _ in asks))
         work = p.work_file(tid, n).relative_to(p.root).as_posix()
-        request = f"\n- 이번 라운드 {label}: {rd['note']}\n- 이번 라운드 작업 사양: `{work}`"
-        request_rule = (f"\n5. 이번 라운드 요청(위 {label})을 반영했는가. 요청이 사양의 Acceptance 를 바꾸면 요청을 따른 쪽을 "
+        request = "".join(f"\n- 이번 라운드 {label}: {text}" for label, text in asks) + f"\n- 이번 라운드 작업 사양: `{work}`"
+        request_rule = (f"\n5. 이번 라운드 요청(위 {labels})을 반영했는가. 요청이 사양의 Acceptance 를 바꾸면 요청을 따른 쪽을 "
                         "맞는 것으로 본다.")
     return fill(_template("review-prompt.md"), role=spec.role, role_title=cfg.role_title(spec.role), task_id=tid,
                 round=str(n), attempt=str(att["attempt"]), title=spec.title, review_file=att["file"],

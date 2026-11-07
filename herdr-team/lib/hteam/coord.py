@@ -534,6 +534,13 @@ def _awaiting(cfg, st: dict, appr: dict | None) -> tuple[list[str] | None, str |
     if appr["blockers"]:
         names = ", ".join(b["task"] for b in appr["blockers"])
         return None, f"승인 직무 태스크 {names} 가 accept 로 awaiting_user 가 되면 함께 묻는다(그때 design-review)"
+    if appr.get("supplement"):  # design-review 는 exit 3 supplement_needed 다(설계 11.4)
+        names = ", ".join(f"{s['task']} r{s['round']}" for s in appr["supplement"])
+        busy = ", ".join(f"{d['task']}({d['status']})" for d in appr.get("directors") or [])
+        first = (f"보강 중인 director 태스크 {busy} 가 끝나기를 기다린다. 끝나면" if busy else
+                 "디렉터 보강 태스크를 만들고(task new --role director), 끝나면")
+        return None, (f"시스템 추가 제안({names})이 있어 묻기 전에 디자인 시스템을 보강한다. {first} 제안한 태스크마다 "
+                      f"{SHIM} fix <T> --supplement <보강 태스크>(coordinator.md \"디자인 시스템 보강\")")
     return H("design-review"), None
 
 

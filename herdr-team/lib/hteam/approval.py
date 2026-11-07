@@ -232,6 +232,57 @@ def unlaunched(st: dict) -> bool:
             and not slot.get("horch_task"))
 
 
+_SUBSECTION = "### 시스템 추가 제안"
+_NONE = re.compile(r"[-*\s]*없음[.。]?\s*")
+
+
+def proposals(p, st: dict) -> str | None:
+    """designer 보고서의 지금 라운드 절(`## rN`)에 있는 시스템 추가 제안(설계 11.2·11.4). `### 시스템 추가 제안` 소절,
+    없으면 2단계 형식의 `- 시스템 추가 제안: …` 줄. 비었거나 "없음" 이면 None. 보고서를 읽지 못해도 None."""
+    try:
+        text = (p.root / report_rel(st["id"])).read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return None
+    lines = text.splitlines()
+    head = re.compile(rf"## r{st['round']}(?!\d)")
+    start = next((i for i, line in enumerate(lines) if head.match(line)), None)
+    if start is None:
+        return None
+    body = []
+    for line in lines[start + 1:]:
+        if line.startswith("## "):
+            break
+        body.append(line)
+    found = None
+    for i, line in enumerate(body):
+        if line.strip() == _SUBSECTION:
+            rest = []
+            for more in body[i + 1:]:
+                if more.startswith(("## ", "### ")):
+                    break
+                rest.append(more)
+            found = "\n".join(rest).strip()
+            break
+        hit = re.match(r"\s*[-*]\s*시스템 추가 제안\s*:\s*(.*)", line)
+        if hit and found is None:
+            found = hit.group(1).strip()
+    return None if not found or _NONE.fullmatch(found) else found
+
+
+def supplement_needed(p, cfg, sts: list[dict]) -> list[dict]:
+    """일괄 승인에 넣을 designer 태스크 가운데 디렉터 보강이 먼저인 것(설계 11.4): 지금 라운드가 보강 라운드
+    (`fix --supplement`)가 아니고 보고서 그 라운드 절에 시스템 추가 제안이 있다. `[roles.director]` 가 없으면 빈 목록."""
+    if "director" not in cfg.roles:
+        return []
+    found = []
+    for st in sts:
+        rd = state.current_round(st) or {}
+        text = proposals(p, st) if st.get("role") == "designer" and not rd.get("supplement") else None
+        if text:
+            found.append({"task": st["id"], "round": st["round"], "proposal": text})
+    return found
+
+
 def _startable(p, cfg, st: dict) -> bool:
     """승인 직무 태스크를 지금 바로 시작할 수 있나: 사양 검사·의존 충족·잠금 비어 있음(설계 11.4). pending 의 직무는
     저장된 직무가 아니라 지금 사양의 직무다(첫 시작이 저장된 직무를 사양에 맞춘다). 띄운 적 없는 queued 라운드
@@ -254,7 +305,8 @@ def view(p, cfg, states: list[dict] | None = None, data: dict | None = None) -> 
     """지금의 승인 상황. waiting: awaiting_user 승인 태스크, blockers: 진행 중이거나 지금 시작할 수 있는 승인 태스크,
     stale: waiting 가운데 선행이 그 뒤에 고쳐진 것({task, round, because}), fresh: waiting 가운데 stale 이 아니고 아직 묻지
     않은 것, asked: 물은 (태스크, 라운드) → out-id, answered: waiting 의 지금 라운드를 물은 out-id 가운데 답이 온 것,
-    unreadable_answers: 그 가운데 답 파일이 있는데 읽지 못한 것.
+    unreadable_answers: 그 가운데 답 파일이 있는데 읽지 못한 것, supplement: fresh 가운데 디렉터 보강이 먼저인 것
+    (supplement_needed), directors: 끝나지 않은 director 태스크(보강 중일 수 있다).
     띄운 적 없는 queued 라운드는 pending 처럼 지금 시작할 수 있을 때만 blocker 다(띄우는 중이면 진행 중). 상태는 읽기만
     한다."""
     states = state.all_states(p) if states is None else states
@@ -286,8 +338,11 @@ def view(p, cfg, states: list[dict] | None = None, data: dict | None = None) -> 
                 answered.add(oid)
         except HteamError:  # 답 파일이 손상됐다. 답이 없다고 하지 않는다
             unreadable.add(oid)
+    directors = [{"task": st["id"], "status": st["status"]} for st in states
+                 if st.get("role") == "director" and st["status"] not in state.CLOSED]
     return {"waiting": waiting, "blockers": blockers, "stale": late, "fresh": fresh, "asked": done, "replay": replay,
-            "answered": answered, "unreadable_answers": unreadable}
+            "answered": answered, "unreadable_answers": unreadable, "supplement": supplement_needed(p, cfg, fresh),
+            "directors": directors}
 
 
 def _urls(text: str) -> list[str]:
@@ -413,6 +468,12 @@ def design_review(p) -> dict:
             raise HteamError("approval_not_ready", f"진행 중이거나 지금 시작할 수 있는 승인 직무 태스크가 있다: {names}",
                              CONFLICT, "시작할 수 있으면 start-ready 를 먼저 한다. 그 태스크들이 accept 로 awaiting_user 가 "
                              "된 뒤 다시 부른다", data={"blockers": v["blockers"]})
+        if v["supplement"]:  # 묻기 전에 디렉터 보강(설계 11.4). 보강 라운드가 다시 승인되면 그때 함께 묻는다
+            names = ", ".join(f"{s['task']} r{s['round']}" for s in v["supplement"])
+            raise HteamError("supplement_needed", f"시스템 추가 제안이 있어 디렉터 보강이 먼저다: {names}", CONFLICT,
+                             "coordinator.md 의 \"디자인 시스템 보강\" 대로 보강 태스크(director)를 만들거나(끝나지 않은 "
+                             "director 태스크가 있으면 끝나기를 기다린다) 끝난 뒤 제안한 태스크마다 fix --supplement",
+                             data={"proposals": v["supplement"], "directors": v["directors"]})
         b = {"batch": _next_batch(p, data), "at": now(), "id": None,
              "tasks": [{"task": s["id"], "round": s["round"]} for s in v["fresh"]], "render": render(p, cfg, v["fresh"])}
         data["batches"].append(b)

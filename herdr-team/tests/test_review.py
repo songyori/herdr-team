@@ -121,6 +121,14 @@ class ReviewTest(ReviewCase):
         self.assertIn("- 이번 라운드 사용자 요청: 글꼴을 키운다\n", text)
         self.assertIn("5. 이번 라운드 요청(위 사용자 요청)을 반영했는가.", text)
         self.assertNotIn("코디네이터 메모", text)
+        # 사용자 요청 라운드를 잇는 fix 의 코디네이터 메모와 디렉터 보강도 따로 보인다
+        rd.update(coord_note="이전 워커가 실패했다", supplement="T-009")
+        text = compose.review_prompt(self.p, config.load(self.p), specs.load(self.p, "T-001"), rd,
+                                     st["rounds"][-1]["reviews"][0])
+        self.assertIn("- 이번 라운드 사용자 요청: 글꼴을 키운다\n- 이번 라운드 코디네이터 메모: 이전 워커가 실패했다\n"
+                      "- 이번 라운드 디렉터 보강: T-009 의 결과(`docs/tasks/T-009/report.md`, `docs/design/system/`)를 반영한다\n"
+                      "- 이번 라운드 작업 사양: `.herdr-team/state/tasks/T-001/r2-work.md`\n", text)
+        self.assertIn("5. 이번 라운드 요청(위 사용자 요청·코디네이터 메모·디렉터 보강)을 반영했는가.", text)
 
     def test_codex_worker_gets_claude_reviewer(self):
         self.write_spec("T-001", front={"worker": "codex"})

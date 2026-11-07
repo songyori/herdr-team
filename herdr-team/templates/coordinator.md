@@ -56,7 +56,7 @@ hteam 명령이 exit 5 `not_coordinator` 를 주면 `hteam up` 이 새 코디네
 - `review` 가 바로 `status: changes`(`source: hteam`)를 주면 사전 검사에 걸린 것이다. `hteam fix T --note "<problems 요약>"`.
 - `review` 가 exit 3 `plan_incomplete` 를 주면 앞선 `hteam plan apply` 가 사양 일부만 커밋한 채 멈췄다(기획자가 고칠 일이 아니다). hint 와 함께 메인에 묻고, 사용자가 정리한 뒤 같은 `hteam review T` 를 다시 한다.
 - `review-finish` 의 `status: approved` → `hteam accept T` → `hteam start-ready`. 기획 태스크면 accept 뒤 `hteam plan apply`(처음) 또는 `hteam plan apply --append`(추가) 를 먼저 한다.
-- 승인 직무(designer 등)는 `accept` 가 `status: awaiting_user` 와 `next` 를 준다. `hteam start-ready` 뒤 `hteam design-review` 를 부른다. exit 3 `approval_not_ready` 면 다른 승인 직무 태스크가 아직 진행 중이거나 지금 시작할 수 있다: 그 태스크를 accept 한 뒤 다시 부른다. `already_asked` 면 사용자 답을 기다린다. `nothing_to_approve` 면 할 일이 없다. `decision_pending` 이면 hint 의 `--decide` 를 먼저 마저 한다. `approval_stale` 이면 메인에 알린다(아래).
+- 승인 직무(designer 등)는 `accept` 가 `status: awaiting_user` 와 `next` 를 준다. `hteam start-ready` 뒤 `hteam design-review` 를 부른다. exit 3 `approval_not_ready` 면 다른 승인 직무 태스크가 아직 진행 중이거나 지금 시작할 수 있다: 그 태스크를 accept 한 뒤 다시 부른다. `already_asked` 면 사용자 답을 기다린다. `nothing_to_approve` 면 할 일이 없다. `decision_pending` 이면 hint 의 `--decide` 를 먼저 마저 한다. `approval_stale` 이면 메인에 알린다(아래). `supplement_needed` 면 아래 "디자인 시스템 보강" 을 먼저 한다.
 - `status: changes` → `hteam fix T --note "<리뷰 지적 요약>"` → `hteam start-ready`. exit 3 `max_rounds` 면 메인에 묻는다(계속 / 버림). 계속이면 `hteam fix T --force-round --note "…"`.
 - `review_tampered`(exit 1): 리뷰 중 제품이 바뀌었다. 자동으로 다시 하지 않는다. 바뀐 경로를 메인에 질문으로 올리고, 사용자가 정리한 뒤 `hteam review T --retry`.
 - `review_failed`(exit 1): 리뷰가 두 번 실패했다. 메인에 묻는다(다시 시도 / 버림). 다시면 `hteam review T --retry`, 버림이면 `hteam drop T --force`.
@@ -73,6 +73,19 @@ hteam 명령이 exit 5 `not_coordinator` 를 주면 `hteam up` 이 새 코디네
 - 결정이 끝나기 전에는 그 결정이 고치는 태스크와 의존 태스크를 `start`·`start-ready` 가 띄우지 않고(start-ready 의 대기 사유 `decision`), 결정 밖의 `fix`·`accept` 도 exit 3 `decision_pending` 으로 거부한다. hint 의 `--decide` 를 먼저 마저 한다.
 - 고친 태스크가 다시 승인되면(accept 뒤 awaiting_user) 새 라운드라 `hteam design-review` 가 다시 묻는다.
 - `approval_stale`: 선행이 결정 밖에서 고쳐져 옛 선행을 보고 만든 승인 태스크다. design-review 가 묻지 않고 accept 가 받지 않는다. 메인에 알리고, 사용자가 정하면 `hteam fix T --note="…"` 로 다시 만든다.
+
+## 디자인 시스템 보강
+`hteam design-review` 가 exit 3 `supplement_needed` 를 주면 묻기 전에 디자인 시스템을 보강한다(designer 보고서의 `### 시스템 추가 제안`). 출력의 `proposals` 에 태스크·라운드·제안이, `directors` 에 끝나지 않은 director 태스크가 있다. `status` 의 hint 도 같은 일을 알린다.
+1. `directors` 가 있으면 보강 중이다. 그 태스크가 끝나기를 기다린다(리뷰·accept 는 여느 태스크와 같다).
+2. 없으면 보강 태스크 하나를 만든다: `hteam task new --role director --title "디자인 시스템 보강: <요약>" --owns "docs/design/system/**,docs/design/direction.md"`. 사양 Change 첫 줄에 "보강 태스크다(단계 ①② 는 하지 않는다)" 를 적고, 제안을 출처(`T-xxx rN`)와 함께 모두 옮긴다. 아직 시작하지 않는다(3 을 먼저 한다).
+3. 바뀐 시스템이 화면 구현보다 먼저 코드에 들어가게 한다. UI 기반 태스크(사양 front matter `plan_key: ui-foundation`)의 상태를 `hteam status` 로 본다. 없으면 건너뛴다.
+   - `pending`(아직 시작하지 않았다): 그 사양의 `depends_on` 에 보강 태스크를 더한다. UI 기반 태스크가 보강을 마친 시스템을 읽는다.
+   - `dropped`: 메인에 알린다(화면 구현이 기다릴 토큰이 없다).
+   - 그 밖(`working`·`reviewing`·`approved`·`changes`·`launch_failed`·`done`. 옛 시스템을 이미 읽었다): "토큰 갱신" 개발 태스크를 더한다: `hteam task new --role developer --title "토큰 갱신: <요약>" --owns "<UI 기반 태스크의 owns>" --depends-on <보강 태스크>,<UI 기반 태스크>`. 사양 Change 에 바뀔 토큰·컴포넌트(제안 목록)를 적는다. 그다음 UI 기반 태스크에 의존하는(사양 `depends_on` 에 그 ID 가 있는) 태스크마다 사양 `depends_on` 에 토큰 갱신 태스크를 더한다(토큰 갱신 태스크 자신은 빼고). 그 화면 구현 태스크는 그 화면의 designer 태스크에도 의존하고 designer 가 모두 `awaiting_user` 이므로 아직 시작하지 않았다(`pending`). 시작한 것이 있으면 사양을 고치지 않고 멈춰 메인에 알린다.
+   - 사양 `depends_on` 편집은 `plan apply` 의 기록(tasks.toml 의 digest)과 상관없다. `start-ready` 는 사양의 `depends_on` 을 본다.
+4. 만들고 고친 사양을 함께 커밋한다(`git add -- <사양들> && git commit -m "spec: <ID 들>" -- <사양들>`). 그다음 `hteam start <보강 태스크>`.
+5. 보강 태스크가 accept 로 `done` 이 되면 제안한 태스크마다 `hteam fix <T> --supplement <보강 태스크> --note="<그 화면의 제안 요약>"`(awaiting_user 에서 라운드 상한을 보지 않는다). `--supplement` 는 done 인 director 태스크만 받는다. 제안하지 않은 화면은 그대로 둔다. 그다음 `hteam start-ready`(토큰 갱신 태스크도 이때 시작된다). 보강 라운드가 작업 실패·리뷰 수정 요청으로 끝나면 여느 때처럼 `hteam fix <T> --note "…"` 한다(보강 ID 를 잇는다).
+6. 고친 화면이 다시 `awaiting_user` 가 되면 `hteam design-review` 가 묻는다. 보강 라운드의 보고서는 제안을 다시 보지 않는다(새 제안은 사용자 일괄 승인 뒤 다음 수정에서 다룬다).
 
 ## 요청 처리
 1. 새 요청이면 기획 태스크가 언제나 먼저다: `hteam task new --role planner --title "<요청 요약> 기획"`, 사양 네 절(Target·Change·Constraints·Acceptance)에 요청 원문과 맥락을 채우고 `git add -- <사양> && git commit -m "spec: T-xxx" -- <사양>`. `hteam start T-xxx`.
@@ -104,6 +117,6 @@ EOF
 ## 직무
 - planner: 사용자 인터뷰(`hteam ask-user`, 메인을 거쳐 사용자에게 바로 간다), `docs/planning/`(spec.md, contracts.md, tasks.toml, interview.md). 기획자의 질문에 끼어들지 않는다.
 - director: 디자인 디렉터(레퍼런스·톤 시안·디자인 시스템, `docs/design/`). 기획자처럼 `hteam ask-user` 로 사용자에게 바로 묻는다. 끼어들지 않는다. 승인 직무가 아니라 accept 하면 `done` 이고, 그 뒤 designer 태스크가 시작된다.
-- designer: 화면 디자인(화면마다 태스크 하나, `docs/design/screens/<화면>/`). 승인 직무라 리뷰 승인 뒤 accept 하면 `awaiting_user` 가 되고, 사용자 일괄 승인(`hteam design-review`, `--decide`) 뒤 `done` 이 된다. 그 화면을 구현하는 개발 태스크는 그 뒤에 시작된다.
+- designer: 화면 디자인(화면마다 태스크 하나, `docs/design/screens/<화면>/`). 시스템에 없는 값은 보고서 `### 시스템 추가 제안` 에 적는다(위 "디자인 시스템 보강"). 승인 직무라 리뷰 승인 뒤 accept 하면 `awaiting_user` 가 되고, 사용자 일괄 승인(`hteam design-review`, `--decide`) 뒤 `done` 이 된다. 그 화면을 구현하는 개발 태스크는 그 뒤에 시작된다.
 - developer: 구현. tester: 테스트와 QA 보고서.
 - 직무별 owns·모델은 `.herdr-team/config.toml`. 리뷰어는 작업 에이전트의 반대쪽(Claude ↔ Codex)이다.
