@@ -48,7 +48,12 @@ _TW_COLOR = re.compile(r"(?<![\w-])border-(?:[ls]-)?(?:[a-z]+-\d{2,3}|black|whit
 _TW_BLUE = re.compile(r"(?<![\w-])(?:from|via|to)-(?:blue|indigo|sky)-\d{2,3}(?![\w-])")
 _TW_PURPLE = re.compile(r"(?<![\w-])(?:from|via|to)-(?:purple|violet|fuchsia)-\d{2,3}(?![\w-])")
 _GRADIENT = re.compile(r"\b(?:repeating-)?(?:linear|radial|conic)-gradient\(", re.I)
-_COLOR = re.compile(r"#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?|oklch)\([^()]*\)|\b[a-zA-Z]+\b")
+_COLOR = re.compile(r"#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?|oklch)\([^()]*\)|\b[a-z]+\b", re.I)
+# Tailwind 클래스 목록: class·className 속성 값(여러 줄 가능, `{"…"}` 포함), `@apply` 문, 그 밖의 문자열 리터럴(`cn("…")`).
+# 앞의 것이 차지한 자리는 뒤의 것이 다시 보지 않는다.
+_CLASS_ATTR = re.compile(r"\b(?:class|className)\s*=\s*\{?\s*([\"'`])(.*?)\1", re.S)
+_APPLY = re.compile(r"@apply\b([^;}]*)")
+_LITERAL = re.compile(r"\"([^\"\n]*)\"|'([^'\n]*)'|`([^`]*)`")
 # oklch(L C H [/ alpha]). L 은 % 또는 0~1, C 는 숫자(또는 %: 100% = 0.4), H 는 도(deg 생략 가능).
 _OKLCH = re.compile(r"oklch\(\s*(\d*\.?\d+)(%?)\s+(\d*\.?\d+)(%?)\s+(\d*\.?\d+)(?:deg)?\s*(?:/\s*\d*\.?\d+%?\s*)?\)")
 _BLUE_NAMES = frozenset({"blue", "royalblue", "dodgerblue", "deepskyblue", "cornflowerblue", "steelblue", "navy",
@@ -85,7 +90,7 @@ def _invisible(value: str) -> bool:
 def left_border(line: str) -> bool:
     """2px 이상의 보이는 왼쪽(시작 쪽) 강조 테두리가 있나: border-left·border-inline-start 선언(CSS, JSX 인라인
     스타일)에 2px 이상과 보이는 선(선 모양·색, 홀로 선 transparent·none·hidden 이 없다), 너비만 준 2px 이상의
-    border-left-width 류(JSX 는 숫자 2 이상도), 한 줄의 Tailwind border-l·border-s 너비(2~8, 2px 이상 임의 값)와 색."""
+    border-left-width 류(JSX 는 숫자 2 이상도). 한 줄만 본다. Tailwind 는 클래스 목록 단위(tailwind_left_border)."""
     for m in (*_LEFT_CSS.finditer(line), *_LEFT_JS.finditer(line)):
         value = m.group(1)
         if _px(value) >= 2 and _VISIBLE.search(value) and not _invisible(value):
@@ -96,8 +101,31 @@ def left_border(line: str) -> bool:
         number, text = m.groups()
         if (float(number) if number is not None else _px(text)) >= 2:
             return True
-    wide = any(v is None or _px(v) >= 2 for v in (m.group(1) for m in _TW_WIDTH.finditer(line)))
-    return wide and bool(_TW_COLOR.search(line))
+    return False
+
+
+def tailwind_left_border(classes: str) -> bool:
+    """한 클래스 목록에 Tailwind border-l·border-s 너비(2~8, 2px 이상 임의 값)와 테두리 색이 함께 있나."""
+    wide = any(v is None or _px(v) >= 2 for v in (m.group(1) for m in _TW_WIDTH.finditer(classes)))
+    return wide and bool(_TW_COLOR.search(classes))
+
+
+def class_lists(text: str) -> list[tuple[int, str]]:
+    """(시작 위치, 클래스 목록 글) 들. class·className 속성 값(여러 줄 가능), @apply 문, 그 밖의 문자열 리터럴 순으로
+    찾고, 이미 찾은 자리와 겹치는 것은 버린다."""
+    taken: list[tuple[int, int]] = []
+    out: list[tuple[int, str]] = []
+    for rx, grp in ((_CLASS_ATTR, 2), (_APPLY, 1), (_LITERAL, 0)):
+        for m in rx.finditer(text):
+            if any(m.start() < e and s < m.end() for s, e in taken):
+                continue
+            taken.append((m.start(), m.end()))
+            if grp:
+                out.append((m.start(grp), m.group(grp)))
+            else:
+                g = next(i for i in (1, 2, 3) if m.group(i) is not None)
+                out.append((m.start(g), m.group(g)))
+    return sorted(out)
 
 
 def _rgb_hue(token: str) -> tuple[float, float, float] | None:
@@ -117,7 +145,8 @@ def _rgb_hue(token: str) -> tuple[float, float, float] | None:
             return None
         if token.startswith("hsl"):
             return float(numbers[0]) % 360, min(float(numbers[1]), 100) / 100, min(float(numbers[2]), 100) / 100
-        r, g, b = (min(float(n), 255) / 255 for n in numbers[:3])
+        channels = re.findall(r"(\d*\.?\d+)(%?)", token)[:3]  # 채널마다 퍼센트는 /100, 숫자는 /255
+        r, g, b = (min(float(n), 100 if pct else 255) / (100 if pct else 255) for n, pct in channels)
     hue, light, sat = colorsys.rgb_to_hls(r, g, b)
     return hue * 360, sat, light
 
@@ -178,8 +207,14 @@ def scan(rel: str, text: str) -> list[str]:
             found.append((number, f"이모지({emoji.group(0)})"))
         if left_border(line):
             found.append((number, f"왼쪽 강조 테두리({_short(line)})"))
-        if _TW_BLUE.search(line) and _TW_PURPLE.search(line):
-            found.append((number, f"파랑·보라 그라디언트({_short(line)})"))
+    for pos, classes in class_lists(text):
+        if tailwind_left_border(classes):
+            first = min(m.start() for m in _TW_WIDTH.finditer(classes))
+            found.append((bisect.bisect_right(starts, pos + first), f"왼쪽 강조 테두리({_short(classes)})"))
+        blue, purple = _TW_BLUE.search(classes), _TW_PURPLE.search(classes)
+        if blue and purple:
+            number = bisect.bisect_right(starts, pos + min(blue.start(), purple.start()))
+            found.append((number, f"파랑·보라 그라디언트({_short(classes)})"))
     for m in _GRADIENT.finditer(text):
         body = _body(text, m.end())
         if {"blue", "purple"} <= {hue_family(t) for t in _COLOR.findall(body)}:

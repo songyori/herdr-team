@@ -102,6 +102,26 @@ class ScanTest(unittest.TestCase):
                                           '<div className="bg-gradient-to-r from-blue-500 to-sky-400">y</div>\n')
         self.assertEqual(self.heads(rel), ["src/ui/Hero.tsx:1: 파랑·보라 그라디언트"])
 
+    def test_tailwind_combo_is_per_class_list(self):
+        rel = self.put("src/ui/Split.tsx",
+                       '<h1 className="bg-gradient-to-r\n  from-blue-500\n  to-violet-600">a</h1>\n'
+                       '<p><b className="from-blue-500 to-blue-600">b</b><i className="from-violet-500 to-violet-600">c</i></p>\n'
+                       '<div className={cn("border-l-4 pl-2", "border-blue-500")}>d</div>\n'  # 문자열 둘: 한 목록이 아니다
+                       '<div className="border-l-4\n  border-blue-500">e</div>\n'
+                       '<div class="px-2 from-indigo-500\n via-sky-500 to-purple-600">f</div>\n')
+        self.assertEqual(self.heads(rel), ["src/ui/Split.tsx:2: 파랑·보라 그라디언트",
+                                           "src/ui/Split.tsx:6: 왼쪽 강조 테두리",
+                                           "src/ui/Split.tsx:8: 파랑·보라 그라디언트"])
+
+    def test_rgb_percent_channels_and_case(self):
+        rel = self.put("src/ui/pct.css",
+                       ".a { background: linear-gradient(rgb(10%,20%,50%),rgb(40%,10%,50%)); }\n"
+                       ".b { background: linear-gradient(rgb(26,51,128),rgb(102,26,128)); }\n"
+                       ".c { background: linear-gradient(RGB(37,99,235),RGB(124,58,237)); }\n"
+                       ".d { background: linear-gradient(Hsl(220,80%,50%),HSL(270,70%,50%)); }\n")
+        self.assertEqual(self.heads(rel), ["src/ui/pct.css:1: 파랑·보라 그라디언트", "src/ui/pct.css:2: 파랑·보라 그라디언트",
+                                           "src/ui/pct.css:3: 파랑·보라 그라디언트", "src/ui/pct.css:4: 파랑·보라 그라디언트"])
+
     def test_skips_excluded_unsupported_outside_missing_large_and_non_utf8(self):
         rels = [self.put("docs/planning/spec.md", "🚀\n"), self.put("docs/design/references.md", "🚀\n"),
                 self.put("docs/tasks/T-001/report.md", "🚀\n"), self.put("docs/reviews/T-001/r1.md", "🚀\n"),
