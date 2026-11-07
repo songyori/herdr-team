@@ -49,12 +49,13 @@ _TW_BLUE = re.compile(r"(?<![\w-])(?:from|via|to)-(?:blue|indigo|sky)-\d{2,3}(?!
 _TW_PURPLE = re.compile(r"(?<![\w-])(?:from|via|to)-(?:purple|violet|fuchsia)-\d{2,3}(?![\w-])")
 _GRADIENT = re.compile(r"\b(?:repeating-)?(?:linear|radial|conic)-gradient\(", re.I)
 _COLOR = re.compile(r"#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?|oklch)\([^()]*\)|\b[a-z]+\b", re.I)
-# Tailwind 클래스 목록: class·className 속성 값(여러 줄 가능, `{"…"}` 포함), `@apply` 문, 그 밖의 문자열 리터럴(`cn("…")`).
-# 앞의 것이 차지한 자리는 뒤의 것이 다시 보지 않는다.
-# 문자열 안의 `\"` 같은 이스케이프는 닫는 따옴표가 아니다.
-_CLASS_ATTR = re.compile(r"\b(?:class|className)\s*=\s*\{?\s*([\"'`])((?:\\.|(?!\1)[^\\])*)\1", re.S)
+# Tailwind 클래스 목록: 직접 인용한 class·className 속성 값(여러 줄 가능), `@apply` 문, 그 밖의 JS 문자열 리터럴
+# (`{"…"}`·`cn("…")`). 앞의 것이 차지한 자리는 뒤의 것이 다시 보지 않는다.
+# 속성 값(HTML·JSX)은 백슬래시가 따옴표를 이스케이프하지 않으니 첫 같은 따옴표에서 끝난다.
+_CLASS_ATTR = re.compile(r"\b(?:class|className)\s*=\s*([\"'])(.*?)\1", re.S)
 _APPLY = re.compile(r"@apply\b([^;}]*)")
-_LITERAL = re.compile(r"\"((?:\\.|[^\"\\\n])*)\"|'((?:\\.|[^'\\\n])*)'|`((?:\\.|[^`\\])*)`")
+# JS 문자열 리터럴만 `\"` 같은 이스케이프(백슬래시+줄바꿈 줄 이음 포함)를 닫는 따옴표로 보지 않는다.
+_LITERAL = re.compile(r"\"((?:\\[\s\S]|[^\"\\\n])*)\"|'((?:\\[\s\S]|[^'\\\n])*)'|`((?:\\[\s\S]|[^`\\])*)`")
 # oklch(L C H [/ alpha]). L 은 % 또는 0~1, C 는 숫자(또는 %: 100% = 0.4), H 는 도(deg 생략 가능).
 _OKLCH = re.compile(r"oklch\(\s*(\d*\.?\d+)(%?)\s+(\d*\.?\d+)(%?)\s+(\d*\.?\d+)(?:deg)?\s*(?:/\s*\d*\.?\d+%?\s*)?\)")
 _BLUE_NAMES = frozenset({"blue", "royalblue", "dodgerblue", "deepskyblue", "cornflowerblue", "steelblue", "navy",

@@ -127,9 +127,12 @@ class ScanTest(unittest.TestCase):
                        'const a = "border-l-4 before:content-[\\"x\\"] border-blue-500";\n'
                        "const b = 'border-l-4 before:content-[\\'x\\'] border-blue-500';\n"
                        'const c = `border-l-4 before:content-[\\`x\\`] border-blue-500`;\n'
-                       '<i className="from-blue-500 before:content-[\\"x\\"] to-violet-600">y</i>\n')
+                       '<i className={"from-blue-500 before:content-[\\"x\\"] to-violet-600"}>y</i>\n'
+                       'x = cn(`border-l-4 \\\n border-blue-500`)\n'
+                       '<div class="icon-\\"></div>\n<div class="border-l-4 border-blue-500">z</div>\n')
         self.assertEqual(self.heads(rel), ["src/ui/Esc.tsx:1: 왼쪽 강조 테두리", "src/ui/Esc.tsx:2: 왼쪽 강조 테두리",
-                                           "src/ui/Esc.tsx:3: 왼쪽 강조 테두리", "src/ui/Esc.tsx:4: 파랑·보라 그라디언트"])
+                                           "src/ui/Esc.tsx:3: 왼쪽 강조 테두리", "src/ui/Esc.tsx:4: 파랑·보라 그라디언트",
+                                           "src/ui/Esc.tsx:5: 왼쪽 강조 테두리", "src/ui/Esc.tsx:8: 왼쪽 강조 테두리"])
 
     def test_many_string_literals_stay_fast(self):
         import json
