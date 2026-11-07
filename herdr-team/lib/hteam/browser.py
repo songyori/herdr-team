@@ -43,11 +43,16 @@ def config_items(args: list[str]) -> list[tuple[int, int, str]]:
     return out
 
 
+def key_of(value: str) -> str:
+    """`-c` 값 `key = value` 의 키. codex 는 `=` 앞의 앞뒤 공백만 같은 키로 읽는다(안쪽 공백은 다른 키)."""
+    return value.split("=", 1)[0].strip()
+
+
 def defines(args: list[str]) -> bool:
     """args 의 `-c`·`--config` 값에 hteam-browser 정의(`mcp_servers.hteam-browser=…` 또는 `mcp_servers.hteam-browser.…`)가
     있나(config_items)."""
     for _, _, v in config_items(args):
-        key = v.split("=", 1)[0].strip()  # codex 는 `key = value` 의 앞뒤 공백만 같은 키로 읽는다(안쪽 공백은 다른 키)
+        key = key_of(v)
         if key == BROWSER_KEY or key.startswith(BROWSER_KEY + "."):
             return True
     return False

@@ -44,20 +44,38 @@ AR_RE = re.compile(r"[1-9]\d{0,3}:[1-9]\d{0,3}")
 KEY_TOLERANCE = 40  # 크로마키: 모서리 색과 채널마다 이만큼 안이면 배경으로 본다
 GRACE = 30  # 래퍼 상한 = timeout + 이만큼(버전 조회 10초 + 그룹 정리 5초 + 감시 주기의 여유). HTEAM_IMAGE_GRACE 로 바꾼다
 STOP_WAIT = 15  # 상한을 넘긴 래퍼에 TERM 을 보낸 뒤 KILL 까지 기다리는 초(래퍼의 trap 이 codex 그룹을 끝낼 시간)
+MAX_SIDE = 16384  # PNG 한 변 상한(IHDR). 넘으면 PNG 로 보지 않는다
+MAX_PIXELS = 1 << 26  # 픽셀 수 상한(약 6700만). 크로마키는 RGBA 로 풀어 메모리를 쓴다
 CHANNELS = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}  # PNG 색 형식 → 채널 수
 DEPTHS = {0: (1, 2, 4, 8, 16), 2: (8, 16), 3: (1, 2, 4, 8), 4: (8, 16), 6: (8, 16)}
 ADAM7 = ((0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8), (2, 0, 4, 4), (0, 2, 2, 4), (1, 0, 2, 2), (0, 1, 1, 2))  # (x0, y0, dx, dy)
 
 
-def preflight() -> None:
-    """codex 와 image_generation 기능(설계 12장). 없으면 exit 12."""
+def feature_args(args: list[str]) -> list[str]:
+    """실행 인자(codex_args 로 거른 것) 가운데 기능·설정에 영향을 주는 것(`-c`·`--config`, `--enable`·`--disable`)만. 사전
+    조회(`codex features list`)가 실행과 같은 기능 상태를 읽게 한다(둘 다 이 인자들을 받는다)."""
+    out = [x for _, _, v in browser.config_items(args) for x in ("-c", v)]
+    k = 0
+    while k < len(args):
+        a = args[k]
+        if a in ("--enable", "--disable") and k + 1 < len(args):
+            out += [a, args[k + 1]]
+            k += 1
+        elif a.startswith(("--enable=", "--disable=")):
+            out.append(a)
+        k += 1
+    return out
+
+
+def preflight(args: list[str] = ()) -> None:
+    """codex 와 image_generation 기능(설계 12장). 없으면 exit 12. args 는 실행에 쓸 Codex 인자다(기능 조회에 반영한다)."""
     if not shutil.which("codex"):
         raise HteamError("codex_missing", "codex 가 PATH 에 없다", MISSING, "hteam doctor 로 점검한다")
     if not os.access(WRAPPER, os.X_OK):
         raise HteamError("wrapper_missing", f"Codex 래퍼가 없거나 실행할 수 없다: {WRAPPER}", MISSING,
                          "플러그인 설치가 깨졌다. herdr-team 을 다시 설치한다")
     try:
-        proc = subprocess.run(["codex", "features", "list"], capture_output=True, text=True, timeout=30,
+        proc = subprocess.run(["codex", "features", "list", *feature_args(list(args))], capture_output=True, text=True, timeout=30,
                               stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise HteamError("codex_failed", f"codex features list 실패: {exc}", FAIL) from None
@@ -87,21 +105,53 @@ def prompt_text(prompt: str, ar: str | None, transparent: bool, refs: list[str])
                      if refs else ""))
 
 
+def split_args(args: list[str]) -> tuple[list[str], list[str]]:
+    """(이미지 실행에 넘길 인자, `codex exec` 가 받지 않거나 이미지가 직접 정해서 뺀 인자의 보임 글). 뺀 인자는 부른 쪽이
+    결과 warnings 에 남긴다. 읽기 전용 `codex --help`·`codex exec --help`(0.166)로 확인했다: `-a/--ask-for-approval`·
+    `--search`·`--no-alt-screen` 은 대화형(`codex`)만 받고 exec 에는 없다(주면 exit 2). `-m/--model` 은 이미지가 `--model` 을
+    직접 준다(두 번 주면 어느 쪽인지 모른다). 이 밖에 [agents.codex].args 에서 MCP 서버 정의와 우회 플래그를 뺀다(codex_args)."""
+    drop: set[int] = set()
+    for start, end, value in browser.config_items(args):
+        if browser.key_of(value).startswith("mcp_servers."):
+            drop.update(range(start, end))
+    shown: list[str] = []
+    k = 0
+    while k < len(args):
+        a = args[k]
+        name = a.split("=", 1)[0]
+        if name in ("--search", "--no-alt-screen"):
+            span = 1
+        elif name in ("-a", "--ask-for-approval", "-m", "--model"):
+            span = 1 if "=" in a or k + 1 >= len(args) else 2
+        elif a.startswith(("-a", "-m")) and not a.startswith("--") and len(a) > 2:
+            span = 1  # 붙인 형 -aNEVER·-mX
+        else:
+            k += 1
+            continue
+        drop.update(range(k, k + span))
+        shown.append(" ".join(args[k:k + span]))
+        k += span
+    kept = [a for k, a in enumerate(args) if k not in drop and a.split("=", 1)[0] not in config.CODEX_BYPASS]
+    return kept, shown
+
+
 def codex_args(args: list[str]) -> list[str]:
     """[agents.codex].args 에서 이미지 실행에 넘기지 않을 것을 뺀다. MCP 서버 정의(`-c`·`--config` 의 `mcp_servers.…`):
     이미지에 브라우저가 필요 없고 서버 시작(npx)을 이미지마다 치르지 않는다. 샌드박스·승인 우회 플래그: 래퍼가 늘
     붙인다(같은 플래그가 두 번이면 codex exec 가 exit 2 로 끝난다). `-c`·`--config` 는 디스패치·doctor 와 같은 파서
-    (browser.config_items: 분리형·붙인 형 모두)로 읽는다."""
-    drop: set[int] = set()
-    for start, end, value in browser.config_items(args):
-        if value.startswith("mcp_servers."):
-            drop.update(range(start, end))
-    return [a for k, a in enumerate(args) if k not in drop and a.split("=", 1)[0] not in config.CODEX_BYPASS]
+    (browser.config_items: 분리형·붙인 형 모두)로 읽고 키의 앞뒤 공백은 browser.key_of 로 뗀다. exec 가 받지 않는 인자는
+    split_args 가 함께 뺀다."""
+    return split_args(args)[0]
+
+
+def size_ok(width: int, height: int) -> bool:
+    """IHDR 의 크기 상한(각 변 MAX_SIDE, 픽셀 수 MAX_PIXELS). 넘으면 풀기 전에 그 이미지만 실패로 한다(메모리·시간)."""
+    return 0 < width <= MAX_SIDE and 0 < height <= MAX_SIDE and width * height <= MAX_PIXELS
 
 
 def rows(width: int, height: int, depth: int, ctype: int, interlace: int) -> list[int] | None:
     """IHDR 로 계산한 풀린 IDAT 의 줄 길이들(필터 바이트 하나를 넣은 길이, Adam7 이면 패스 차례로). 맞지 않는 조합이면 None."""
-    if depth not in DEPTHS.get(ctype, ()) or interlace not in (0, 1) or not width or not height:
+    if depth not in DEPTHS.get(ctype, ()) or interlace not in (0, 1) or not width or not height or not size_ok(width, height):
         return None
     bits = depth * CHANNELS[ctype]
 
@@ -110,12 +160,6 @@ def rows(width: int, height: int, depth: int, ctype: int, interlace: int) -> lis
     if not interlace:
         return lines(width, height)
     return [n for x0, y0, dx, dy in ADAM7 for n in lines((width - x0 + dx - 1) // dx, (height - y0 + dy - 1) // dy)]
-
-
-def raw_size(width: int, height: int, depth: int, ctype: int, interlace: int) -> int | None:
-    """IHDR 로 계산한 풀린 IDAT 길이(rows 의 합). 맞지 않는 조합이면 None."""
-    found = rows(width, height, depth, ctype, interlace)
-    return None if found is None else sum(found)
 
 
 def png_info(data: bytes) -> tuple[int, int, int, int] | None:
@@ -175,10 +219,13 @@ def png_info(data: bytes) -> tuple[int, int, int, int] | None:
 
 
 def _chunks(data: bytes):
+    """서명 뒤 청크를 차례로. IEND 에서 멈춘다(그 뒤의 덧붙은 바이트는 png_info 와 같이 보지 않는다)."""
     pos = 8
     while pos + 8 <= len(data):
         length, kind = struct.unpack(">I4s", data[pos:pos + 8])
         yield kind, data[pos + 8:pos + 8 + length]
+        if kind == b"IEND":
+            return
         pos += 12 + length
 
 
@@ -195,13 +242,13 @@ def read_rgba(data: bytes) -> tuple[int, int, bytearray] | None:
     head, idat = None, []
     for kind, body in _chunks(data):
         if kind == b"IHDR":
-            head = struct.unpack(">IIBBBBB", body[:13])
+            head = head or struct.unpack(">IIBBBBB", body[:13])  # 첫 IHDR 만(png_info 와 같다)
         elif kind == b"IDAT":
             idat.append(body)
     if not head:
         return None
     width, height, depth, ctype, _, _, interlace = head
-    if depth != 8 or ctype not in (2, 6) or interlace:
+    if depth != 8 or ctype not in (2, 6) or interlace or not size_ok(width, height):
         return None
     bpp = 4 if ctype == 6 else 3
     stride = width * bpp
@@ -424,7 +471,7 @@ def one(p, cfg, prompt: str, *, i: int, out: Path, dfd: int, ar, transparent: bo
         return {**item, "status": "failed", "reason": why, "result": _tail(folder / "result.txt", 20),
                 "progress": _tail(folder / "progress.log")}
     if event != "turn.completed":
-        item["warnings"].append(f"종단 이벤트가 {event} 인데 이미지 파일이 있다(exit {code}). 직접 열어 확인한다")
+        item["warnings"].append(f"종단 이벤트가 {event or '없음'} 인데 이미지 파일이 있다(exit {code}). 직접 열어 확인한다")
     data = _read(src)
     if png_info(data) is None:
         png = _to_png(data, folder, src.suffix)
@@ -481,15 +528,18 @@ def image(p, prompt: str, *, n: int, out: str, ar: str | None, transparent: bool
         raise HteamError("usage", f"--ref 파일이 없다: {', '.join(missing)}", USAGE)
     folder = out_folder(p, out)
     cfg = config.load(p)
-    preflight()
+    args, dropped = split_args(cfg.args("codex"))
+    preflight(args)
     try:
         folder.mkdir(parents=True, exist_ok=True)
         dfd = open_out(folder)
     except OSError as exc:
         raise HteamError("usage", f"--out 폴더를 만들거나 열 수 없다: {exc}", USAGE) from None
     try:
-        extra, warning = browser.user_off(p.root)  # 사용자 chrome-devtools 를 이미지 실행에서만 끈다(조회 실패면 경고만)
+        extra, warning = browser.user_off(p.root, args)  # 사용자 chrome-devtools 를 이미지 실행에서만 끈다(조회 실패·프로필이면 경고만)
         notes = [warning] if warning else []
+        if dropped:
+            notes.append("이미지 실행(codex exec)이 받지 않거나 이미지가 직접 정하는 인자를 뺐다: " + ", ".join(dropped))
         refs = [str(Path(r).resolve()) for r in refs]
         items: list[dict] = []
         for i in range(1, n + 1):
@@ -503,7 +553,8 @@ def image(p, prompt: str, *, n: int, out: str, ar: str | None, transparent: bool
             except HteamError as exc:  # 실행 중 codex 가 없어졌다 등: 그 오류 그대로 멈추되 지금까지의 결과를 붙인다
                 exc.data = {**exc.data, **_summary(items, folder, notes)}
                 raise
-            except (OSError, subprocess.SubprocessError, ValueError, zlib.error, struct.error) as exc:
+            except (OSError, subprocess.SubprocessError, ValueError, zlib.error, struct.error, MemoryError,
+                    OverflowError) as exc:
                 items.append({"i": i, "status": "failed", "path": None, "warnings": [],
                               "reason": f"이미지 처리 중 오류: {type(exc).__name__}: {exc}"})
     finally:

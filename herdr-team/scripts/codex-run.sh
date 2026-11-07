@@ -123,7 +123,30 @@ PROGRESS="$RUN_DIR/progress.log"
 STATUS="$RUN_DIR/status.json"
 
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
-json_str() { printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"; }
+json_str() {  # JSON 문자열. \ " 와 제어 문자(U+0000–001F, 줄바꿈·탭 포함)를 이스케이프한다. 문자마다 보는 bash 3.2 호환 루프
+  local s="$1" out="" c n i
+  for ((i = 0; i < ${#s}; i++)); do
+    c="${s:i:1}"
+    case "$c" in
+      '\') out="$out\\\\" ;;
+      '"') out="$out\\\"" ;;
+      *)
+        n=$(printf '%d' "'$c" 2>/dev/null) || n=-1
+        if [ "$n" -ge 0 ] 2>/dev/null && [ "$n" -lt 32 ]; then
+          case "$n" in
+            9) out="$out\\t" ;;
+            10) out="$out\\n" ;;
+            13) out="$out\\r" ;;
+            *) out="$out$(printf '\\u%04x' "$n")" ;;
+          esac
+        else
+          out="$out$c"
+        fi
+        ;;
+    esac
+  done
+  printf '"%s"' "$out"
+}
 
 STARTED_AT="$(now_iso)"
 LAST_EVENT_AT="$STARTED_AT"
@@ -210,7 +233,7 @@ set -m  # codex 에 자기 프로세스 그룹을 준다(pgid == $!)
     "$@" \
     --json \
     --output-last-message "$RESULT" \
-    "$PROMPT"
+    -- "$PROMPT"
 ) >"$EVENTS" 2>"$PROGRESS" </dev/null &
 CODEX_PID=$!
 set +m

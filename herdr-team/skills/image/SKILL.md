@@ -26,7 +26,7 @@ argument-hint: "[--n <1..8>] [--out <폴더>] [--ar <w:h>] [--transparent] [--re
 | `--n` 이 1 이고 `--background` 가 없다 | 포그라운드. Bash `timeout: 600000`, `--timeout 450`(이미지 하나의 시간 제한) |
 | `--n` ≥ 2 이거나 `--background` | Bash `run_in_background: true`. `--timeout` 은 주지 않는다(기본 900초). "N장 만드는 중, 끝나면 알림" 한 줄로 알리고 다른 일을 한다 |
 
-포그라운드의 최악 시간이 Bash 최대 600초 안에 든다: 사전 점검 30 + `--timeout` 450 + 래퍼 여유(GRACE) 30 + TERM 뒤 KILL 까지 15 + PNG 변환(sips) 60 = 30 + 450 + 30 + 15 + 60 = 585초. 두 장부터는 이 합이 600초를 넘을 수 있어 백그라운드로 돌린다.
+포그라운드의 최악 시간이 Bash 최대 600초 안에 든다: 기능 조회 30 + 사용자 서버 조회(`codex mcp get`) 15 + `--timeout` 450 + 래퍼 여유(GRACE) 30 + 래퍼를 끝내는 TERM 뒤 KILL 15 와 PNG 변환(sips) 60 중 큰 쪽(둘은 함께 일어나지 않는다) 60 = 30 + 15 + 450 + 30 + 60 = 585초. 두 장부터는 이 합이 600초를 넘을 수 있어 백그라운드로 돌린다.
 
 ```bash
 .herdr-team/bin/hteam image --n 1 --out assets/home --ar 16:9 --timeout 450 -- "따뜻한 오후 햇살이 드는 작업실 일러스트, 평면 스타일"

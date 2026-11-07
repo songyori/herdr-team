@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests.helpers import ROOT, TeamCase
-from hteam import image
+from hteam import browser, image
 from hteam.errors import HteamError
 from hteam.paths import Project
 
@@ -41,11 +41,16 @@ if [ "$1" = "--version" ] && [ -n "${FAKE_VERSION_HANG:-}" ]; then
 fi
 exec "$FAKE_PYTHON" "$(dirname "$0")/fake_codex.py" "$@"
 '''
-# 시험이 쥐는 시계: FAKE_SLEEP_GATE 가 있으면 0.2초 잠(래퍼의 버전 대기 한 칸)은 그 파일(준비 신호)이 생길 때까지 시작하지
-# 않는다. 래퍼의 버전 대기 제한은 준비 신호 뒤에야 세기 시작한다(Codex 계획 r3). 다른 잠은 그대로 /bin/sleep 이다
+# 시험이 쥐는 시계: FAKE_SLEEP_GATE 가 있으면 0.2초 잠(래퍼의 버전 대기 한 칸), FAKE_SLEEP_GATE1 이 있으면 1초 잠(감시 주기·
+# 그룹 정리 한 칸)은 그 파일(준비 신호)이 생길 때까지(최대 60초) 시작하지 않는다. 래퍼의 버전 대기·진행 신호 없음 제한은 준비 신호 뒤에야 의미를 갖는다
+# (Codex 계획 r3, 태스크 리뷰 6). 다른 잠은 그대로 /bin/sleep 이다
 FAKE_SLEEP = r'''#!/bin/sh
-if [ "$1" = 0.2 ] && [ -n "${FAKE_SLEEP_GATE:-}" ]; then
-  while [ ! -e "$FAKE_SLEEP_GATE" ]; do /bin/sleep 0.05; done
+gate=""
+[ "$1" = 0.2 ] && gate="${FAKE_SLEEP_GATE:-}"
+[ "$1" = 1 ] && gate="${FAKE_SLEEP_GATE1:-}"
+if [ -n "$gate" ]; then
+  n=0
+  while [ ! -e "$gate" ] && [ "$n" -lt 1200 ]; do /bin/sleep 0.05; n=$((n+1)); done
 fi
 exec /bin/sleep "$@"
 '''
@@ -73,7 +78,10 @@ if args[:3] == ["mcp", "get", "chrome-devtools"]:
     print(json.dumps({"name": "chrome-devtools", "enabled": True, "transport": transport})); sys.exit(0)
 if args[:2] == ["features", "list"]:
     print("hooks  stable  true")
-    print("image_generation  stable  " + ("false" if os.environ.get("FAKE_NO_IMAGE") else "true")); sys.exit(0)
+    on = ("features.image_generation=true" in args or "--enable=image_generation" in args
+          or any(a == "--enable" and args[k + 1] == "image_generation" for k, a in enumerate(args[:-1])))
+    off = "features.image_generation=false" in args or "--disable=image_generation" in args
+    print("image_generation  stable  " + ("false" if (os.environ.get("FAKE_NO_IMAGE") and not on) or off else "true")); sys.exit(0)
 with open(os.environ["FAKE_ARGV"], "a") as fh:
     fh.write(json.dumps(args) + "\n")
 stdin = "chardev" if os.path.exists("/dev/stdin") and os.stat("/dev/stdin").st_mode & 0o020000 else "other"
@@ -83,6 +91,9 @@ mode = os.environ.get("FAKE_MODE", "ok")
 def event(kind):
     print(json.dumps({"type": kind}, separators=(",", ":")), flush=True)
 event("thread.started"); event("turn.started")
+if mode == "noevent":
+    shutil.copyfile(os.environ["FAKE_PNG"], os.path.join(os.environ["FAKE_GEN"], "ig_ne.png"))
+    open(out, "w").write(os.path.join(os.environ["FAKE_GEN"], "ig_ne.png") + "\n"); sys.exit(0)
 if mode in ("ok", "image", "link"):
     path = os.environ.get("FAKE_PNG", "")
     made = os.path.join(os.environ["FAKE_GEN"], "ig_%d.png" % len(os.listdir(os.environ["FAKE_GEN"])))
@@ -238,7 +249,15 @@ class WrapperTest(FakeCodexMixin, unittest.TestCase):
         self.assertEqual(argv[argv.index("-c") + 1], "model_reasoning_effort=medium")
         self.assertLess(argv.index("-i"), argv.index("--json"))  # -i 는 값을 여럿 받는다. 프롬프트를 먹지 않게
         self.assertEqual(argv[-1], '따옴표 " 백틱 ` 달러 $HOME\n둘째 줄')  # 끝 줄바꿈만 빠진다
+        self.assertEqual(argv[-2], "--")  # 프롬프트가 `-` 로 시작해도 옵션으로 읽히지 않는다
         self.assertEqual((self.root / "stdin.txt").read_text(), "chardev")  # /dev/null
+
+    def test_status_json_escapes_control_characters(self):
+        # 작업 폴더 이름의 줄바꿈·탭·따옴표·역슬래시·제어 문자가 status.json 을 깨지 않는다
+        self.cwd = self.root / 'wo"rk\\\n\tx\x01'
+        self.cwd.mkdir()
+        self.assertEqual(self.run_wrapper().returncode, 0)
+        self.assertEqual(self.status()["cwd"], str(self.cwd))
 
     def test_optional_flags_are_left_out(self):
         self.assertEqual(self.run_wrapper().returncode, 0)
@@ -259,7 +278,9 @@ class WrapperTest(FakeCodexMixin, unittest.TestCase):
 
     def test_silence_is_11_and_kills_the_group(self):
         # 진행 신호 없음 2초, 전체 제한 60초: 스케줄링이 늦어도 전체 시간 초과가 먼저 오지 않는다
-        proc = self.run_wrapper("--timeout", "60", "--heartbeat", "2", mode="silent")
+        # 준비 신호(pids 파일) 전에는 감시 주기가 돌지 않는다(FAKE_SLEEP_GATE): 파이썬 시작이 느려도 흔들리지 않는다
+        proc = self.run_wrapper("--timeout", "60", "--heartbeat", "2", mode="silent",
+                                env={"FAKE_SLEEP_GATE1": self.env["FAKE_PIDS"]})
         self.assertEqual(proc.returncode, 11, proc.stderr)
         self.assertEqual((self.status()["state"], self.status()["exit"]), ("stalled", 11))
         self.assert_group_gone(self.recorded(self.root))  # 가짜 codex 와 그 자식(sleep)이 그룹째 끝났다
@@ -407,6 +428,52 @@ class PngTest(unittest.TestCase):
                 self.assertIsNone(image.png_info(data))
 
 
+    def test_png_size_limit(self):
+        # 태스크 리뷰 7: IHDR 의 크기가 상한을 넘으면 풀기 전에 PNG 로 보지 않는다(메모리·시간)
+        pix = zlib.compress(b"\x00" * 4)
+        for width, height in ((image.MAX_SIDE + 1, 1), (1, image.MAX_SIDE + 1), (image.MAX_SIDE, image.MAX_SIDE)):
+            with self.subTest(size=(width, height)):
+                data = png_chunks((width, height, 8, 2, 0), [(b"IDAT", pix)])
+                self.assertIsNone(image.png_info(data))
+                self.assertIsNone(image.read_rgba(data))
+        self.assertEqual(image.png_info(png_rgb(2, 1, lambda x, y: (1, 2, 3)))[:2], (2, 1))
+
+    def test_rgba_reader_stops_at_iend_and_uses_the_first_ihdr(self):
+        # 태스크 리뷰 10: IEND 뒤의 덧붙은 청크(IDAT·IHDR)는 png_info 처럼 보지 않는다
+        good = png_rgb(3, 2, lambda x, y: (x * 9, y * 9, 7))
+        def chunk(kind, body):
+            return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF)
+        tail = chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)) + chunk(b"IDAT", b"junk")
+        dup = good.replace(b"IDAT", b"IHDR", 0)  # 같은 PNG
+        self.assertEqual(image.read_rgba(good + tail), image.read_rgba(dup))
+        self.assertEqual(image.png_info(good + tail), (3, 2, 8, 2))
+        mid = good[:33] + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)) + good[33:]  # 둘째 IHDR 는 쓰지 않는다
+        self.assertEqual(image.read_rgba(mid)[:2], (3, 2))
+
+
+class PreflightTest(FakeCodexMixin, unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="hteam-pre-")).resolve()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        env = {**self.fake_codex(self.root), "FAKE_NO_IMAGE": "1"}
+        patch = mock.patch.dict(os.environ, env)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_run_args_reach_the_feature_query(self):
+        # Codex 78e7b59 P2: 사용자 설정에서 꺼져 있어도 실행 인자가 켜면 사전 점검이 통과하고, 끄면 막힌다
+        with self.assertRaises(HteamError) as ctx:
+            image.preflight([])
+        self.assertEqual(ctx.exception.code, "no_image_generation")
+        for args in (["--enable=image_generation"], ["--enable", "image_generation"],
+                     ["-c", "features.image_generation=true"], ["-cfeatures.image_generation=true"]):
+            with self.subTest(args=args):
+                image.preflight(args)
+        os.environ.pop("FAKE_NO_IMAGE")
+        with self.assertRaises(HteamError):
+            image.preflight(["--disable=image_generation"])
+
+
 class CodexArgsTest(unittest.TestCase):
     def test_image_drops_mcp_servers_and_bypass(self):
         # 이미지 실행에 브라우저가 필요 없고(서버 시작을 이미지마다 치르지 않는다), 래퍼가 우회 플래그를 늘 붙인다
@@ -415,6 +482,31 @@ class CodexArgsTest(unittest.TestCase):
                 "--config=mcp_servers.a.x=1", "-cmcp_servers.a.y=2", "-c=mcp_servers.a.z=3", "-c", "model_verbosity=low",
                 "--dangerously-bypass-approvals-and-sandbox", "--yolo", "--full-auto", "--approve-for-me"]
         self.assertEqual(image.codex_args(args), ["--disable=hooks", "-c", "model_verbosity=low"])
+
+    def test_key_whitespace_is_ignored(self):
+        # 태스크 리뷰·Codex 78e7b59 P2: codex 는 `=` 앞의 키의 앞뒤 공백을 떼고 읽는다(browser.key_of 하나를 같이 쓴다)
+        args = ["-c", ' mcp_servers.hteam-browser={command="npx"}', "-c", "mcp_servers.a.x =1", "--config= mcp_servers.b.y=1",
+                "-c", "mcp_servers .c=1", "-c", "model_verbosity=low"]
+        self.assertEqual(image.codex_args(args), ["-c", "mcp_servers .c=1", "-c", "model_verbosity=low"])
+        self.assertEqual(browser.key_of("  a.b  = 1"), "a.b")
+
+    def test_interactive_only_and_model_args_are_dropped_and_shown(self):
+        # 읽기 전용 `codex exec --help`(0.166): -a/--ask-for-approval·--search·--no-alt-screen 은 exec 에 없고, -m/--model 은
+        # 이미지가 --model 을 직접 준다. 뺀 인자는 보임 글로 돌려준다
+        args = ["--disable=hooks", "-a", "never", "--ask-for-approval=never", "-anever", "--search", "--no-alt-screen",
+                "-m", "x", "--model", "y", "--model=z", "-mw", "-c", "model_verbosity=low", "--profile", "p"]
+        kept, shown = image.split_args(args)
+        self.assertEqual(kept, ["--disable=hooks", "-c", "model_verbosity=low", "--profile", "p"])
+        self.assertEqual(shown, ["-a never", "--ask-for-approval=never", "-anever", "--search", "--no-alt-screen", "-m x",
+                                 "--model y", "--model=z", "-mw"])
+        self.assertEqual(image.split_args(["--disable=hooks"]), (["--disable=hooks"], []))
+
+    def test_feature_args_follow_the_run_args(self):
+        # 사전 조회(codex features list)에도 실행에 쓰는 기능·설정 인자만 넘긴다
+        args = ["--disable=hooks", "--enable", "image_generation", "-c", "features.x=true", "-cmodel_verbosity=low",
+                "--search", "--profile", "p", "--model", "m"]
+        self.assertEqual(image.feature_args(args), ["-c", "features.x=true", "-c", "model_verbosity=low",
+                                                    "--disable=hooks", "--enable", "image_generation"])
 
 
 class ImageCommandTest(FakeCodexMixin, TeamCase):
@@ -536,6 +628,13 @@ class ImageCommandTest(FakeCodexMixin, TeamCase):
         self.assertTrue(any("sips" in w for w in item["warnings"]))
         self.assertEqual(sorted(p.name for p in (self.proj / "assets/j").iterdir()), ["picture-1.png"])
 
+    def test_missing_terminal_event_warns_without_none(self):
+        code, out = self.image("picture", mode="noevent")
+        self.assertEqual(code, 0, out)
+        [warning] = out["images"][0]["warnings"]
+        self.assertIn("종단 이벤트가 없음 인데", warning)
+        self.assertNotIn("None", warning)
+
     def test_refusal_is_not_retried(self):
         code, out = self.image("--n", "2", "picture", mode="refuse")
         self.assertEqual((code, out["error"]["code"]), (1, "image_failed"), out)
@@ -552,8 +651,10 @@ class ImageCommandTest(FakeCodexMixin, TeamCase):
         # 래퍼가 멈춰도(여기서는 codex --version 이 끝나지 않고 버전 대기가 길다) hteam image 는 timeout + 여유
         # (HTEAM_IMAGE_GRACE) 뒤 래퍼를 끝내고 그 이미지를 실패로 낸다. 래퍼의 trap 이 버전 조회 그룹을 끝낸다
         start = time.monotonic()
-        code, out = self.image("--timeout", "2", "picture", FAKE_VERSION_HANG="1", HTEAM_CODEX_VERSION_WAIT="600",
-                               HTEAM_IMAGE_GRACE="1")
+        # 래퍼의 버전 조회 대기 칸이 준비 신호(vpids)를 기다리고(FAKE_SLEEP_GATE), 상한(4 + 1초)은 셸 대역이 준비를 쓰기에
+        # 넉넉하다(느린 기계에서 준비 전에 끝내지 않는다)
+        code, out = self.image("--timeout", "4", "picture", FAKE_VERSION_HANG="1", HTEAM_CODEX_VERSION_WAIT="600",
+                               HTEAM_IMAGE_GRACE="1", FAKE_SLEEP_GATE=str(self.tmp / "vpids.json"))
         self.assertEqual((code, out["error"]["code"]), (1, "image_failed"), out)
         self.assertEqual(out["images"][0]["status"], "failed")
         self.assertIn("끝나지 않아", out["images"][0]["reason"])
@@ -654,6 +755,34 @@ class ImageLoopTest(TeamCase):
         result, one = self.run_image(["ok"])
         self.assertEqual((result["count"], result["warnings"]), (1, [self.warn]))
 
+    def image_with(self, args, **kw):
+        ok = {"status": "ok", "path": str(self.proj / "assets/a.png"), "warnings": [], "i": 1}
+        with mock.patch.object(image, "preflight") as pre, mock.patch.object(image, "one", return_value=ok), \
+                mock.patch.object(image.config.Config, "args", return_value=args):
+            return image.image(self.p, "x", n=1, out=str(self.proj / "assets"), ar=None, transparent=False, refs=[],
+                               timeout=60), pre
+
+    def test_run_args_reach_preflight_and_user_off(self):
+        # Codex 78e7b59 P2: 거른 실행 인자(MCP 정의·우회·exec 가 받지 않는 인자를 뺀 것)를 사전 점검과 사용자 서버 조회에 넘긴다
+        args = ["--enable=image_generation", "--search", "-c", 'mcp_servers.hteam-browser={command="npx"}', "-c", "a=1"]
+        with mock.patch.object(image.browser, "user_off", return_value=([], None)) as off:
+            result, pre = self.image_with(args)
+        kept = ["--enable=image_generation", "-c", "a=1"]
+        pre.assert_called_once_with(kept)
+        off.assert_called_once_with(self.p.root, kept)
+        self.assertEqual(result["warnings"], ["이미지 실행(codex exec)이 받지 않거나 이미지가 직접 정하는 인자를 뺐다: --search"])
+
+    def test_profile_warning_is_kept(self):
+        # 프로필(-p)이 있으면 user_off 는 조회를 믿지 않고 끄지 않는다. 그 경고가 결과 warnings 에 남는다(Codex 78e7b59 P2)
+        result, _ = self.image_with(["--profile", "p"])
+        self.assertEqual(len(result["warnings"]), 1)
+        self.assertIn("프로필이 있어", result["warnings"][0])
+
+    def test_memory_error_is_an_image_failure(self):
+        exc, one = self.run_image(["ok", MemoryError(), OverflowError("too big")])
+        self.assertEqual((exc.code, one.call_count), ("image_failed", 3))
+        self.assertEqual([x["status"] for x in exc.data["images"]], ["ok", "failed", "failed"])
+
     def test_interrupt_returns_what_was_made(self):
         exc, one = self.run_image(["ok", KeyboardInterrupt(), "ok"])
         self.assertEqual((exc.code, one.call_count), ("image_interrupted", 2))
@@ -663,9 +792,10 @@ class ImageLoopTest(TeamCase):
 class ImageSkillTest(unittest.TestCase):
     def test_skill_runs_hteam_image_within_the_bash_limit(self):
         text = (ROOT / "skills/image/SKILL.md").read_text(encoding="utf-8")
-        # 포그라운드 최악 시간이 Bash 600초 안에 든다: 사전 점검 30 + timeout 450 + GRACE 30 + STOP_WAIT 15 + sips 60
-        self.assertEqual(30 + 450 + image.GRACE + image.STOP_WAIT + 60, 585)
-        for needle in ("name: image", ".herdr-team/bin/hteam image", "--timeout 450", "30 + 450 + 30 + 15 + 60 = 585",
+        # 포그라운드 최악 시간이 Bash 600초 안에 든다: 기능 조회 30 + codex mcp get 15 + timeout 450 + GRACE 30 +
+        # max(래퍼를 끝내는 STOP_WAIT 15, PNG 변환 sips 60: 둘은 함께 일어나지 않는다) = 585
+        self.assertEqual(30 + browser.QUERY_TIMEOUT + 450 + image.GRACE + max(image.STOP_WAIT, 60), 585)
+        for needle in ("name: image", ".herdr-team/bin/hteam image", "--timeout 450", "30 + 15 + 450 + 30 + 60 = 585",
                        "`--n` 이 1 이고", "run_in_background: true",
                        "`refused`", "Read 로 하나씩 직접 연다", "### 이미지", "`--background` 는 hteam 에 넘기지 않는다"):
             self.assertIn(needle, text)
