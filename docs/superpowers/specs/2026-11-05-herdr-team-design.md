@@ -552,11 +552,11 @@ UI 기반 태스크가 `tokens.json` 을 CSS 변수·테마로 옮기고 공통 
 
 ### 11.5 AI 티 금지 목록 (`design-rules.md`)
 
-orca-team 의 금지 규칙 10개를 옮긴다(이모지 장식, 왼쪽 강조 테두리, 파랑·보라 그라디언트 등. 목록 원문은 구현 계획에 적는다). 워커는 보고서에서 스스로 점검하고, 리뷰어가 디자인 절로 다시 본다.
+orca-team 의 금지 규칙 10개를 옮긴다(이모지 장식, 왼쪽 강조 테두리, 파랑·보라 그라디언트 등. 원문은 `templates/design-rules.md`, scaffold 가 `.herdr-team/design-rules.md` 로 복사한다). 워커는 보고서 이번 라운드 절의 `### 금지 목록 점검` 에 항목마다 스스로 점검하고, 리뷰어가 디자인 절로 다시 본다.
 
 ### 11.6 자동 검사 (`hteam lint`)
 
-리뷰 대상에서 바뀐 파일만 본다(`.html .css .scss .js .jsx .ts .tsx .vue .svelte .md .json`, `references.md`·`docs/planning`·`docs/tasks`·`docs/reviews` 제외, 1 MB 넘는 파일 제외). 찾는 것: 이모지(U+1F000–1FAFF, BMP Emoji_Presentation, `X+FE0F`), 2px 이상 왼쪽 강조 테두리(CSS·JSX·Tailwind `border-l/s-N` + 색), 한 그라디언트 안 파랑(190–245°)과 보라(245–300°)(oklch, Tailwind `from/via/to` 포함). 출력 `file:line: 패턴(발췌)`, 50개까지. 리뷰 프롬프트에 경고로만 넣는다(판정은 리뷰어).
+리뷰 대상에서 바뀐 파일만 본다(`.html .css .scss .js .jsx .ts .tsx .vue .svelte .md .json`, `references.md`·`docs/planning`·`docs/tasks`·`docs/reviews` 제외, 1 MB 넘는 파일 제외). 찾는 것: 이모지(U+1F000–1FAFF, BMP Emoji_Presentation, `X+FE0F`), 2px 이상 왼쪽 강조 테두리(CSS·JSX·Tailwind `border-l/s-N` + 색), 한 그라디언트 안 파랑(190–245°)과 보라(245–300°)(oklch, Tailwind `from/via/to` 포함. oklch 는 색상각 자가 HSL 과 달라 200–280° 를 파랑, 280–330° 를 보라로 본다). 출력 `file:line: 패턴(발췌)`, 50개까지. 리뷰 프롬프트에 경고로만 넣는다(판정은 리뷰어).
 
 ## 12. 이미지 (`/herdr-team:image`, `hteam image`)
 

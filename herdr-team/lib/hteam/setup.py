@@ -24,6 +24,7 @@ COORD_PROMPT = f"`{SHIM} bind` 를 실행하고 `.herdr-team/coordinator.md` 를
 FILES = {
     "config.toml": ".herdr-team/config.toml",
     "coordinator.md": ".herdr-team/coordinator.md",
+    "design-rules.md": ".herdr-team/design-rules.md",
     "roles/planner.md": ".herdr-team/roles/planner.md",
     "roles/designer.md": ".herdr-team/roles/designer.md",
     "roles/developer.md": ".herdr-team/roles/developer.md",
