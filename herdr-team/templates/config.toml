@@ -39,6 +39,16 @@ codex_model = "gpt-6.1-sol"
 codex_effort = "high"
 owns = ["docs/planning/**"]
 
+# 디자인 디렉터: 레퍼런스·톤 시안·디자인 시스템을 사용자와 정한다(설계 11.1). claude 만 된다. 승인 직무가 아니다.
+# codex_* 는 리뷰어(Codex) 모델이다.
+[roles.director]
+title = "디자인 디렉터"
+claude_model = "opus"
+claude_effort = "xhigh"
+codex_model = "gpt-6.1-sol"
+codex_effort = "high"
+owns = ["docs/design/**", "assets/**"]
+
 # 화면 디자인. claude 만 된다(설계 4.2). 승인 직무라 리뷰 승인 뒤 사용자 일괄 승인을 기다린다.
 [roles.designer]
 title = "디자인"

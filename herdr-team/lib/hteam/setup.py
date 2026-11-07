@@ -27,6 +27,7 @@ FILES = {
     "coordinator.md": ".herdr-team/coordinator.md",
     "design-rules.md": ".herdr-team/design-rules.md",
     "roles/planner.md": ".herdr-team/roles/planner.md",
+    "roles/director.md": ".herdr-team/roles/director.md",
     "roles/designer.md": ".herdr-team/roles/designer.md",
     "roles/developer.md": ".herdr-team/roles/developer.md",
     "roles/tester.md": ".herdr-team/roles/tester.md",

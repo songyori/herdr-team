@@ -103,6 +103,7 @@ EOF
 
 ## 직무
 - planner: 사용자 인터뷰(`hteam ask-user`, 메인을 거쳐 사용자에게 바로 간다), `docs/planning/`(spec.md, contracts.md, tasks.toml, interview.md). 기획자의 질문에 끼어들지 않는다.
+- director: 디자인 디렉터(레퍼런스·톤 시안·디자인 시스템, `docs/design/`). 기획자처럼 `hteam ask-user` 로 사용자에게 바로 묻는다. 끼어들지 않는다. 승인 직무가 아니라 accept 하면 `done` 이고, 그 뒤 designer 태스크가 시작된다.
 - designer: 화면 디자인(화면마다 태스크 하나, `docs/design/screens/<화면>/`). 승인 직무라 리뷰 승인 뒤 accept 하면 `awaiting_user` 가 되고, 사용자 일괄 승인(`hteam design-review`, `--decide`) 뒤 `done` 이 된다. 그 화면을 구현하는 개발 태스크는 그 뒤에 시작된다.
 - developer: 구현. tester: 테스트와 QA 보고서.
 - 직무별 owns·모델은 `.herdr-team/config.toml`. 리뷰어는 작업 에이전트의 반대쪽(Claude ↔ Codex)이다.

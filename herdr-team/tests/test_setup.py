@@ -101,7 +101,8 @@ class ScaffoldTest(TeamCase):
         code, out = self.scaffold()
         self.assertEqual(code, 0, out)
         for rel in (".herdr-team/config.toml", ".herdr-team/coordinator.md", ".herdr-team/roles/planner.md",
-                    ".herdr-team/roles/designer.md", ".herdr-team/roles/developer.md", ".herdr-team/roles/tester.md",
+                    ".herdr-team/roles/director.md", ".herdr-team/roles/designer.md", ".herdr-team/roles/developer.md",
+                    ".herdr-team/roles/tester.md", ".herdr-team/design-rules.md",
                     ".herdr-team/bin/hteam",
                     ".herdr-team/project.md", "CLAUDE.md", "AGENTS.md", ".gitignore"):
             self.assertIn(rel, out["created"])
@@ -406,12 +407,13 @@ class TemplateContractTest(unittest.TestCase):
         import tomllib
         from hteam import plan
         raw = tomllib.loads((ROOT / "templates/config.toml").read_text(encoding="utf-8"))
-        self.assertEqual(set(raw["roles"]), {"planner", "designer", "developer", "tester"})
-        self.assertEqual(raw["user_approval_roles"], ["designer"])
+        self.assertEqual(set(raw["roles"]), {"planner", "director", "designer", "developer", "tester"})
+        self.assertEqual(raw["user_approval_roles"], ["designer"])  # director 는 승인 직무가 아니다(설계 11.1)
         self.assertEqual(raw["roles"]["designer"]["owns"], ["docs/design/**", "assets/**"])
+        self.assertEqual(raw["roles"]["director"]["owns"], ["docs/design/**", "assets/**"])
         self.assertEqual(config.validate(raw), [])
         self.assertEqual(sorted(p.name for p in (ROOT / "templates/roles").iterdir()),
-                         ["designer.md", "developer.md", "planner.md", "tester.md"])
+                         ["designer.md", "developer.md", "director.md", "planner.md", "tester.md"])
         designer = (ROOT / "templates/roles/designer.md").read_text(encoding="utf-8")
         for needle in ("docs/design/screens/<화면>/index.html", "- 아티팩트: <claude.ai URL 또는 없음>",
                        "사용자 일괄 승인", "코드(`src/`)"):
@@ -423,13 +425,24 @@ class TemplateContractTest(unittest.TestCase):
         def task(key, role, owns, deps=()):
             return {"key": key, "role": role, "title": f"{key} 제목", "owns": list(owns), "depends_on": list(deps),
                     "target": "대상", "change": "바꿀 것", "constraints": "제약", "acceptance": ["확인 1"]}
-        # 템플릿 설정으로 화면마다 designer 태스크를 두고 개발이 그것에 의존하는 그래프가 plan check 를 통과한다
+        # 템플릿 설정으로 디렉터 태스크 하나, 그것에 의존하는 화면마다 designer 태스크, 개발이 그것에 의존하는 그래프가
+        # plan check 를 통과한다(디렉터 owns 는 설계 11.1 대로 좁힌다)
         cfg = config.build(raw)
-        screens = [task("login-screen", "designer", ["docs/design/screens/login/**", "assets/login/**"]),
-                   task("list-screen", "designer", ["docs/design/screens/list/**", "assets/list/**"])]
+        direction = task("design-direction", "director",
+                         ["docs/design/direction.md", "docs/design/references.md", "docs/design/board/**",
+                          "docs/design/pilots/**", "docs/design/system/**"])
+        screens = [task("login-screen", "designer", ["docs/design/screens/login/**", "assets/login/**"],
+                        ["design-direction"]),
+                   task("list-screen", "designer", ["docs/design/screens/list/**", "assets/list/**"],
+                        ["design-direction"])]
         app = task("app", "developer", ["src/**"], ["login-screen", "list-screen"])
-        self.assertEqual(plan.validate(cfg, screens + [app]), ([], [["login-screen", "list-screen"], ["app"]]))
-        chained = [screens[0], task("login-more", "designer", ["docs/design/screens/login/**"], ["login-screen"])]
+        self.assertEqual(plan.validate(cfg, [direction, *screens, app]),
+                         ([], [["design-direction"], ["login-screen", "list-screen"], ["app"]]))
+        alone = [{**t, "depends_on": []} for t in screens]  # 디렉터 태스크가 없으면 plan check 가 거부한다
+        self.assertIn("designer 태스크가 있으면 director 태스크가 정확히 하나여야 한다(지금 0개)",
+                      plan.validate(cfg, [*alone, app])[0])
+        chained = [direction, screens[0],
+                   task("login-more", "designer", ["docs/design/screens/login/**"], ["login-screen"])]
         self.assertTrue(any("승인 직무 태스크" in e for e in plan.validate(cfg, chained)[0]))
 
     def test_codex_reviewer_browser_in_template(self):
