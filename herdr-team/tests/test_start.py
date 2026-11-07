@@ -347,6 +347,31 @@ class BrowserOffTest(StartCase):
         self.assertEqual(browser.config_items(["-c", "a=1", "--config", "b=2", "-cc=3", "-c=d=4", "--config=e=5", "-c"]),
                          [(0, 2, "a=1"), (2, 4, "b=2"), (4, 5, "c=3"), (5, 6, "d=4"), (6, 7, "e=5")])
 
+    def test_profile_in_args_skips_query_with_warning(self):
+        # Codex ca3f033 r1: `codex mcp get` 은 -c 만 받고 프로필을 받지 않는다. 프로필이 있으면 조회를 믿지 않고 끄지 않는다
+        for n, form in enumerate((["--profile", "x"], ["-p", "x"], ["--profile=x"], ["-px"])):
+            with self.subTest(form=form):
+                base = ["--disable=hooks", *form, "-c", self.DEFINE]
+                (self.team / "config.toml").write_text(
+                    BASE_CONFIG.replace('args = ["--disable=hooks"]', f"args = {json.dumps(base)}"))
+                self.make_task(f"T-00{n + 1}", owns=f"src/t-00{n + 1}/**")
+                code, out = self.hteam("start", f"T-00{n + 1}", "--worker", "codex", env={"FAKE_MCP": "stdio"})
+                self.assertEqual(code, 0, out)
+                self.assertEqual(json.loads(self.dispatch_row(out["dispatch"])["agent_args"]), base)
+                self.assertTrue([w for w in out["warnings"] if "프로필이 있어" in w], out["warnings"])
+                self.assertEqual(self.queries(), [])
+
+    def test_query_gets_run_config_args(self):
+        out, _ = self.start("stdio")
+        self.assertIn(["-c", self.DEFINE], [json.loads(q)[-2:] for q in self.queries()])
+
+    def test_defines_normalizes_key_whitespace(self):
+        spaced = self.DEFINE.replace("hteam-browser=", "hteam-browser = ")
+        for a in (["-c", spaced], ["-c", "mcp_servers.hteam-browser .command=\"npx\""], ["--config=" + spaced]):
+            self.assertTrue(browser.defines(a), a)
+        self.assertFalse(browser.defines(["-c", "mcp_servers.hteam-browser2={}"]))
+        self.assertEqual(browser.user_off(self.proj, ["--profile", "x"])[0], [])
+
     def test_query_is_cached_and_bounded(self):
         calls = []
 

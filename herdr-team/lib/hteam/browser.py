@@ -46,14 +46,32 @@ def config_items(args: list[str]) -> list[tuple[int, int, str]]:
 def defines(args: list[str]) -> bool:
     """args 의 `-c`·`--config` 값에 hteam-browser 정의(`mcp_servers.hteam-browser=…` 또는 `mcp_servers.hteam-browser.…`)가
     있나(config_items)."""
-    return any(v.startswith((BROWSER_KEY + "=", BROWSER_KEY + ".")) for _, _, v in config_items(args))
+    for _, _, v in config_items(args):
+        key = "".join(v.split("=", 1)[0].split())  # TOML 은 `key = value`·`a . b` 의 공백도 같은 키로 읽는다
+        if key == BROWSER_KEY or key.startswith(BROWSER_KEY + "."):
+            return True
+    return False
 
 
-def user_off(root: Path) -> tuple[list[str], str | None]:
-    """(끄는 `-c` 한 쌍 또는 빈 목록, 경고 또는 None). 프로세스 안에서 root 마다 한 번만 조회한다."""
-    key = str(root)
+def has_profile(args: list[str]) -> bool:
+    """args 가 codex 프로필을 고르나(`-p X`·`-pX`·`--profile X`·`--profile=X`). `codex mcp get` 은 `-c` 만 받고 프로필을
+    받지 않아(codex-cli 0.166 `mcp get --help`) 조회가 실행과 다른 설정을 읽는다."""
+    return any(a in ("-p", "--profile") or a.startswith("--profile=")
+               or (a.startswith("-p") and not a.startswith("--") and len(a) > 2) for a in args)
+
+
+def user_off(root: Path, args: list[str] | None = None) -> tuple[list[str], str | None]:
+    """(끄는 `-c` 한 쌍 또는 빈 목록, 경고 또는 None). 프로세스 안에서 (root, 실행 인자의 `-c` 값) 마다 한 번만 조회한다.
+    조회에도 실행의 `-c`·`--config` 를 넘겨 같은 설정을 읽게 한다. 프로필(`-p`)은 `mcp get` 이 받지 않으므로 args 에
+    프로필이 있으면 조회를 믿지 않고 끄지 않는다(같은 이름 서버가 없는 프로필에 `enabled=false` 만 주면 codex 가
+    `invalid transport` 로 시작하지 못한다)."""
+    args = args or []
+    if has_profile(args):
+        return _skip("프로필이 있어 조회가 실행과 다른 설정을 읽는다")
+    cfg = [x for _, _, v in config_items(args) for x in ("-c", v)]
+    key = json.dumps([str(root), cfg])
     if key not in _cache:
-        _cache[key] = _query(root)
+        _cache[key] = _query(root, cfg)
     off, warning = _cache[key]
     return list(off), warning
 
@@ -62,11 +80,11 @@ def _skip(why: str) -> tuple[list[str], str]:
     return [], f"사용자 Codex 의 {USER_BROWSER} 서버를 확인하지 못해 끄지 않았다({why})"
 
 
-def _query(root: Path) -> tuple[list[str], str | None]:
+def _query(root: Path, cfg: list[str]) -> tuple[list[str], str | None]:
     if not shutil.which("codex"):
         return _skip("codex 가 PATH 에 없다")
     try:
-        proc = subprocess.run(["codex", "mcp", "get", USER_BROWSER, "--json"], capture_output=True, text=True,
+        proc = subprocess.run(["codex", "mcp", "get", USER_BROWSER, "--json", *cfg], capture_output=True, text=True,
                               timeout=QUERY_TIMEOUT, stdin=subprocess.DEVNULL, cwd=root)
     except subprocess.TimeoutExpired:
         return _skip(f"`codex mcp get` 이 {QUERY_TIMEOUT}초 안에 끝나지 않았다")

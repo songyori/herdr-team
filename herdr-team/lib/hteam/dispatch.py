@@ -177,7 +177,7 @@ def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str |
                 "warnings": warnings}
     if agent == "codex" and browser.defines(args):
         # 사용자 Codex 의 같은 일을 하는 chrome-devtools 를 이 codex 에서만 끈다(설계 14장). 조회하지 못하면 끄지 않고 알린다
-        off, warning = browser.user_off(p.root)
+        off, warning = browser.user_off(p.root, args)
         args = [*args, *off]
         if warning:
             warnings.append(warning)
