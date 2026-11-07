@@ -77,6 +77,8 @@ if args[:3] == ["mcp", "get", "chrome-devtools"]:
                  else {"type": "streamable_http", "url": "http://127.0.0.1:9/mcp"})
     print(json.dumps({"name": "chrome-devtools", "enabled": True, "transport": transport})); sys.exit(0)
 if args[:2] == ["features", "list"]:
+    if os.environ.get("FAKE_BAD_PROVIDER") and any(a.startswith("model_provider") for a in args):
+        print("Error: Model provider image_backend not found", file=sys.stderr); sys.exit(1)
     print("hooks  stable  true")
     on = ("features.image_generation=true" in args or "--enable=image_generation" in args
           or any(a == "--enable" and args[k + 1] == "image_generation" for k, a in enumerate(args[:-1])))
@@ -473,6 +475,21 @@ class PreflightTest(FakeCodexMixin, unittest.TestCase):
         with self.assertRaises(HteamError):
             image.preflight(["--disable=image_generation"])
 
+    def test_profile_skips_the_check_with_a_warning(self):
+        # Codex 3300643 P2: `codex features list` 는 프로필을 받지 않는다(--help). 프로필에만 있는 설정(provider 등)에 기대는
+        # 정상 설정을 막지 않고 건너뛰며 경고만 남긴다. 일반 -c 는 조회에 넘어가지 않는다
+        for args in (["--profile", "images", "-c", 'model_provider="image_backend"'], ["-pimages"], ["--profile=images"]):
+            with self.subTest(args=args):
+                warning = image.preflight(args)
+                self.assertIn("프로필이 있어 image_generation 사전 확인을 건너뛰었다", warning)
+        self.assertIsNone(image.preflight(["--enable=image_generation"]))
+
+    def test_general_config_is_not_sent_to_the_query(self):
+        # provider 를 모르는 조회는 실패한다(가짜 codex 가 그렇게 흉내 낸다). features.* 만 넘기면 통과한다
+        os.environ["FAKE_BAD_PROVIDER"] = "1"
+        self.addCleanup(os.environ.pop, "FAKE_BAD_PROVIDER", None)
+        image.preflight(["-c", 'model_provider="image_backend"', "-c", "features.image_generation=true"])
+
 
 class CodexArgsTest(unittest.TestCase):
     def test_image_drops_mcp_servers_and_bypass(self):
@@ -505,8 +522,11 @@ class CodexArgsTest(unittest.TestCase):
         # 사전 조회(codex features list)에도 실행에 쓰는 기능·설정 인자만 넘긴다
         args = ["--disable=hooks", "--enable", "image_generation", "-c", "features.x=true", "-cmodel_verbosity=low",
                 "--search", "--profile", "p", "--model", "m"]
-        self.assertEqual(image.feature_args(args), ["-c", "features.x=true", "-c", "model_verbosity=low",
-                                                    "--disable=hooks", "--enable", "image_generation"])
+        # 기능 관련만: features.* 의 -c(키 앞뒤 공백은 뗀다)와 --enable·--disable. 그 밖의 -c 는 조회가 모르는 프로필 설정에
+        # 기대는 것일 수 있어(예: 프로필 전용 model_provider) 넘기지 않는다(Codex 3300643 P2)
+        self.assertEqual(image.feature_args(args + ["-c", " features.y = false", "-c", "model_provider=\"b\""]),
+                         ["-c", "features.x=true", "-c", " features.y = false", "--disable=hooks", "--enable",
+                          "image_generation"])
 
 
 class ImageCommandTest(FakeCodexMixin, TeamCase):
@@ -723,7 +743,7 @@ class ImageLoopTest(TeamCase):
     def run_image(self, effects):
         ok = {"status": "ok", "path": str(self.proj / "assets/a.png"), "warnings": []}
         side = [dict(ok, i=n + 1) if e == "ok" else e for n, e in enumerate(effects)]
-        with mock.patch.object(image, "preflight"), mock.patch.object(image.browser, "user_off", return_value=([], self.warn)), \
+        with mock.patch.object(image, "preflight", return_value=None), mock.patch.object(image.browser, "user_off", return_value=([], self.warn)), \
                 mock.patch.object(image, "one", side_effect=side) as one:
             try:
                 return image.image(self.p, "x", n=len(effects), out=str(self.proj / "assets"), ar=None,
@@ -757,7 +777,7 @@ class ImageLoopTest(TeamCase):
 
     def image_with(self, args, **kw):
         ok = {"status": "ok", "path": str(self.proj / "assets/a.png"), "warnings": [], "i": 1}
-        with mock.patch.object(image, "preflight") as pre, mock.patch.object(image, "one", return_value=ok), \
+        with mock.patch.object(image, "preflight", return_value=None) as pre, mock.patch.object(image, "one", return_value=ok), \
                 mock.patch.object(image.config.Config, "args", return_value=args):
             return image.image(self.p, "x", n=1, out=str(self.proj / "assets"), ar=None, transparent=False, refs=[],
                                timeout=60), pre
@@ -771,6 +791,14 @@ class ImageLoopTest(TeamCase):
         pre.assert_called_once_with(kept)
         off.assert_called_once_with(self.p.root, kept)
         self.assertEqual(result["warnings"], ["이미지 실행(codex exec)이 받지 않거나 이미지가 직접 정하는 인자를 뺐다: --search"])
+
+    def test_preflight_skip_warning_is_kept(self):
+        warn = "프로필이 있어 image_generation 사전 확인을 건너뛰었다"
+        with mock.patch.object(image.browser, "user_off", return_value=([], None)), \
+                mock.patch.object(image, "preflight", return_value=warn), \
+                mock.patch.object(image, "one", return_value={"status": "ok", "path": "p", "warnings": [], "i": 1}):
+            result = image.image(self.p, "x", n=1, out=str(self.proj / "assets"), ar=None, transparent=False, refs=[], timeout=60)
+        self.assertEqual(result["warnings"], [warn])
 
     def test_profile_warning_is_kept(self):
         # 프로필(-p)이 있으면 user_off 는 조회를 믿지 않고 끄지 않는다. 그 경고가 결과 warnings 에 남는다(Codex 78e7b59 P2)

@@ -52,9 +52,10 @@ ADAM7 = ((0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8), (2, 0, 4, 4), (0, 2, 2, 4), (
 
 
 def feature_args(args: list[str]) -> list[str]:
-    """실행 인자(codex_args 로 거른 것) 가운데 기능·설정에 영향을 주는 것(`-c`·`--config`, `--enable`·`--disable`)만. 사전
-    조회(`codex features list`)가 실행과 같은 기능 상태를 읽게 한다(둘 다 이 인자들을 받는다)."""
-    out = [x for _, _, v in browser.config_items(args) for x in ("-c", v)]
+    """실행 인자(codex_args 로 거른 것) 가운데 기능에 영향을 주는 것만: `--enable`·`--disable` 과 키가 `features.` 로 시작하는
+    `-c`·`--config`(browser.key_of). 사전 조회(`codex features list`)가 실행과 같은 기능 상태를 읽게 한다. 그 밖의 `-c`
+    (프로필 전용 model_provider 등)는 조회가 모를 수 있어 넘기지 않는다."""
+    out = [x for _, _, v in browser.config_items(args) if browser.key_of(v).startswith("features.") for x in ("-c", v)]
     k = 0
     while k < len(args):
         a = args[k]
@@ -67,13 +68,17 @@ def feature_args(args: list[str]) -> list[str]:
     return out
 
 
-def preflight(args: list[str] = ()) -> None:
-    """codex 와 image_generation 기능(설계 12장). 없으면 exit 12. args 는 실행에 쓸 Codex 인자다(기능 조회에 반영한다)."""
+def preflight(args: list[str] = ()) -> str | None:
+    """codex 와 image_generation 기능(설계 12장). 없으면 exit 12. args 는 실행에 쓸 Codex 인자다(기능 조회에 반영한다).
+    `codex features list` 는 프로필(`-p`)을 받지 않는다(--help). args 에 프로필이 있으면 조회가 실행과 다른 설정을 읽으므로
+    기능 확인을 건너뛰고 경고를 낸다(막지 않는다. 안 되면 실행 결과로 드러난다)."""
     if not shutil.which("codex"):
         raise HteamError("codex_missing", "codex 가 PATH 에 없다", MISSING, "hteam doctor 로 점검한다")
     if not os.access(WRAPPER, os.X_OK):
         raise HteamError("wrapper_missing", f"Codex 래퍼가 없거나 실행할 수 없다: {WRAPPER}", MISSING,
                          "플러그인 설치가 깨졌다. herdr-team 을 다시 설치한다")
+    if browser.has_profile(list(args)):
+        return "프로필이 있어 image_generation 사전 확인을 건너뛰었다(`codex features list` 는 프로필을 받지 않는다)"
     try:
         proc = subprocess.run(["codex", "features", "list", *feature_args(list(args))], capture_output=True, text=True, timeout=30,
                               stdin=subprocess.DEVNULL)
@@ -83,6 +88,7 @@ def preflight(args: list[str] = ()) -> None:
     if proc.returncode != 0 or not row or row[-1] != "true":
         raise HteamError("no_image_generation", "Codex 의 image_generation 기능이 꺼져 있다", MISSING,
                          "사용자가 `codex features enable image_generation` 으로 켠다(시험 생성은 하지 않는다)")
+    return None
 
 
 def slug(prompt: str) -> str:
@@ -529,7 +535,7 @@ def image(p, prompt: str, *, n: int, out: str, ar: str | None, transparent: bool
     folder = out_folder(p, out)
     cfg = config.load(p)
     args, dropped = split_args(cfg.args("codex"))
-    preflight(args)
+    skipped = preflight(args)
     try:
         folder.mkdir(parents=True, exist_ok=True)
         dfd = open_out(folder)
@@ -537,7 +543,7 @@ def image(p, prompt: str, *, n: int, out: str, ar: str | None, transparent: bool
         raise HteamError("usage", f"--out 폴더를 만들거나 열 수 없다: {exc}", USAGE) from None
     try:
         extra, warning = browser.user_off(p.root, args)  # 사용자 chrome-devtools 를 이미지 실행에서만 끈다(조회 실패·프로필이면 경고만)
-        notes = [warning] if warning else []
+        notes = [w for w in (skipped, warning) if w]
         if dropped:
             notes.append("이미지 실행(codex exec)이 받지 않거나 이미지가 직접 정하는 인자를 뺐다: " + ", ".join(dropped))
         refs = [str(Path(r).resolve()) for r in refs]
