@@ -535,10 +535,19 @@ def _awaiting(cfg, st: dict, appr: dict | None) -> tuple[list[str] | None, str |
         names = ", ".join(b["task"] for b in appr["blockers"])
         return None, f"승인 직무 태스크 {names} 가 accept 로 awaiting_user 가 되면 함께 묻는다(그때 design-review)"
     if appr.get("supplement"):  # design-review 는 exit 3 supplement_needed 다(설계 11.4)
+        bad = [s for s in appr["supplement"] if s.get("error")]
+        if bad:  # 보고서를 읽지 못한다: design-review 는 exit 1 unreadable_report 로 멈춘다
+            return None, f"{bad[0]['error']}. 제안이 있는지 알 수 없어 묻지 않는다(보고서를 고치거나 메인에 알린다)"
         names = ", ".join(f"{s['task']} r{s['round']}" for s in appr["supplement"])
-        busy = ", ".join(f"{d['task']}({d['status']})" for d in appr.get("directors") or [])
-        first = (f"보강 중인 director 태스크 {busy} 가 끝나기를 기다린다. 끝나면" if busy else
-                 "디렉터 보강 태스크를 만들고(task new --role director), 끝나면")
+        dirs = appr.get("directors") or []
+        waiting = [d for d in dirs if d["status"] == "pending"]  # 만들어 두고 시작하지 않은 보강 태스크
+        busy = ", ".join(f"{d['task']}({d['status']})" for d in dirs if d["status"] != "pending")
+        if waiting and not busy:
+            first = (f"만들어 둔 보강 태스크 {', '.join(d['task'] for d in waiting)} 는 아직 시작하지 않았다. "
+                     "coordinator.md \"디자인 시스템 보강\" 3–4 를 마저 하고(UI 기반 의존 정리, 사양 커밋, hteam start), 끝나면")
+        else:
+            first = (f"보강 중인 director 태스크 {busy} 가 끝나기를 기다린다. 끝나면" if busy else
+                     "디렉터 보강 태스크를 만들고(task new --role director), 끝나면")
         return None, (f"시스템 추가 제안({names})이 있어 묻기 전에 디자인 시스템을 보강한다. {first} 제안한 태스크마다 "
                       f"{SHIM} fix <T> --supplement <보강 태스크>(coordinator.md \"디자인 시스템 보강\")")
     return H("design-review"), None

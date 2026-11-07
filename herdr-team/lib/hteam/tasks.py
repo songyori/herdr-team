@@ -580,8 +580,15 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
     cfg = config.load(p)
     spec = specs.check(p, cfg, tid)
     choice = config.resolve(cfg, spec.role, spec.front, cli)
+    followers: list[dict] = []
+    defer = False
     if supplement is not None:
         _check_supplement(p, supplement)
+        if not queue:
+            followers = _supplement_followers(p, cfg, tid, supplement)  # 바꾸기 전에 거부할 것을 모두 본다
+            # 선행 승인 태스크가 아직 다시 승인되지 않았으면(보강 라운드가 도는 중) 바로 띄우지 않고 대기로 둔다. 띄우면
+            # 선행의 옛 라운드를 basis 로 남겨 선행이 다시 승인된 뒤 approval_stale 이 된다(설계 11.4)
+            defer = cfg.is_approval(spec.role) and not deps_met(p, cfg, spec)
     h = Horch(p.horch_home)
 
     allowed_from = FIX_FROM + tuple(extra_from)
@@ -615,7 +622,10 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
         if not from_user and prior.get("from_user") and prior.get("note") and old != "awaiting_user":
             # 결정이 연 사용자 요청 라운드가 사용자에게 다시 보이지 못한 채 닫힌다(워커 실패, 리뷰 수정 요청 뒤 changes 등).
             # 그 요청을 그대로 잇고 코디네이터 메모는 따로 적는다(워커·리뷰어가 메모를 사용자 요청으로 읽지 않게)
-            note, coord_note, from_user = prior["note"], note, True
+            # 이미 그 라운드에 적힌 코디네이터 메모는 새 메모와 함께 잇는다(같은 메모는 쌓지 않는다)
+            kept = (prior["coord_note"].split(" / ") if prior.get("coord_note") else []) + ([note] if note else [])
+            coord_note = " / ".join(dict.fromkeys(kept)) if kept else None
+            note, from_user = prior["note"], True
         if supplement is None and prior.get("supplement") and old != "awaiting_user":
             # 보강 라운드가 다시 승인되지 못한 채 닫힌다(작업 실패, 리뷰 수정 요청 등). 끝나지 않은 보강을 잇는다
             # (수정 블록이 보강 결과를 계속 보이고, 다시 승인된 뒤 그 라운드의 제안을 보강 대상으로 보지 않는다)
@@ -628,7 +638,7 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
             # 마지막으로 실제 리뷰된 라운드의 판정(그 뒤 라운드는 띄우지 않았거나 판정 전에 닫혔다). 수정 요청이면 그 지적도
             # 다루게 한다
             rd["prior_verdict"], rd["prior_review_round"] = _last_review(st)
-        if queue:
+        if queue or defer:
             rd["queued"] = True
         text = compose.work_spec(p, cfg, spec, rd, owns)
         st["rounds"].append(rd)
@@ -636,11 +646,58 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
         st["owns"] = owns
         st["note"] = note
         _begin(p, st, rd, text, "fix", previous=old, force_round=force_round)
-    if queue:  # 띄우지 않는다. start-ready 의 의존 검사가 선행이 다시 승인된 뒤에 띄운다(설계 11.4)
-        return {"task": tid, "round": rd["round"], "status": "launch_failed", "queued": True,
+    fixed = _queue_followers(p, followers, supplement, tid) if followers else []
+    if queue or defer:  # 띄우지 않는다. start-ready 의 의존 검사가 선행이 다시 승인된 뒤에 띄운다(설계 11.4)
+        return {"task": tid, "round": rd["round"], "status": "launch_failed", "queued": True, "followers": fixed,
                 "next": [SHIM, "start-ready"],
                 "hint": "수정 라운드를 만들었다. start-ready 가 선행이 끝난(승인 직무는 awaiting_user) 뒤에 띄운다"}
-    return run_work(p, cfg, h, tid)
+    res = run_work(p, cfg, h, tid)
+    if fixed:
+        res["followers"] = fixed
+    return res
+
+
+def _supplement_followers(p, cfg, tid: str, sup: str) -> list[dict]:
+    """`fix --supplement` 가 고치는 태스크 tid 에 직간접으로 의존하는 승인 직무 태스크 가운데 보강 라운드를 대기로 만들 것
+    (일괄 승인 결정이 의존 태스크를 함께 고치는 것과 같다, 설계 11.4). 선행이 새 라운드를 열면 이 태스크들은 옛 선행을 보고 만든
+    것이라 그대로 두면 approval_stale 이 된다. 아직 시작하지 않은(pending)·끝난 태스크와 이미 그 보강의 대기 라운드가 있는
+    태스크는 건너뛴다(중복 없음). 끝나지 않은 결정이 고치는 태스크는 아무것도 바꾸기 전에 exit 3 으로 거부한다. 진행 중이거나
+    리뷰 중인 태스크는 결정처럼 다시 만든다(옛 선행을 보고 만들었다)."""
+    from . import approval  # approval 이 tasks 를 쓴다. 불러오는 순서가 꼬이지 않게 여기서 가져온다
+    graph = approval.Graph(p)
+    found = []
+    for other in sorted(set(specs.list_ids(p)) | {s["id"] for s in state.all_states(p)}, key=state.id_number):
+        if other == tid or tid not in graph.ancestors(other) or not cfg.is_approval(graph.role(other)):
+            continue
+        st = state.load(p, other)
+        if st is None or st["status"] == "pending" or st["status"] in state.CLOSED:
+            continue
+        rd = state.current_round(st) or {}
+        if rd.get("supplement") == sup and approval.unlaunched(st):
+            continue  # 이미 이 보강의 대기 라운드가 있다
+        held = approval.held_by_decision(p, other)
+        if held:
+            raise approval._decision_pending({"id": held})
+        found.append({"task": other, "round": st["round"]})
+    return found
+
+
+def _queue_followers(p, followers: list[dict], sup: str, tid: str) -> list[dict]:
+    """_supplement_followers 가 고른 태스크마다 보강 라운드를 대기(queued)로 만든다. 선행 tid 의 새 라운드가 다시 승인되면
+    start-ready 가 띄우고 그때 basis 가 선행의 새 라운드를 적는다."""
+    from . import approval  # approval 이 tasks 를 쓴다. 불러오는 순서가 꼬이지 않게 여기서 가져온다
+    note = f"선행 {tid} 가 디렉터 보강 {sup} 를 반영해 고쳐졌다. 이 화면도 그 결과를 반영한다"
+    done = []
+    for f in followers:
+        try:
+            res = fix(p, f["task"], note=note, supplement=sup, force_round=True, cli={}, expect_round=f["round"], queue=True,
+                      extra_from=approval.DEPENDENT_FROM)
+        except HteamError as exc:
+            if exc.code not in ("round_changed", "task_closed"):
+                raise
+            continue
+        done.append({"task": f["task"], "round": res["round"]})
+    return done
 
 
 def _check_supplement(p, sup: str) -> None:
@@ -652,6 +709,9 @@ def _check_supplement(p, sup: str) -> None:
     if role != "director":
         raise HteamError("bad_supplement", f"--supplement {sup} 는 {role} 태스크다(디렉터 보강 태스크만 준다)", USAGE)
     st = state.load(p, sup)
+    if st is not None and st["status"] == "dropped":
+        raise HteamError("supplement_not_done", f"보강 태스크 {sup} 는 버려졌다(dropped). 끝난 보강 태스크만 받는다", CONFLICT,
+                         "새 보강 태스크를 만들어 done 이 된 뒤 fix --supplement 한다")
     if st is None or st["status"] != "done":
         raise HteamError("supplement_not_done", f"보강 태스크 {sup} 가 아직 끝나지 않았다({(st or {}).get('status', '상태 없음')})",
                          CONFLICT, "보강 태스크를 accept 해 done 이 된 뒤 fix --supplement 한다")

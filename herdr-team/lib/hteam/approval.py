@@ -238,11 +238,16 @@ _NONE = re.compile(r"[-*\s]*없음[.。]?\s*")
 
 def proposals(p, st: dict) -> str | None:
     """designer 보고서의 지금 라운드 절(`## rN`)에 있는 시스템 추가 제안(설계 11.2·11.4). `### 시스템 추가 제안` 소절,
-    없으면 2단계 형식의 `- 시스템 추가 제안: …` 줄. 비었거나 "없음" 이면 None. 보고서를 읽지 못해도 None."""
+    없으면 2단계 형식의 `- 시스템 추가 제안: …` 줄. 비었거나 "없음" 이면 None. 보고서가 없으면 None 이고, 있는데 읽지
+    못하면 exit 1 `unreadable_report` 다(읽지 못한 것을 제안 없음으로 보고 묻지 않는다: fail-closed)."""
+    path = p.root / report_rel(st["id"])
     try:
-        text = (p.root / report_rel(st["id"])).read_text(encoding="utf-8")
-    except (OSError, ValueError):
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
         return None
+    except (OSError, ValueError) as exc:
+        raise HteamError("unreadable_report", f"{st['id']} 보고서 `{report_rel(st['id'])}` 를 읽지 못했다: {exc}", FAIL,
+                         "보고서를 고치거나 메인에 알린다. 제안이 있는지 알 수 없어 묻지 않는다") from None
     lines = text.splitlines()
     head = re.compile(rf"## r{st['round']}(?!\d)")
     start = next((i for i, line in enumerate(lines) if head.match(line)), None)
@@ -277,7 +282,13 @@ def supplement_needed(p, cfg, sts: list[dict]) -> list[dict]:
     found = []
     for st in sts:
         rd = state.current_round(st) or {}
-        text = proposals(p, st) if st.get("role") == "designer" and not rd.get("supplement") else None
+        if st.get("role") != "designer" or rd.get("supplement"):
+            continue
+        try:
+            text = proposals(p, st)
+        except HteamError as exc:  # 읽지 못한 보고서는 제안이 있을 수 있다. design-review 가 exit 1 로 멈춘다
+            found.append({"task": st["id"], "round": st["round"], "proposal": None, "error": exc.message})
+            continue
         if text:
             found.append({"task": st["id"], "round": st["round"], "proposal": text})
     return found
@@ -468,6 +479,11 @@ def design_review(p) -> dict:
             raise HteamError("approval_not_ready", f"진행 중이거나 지금 시작할 수 있는 승인 직무 태스크가 있다: {names}",
                              CONFLICT, "시작할 수 있으면 start-ready 를 먼저 한다. 그 태스크들이 accept 로 awaiting_user 가 "
                              "된 뒤 다시 부른다", data={"blockers": v["blockers"]})
+        unreadable = [s for s in v["supplement"] if s.get("error")]
+        if unreadable:  # 보고서를 읽지 못해 제안이 있는지 모른다(fail-closed)
+            raise HteamError("unreadable_report", "; ".join(s["error"] for s in unreadable), FAIL,
+                             "보고서를 고치거나 메인에 알린다. 제안이 있는지 알 수 없어 묻지 않는다",
+                             data={"unreadable": unreadable})
         if v["supplement"]:  # 묻기 전에 디렉터 보강(설계 11.4). 보강 라운드가 다시 승인되면 그때 함께 묻는다
             names = ", ".join(f"{s['task']} r{s['round']}" for s in v["supplement"])
             raise HteamError("supplement_needed", f"시스템 추가 제안이 있어 디렉터 보강이 먼저다: {names}", CONFLICT,

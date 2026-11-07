@@ -876,6 +876,24 @@ class ApprovalFollowupTest(DecisionCase):
         self.assertIn("코디네이터 메모: 이전 워커가 done 없이 끝남\n", work)
         self.assertNotIn("사용자 요청: 이전 워커", work)
 
+    def test_repeated_plain_fix_keeps_earlier_coordinator_notes(self):
+        # 같은 사용자 요청 라운드를 일반 fix 로 또 닫아도 앞 코디네이터 메모를 버리지 않는다(같은 메모는 쌓지 않는다)
+        self.task("T-001", "awaiting_user")
+        self.review()
+        self.assertEqual(self.decide("out-0001", {"T-001": "버튼을 크게"})[0], 0)
+        self.move("T-001", "working")
+        self.assertEqual(self.hteam("fix", "T-001", "--note=워커가 끝남")[0], 0)
+        self.move("T-001", "working")
+        self.assertEqual(self.hteam("fix", "T-001", "--force-round", "--note=리뷰 지적: 배지")[0], 0)
+        rd = self.task_state("T-001")["rounds"][-1]
+        self.assertEqual((rd["note"], rd["coord_note"]), ("버튼을 크게", "워커가 끝남 / 리뷰 지적: 배지"))
+        self.move("T-001", "working")
+        self.assertEqual(self.hteam("fix", "T-001", "--force-round", "--note=워커가 끝남")[0], 0)
+        self.assertEqual(self.task_state("T-001")["rounds"][-1]["coord_note"], "워커가 끝남 / 리뷰 지적: 배지")
+        self.move("T-001", "working")
+        self.assertEqual(self.hteam("fix", "T-001", "--force-round")[0], 0)  # 새 메모가 없어도 앞 메모는 남는다
+        self.assertEqual(self.task_state("T-001")["rounds"][-1]["coord_note"], "워커가 끝남 / 리뷰 지적: 배지")
+
 
 DIRECTOR_CONFIG = APPROVAL + """
 [roles.director]
@@ -953,6 +971,123 @@ class SupplementTest(DecisionCase):
         code, out = self.hteam("fix", "T-001", "--note=사용자와 다시 본다")  # awaiting_user 뒤의 새 수정은 잇지 않는다
         self.assertEqual((code, out["round"]), (0, 4), out)
         self.assertIsNone(self.task_state("T-001")["rounds"][-1]["supplement"])
+
+    def screens(self, *, c="awaiting_user"):
+        """T-001 ← T-002 ← T-003(간접), 끝난 디렉터 보강 태스크 T-009."""
+        self.task("T-001", "awaiting_user", title="목록")
+        self.task("T-002", "awaiting_user", depends="T-001", title="상세")
+        self.task("T-003", c, depends="T-002", title="통계")
+        self.task("T-009", "done", role="director")
+
+    def settle(self, tid):
+        """start-ready 로 띄운 수정 라운드가 리뷰를 거쳐 다시 승인됐다."""
+        self.move(tid, "awaiting_user")
+
+    def test_supplement_also_queues_dependent_screens(self):
+        # 사용자 결정: 보강 의존은 결정처럼 대기 라운드. 선행이 보강으로 새 라운드를 열면 의존 승인 태스크(간접 포함)도 보강
+        # 라운드를 대기로 만든다. 그대로 두면 옛 선행을 보고 만든 라운드라 approval_stale 이 된다
+        self.screens()
+        self.task("T-004", "pending", depends="T-003", title="설정")  # 시작하지 않은 의존 태스크는 건드리지 않는다
+        code, out = self.hteam("fix", "T-001", "--supplement", "T-009", "--note=진한 강조색")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["followers"], [{"task": "T-002", "round": 2}, {"task": "T-003", "round": 2}])
+        self.assertEqual(self.rounds("T-001", "T-004"), [("T-001", "working", 2), ("T-004", "pending", 0)])
+        for tid in ("T-002", "T-003"):
+            st = self.task_state(tid)
+            rd = st["rounds"][-1]
+            self.assertEqual((st["status"], rd["supplement"], rd.get("queued"), rd["work"].get("launched")),
+                             ("launch_failed", "T-009", True, None), tid)
+        self.assertIn("디렉터 보강 태스크 T-009 의 결과", self.work("T-002"))
+        self.assertEqual(self.hteam("start-ready")[1]["started"], [])  # 선행이 아직 다시 승인되지 않았다
+        self.settle("T-001")
+        code, out = self.hteam("start-ready")
+        self.assertEqual([s["task"] for s in out["started"]], ["T-002"], out)  # T-003 은 T-002 가 다시 승인된 뒤
+        self.assertEqual(self.task_state("T-002")["rounds"][-1]["basis"], {"T-001": 2})
+        self.settle("T-002")
+        self.assertEqual([s["task"] for s in self.hteam("start-ready")[1]["started"]], ["T-003"])
+        self.assertEqual(self.task_state("T-003")["rounds"][-1]["basis"], {"T-001": 2, "T-002": 2})
+        self.settle("T-003")
+        self.assertEqual([s["task"] for s in self.hteam("start-ready")[1]["started"]], ["T-004"])  # 처음 시작한다
+        self.settle("T-004")
+        self.assertEqual(approval.stale(self.p, config.load(self.p), state.all_states(self.p)), {})
+        code, out = self.review()
+        self.assertEqual(code, 0, out)
+        self.assertEqual([t["task"] for t in out["tasks"]], ["T-001", "T-002", "T-003", "T-004"])
+
+    def test_direct_supplement_on_a_dependent_waits_for_its_predecessor(self):
+        # 둘 다 제안해 선행부터 fix --supplement 한다. 의존 화면은 이미 대기 라운드가 있고(중복 없음), 그 화면에 직접 한 fix
+        # 는 선행이 다시 승인되지 않았으니 바로 띄우지 않고 대기로 둔다
+        self.screens()
+        self.assertEqual(self.hteam("fix", "T-001", "--supplement", "T-009", "--note=A")[0], 0)
+        self.assertEqual(self.rounds("T-002", "T-003"), [("T-002", "launch_failed", 2), ("T-003", "launch_failed", 2)])
+        code, out = self.hteam("fix", "T-002", "--supplement", "T-009", "--note=상세의 제안")
+        self.assertEqual((code, out["round"], out["status"], out["queued"]), (0, 3, "launch_failed", True), out)
+        self.assertEqual(self.task_state("T-002")["rounds"][-1]["supplement"], "T-009")
+        self.assertIn("상세의 제안", self.work("T-002"))
+        self.assertEqual(self.task_state("T-003")["round"], 2)  # 간접 의존 화면의 대기 라운드를 다시 만들지 않는다
+        self.assertEqual(self.hteam("start-ready")[1]["started"], [])
+        self.settle("T-001")
+        self.assertEqual([s["task"] for s in self.hteam("start-ready")[1]["started"]], ["T-002"])
+        self.assertEqual(self.task_state("T-002")["rounds"][-1]["basis"], {"T-001": 2})
+        self.settle("T-002")
+        self.hteam("start-ready")
+        self.settle("T-003")
+        code, out = self.review()
+        self.assertEqual(code, 0, out)
+
+    def test_supplement_followers_are_refused_before_anything_changes_when_held(self):
+        self.screens()
+        self.review()  # out-0001 이 세 화면을 묻는다
+        code, _ = self.decide("out-0001", {"T-002": "x"}, env={"HTEAM_TEST_DIE_AT": "decision_recorded"})
+        self.assertEqual(code, 137)  # 결정이 기록만 되고 끝나지 않았다(T-002 와 T-003 을 고칠 예정)
+        code, out = self.hteam("fix", "T-001", "--supplement", "T-009")
+        self.assertEqual((code, out["error"]["code"]), (3, "decision_pending"), out)
+        self.assertEqual(self.task_state("T-001")["round"], 1)  # 아무것도 바꾸지 않았다
+
+    def test_unreadable_report_stops_design_review(self):
+        self.task("T-001", "awaiting_user")
+        (self.proj / "docs/tasks/T-001/report.md").mkdir(parents=True)  # 파일이 아니라 폴더라 읽지 못한다
+        code, out = self.review()
+        self.assertEqual((code, out["error"]["code"]), (1, "unreadable_report"), out)
+        self.assertEqual(self.outbox_items(), [])  # 제안이 있는지 모르니 묻지 않는다
+        self.assertIn("읽지 못했다", self.hints()["T-001"]["hint"])
+
+    def test_supplement_task_not_started_gets_a_pointer_in_the_hint(self):
+        self.task("T-001", "awaiting_user")
+        self.report("T-001", "## r1\n### 시스템 추가 제안\n- 진한 강조색\n")
+        self.task("T-005", "pending", role="director")  # 만들어 두고 시작하지 않았다
+        hint = self.hints()["T-001"]["hint"]
+        self.assertIn("T-005 는 아직 시작하지 않았다", hint)
+        self.assertIn("3–4 를 마저 하고", hint)
+
+    def test_dropped_supplement_task_is_not_called_unfinished(self):
+        self.task("T-001", "awaiting_user")
+        self.task("T-005", "dropped", role="director")
+        code, out = self.hteam("fix", "T-001", "--supplement", "T-005")
+        self.assertEqual((code, out["error"]["code"]), (3, "supplement_not_done"), out)
+        self.assertIn("버려졌다", out["error"]["message"])
+        self.assertNotIn("아직 끝나지 않았다", out["error"]["message"])
+
+    def test_plain_fix_keeps_the_supplement_from_working_and_launch_failed(self):
+        self.task("T-001", "awaiting_user")
+        self.task("T-005", "done", role="director")
+        self.assertEqual(self.hteam("fix", "T-001", "--supplement", "T-005")[1]["round"], 2)
+        for status, want in (("working", 3), ("launch_failed", 4)):
+            self.move("T-001", status)
+            code, out = self.hteam("fix", "T-001", "--force-round", "--note=다시")
+            self.assertEqual((code, out["round"]), (0, want), out)
+            self.assertEqual(self.task_state("T-001")["rounds"][-1]["supplement"], "T-005", status)
+
+    def test_blockers_come_before_supplement_and_only_approval_roles_need_it(self):
+        self.task("T-001", "awaiting_user")
+        self.report("T-001", "## r1\n### 시스템 추가 제안\n- 진한 강조색\n")
+        self.task("T-002", "working")  # 아직 진행 중인 승인 직무 태스크
+        code, out = self.review()
+        self.assertEqual((code, out["error"]["code"]), (3, "approval_not_ready"), out)
+        self.task("T-006", "awaiting_user", role="developer")
+        self.report("T-006", "## r1\n### 시스템 추가 제안\n- 진한 강조색\n")
+        got = approval.supplement_needed(self.p, config.load(self.p), [self.task_state("T-006")])
+        self.assertEqual(got, [])  # designer 가 아니면 보강 대상이 아니다
 
     def test_supplement_must_be_a_director_task(self):
         self.task("T-001", "awaiting_user")
