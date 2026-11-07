@@ -246,9 +246,15 @@ def annotate(p, m: dict, rows: list[dict] | None, horch_cmd: str, *, cfg=_LOAD,
         elif kind == "error":
             if cfg is _LOAD:
                 cfg = _config(p)
-            again, why = _fix(cfg, tid, loc["round"], "워커 오류") if work else (None, None)
-            tail = f"`{SHIM} fix {tid}`" if again else (why or "메인에 묻는다")
-            info["hint"] = f"`{horch_cmd} worker-show --dispatch {did} --lines 80` 으로 보고 send 로 이어가거나 {tail}"
+            again, limit_why = _fix(cfg, tid, loc["round"], "워커 오류") if work else (None, None)
+            # 복구 안내(worker-show·send)는 늘 유지한다. 라운드 상한이면 fix 대신 그 까닭을 덧붙인다(why 에 넣지 않는다:
+            # 함수 끝 공통 분기가 hint 를 상한 안내로 덮는다)
+            if again or not work:
+                tail = f"`{SHIM} fix {tid}`" if work else "메인에 묻는다"
+                info["hint"] = f"`{horch_cmd} worker-show --dispatch {did} --lines 80` 으로 보고 send 로 이어가거나 {tail}"
+            else:
+                info["hint"] = (f"`{horch_cmd} worker-show --dispatch {did} --lines 80` 으로 보고 send 로 이어간다. "
+                                f"{limit_why}")
         elif kind == "blocked":
             info["hint"] = (f"`{horch_cmd} worker-show --dispatch {did} --lines 80` 으로 화면을 보고 메인에 질문으로 "
                             "올린다. 키를 누르지 않는다")
@@ -296,6 +302,8 @@ def attention(p, rows: list[dict], grace: float, *, states: list[dict] | None = 
     현재 시도 Dispatch 만 본다.
 
     state/attention.json = {"reported": {Dispatch: 알린 단어}, "since": {Dispatch: no_status 를 센 시작 시각(epoch)}}.
+    state/attention.json 의 "ok" 는 정상(no_status 아님)으로 본 Dispatch 다. 그 뒤 다시 no_status 가 되면 생성 시각이 아니라
+    그때부터 센다(생성 시각은 처음 관측일 때만 쓴다).
     한 번 알린 것은 다시 알리지 않는다. reported 는 지금 보는 Dispatch(끝나지 않은 태스크의 현재 라운드·시도)만 남긴다
     (끝난 Dispatch 가 쌓이지 않게. 다시 볼 일이 없다). no_status 는 Dispatch 를 만든 시각(worker-list 의 created_at)부터
     센다(처음 본 시각부터 세면 wait 이 늦게 돌면 최악 2배를 기다린다). 그 시각을 읽지 못하면 처음 본 시각이다. 시각을
@@ -308,7 +316,8 @@ def attention(p, rows: list[dict], grace: float, *, states: list[dict] | None = 
     with flock(p.state / "attention.lock"):
         data = _dict(read_json(p.attention, {}))
         reported, since = dict(_dict(data.get("reported"))), dict(_dict(data.get("since")))
-        before = (dict(reported), dict(since))
+        ok = set(d for d in (data.get("ok") if isinstance(data.get("ok"), list) else []) if isinstance(d, str))
+        before = (dict(reported), dict(since), set(ok))
         now = time.time()
         watching, current = set(), set()
         for st in states:
@@ -318,6 +327,8 @@ def attention(p, rows: list[dict], grace: float, *, states: list[dict] | None = 
                     continue
                 did, word = row["id"], row.get("attention")
                 current.add(did)
+                if word != "no_status":
+                    ok.add(did)
                 if word not in ("no_status", "launch_failed") or reported.get(did) == word:
                     continue
                 if word == "no_status":
@@ -325,7 +336,8 @@ def attention(p, rows: list[dict], grace: float, *, states: list[dict] | None = 
                     first = since.get(did)
                     if not isinstance(first, (int, float)):
                         age = age_seconds(row.get("created_at"))
-                        first = since[did] = now - age if age is not None and age > 0 else now
+                        fresh = age is not None and age > 0 and did not in ok
+                        first = since[did] = now - age if fresh else now
                     if now - first < grace:
                         continue
                     hint = (f"시작 확인 창에서 멈췄을 수 있다. `{horch_cmd} worker-show --dispatch {did} --lines 80` 으로 "
@@ -340,8 +352,9 @@ def attention(p, rows: list[dict], grace: float, *, states: list[dict] | None = 
                 reported[did] = word
         since = {d: at for d, at in since.items() if d in watching}
         reported = {d: w for d, w in reported.items() if d in current}
-        if (reported, since) != before:
-            write_json(p.attention, {"reported": reported, "since": since})
+        ok &= current
+        if (reported, since, ok) != before:
+            write_json(p.attention, {"reported": reported, "since": since, "ok": sorted(ok)})
     return found
 
 

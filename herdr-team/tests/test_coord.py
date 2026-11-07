@@ -120,6 +120,23 @@ class WaitTest(CoordCase):
         out = self.wait(timeout="1")
         self.assertEqual((out["reason"], out["attention"][0]["dispatch"]), ("attention", did), out)
 
+    def test_no_status_reentry_counts_from_now(self):
+        # no_status → 정상 → no_status: 정상을 본 뒤 다시 들어오면 생성 시각이 아니라 지금부터 센다
+        import time
+        from unittest import mock
+        from hteam import coord
+        self.started()
+        old = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 120))
+        row = {"id": "dsp-x", "attention": "no_status", "created_at": old}
+        states = state.all_states(self.p)
+        with mock.patch.object(coord.dispatch, "slot_row", lambda rows, slot: row):
+            run = lambda: coord.attention(self.p, [], 60, states=states)
+            row["attention"] = None
+            self.assertEqual(run(), [])  # 정상을 봤다
+            row["attention"] = "no_status"
+            self.assertEqual(run(), [])  # 생성 120초 전이어도 다시 들어왔으니 지금부터 센다
+            self.assertEqual(json.loads((self.state_dir / "attention.json").read_text())["reported"], {})
+
     def test_reported_keeps_only_current_dispatches(self):
         self.started()
         did = self.work_dispatch("T-001")
@@ -141,6 +158,10 @@ class WaitTest(CoordCase):
         hint = coord.annotate(self.p, msg, [], "HORCH", cfg=config.load(self.p))["hteam"]["hint"]
         self.assertNotIn("hteam fix T-001`", hint)
         self.assertIn("max_rounds(1) 에 닿았다", hint)
+        self.assertIn("worker-show --dispatch", hint)  # 기존 워커 복구 안내는 유지한다
+        self.assertIn("send 로 이어간다", hint)
+        out = coord.annotate(self.p, msg, [], "HORCH", cfg=config.load(self.p))["hteam"]
+        self.assertEqual(out.get("next"), None)
         # 이어 붙인 작업 워커의 next 도 같은 판정(tasks.fix_next)이다
         self.assertIs(coord._fix, tasks.fix_next)
         nxt, why = tasks._adopted_next(config.load(self.p), "T-001", 1,
