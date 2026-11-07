@@ -47,7 +47,7 @@ def defines(args: list[str]) -> bool:
     """args 의 `-c`·`--config` 값에 hteam-browser 정의(`mcp_servers.hteam-browser=…` 또는 `mcp_servers.hteam-browser.…`)가
     있나(config_items)."""
     for _, _, v in config_items(args):
-        key = "".join(v.split("=", 1)[0].split())  # TOML 은 `key = value`·`a . b` 의 공백도 같은 키로 읽는다
+        key = v.split("=", 1)[0].strip()  # codex 는 `key = value` 의 앞뒤 공백만 같은 키로 읽는다(안쪽 공백은 다른 키)
         if key == BROWSER_KEY or key.startswith(BROWSER_KEY + "."):
             return True
     return False

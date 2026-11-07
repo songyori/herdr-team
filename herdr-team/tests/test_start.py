@@ -367,8 +367,11 @@ class BrowserOffTest(StartCase):
 
     def test_defines_normalizes_key_whitespace(self):
         spaced = self.DEFINE.replace("hteam-browser=", "hteam-browser = ")
-        for a in (["-c", spaced], ["-c", "mcp_servers.hteam-browser .command=\"npx\""], ["--config=" + spaced]):
+        for a in (["-c", spaced], ["-c", " " + self.DEFINE], ["--config=" + spaced]):
             self.assertTrue(browser.defines(a), a)
+        # Codex 2e6021b: 키 안쪽 공백은 codex 가 다른 키로 읽는다(정의가 아니다). 앞뒤 공백만 정규화한다
+        for a in (["-c", "mcp_servers . hteam-browser={command=\"npx\"}"], ["-c", "mcp_servers.hteam-browser .command=\"npx\""]):
+            self.assertFalse(browser.defines(a), a)
         self.assertFalse(browser.defines(["-c", "mcp_servers.hteam-browser2={}"]))
         self.assertEqual(browser.user_off(self.proj, ["--profile", "x"])[0], [])
 
