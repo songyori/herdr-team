@@ -222,7 +222,7 @@ def annotate(p, m: dict, rows: list[dict] | None, horch_cmd: str, *, cfg=_LOAD,
     resume = H("start", tid) if work else H("review", tid)
     t = m.get("type")
     nxt, why = None, None
-    err_recover = None  # 라운드 상한이어도 남기는 복구 안내(error): 상한 사유를 그 뒤에 덧붙인다
+    err_recover = None  # error 의 복구 안내: 상한이면 상한 사유를 그 뒤에 덧붙인다
     if t == "worker_done":
         if recover:
             nxt = resume
@@ -252,14 +252,14 @@ def annotate(p, m: dict, rows: list[dict] | None, horch_cmd: str, *, cfg=_LOAD,
             if cfg is _LOAD:
                 cfg = _config(p)
             again, limit_why = _fix(cfg, tid, loc["round"], "워커 오류") if work else (None, None)
+            show = f"`{horch_cmd} worker-show --dispatch {did} --lines 80` 으로 보고"
             if again or not work:
                 tail = f"`{SHIM} fix {tid}`" if work else "메인에 묻는다"
-                info["hint"] = f"`{horch_cmd} worker-show --dispatch {did} --lines 80` 으로 보고 send 로 이어가거나 {tail}"
+                err_recover, why = f"{show} send 로 이어가거나 {tail}", ""
             else:
-                # 상한: 복구 안내(worker-show·send)는 유지하고 상한 사유를 덧붙인다. 아래 moved 검사를 거친다(이미 넘어간
-                # 태스크의 옛 error 는 ack 만 안내한다)
-                err_recover = f"`{horch_cmd} worker-show --dispatch {did} --lines 80` 으로 보고 send 로 이어간다."
-                why = limit_why
+                # 상한: 복구 안내(worker-show·send)는 유지하고 상한 사유를 덧붙인다
+                err_recover, why = f"{show} send 로 이어간다.", limit_why
+            # 어느 쪽이든 아래 moved 검사를 먼저 거친다(이미 넘어간 태스크의 옛 error 는 ack 만 안내한다)
         elif kind == "blocked":
             info["hint"] = (f"`{horch_cmd} worker-show --dispatch {did} --lines 80` 으로 화면을 보고 메인에 질문으로 "
                             "올린다. 키를 누르지 않는다")
@@ -279,7 +279,7 @@ def annotate(p, m: dict, rows: list[dict] | None, horch_cmd: str, *, cfg=_LOAD,
         elif nxt is not None:
             info["next"] = nxt
         else:
-            info["hint"] = f"{err_recover} {why}" if err_recover else why  # 라운드 상한: fix 대신 사용자에게 묻는다
+            info["hint"] = f"{err_recover} {why}".strip() if err_recover else why  # 라운드 상한: fix 대신 사용자에게 묻는다
     return {**m, "hteam": info}
 
 

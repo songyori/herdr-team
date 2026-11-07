@@ -239,6 +239,21 @@ class WaitTest(CoordCase):
         self.assertIsNone(nxt)
         self.assertEqual(why, "이어 붙인 작업 워커가 이미 실패로 끝났다. " + tasks.fix_next(config.load(self.p), "T-001", 1, "")[1])
 
+    def test_observed_error_below_cap_after_task_moved_only_acks(self):
+        # 상한 아래여도 이미 awaiting_user·reviewing 으로 넘어간 태스크의 옛 error 는 fix 를 권하지 않고 ack 만 안내한다
+        from hteam import config, coord, state
+        self.started()
+        did = self.work_dispatch("T-001")
+        msg = {"id": 1, "type": "observed", "body": json.dumps({"kind": "error", "dispatch": did})}
+        for status in ("awaiting_user", "reviewing"):
+            with state.edit(self.p, "T-001") as st:
+                st["status"] = status
+            out = coord.annotate(self.p, msg, [], "HORCH", cfg=config.load(self.p))["hteam"]
+            self.assertIn(f"이미 {status} 다", out["hint"])
+            self.assertNotIn("fix", out["hint"])
+            self.assertNotIn("send", out["hint"])
+            self.assertNotIn("next", out)
+
     def test_wait_is_coordinator_only(self):
         code, out = self.hteam("wait", "--timeout", "0.1", as_="main")
         self.assertEqual(code, 5)

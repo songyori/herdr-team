@@ -253,7 +253,7 @@ def proposals(p, st: dict) -> str | None:
         raise HteamError("unreadable_report", f"{st['id']} 보고서 `{report_rel(st['id'])}` 를 읽지 못했다: {exc}", FAIL,
                          "보고서를 고치거나 메인에 알린다. 제안이 있는지 알 수 없어 묻지 않는다") from None
     lines = text.splitlines()
-    head = re.compile(rf"## r{st['round']}(?!\d)")
+    head = re.compile(rf"## r{st['round']}(?!\d)", re.I)
     start = next((i for i, line in enumerate(lines) if head.match(line)), None)
     if start is None:
         return None
@@ -264,7 +264,7 @@ def proposals(p, st: dict) -> str | None:
         body.append(line)
     found = None
     for i, line in enumerate(body):
-        if line.strip() == _SUBSECTION:
+        if line.strip().startswith(_SUBSECTION):
             rest = []
             for more in body[i + 1:]:
                 if more.startswith(("## ", "### ")):

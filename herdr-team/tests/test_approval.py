@@ -1169,7 +1169,10 @@ class SupplementTest(DecisionCase):
                  ("## r10\n### 시스템 추가 제안\n- 다른 라운드\n", None),
                  ("## r1\n### 시스템 추가 제안\n- 간격 20px\n### 금지 목록 점검\n- 지켰다\n## r2\n### 시스템 추가 제안\n- r2\n",
                   "- 간격 20px"),
-                 ("## r2\n### 시스템 추가 제안\n- r2 것\n", None)]
+                 ("## r2\n### 시스템 추가 제안\n- r2 것\n", None),
+                 ("## r1\n### 시스템 추가 제안 (2건)\n- 간격 20px\n- 색\n", "- 간격 20px\n- 색"),  # 소절 제목 뒤 덧말
+                 ("## R1\n### 시스템 추가 제안\n- 간격 20px\n", "- 간격 20px"),  # 대소문자
+                 ("## r1\n### 시스템 추가 제안 (0건)\n없음\n", None)]  # 없음 은 정확히 일치만
         path = self.proj / "docs/tasks/T-001/report.md"
         path.parent.mkdir(parents=True)
         for text, want in cases:
