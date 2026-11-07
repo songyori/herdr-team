@@ -109,9 +109,13 @@ class ScanTest(unittest.TestCase):
                        '<div className={cn("border-l-4 pl-2", "border-blue-500")}>d</div>\n'  # 문자열 둘: 한 목록이 아니다
                        '<div className="border-l-4\n  border-blue-500">e</div>\n'
                        '<div class="px-2 from-indigo-500\n via-sky-500 to-purple-600">f</div>\n')
+        # 4줄(한 줄 두 요소)은 알려진 거짓 경고다: 한 줄 방식과 클래스 목록 방식을 함께 쓴다(설계 11.6). 5줄은 한 줄 방식.
         self.assertEqual(self.heads(rel), ["src/ui/Split.tsx:2: 파랑·보라 그라디언트",
+                                           "src/ui/Split.tsx:4: 파랑·보라 그라디언트",
+                                           "src/ui/Split.tsx:5: 왼쪽 강조 테두리",
                                            "src/ui/Split.tsx:6: 왼쪽 강조 테두리",
-                                           "src/ui/Split.tsx:8: 파랑·보라 그라디언트"])
+                                           "src/ui/Split.tsx:8: 파랑·보라 그라디언트",
+                                           "src/ui/Split.tsx:9: 파랑·보라 그라디언트"])  # 9줄: 한 줄 방식이 목록의 뒷줄을 또 본다
 
     def test_rgb_percent_channels_and_case(self):
         rel = self.put("src/ui/pct.css",
@@ -129,10 +133,15 @@ class ScanTest(unittest.TestCase):
                        'const c = `border-l-4 before:content-[\\`x\\`] border-blue-500`;\n'
                        '<i className={"from-blue-500 before:content-[\\"x\\"] to-violet-600"}>y</i>\n'
                        'x = cn(`border-l-4 \\\n border-blue-500`)\n'
-                       '<div class="icon-\\"></div>\n<div class="border-l-4 border-blue-500">z</div>\n')
+                       '<div class="icon-\\"></div>\n<div class="border-l-4 border-blue-500">z</div>\n'
+                       'const className = "border-l-4 before:content-[\\"x\\"] border-blue-500";\n'
+                       'el.className = "border-l-4 before:content-[\\"x\\"] border-blue-500";\n'
+                       "<p>Don't <span className={'border-l-4 border-blue-500'}>x</span></p>\n")
         self.assertEqual(self.heads(rel), ["src/ui/Esc.tsx:1: 왼쪽 강조 테두리", "src/ui/Esc.tsx:2: 왼쪽 강조 테두리",
                                            "src/ui/Esc.tsx:3: 왼쪽 강조 테두리", "src/ui/Esc.tsx:4: 파랑·보라 그라디언트",
-                                           "src/ui/Esc.tsx:5: 왼쪽 강조 테두리", "src/ui/Esc.tsx:8: 왼쪽 강조 테두리"])
+                                           "src/ui/Esc.tsx:5: 왼쪽 강조 테두리", "src/ui/Esc.tsx:8: 왼쪽 강조 테두리",
+                                           "src/ui/Esc.tsx:9: 왼쪽 강조 테두리", "src/ui/Esc.tsx:10: 왼쪽 강조 테두리",
+                                           "src/ui/Esc.tsx:11: 왼쪽 강조 테두리"])
 
     def test_many_string_literals_stay_fast(self):
         import json

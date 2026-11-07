@@ -92,7 +92,7 @@ def _invisible(value: str) -> bool:
 def left_border(line: str) -> bool:
     """2px 이상의 보이는 왼쪽(시작 쪽) 강조 테두리가 있나: border-left·border-inline-start 선언(CSS, JSX 인라인
     스타일)에 2px 이상과 보이는 선(선 모양·색, 홀로 선 transparent·none·hidden 이 없다), 너비만 준 2px 이상의
-    border-left-width 류(JSX 는 숫자 2 이상도). 한 줄만 본다. Tailwind 는 클래스 목록 단위(tailwind_left_border)."""
+    border-left-width 류(JSX 는 숫자 2 이상도). 한 줄만 본다. Tailwind 는 tailwind_left_border."""
     for m in (*_LEFT_CSS.finditer(line), *_LEFT_JS.finditer(line)):
         value = m.group(1)
         if _px(value) >= 2 and _VISIBLE.search(value) and not _invisible(value):
@@ -113,24 +113,15 @@ def tailwind_left_border(classes: str) -> bool:
 
 
 def class_lists(text: str) -> list[tuple[int, str]]:
-    """(시작 위치, 클래스 목록 글) 들. class·className 속성 값(여러 줄 가능), @apply 문, 그 밖의 문자열 리터럴 순으로
-    찾고, 이미 찾은 자리와 겹치는 것은 버린다."""
-    starts: list[int] = []  # 차지한 자리들(서로 겹치지 않는다)의 시작·끝. 시작 순으로 정렬해 bisect 로 겹침을 본다
-    ends: list[int] = []
+    """(시작 위치, 클래스 목록 글) 들. class·className 속성 값(여러 줄 가능), @apply 문, 문자열 리터럴 매치를 모두 담는다.
+    서로 겹쳐도 버리지 않는다(후보마다 따로 검사하고 경고를 합친다)."""
     out: list[tuple[int, str]] = []
-    for rx, grp in ((_CLASS_ATTR, 2), (_APPLY, 1), (_LITERAL, 0)):
-        for m in rx.finditer(text):
-            i = bisect.bisect_right(starts, m.start())
-            if (i and ends[i - 1] > m.start()) or (i < len(starts) and starts[i] < m.end()):
-                continue
-            starts.insert(i, m.start())
-            ends.insert(i, m.end())
-            if grp:
-                out.append((m.start(grp), m.group(grp)))
-            else:
-                g = next(i for i in (1, 2, 3) if m.group(i) is not None)
-                out.append((m.start(g), m.group(g)))
-    return sorted(out)
+    for rx, grp in ((_CLASS_ATTR, 2), (_APPLY, 1)):
+        out += [(m.start(grp), m.group(grp)) for m in rx.finditer(text)]
+    for m in _LITERAL.finditer(text):
+        g = next(i for i in (1, 2, 3) if m.group(i) is not None)
+        out.append((m.start(g), m.group(g)))
+    return out
 
 
 def _rgb_hue(token: str) -> tuple[float, float, float] | None:
@@ -212,7 +203,10 @@ def scan(rel: str, text: str) -> list[str]:
             found.append((number, f"이모지({emoji.group(0)})"))
         if left_border(line):
             found.append((number, f"왼쪽 강조 테두리({_short(line)})"))
-    for pos, classes in class_lists(text):
+    # Tailwind 조합은 한 클래스 목록과 물리적 한 줄 둘 다에서 따로 본다. 한 줄에 다른 요소가 섞이면 거짓 경고가 날 수 있다.
+    lines = text.split("\n")
+    candidates = [(starts[n], line) for n, line in enumerate(lines)] + class_lists(text)
+    for pos, classes in candidates:
         if tailwind_left_border(classes):
             first = min(m.start() for m in _TW_WIDTH.finditer(classes))
             found.append((bisect.bisect_right(starts, pos + first), f"왼쪽 강조 테두리({_short(classes)})"))
@@ -225,7 +219,13 @@ def scan(rel: str, text: str) -> list[str]:
         if {"blue", "purple"} <= {hue_family(t) for t in _COLOR.findall(body)}:
             number = bisect.bisect_right(starts, m.start())
             found.append((number, f"파랑·보라 그라디언트({_short(m.group(0) + body + ')')})"))
-    return [f"{rel}:{number}: {what}" for number, what in sorted(found, key=lambda x: x[0])]
+    seen: set[tuple[int, str]] = set()  # (줄, 패턴 이름) 하나에 경고 하나
+    out = []
+    for number, what in sorted(found, key=lambda x: x[0]):
+        if (number, what.split("(", 1)[0]) not in seen:
+            seen.add((number, what.split("(", 1)[0]))
+            out.append(f"{rel}:{number}: {what}")
+    return out
 
 
 def design_lint(root: Path, files: list[str]) -> list[str]:
