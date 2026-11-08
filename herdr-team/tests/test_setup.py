@@ -408,6 +408,7 @@ class TemplateContractTest(unittest.TestCase):
                        "`hteam notify --type question --json - --test-confirm`", "`bad_test_approvals`", "`test_unapproved`",
                        "`hteam task new --role <그 직무> --title \"묶음 정리: <묶음 key>\" --owns", "tester 정리 태스크로 만든다",
                        "`<실패했던 테스트 하나를 직접 돌리는 정확한 명령>`", "\"`hteam test T-yyy` 가 통과한다\"",
+                       "확정한 `[test]` 가 있을 때만(`hteam status` 의 `test_gate.state` 가 `approved`) 넣는다",
                        "묶음 테스트(tester) 태스크였으면", "- developer: 구현. tester: 묶음 통합 테스트(묶음마다 하나), QA 보고서.",
                        "5. 모든 태스크가 `done` 또는 `dropped` 면 아래 \"마무리\" 를 한다."):
             self.assertIn(needle, coord)
