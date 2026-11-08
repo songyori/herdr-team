@@ -4,7 +4,7 @@
 
 **Goal:** 설계 15.3 의 4번을 만든다: orca-team 0.5.2(`setup-with-orca` 커밋 5974adc 로 고정)의 네 기능, 곧 문구 규칙(11.7), 디자인 규칙 확장과 리뷰 디자인 기준(11.5), 디자인 diff 자동 검사 designdiff(11.6), 코디네이터 자동 부활(9.5)을 herdr-team 에 옮긴다. 네 기능을 한 주기로 하고 병합 때 herdr-team 0.2.0 이다(herdr-orch 는 0.1.2 그대로). 실환경은 설계 15.2 의 4단계 둘만 본다(리뷰만, 자동 부활). main 병합은 계획 밖이다(컨트롤러가 한다).
 
-**Architecture:** 새 모듈 셋이다. `herdr-team/lib/hteam/textlint.py` 는 리뷰 대상 커밋이 추가한 줄에서 한국어 문구 규칙의 의심 위치를 찾고, `herdr-team/lib/hteam/designdiff.py` 는 같은 커밋의 지운 줄에서 줄어든 접근성·글자 신호와 추가한 줄의 확대 막기·대체 없는 포커스 제거를 찾는다. 둘 다 git 을 `gitio.diff_lines`(커밋마다 `diff-tree -p -U0`, 부모는 `commit_files` 와 같다)로만 읽고 결과는 경고다. `compose.review_prompt` 가 기준 → 디자인 절(designdiff 먼저, 기존 내용 검사 뒤, 합쳐 50건) → 문구 절(새 `templates/review-text.md`, `.herdr-team/text-rules.md` 가 있고 문구 대상이 바뀌었을 때) 순서로 붙이고, 검사마다 `compose.guarded` 로 감싸 하나가 실패해도 리뷰는 계속한다. 규칙 문구는 orca-team 템플릿을 정한 치환만 해서 옮긴다(`templates/text-rules.md` 새로, `templates/design-rules.md`·`review-design.md` 다시 씀). `herdr-team/lib/hteam/autoup.py` 는 메인 세션 훅(`session-start`·`role-mark`)이 늦게 가져와 부른다: 훅 시작 4초 규칙과 훅 시작 + 12초 마감 안에서 `herdr.probe`(3초)로 코디네이터를 판정하고, 확실히 죽었을 때만 `/bin/sh` 로 `<플러그인>/bin/hteam --root <루트> up` 을 분리 실행한다(두 번 띄우는 것은 기존 `up` 의 `run.json` 잠금이 막는다). 직무 문서(planner·director·designer·developer)·코디네이터 사용법·메인 규칙·up 스킬·설정 템플릿은 그 규칙을 따르도록 문구를 바꾼다.
+**Architecture:** 새 모듈 셋이다. `herdr-team/lib/hteam/textlint.py` 는 리뷰 대상 커밋이 추가한 줄에서 한국어 문구 규칙의 의심 위치를 찾고, `herdr-team/lib/hteam/designdiff.py` 는 같은 커밋의 지운 줄에서 줄어든 접근성·글자 신호와 추가한 줄의 확대 막기·대체 없는 포커스 제거를 찾는다. 둘 다 git 을 `gitio.diff_lines`(커밋마다 `diff-tree -p -U0`, 부모는 `commit_files` 와 같다)로만 읽고 결과는 경고다. `compose.review_prompt` 가 기준 → 디자인 절(designdiff 먼저, 기존 내용 검사 뒤, 합쳐 50건) → 문구 절(새 `templates/review-text.md`, `.herdr-team/text-rules.md` 가 있고 문구 대상이 바뀌었을 때) 순서로 붙이고, 검사마다(문구 대상 판정 포함) `compose.guarded` 로 감싸 하나가 실패해도 리뷰는 계속한다. 규칙 문구는 orca-team 템플릿을 정한 치환만 해서 옮긴다(`templates/text-rules.md` 새로, `templates/design-rules.md`·`review-design.md` 다시 씀). `herdr-team/lib/hteam/autoup.py` 는 메인 세션 훅(`session-start`·`role-mark`)이 늦게 가져와 부른다: 훅 시작 4초 규칙과 훅 시작 + 12초 마감 안에서 `herdr.probe`(3초)로 코디네이터를 판정하고, 확실히 죽었을 때만 `/bin/sh` 로 `<플러그인>/bin/hteam --root <루트> up` 을 분리 실행한다(두 번 띄우는 것은 기존 `up` 의 `run.json` 잠금이 막는다). 직무 문서(planner·director·designer·developer)·코디네이터 사용법·메인 규칙·up 스킬·설정 템플릿은 그 규칙을 따르도록 문구를 바꾼다.
 
 **Tech Stack:** Python 3.11+ 표준 라이브러리(re, collections.Counter, subprocess, tomllib, unittest, unittest.mock), git(`diff-tree -p -U0 --no-renames`, `:(top,literal)` pathspec), herdr-orch 0.1.2(`horch`, 바꾸지 않는다), herdr-core `hc`(테스트는 `herdr-orch/tests/fakes/hc` 의 `delay`·`fail`), herdr-app, Claude Code 훅(SessionStart·UserPromptSubmit, 제한 15초 그대로), Codex CLI(리뷰어, 실환경 (1)).
 
@@ -32,7 +32,7 @@
 - 저장소는 공개될 수 있다. 커밋 전에 `git grep -n -I -P '/[U]sers/|/private/[t]mp|~[/]Workspace' -- . ':!.codex-reviews'` 가 아무것도 찾지 않아야 한다. 템플릿·스킬은 `tests/test_setup.py` 의 `test_no_personal_paths_or_trust_all` 이 `/[h]ome/` 까지 본다.
 - 버전: herdr-team 은 Task 5 가 `0.1.0` → `0.2.0` 으로 올린다(`herdr-team/lib/hteam/paths.py` 의 `VERSION`, `herdr-team/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` 의 herdr-team 항목. `herdr-team/tests/test_cli.py` 의 `test_versions_match`). herdr-orch 는 `0.1.2` 그대로다(`herdr-orch/` 아래 파일을 바꾸지 않는다).
 - 작업 브랜치 `design/herdr-team-p4` 에서 한다. main 에 직접 커밋하지 않는다. main 병합은 이 계획 밖이다(컨트롤러가 한다).
-- 테스트: 저장소 루트에서 `bash herdr-team/tests/run.sh`(전체 10–12분)와 `bash herdr-orch/tests/run.sh`(1분). 태스크 중간에는 `-k` 로 고른다(`run.sh` 는 인자를 `unittest discover` 에 넘긴다. `-k` 는 여러 번 줄 수 있다). **전체 모음은 백그라운드로 하나씩 돌린다. 두 전체 모음을 함께 돌리거나 다른 무거운 일과 함께 돌리지 않는다(이 기계는 함께 돌면 exit 137 로 죽인다). 기다릴 때 sleep 으로 폴링하지 않는다(끝나면 알림이 온다).** 테스트는 실제 hc·Herdr·에이전트·codex 를 건드리지 않는다: 실제 `horch` 를 부르고 hc·herdr-app·claude·codex 는 `herdr-orch/tests/fakes/` 의 가짜, 워커·리뷰어의 일은 `herdr-team/tests/fakes/agent-act` 가 대신한다(`tests/helpers.py`). 이 프로세스 안에서 hc 를 부르는 시험(`tests/test_autoup.py`, `test_config.py` 의 `ProbeTimeoutTest`)은 `mock.patch.dict(os.environ, …)` 로 테스트 환경을 옮긴다. 자동 부활 시험이 분리 실행한 `hteam up`(가짜 hc)은 시험이 끝나기 전에 끝날 때까지 기다린다. 사용자 hc core 를 멈추거나 다시 띄우지 않고, 새 `HC_SESSION` 으로 hc 를 부르지 않는다. `~/.claude/settings.json`·`~/.codex/config.toml` 을 고치지 않는다.
+- 테스트: 저장소 루트에서 `bash herdr-team/tests/run.sh`(전체 10–12분)와 `bash herdr-orch/tests/run.sh`(1분). 태스크 중간에는 `-k` 로 고른다(`run.sh` 는 인자를 `unittest discover` 에 넘긴다. `-k` 는 여러 번 줄 수 있다). **전체 모음은 백그라운드로 하나씩 돌린다. 두 전체 모음을 함께 돌리거나 다른 무거운 일과 함께 돌리지 않는다(이 기계는 함께 돌면 exit 137 로 죽인다). 기다릴 때 sleep 으로 폴링하지 않는다(끝나면 알림이 온다).** 테스트는 실제 hc·Herdr·에이전트·codex 를 건드리지 않는다: 실제 `horch` 를 부르고 hc·herdr-app·claude·codex 는 `herdr-orch/tests/fakes/` 의 가짜, 워커·리뷰어의 일은 `herdr-team/tests/fakes/agent-act` 가 대신한다(`tests/helpers.py`). 이 프로세스 안에서 hc 를 부르는 시험(`tests/test_autoup.py`, `test_config.py` 의 `ProbeTimeoutTest`)은 `mock.patch.dict(os.environ, …)` 로 테스트 환경을 옮긴다. 자동 부활 시험이 분리 실행한 `hteam up`(가짜 hc)은 시험이 끝나기 전에 끝날 때까지 기다리고 결과(프로세스 종료·pid 파일·로그·`run.json`)만 본다. 4초 규칙·마감 같은 시간 경계는 가상 단조 시계(`autoup._clock` 패치)와 단계별 소요로 남은 시간을 정해 보고 실제 실행 속도에 기대지 않는다(Codex 계획 리뷰 r1). 사용자 hc core 를 멈추거나 다시 띄우지 않고, 새 `HC_SESSION` 으로 hc 를 부르지 않는다. `~/.claude/settings.json`·`~/.codex/config.toml` 을 고치지 않는다.
 - **Codex 교차 검증(CLAUDE.md):** 이 계획은 실행 전에 컨트롤러가 `scripts/codex-review.sh doc <이름> <프롬프트 파일>` 로 검토받는다(잘못된 가정, 빠진 실패 경로, 모순, 구현할 수 없는 요구, 범위 과잉, 심각도 P0–P3 와 근거 위치). 리뷰 모델은 스크립트의 `-m ${CODEX_REVIEW_MODEL:-gpt-6.1-sol}` 이다. 각 태스크의 마지막 단계는 커밋이다. **구현자는 커밋에서 멈춘다.** 그 뒤 컨트롤러가 Herdr pane 에서 `scripts/codex-review.sh commit HEAD` 를 돌린다(같은 space 의 "리뷰" 탭에 pane 을 띄우고 터미널 주소를 출력한다). 끝나기를 붙잡고 기다리지 않고 `hc wait <주소> --timeout 3600` 을 백그라운드로 건 뒤 다른 일을 한다. 결과 `.codex-reviews/commit-<sha 7자>.md`(커밋하지 않는다)의 지적은 그대로 따르지 않는다: 항목마다 코드로 사실인지 확인한 뒤 고치거나(고치면 재현 테스트를 먼저 더하고 커밋한 뒤 그 커밋을 다시 리뷰) 고치지 않는 이유를 적는다. 고칠 범위(사용자 결정, 설계 1장): P0·P1, 기본 경로의 P2, 이번 변경이 만든 회귀. 드문 설정·경쟁·악의적 경합의 P2 는 알려진 한계로 적는다. P0·P1 이 남지 않을 때까지 최대 3 라운드. 3 라운드 뒤에도 남으면 사용자에게 묻는다. 사용자 보고에는 Codex 가 무엇을 지적했고 무엇을 고쳤는지, 무엇을 왜 고치지 않았는지 적는다.
 - 설계가 정하지 않은 방어 코드를 더하지 않는다(사용자 결정). 알려진 한계는 설계 9.5·11.6·11.7 의 목록 그대로 두고 고치지 않는다.
 
@@ -43,10 +43,10 @@ herdr-team/
   lib/hteam/
     textlint.py    새로: 문구 대상·검사할 줄·분류 정규식·용어집·높임법·추가한 줄만 검사(Task 1)
     designdiff.py  새로: 지운 줄 신호(옮긴 줄 상쇄, net·lost), 추가한 줄의 확대 막기·포커스 제거(Task 3)
-    autoup.py      새로: 판정 decide·확인 check·분리 실행 spawn_up, 안내 문구 다섯, 상수(Task 4)
+    autoup.py      새로: 판정 decide·확인 check·분리 실행 spawn_up, 시계 _clock, 안내 문구 다섯, 상수(Task 4)
     gitio.py       _against(commit_files 와 diff_lines 가 같은 부모), diff_lines·added_lines(Task 1)
     lint.py        read_source·cap·design_findings 로 나누기, lint --task 의 findings·text_findings(Task 1), 모듈 설명 §1(Task 2)
-    compose.py     guarded·findings_list·design_findings·text_findings·text_section, 프롬프트의 {{text}}(Task 1),
+    compose.py     failure·guarded·findings_list·design_findings·text_findings·text_section, 프롬프트의 {{text}}(Task 1),
                    design_findings 에 designdiff 먼저(Task 3)
     util.py        fill 의 템플릿 인자를 위치 전용으로(`{{text}}` 자리, Task 1)
     paths.py       Project.text_rules(Task 1), auto_up·auto_up_pid·auto_up_log(Task 4), VERSION 0.2.0(Task 5)
@@ -109,7 +109,7 @@ docs/superpowers/specs/2026-11-05-herdr-team-design.md   머리 상태 줄과 15
 
 ### Task 1: 문구 규칙 `text-rules.md` 와 리뷰 문구 절(textlint, `gitio.diff_lines`, `compose.guarded`)
 
-설계 11.7·6.2·10장: orca-team 0.5.0 의 문구 규칙을 `templates/text-rules.md` 로 옮기고 scaffold 가 `.herdr-team/text-rules.md` 로 복사한다. 리뷰 프롬프트는 디자인 절 다음에 문구 절(새 `templates/review-text.md`)을 붙인다: 직무와 관계없이 `.herdr-team/text-rules.md` 가 있고 시도 기록의 바뀐 파일 가운데 문구 대상이 하나 이상일 때다. 문구 절의 경고는 새 `textlint.py` 가 리뷰 대상 커밋이 **추가한 줄**에서 찾는다(분류 9개, 용어집, 높임법 섞임, 50건). git 은 새 `gitio.diff_lines`(커밋마다 `diff-tree -p -U0 --no-renames`, 부모는 `commit_files` 와 같게 `_against` 로 맞춘다, `:(top,literal)` 경로)로만 읽는다. 자동 검사는 하나씩 `compose.guarded` 로 감싸 예외가 나도 그 자리에 한 줄을 넣고 리뷰는 계속한다(이 태스크에서 내용 검사도 감싼다. Task 3 이 designdiff 를 더한다). `lint.py` 는 `read_source`·`cap`·`design_findings` 로 나누고(textlint·designdiff 가 함께 쓴다), `hteam lint --task` 는 `findings`(디자인 절 목록)와 `text_findings`(문구 절 목록, 규칙 파일이 없으면 null)를 낸다. planner 는 13번째 점검표 항목 "문구 기준" 과 `docs/planning/voice.md` 를 만들고, designer·developer 는 `## 문구 규칙` 절과 `### 문구 점검` 을 따른다. 템플릿 developer owns 에 정책·사용자 문서 세 경로를 더한다.
+설계 11.7·6.2·10장: orca-team 0.5.0 의 문구 규칙을 `templates/text-rules.md` 로 옮기고 scaffold 가 `.herdr-team/text-rules.md` 로 복사한다. 리뷰 프롬프트는 디자인 절 다음에 문구 절(새 `templates/review-text.md`)을 붙인다: 직무와 관계없이 `.herdr-team/text-rules.md` 가 있고 시도 기록의 바뀐 파일 가운데 문구 대상이 하나 이상일 때다. 문구 절의 경고는 새 `textlint.py` 가 리뷰 대상 커밋이 **추가한 줄**에서 찾는다(분류 9개, 용어집, 높임법 섞임, 50건). git 은 새 `gitio.diff_lines`(커밋마다 `diff-tree -p -U0 --no-renames`, 부모는 `commit_files` 와 같게 `_against` 로 맞춘다, `:(top,literal)` 경로)로만 읽는다. 자동 검사는 하나씩 `compose.guarded` 로 감싸 예외가 나도 그 자리에 한 줄(`compose.failure`)을 넣고 리뷰는 계속한다(이 태스크에서 내용 검사도 감싼다. Task 3 이 designdiff 를 더한다). 문구 대상 판정(`textlint.targets`)도 자동 검사다: 예외로 끝나면 대상이 있는지 모르므로 문구 절을 붙이고 경고 자리에 그 한 줄을 넣는다(Codex 계획 리뷰 r1). 디자인 절은 직무·설정만 보고 붙으며 파일을 읽는 일은 모두 두 검사(guarded) 안에서 한다. `lint.py` 는 `read_source`·`cap`·`design_findings` 로 나누고(textlint·designdiff 가 함께 쓴다), `hteam lint --task` 는 `findings`(디자인 절 목록)와 `text_findings`(문구 절 목록, 규칙 파일이 없으면 null)를 낸다. planner 는 13번째 점검표 항목 "문구 기준" 과 `docs/planning/voice.md` 를 만들고, designer·developer 는 `## 문구 규칙` 절과 `### 문구 점검` 을 따른다. 템플릿 developer owns 에 정책·사용자 문서 세 경로를 더한다.
 
 리뷰 프롬프트 템플릿의 자리 이름이 `{{text}}` 라서 `util.fill(text, **values)` 의 첫 인자 이름과 겹친다. `fill` 의 템플릿 인자를 위치 전용(`/`)으로 바꾼다(부르는 쪽은 모두 위치 인자로 넘긴다).
 
@@ -124,7 +124,7 @@ docs/superpowers/specs/2026-11-05-herdr-team-design.md   머리 상태 줄과 15
   - `gitio.diff_lines(root, shas: list[str], rel: str) -> tuple[list[str], list[str]] | None`((추가한 줄, 지운 줄) 멀티셋, git 실패·UTF-8 아님이면 None), `gitio.added_lines(root, shas, rel) -> set[str] | None`
   - `lint.read_source(root, rel) -> str | None`, `lint.cap(items, limit=50) -> list[str]`, `lint.design_findings(root, files) -> list[str]`(상한 없음), `lint.design_lint = cap(design_findings)`
   - `textlint.SUFFIXES`·`CODE`·`MARKUP`·`MARKDOWN`·`EXCLUDE`·`VOICE`·`CATEGORIES`, `textlint.visible_lines(rel, text) -> [(줄 번호, 원문, 검사할 글)]`, `textlint.ending_styles(line) -> set[str]`, `textlint.load_glossary(root) -> [(쓰는 표기, [쓰지 않는 표기])]`, `textlint.scan(rel, text, added, glossary) -> list[str]`, `textlint.targets(root, files) -> list[str]`, `textlint.text_lint(root, files, shas) -> list[str]`(50건 상한)
-  - `compose.guarded(check) -> list[str]`, `compose.findings_list(items) -> str`, `compose.design_findings(p, files, shas) -> list[str]`, `compose.text_findings(p, files, shas) -> list[str] | None`, `compose.design_section(p, cfg, spec, files, shas, agent="codex")`, `compose.text_section(p, files, shas) -> str`
+  - `compose.failure(exc) -> str`, `compose.guarded(check) -> list[str]`, `compose.findings_list(items) -> str`, `compose.design_findings(p, files, shas) -> list[str]`, `compose.text_findings(p, files, shas) -> list[str] | None`, `compose.design_section(p, cfg, spec, files, shas, agent="codex")`, `compose.text_section(p, files, shas) -> str`
   - `hteam lint --task T` 의 출력 `{"task", "files", "findings", "text_findings"}`
   - `.herdr-team/text-rules.md`(scaffold), 직무 문서의 `## 문구 규칙`·`### 문구 점검`, planner 산출물 `docs/planning/voice.md`
 
@@ -356,7 +356,7 @@ if __name__ == "__main__":
 ````
 
 
-리뷰 프롬프트의 문구 절과 템플릿(`TextSectionTest`, `TextTemplateTest`)이다.
+리뷰 프롬프트의 문구 절과 템플릿(`TextSectionTest`, `TextTemplateTest`)이다. 대상 판정이 예외로 끝나도 리뷰가 진행되는지는 이 프로세스에서 `review.review` 를 코디네이터 환경으로 불러 본다.
 
 **Edit** `herdr-team/tests/test_review.py`
 
@@ -463,6 +463,19 @@ class TextSectionTest(ReviewCase):
         long = compose.guarded(lambda: (_ for _ in ()).throw(ValueError("가" * 300)))
         self.assertEqual(len(long), 1)
         self.assertEqual(len(long[0]), 200)
+
+    def test_target_check_failure_keeps_the_section_and_the_review_goes_on(self):
+        # Codex 계획 r1: 문구 대상 판정(textlint.targets)도 자동 검사다. 예외로 끝나도 리뷰 프롬프트를 쓰고 리뷰어를 띄운다
+        from hteam import review
+        self.started("T-001", "developer")
+        self.assertEqual(self.act_work("T-001", {"src/app.tsx": 'a = "저장됬어요";\n'})[0], 0)
+        with mock.patch.dict(os.environ, self._env("coordinator", None, None), clear=True), \
+                mock.patch.object(textlint, "targets", side_effect=RuntimeError("대상 판정\n실패")):
+            out = review.review(self.p, "T-001")
+        self.assertEqual(out["status"], "reviewing", out)
+        text = (self.state_dir / "tasks/T-001/r1-review-a1.md").read_text(encoding="utf-8")
+        self.assertIn("## 문구 기준", text)
+        self.assertIn("판단한다):\n- 자동 검사 실패: RuntimeError: 대상 판정 실패\n\n## REVIEW_FILE 형식", text)
 
 
 class TextTemplateTest(unittest.TestCase):
@@ -1153,13 +1166,18 @@ def design_section(p, cfg, spec, files: list[str], agent: str = "codex") -> str:
 
 ```python
 
+def failure(exc: Exception) -> str:
+    """자동 검사 실패 한 줄: `자동 검사 실패: <예외 이름>: <메시지>`(공백·줄바꿈을 한 칸으로, 200자까지)."""
+    return " ".join(f"자동 검사 실패: {type(exc).__name__}: {exc}".split())[:200]
+
+
 def guarded(check) -> list[str]:
-    """자동 검사 하나(인자 없는 함수)를 따로 돌린다(설계 6.2). 예외로 실패하면 그 검사 결과 자리에 `자동 검사 실패:
-    <예외 이름>: <메시지>` 한 줄(공백·줄바꿈을 한 칸으로, 200자까지)을 넣고 다른 검사와 리뷰는 계속한다."""
+    """자동 검사 하나(인자 없는 함수)를 따로 돌린다(설계 6.2). 예외로 실패하면 그 검사 결과 자리에 failure 한 줄을 넣고
+    다른 검사와 리뷰는 계속한다."""
     try:
         return list(check())
     except Exception as exc:  # noqa: BLE001  경고 전용 검사가 리뷰를 막지 않는다
-        return [" ".join(f"자동 검사 실패: {type(exc).__name__}: {exc}".split())[:200]]
+        return [failure(exc)]
 
 
 def findings_list(items: list[str]) -> str:
@@ -1193,11 +1211,18 @@ def design_section(p, cfg, spec, files: list[str], shas: list[str], agent: str =
 
 def text_section(p, files: list[str], shas: list[str]) -> str:
     """리뷰 프롬프트의 문구 절(설계 6.2·11.7): 직무와 관계없이 `.herdr-team/text-rules.md` 가 있고 바뀐 파일 가운데 문구
-    대상(textlint.targets)이 하나 이상이면 문구 기준과 자동 검사 경고. 아니면 빈 문자열."""
-    if not p.text_rules.is_file() or not textlint.targets(p.root, files):
+    대상(textlint.targets)이 하나 이상이면 문구 기준과 자동 검사 경고. 아니면 빈 문자열. 대상 판정도 자동 검사라서 예외로
+    실패하면 대상이 있는지 모르므로 절을 붙이고 경고 자리에 failure 한 줄을 넣는다(리뷰는 계속한다)."""
+    if not p.text_rules.is_file():
         return ""
-    return fill(_template("review-text.md"),
-                text_lint=findings_list(text_findings(p, files, shas) or [])).rstrip() + "\n\n"
+    try:
+        if not textlint.targets(p.root, files):
+            return ""
+    except Exception as exc:  # noqa: BLE001
+        found = [failure(exc)]
+    else:
+        found = text_findings(p, files, shas) or []
+    return fill(_template("review-text.md"), text_lint=findings_list(found)).rstrip() + "\n\n"
 
 ```
 
@@ -1650,7 +1675,7 @@ owns = ["src/**", "README.md", "docs/user/**", "docs/policy/**"]
 - [ ] **Step 4: 통과 확인**
 
 Run: Step 2 와 같은 명령.
-Expected: OK(94개). `lint --task` 는 `text-rules.md` 가 없는 프로젝트에서 `text_findings: null` 이고, 규칙 파일을 둔 뒤 `[T-001]` 커밋이 추가한 줄의 오탈자를 낸다.
+Expected: OK(95개). `lint --task` 는 `text-rules.md` 가 없는 프로젝트에서 `text_findings: null` 이고, 규칙 파일을 둔 뒤 `[T-001]` 커밋이 추가한 줄의 오탈자를 낸다.
 
 - [ ] **Step 5: 커밋**
 
@@ -2770,7 +2795,7 @@ def design_findings(p, files: list[str], shas: list[str]) -> list[str]:
 - [ ] **Step 4: 통과 확인**
 
 Run: Step 2 와 같은 명령.
-Expected: OK(39개). 내용 그대로 옮긴 파일·컴포넌트 추출·지웠다 되살린 줄은 경고가 없고, 옮긴 파일의 실제 감소는 옛 경로 이름으로 나온다.
+Expected: OK(40개). 내용 그대로 옮긴 파일·컴포넌트 추출·지웠다 되살린 줄은 경고가 없고, 옮긴 파일의 실제 감소는 옛 경로 이름으로 나온다.
 
 - [ ] **Step 5: 커밋**
 
@@ -2796,7 +2821,7 @@ Expected: `git grep` 출력 없음, `ast.parse` 오류 없음, 커밋 성공. �
 
 곁가지 수정(설계 9.5 의 변경 범위): `herdr.probe` 에 `timeout`(기본 10초), `herdr._hc` 가 UTF-8 이 아닌 출력의 `UnicodeDecodeError` 를 `hc_failed`(`kind: bad_output`)로 바꾼다(그래서 probe 가 unverifiable 을 낸다. up·watch·Stop 훅의 같은 경로도 확인 불가가 된다). `procs` 의 `_ps_state`·`start_time`·`alive`·`record_alive` 에 `timeout`(기본 5초, 지금 값)을 더한다. 설정 `[coordinator] auto_up` 은 없으면 true, 불리언이 아니면 `bad_config` 다. `hooks/hooks.json` 의 15초는 바꾸지 않는다.
 
-계획이 정한 것: `auto-up.pid` 를 "쓴 지" 는 파일 mtime 으로 잰다(설계의 `{pid, started}` 꼴을 지키려고). `autoup.STARTING_S` 는 `coord.STARTING_S` 와 같은 값을 따로 둔다(훅이 `coord` 와 그것이 끌어오는 모듈을 가져오지 않게. 같은지는 테스트가 본다). 훅 시작 시각은 훅 스크립트를 불러온 때의 `time.monotonic()`(`HOOK_START`)이다.
+계획이 정한 것: `auto-up.pid` 를 "쓴 지" 는 파일 mtime 으로 잰다(설계의 `{pid, started}` 꼴을 지키려고). 남은 시간은 `autoup._clock()`(= `time.monotonic()`)으로 잰다. 시험은 이 시계만 가상 시계로 바꾸고(subprocess 의 시간 제한은 건드리지 않는다) 패치한 단계(ps·hc·sh)가 시계를 정한 만큼 옮기게 해 4초 규칙·마감·단계별 시간 제한을 실행 속도와 관계없이 본다(Codex 계획 리뷰 r1). `autoup.STARTING_S` 는 `coord.STARTING_S` 와 같은 값을 따로 둔다(훅이 `coord` 와 그것이 끌어오는 모듈을 가져오지 않게. 같은지는 테스트가 본다). 훅 시작 시각은 훅 스크립트를 불러온 때의 `time.monotonic()`(`HOOK_START`)이다.
 
 **Files:**
 - Create: `herdr-team/lib/hteam/autoup.py`, `herdr-team/tests/test_autoup.py`
@@ -2807,14 +2832,14 @@ Expected: `git grep` 출력 없음, `ast.parse` 오류 없음, 커밋 성공. �
 - Consumes: `outbox._run`(손상이면 `bad_run_file`), `config.load`, `herdr.probe`, `procs.record_alive`·`start_time`·`me`, `util.age_seconds`·`now`·`read_json`·`write_json`, `paths.PLUGIN_ROOT`, 기존 `setup.up`(`require_main`, `RACE_KEYS`·`run.lock`, `launch_raced`·`launch_uncertain`·`same_terminal`)
 - Produces:
   - `autoup.CHECK_INTERVAL_S` … `HOOK_DEADLINE_S`, `MIN_LEFT_S = 1`, `STARTING_S = 180`, 문구 `REVIVED`·`UNKNOWN`·`NO_HANDLE`·`DISABLED`·`FAILED`
-  - `autoup.within(stamp, seconds) -> bool`, `autoup.decide(p, deadline) -> (action, notice) | None`(None 은 시간 부족), `autoup.spawn_up(p, deadline) -> bool`, `autoup.check(p, force, started) -> str | None`
+  - `autoup._clock() -> float`, `autoup.within(stamp, seconds) -> bool`, `autoup.decide(p, deadline) -> (action, notice) | None`(None 은 시간 부족), `autoup.spawn_up(p, deadline) -> bool`, `autoup.check(p, force, started) -> str | None`
   - `herdr.probe(terminal, argv, timeout=10)`, `procs.record_alive(rec, timeout=5)` 등, `Config.auto_up`
   - 훅의 `auto_up(p, force)`, SessionStart·UserPromptSubmit `additionalContext`
   - 상태 파일 `state/auto-up.json`·`auto-up.pid`·`auto-up.log`
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
-판정·확인·분리 실행(실제 `hteam --root <루트> up` 을 가짜 hc 로)·시간 예산·마감이다. 분리 실행한 `up` 은 시험이 끝나기 전에 끝나기를 기다린다.
+판정·확인·분리 실행(실제 `hteam --root <루트> up` 을 가짜 hc 로)·시간 예산·마감이다. 분리 실행한 `up` 은 시험이 끝나기 전에 끝나기를 기다리고 결과(프로세스 종료·pid 파일·로그·`run.json`)만 본다. 시간 예산·마감(`BudgetTest`)은 가상 시계 `Clock` 과 단계별 소요로 남은 시간을 정한다.
 
 **Create** `herdr-team/tests/test_autoup.py`
 
@@ -3088,78 +3113,95 @@ class SpawnTest(AutoUpCase):
             time.sleep(0.05)
         self.assertIn('"ok": false', (self.state_dir / "auto-up.log").read_text())
 
-    def test_started_is_null_when_time_is_short_after_spawn(self):
-        self.dead()
-        self.assertTrue(autoup.spawn_up(self.p, time.monotonic() + 0.9))
-        pid = json.loads((self.state_dir / "auto-up.pid").read_text())
-        self.assertIsNone(pid["started"])
-        deadline = time.monotonic() + 30
-        while "launched" not in (self.state_dir / "auto-up.log").read_text():
-            self.assertLess(time.monotonic(), deadline)
-            time.sleep(0.05)
+
+class Clock:
+    """가상 단조 시계(autoup._clock 자리). 패치한 단계가 부르면 그 단계가 걸린 만큼 앞으로 간다."""
+
+    def __init__(self, now: float = 1000.0):
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
 
 
 class BudgetTest(AutoUpCase):
-    def test_late_hook_start_skips_and_writes_nothing(self):
+    """훅 시작 4초 규칙과 마감(설계 9.5). 남은 시간은 가상 시계와 단계별 소요로 정해 실행 속도에 기대지 않는다."""
+
+    def setUp(self):
+        super().setUp()
+        self.clock = Clock()
+        patcher = mock.patch.object(autoup, "_clock", self.clock)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.dead()
+        self.seen = {}
+
+    def step(self, name, seconds, value):
+        """패치할 단계: 받은 시간 제한을 seen[name] 에 적고 시계를 seconds 만큼 옮긴 뒤 value 를 돌려준다."""
+        def run(*args, timeout, **kw):
+            self.seen[name] = timeout
+            self.clock.now += seconds
+            return value
+        return run
+
+    def sh(self, seconds):
+        return self.step("sh", seconds, subprocess.CompletedProcess(["/bin/sh"], 0, "4242\n", ""))
+
+    def fresh_pid(self):
+        (self.state_dir / "auto-up.pid").write_text(json.dumps(procs.me()))
+
+    def test_late_hook_start_skips_and_writes_nothing(self):
         before = self.gets()
-        self.assertIsNone(self.check(force=True, started=time.monotonic() - 4.5))
+        self.assertIsNone(check(self.p, force=True, started=self.clock.now - 4.5))
         self.assertEqual((self.gets(), self.record()), (before, {}))
-        self.assertIsNotNone(self.check(started=time.monotonic()))  # 다음 확인은 간격과 관계없이 바로 한다
-        self.wait_spawned()
+        with mock.patch.object(autoup, "spawn_up", return_value=True):  # 다음 확인은 간격과 관계없이 바로 한다
+            self.assertEqual(check(self.p, force=False, started=self.clock.now), REVIVED)
+        self.assertEqual(self.gets(), before + 1)
 
     def test_deadline_stops_before_ps_hc_and_sh(self):
-        self.dead()
-        (self.state_dir / "auto-up.pid").write_text(json.dumps(procs.me()))
-        with mock.patch.object(autoup, "HOOK_DEADLINE_S", 0.5), \
-                mock.patch.object(autoup.procs, "record_alive") as alive:
-            self.assertIsNone(self.check())  # 진행 중 확인(ps) 앞에서 멈춘다
-            alive.assert_not_called()
-            (self.state_dir / "auto-up.pid").unlink()
-            before = self.gets()
-            self.assertIsNone(self.check())  # hc 앞에서 멈춘다
-            self.assertEqual(self.gets(), before)
+        self.fresh_pid()
+        with mock.patch.object(autoup.procs, "record_alive") as alive:
+            self.assertIsNone(decide(self.p, self.clock.now + 0.5))  # 진행 중 확인(ps) 앞에서 멈춘다
+        alive.assert_not_called()
+        before = self.gets()
+        (self.state_dir / "auto-up.pid").unlink()
+        self.assertIsNone(decide(self.p, self.clock.now + 0.5))  # hc 앞에서 멈춘다
+        self.assertEqual(self.gets(), before)
+        self.fresh_pid()  # ps 가 11.2초 걸렸다: hc 앞에서 멈추고 아무것도 쓰지 않는다
+        with mock.patch.object(autoup.procs, "record_alive", side_effect=self.step("ps", 11.2, False)), \
+                mock.patch.object(autoup.herdr, "probe") as probe:
+            self.assertIsNone(check(self.p, force=True, started=self.clock.now))
+        probe.assert_not_called()
         self.assertEqual(self.record(), {})
-        with self._hc_locked() as st:  # 느린 hc: 확인 뒤 남은 시간이 1초 아래라 sh 를 띄우지 않는다
-            st["delay"] = {"get": 1.95}
-        with mock.patch.object(autoup, "HOOK_DEADLINE_S", 2.9):
-            self.assertIsNone(self.check())
+        (self.state_dir / "auto-up.pid").unlink()  # hc 가 11.5초 걸렸다: sh 앞에서 멈추고 아무것도 쓰지 않는다
+        with mock.patch.object(autoup.herdr, "probe", side_effect=self.step("probe", 11.5, "exited")), \
+                mock.patch.object(autoup.subprocess, "run") as run:
+            self.assertIsNone(check(self.p, force=True, started=self.clock.now))
+        run.assert_not_called()
         self.assertEqual(self.record(), {})
         self.assertFalse((self.state_dir / "auto-up.pid").exists())
 
     def test_each_step_gets_the_remaining_time(self):
-        seen = {}
-
-        def probe(term, argv, timeout):
-            seen["probe"] = timeout
-            return "exited"
-
-        def alive(rec, timeout):
-            seen["ps"] = timeout
-            return False
-
-        def run(argv, *args, timeout, **kw):
-            seen["sh"] = timeout
-            return subprocess.CompletedProcess(argv, 0, "4242\n", "")
-
-        def start_time(pid, timeout):
-            seen["start"] = timeout
-            return None
-        pid = self.state_dir / "auto-up.pid"
-        with mock.patch.object(autoup.herdr, "probe", side_effect=probe), \
-                mock.patch.object(autoup.procs, "record_alive", side_effect=alive), \
-                mock.patch.object(autoup.subprocess, "run", side_effect=run), \
-                mock.patch.object(autoup.procs, "start_time", side_effect=start_time):
-            pid.write_text(json.dumps({"pid": 1, "started": "x"}))
-            self.assertEqual(self.check(force=True), REVIVED)
-            self.assertEqual((seen["ps"], seen["probe"], seen["sh"], seen["start"]), (5, 3, 5, 5))
+        def run(ps, probe, sh):
+            self.fresh_pid()
             self.set_record()
-            pid.write_text(json.dumps({"pid": 1, "started": "x"}))
-            with mock.patch.object(autoup, "HOOK_DEADLINE_S", 2):
-                self.assertEqual(self.check(force=True), REVIVED)
-        for step in ("ps", "probe", "sh", "start"):
-            self.assertLessEqual(seen[step], 2, step)
-            self.assertGreater(seen[step], 1.5, step)
+            with mock.patch.object(autoup.procs, "record_alive", side_effect=self.step("ps", ps, False)), \
+                    mock.patch.object(autoup.herdr, "probe", side_effect=self.step("probe", probe, "exited")), \
+                    mock.patch.object(autoup.subprocess, "run", side_effect=self.sh(sh)), \
+                    mock.patch.object(autoup.procs, "start_time", side_effect=self.step("start", 0, "Sun Nov  8 00:00:00 2026")):
+                self.assertEqual(check(self.p, force=True, started=self.clock.now), REVIVED)
+            return tuple(self.seen[k] for k in ("ps", "probe", "sh", "start"))
+        self.assertEqual(run(0, 0, 0), (5, 3, 5, 5))  # 남은 시간이 넉넉하면 자기 제한
+        self.assertEqual(run(9, 1, 0.5), (5, 3, 2, 1.5))  # ps 9초 뒤 남은 3초, hc 1초 뒤 2초, sh 0.5초 뒤 1.5초
+
+    def test_started_is_null_when_time_is_short_after_spawn(self):
+        with mock.patch.object(autoup.herdr, "probe", side_effect=self.step("probe", 0, "exited")), \
+                mock.patch.object(autoup.subprocess, "run", side_effect=self.sh(11.5)), \
+                mock.patch.object(autoup.procs, "start_time") as start_time:
+            self.assertEqual(check(self.p, force=True, started=self.clock.now), REVIVED)
+        start_time.assert_not_called()
+        self.assertEqual(json.loads((self.state_dir / "auto-up.pid").read_text()), {"pid": 4242, "started": None})
+        self.assertIn("spawned_at", self.record())
 
 
 if __name__ == "__main__":
@@ -3465,8 +3507,13 @@ def within(stamp, seconds: float) -> bool:
     return age is not None and 0 <= age < seconds
 
 
+def _clock() -> float:
+    """훅 시작 시각(HOOK_START)과 같은 단조 시계. 시험이 가상 시계로 바꾼다(subprocess 의 시간 제한은 건드리지 않는다)."""
+    return time.monotonic()
+
+
 def _left(deadline: float) -> float:
-    return deadline - time.monotonic()
+    return deadline - _clock()
 
 
 def _record(p) -> dict:
@@ -3559,7 +3606,7 @@ def check(p, force: bool, started: float) -> str | None:
     force(SessionStart)는 간격과 같은 안내 줄이기를 보지 않는다. 자격이 없거나, 훅이 시작한 지 HOOK_START_BUDGET_S 가
     지났거나, 간격 안이거나, 시간이 모자라면 아무 파일도 쓰지 않는다. 확인을 마치면 auto-up.json 을 한 번에 쓴다. 판정·띄우기가
     예외로 끝나면 checked_at 만 쓰려 하고(실패하면 넘어간다) 예외를 다시 낸다(훅이 기록한다)."""
-    if _run(p) is None or time.monotonic() - started >= HOOK_START_BUDGET_S:
+    if _run(p) is None or _clock() - started >= HOOK_START_BUDGET_S:
         return None
     rec = _record(p)
     if not force and within(rec.get("checked_at"), CHECK_INTERVAL_S):
@@ -4157,7 +4204,8 @@ Expected: `git grep`·`git diff --stat` 출력 없음, 커밋 성공. 구현자�
 
 안전 규칙(1–3단계 실환경과 같다, 이 태스크 내내):
 - 시험 프로젝트는 컨트롤러가 준 세션 스크래치패드 아래에 만든다(`<세션 스크래치패드>` 는 실행할 때 주어진다). 이 저장소와 사용자의 다른 프로젝트는 건드리지 않는다.
-- (1) 은 플러그인을 설치하지 않는다(이 저장소의 `herdr-team/bin/hteam` 을 절대 경로로 부르고, horch 는 형제 `herdr-orch/bin/horch` 를 찾는다). (2) 는 플러그인을 **시험 프로젝트 범위(project scope)에만** 등록·설치하고 끝나면 제거한다. 사용자 범위에 설치하지 않는다. `~/.claude/settings.json`·`~/.codex/config.toml` 등 전역 설정을 고치지 않는다.
+- **플러그인을 설치하지 않는다**(Codex 계획 리뷰 r1: 2·3단계에서 플러그인 CLI 가 사용자 `installed_plugins.json` 의 최상위 `enabledPlugins` 키를 떨어뜨렸다). (1) 은 이 저장소의 `herdr-team/bin/hteam` 을 절대 경로로 부른다(horch 는 형제 `herdr-orch/bin/horch` 를 찾는다). (2) 는 메인을 `claude --plugin-dir <저장소>/herdr-team --plugin-dir <저장소>/herdr-orch` 로 띄운다(그 세션에만 불러오고 설치 기록을 쓰지 않는다). `claude plugin marketplace add`·`claude plugin install`·`uninstall` 을 쓰지 않는다. `~/.claude/settings.json`·`~/.codex/config.toml` 등 전역 설정을 고치지 않는다.
+- 전역 파일 `~/.claude/plugins/known_marketplaces.json`·`~/.claude/plugins/installed_plugins.json`·`~/.codex/config.toml` 은 Step 1 의 스냅숏과 Step 10 의 diff 가 비어야 성공이다(예외는 `~/.codex/config.toml` 의 시험 폴더 신뢰 항목뿐이고 보고한다). 비어 있지 않으면 실패로 적고 사용자에게 알린다. 스냅숏으로 덮어쓰지 않는다(그사이 사용자의 다른 세션이 바꿨을 수 있다).
 - `--permission-mode bypassPermissions` 는 (2) 의 시험 프로젝트 `[agents.claude].args`(init 4단계 표로 승인)와 시험용 메인 실행에만 쓴다. `--dangerously-bypass-approvals-and-sandbox` 는 (1) 의 시험 프로젝트 `[agents.codex].args` 에만 쓴다(리뷰어가 화면을 렌더하게, 설계 15.2).
 - 사용자의 hc core 를 멈추거나 다시 띄우지 않는다(`hc server stop`·`hc server restart`·`hc update` 금지). 새 `HC_SESSION` 으로 hc 를 부르지 않는다. 시험이 만든 터미널·탭·space 만 kill·rm·닫는다.
 - 시험용 `hc run` 은 늘 `--no-notify` 를 붙인다.
@@ -4178,7 +4226,7 @@ for d in review revive; do (cd "$E2E/$d" && git init -q -b main && echo "# $d" >
 herdr-app do space.new --name hteam-e2e-p4 --folder "$E2E/review"
 ```
 
-Expected: `{"space", "tab", "terminal"}`. 값을 `$S`, `$T` 로 적는다. 스냅숏 넷이 `$E2E/pre/` 에 있다(복사는 읽기만 한다).
+Expected: `{"space", "tab", "terminal"}`. 값을 `$S`, `$T` 로 적는다. 스냅숏 넷이 `$E2E/pre/` 에 있다(복사는 읽기만 한다). 사용자 `installed_plugins.json` 의 최상위 키(`enabledPlugins` 등)를 적어 둔다.
 
 - [ ] **Step 2: (1) 시험 프로젝트와 바탕 커밋**
 
@@ -4200,7 +4248,9 @@ cat > src/index.html <<'EOF'
 <!doctype html>
 <html lang="ko">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="app.css"></head>
-<body><main id="app"></main><script type="module" src="app.js"></script></body>
+<body><main id="app"></main>
+<script src="components/Header.js"></script><script src="components/EmptyState.js"></script><script src="components/TodoItem.js"></script><script src="app.js"></script>
+</body>
 </html>
 EOF
 cat > src/app.css <<'EOF'
@@ -4208,20 +4258,17 @@ cat > src/app.css <<'EOF'
 .btn:focus-visible { outline: 2px solid #1f6f5c; outline-offset: 2px; }
 EOF
 cat > src/app.js <<'EOF'
-import { Header } from "./components/Header.js";
-import { TodoItem } from "./components/TodoItem.js";
-import { EmptyState } from "./components/EmptyState.js";
-document.getElementById("app").innerHTML = Header() + EmptyState() + TodoItem("우유 사기");
+document.getElementById("app").innerHTML = Header() + EmptyState() + "<ul>" + TodoItem("우유 사기") + "</ul>";
 EOF
 cat > src/components/Header.js <<'EOF'
-export const Header = () => `<header class="header"><button class="btn" aria-label="메뉴 열기">≡</button><h1>오늘 할 일</h1></header>`;
+function Header() { return `<header class="header"><button class="btn" aria-label="메뉴 열기">≡</button><h1>오늘 할 일</h1></header>`; }
 EOF
 cat > src/components/TodoItem.js <<'EOF'
-export const TodoItem = (title) => `<li class="todo"><span>${title}</span>
-  <button class="btn" aria-label="할 일 삭제" data-action="delete"><svg aria-hidden="true" width="16" height="16"></svg></button></li>`;
+function TodoItem(title) { return `<li class="todo"><span>${title}</span>
+  <button class="btn" aria-label="할 일 삭제" data-action="delete"><svg aria-hidden="true" width="16" height="16"></svg></button></li>`; }
 EOF
 cat > src/components/EmptyState.js <<'EOF'
-export const EmptyState = () => `<p class="empty">📭 아직 할 일이 없어요. 위에서 추가해 보세요.</p>`;
+function EmptyState() { return `<p class="empty">📭 아직 할 일이 없어요. 위에서 추가해 보세요.</p>`; }
 EOF
 cat > src/i18n/ko.json <<'EOF'
 {"saved": "저장했어요", "remaining": "{count}개 남았어요"}
@@ -4270,7 +4317,7 @@ git log -1 --format=%H > "$E2E/base.txt"   # 다음 커밋 앞 HEAD 가 태스�
 cd "$REPO_ROOT"
 ```
 
-Expected: scaffold 의 `created` 에 `.herdr-team/text-rules.md`·`.herdr-team/design-rules.md`, `config.toml` 의 developer owns 가 `["src/**", "README.md", "docs/user/**", "docs/policy/**"]`, `[coordinator] auto_up = true`. 사양은 바탕 커밋에 들어 있다(`spec: T-001` 접두사의 커밋을 따로 두지 않아도 리뷰 대상 커밋은 `[T-001]` 접두사만 본다).
+화면은 ES 모듈이 아닌 `<script>` 로 불러온다(리뷰어 브라우저가 `file://` 로 열어도 그린다. 모듈은 `file://` 에서 막힌다). Expected: scaffold 의 `created` 에 `.herdr-team/text-rules.md`·`.herdr-team/design-rules.md`, `config.toml` 의 developer owns 가 `["src/**", "README.md", "docs/user/**", "docs/policy/**"]`, `[coordinator] auto_up = true`. 사양은 바탕 커밋에 들어 있다(`spec: T-001` 접두사의 커밋을 따로 두지 않아도 리뷰 대상 커밋은 `[T-001]` 접두사만 본다).
 
 - [ ] **Step 3: (1) 가짜 워커 커밋과 태스크 상태**
 
@@ -4280,11 +4327,13 @@ mkdir -p src/ui
 git mv src/components/Header.js src/ui/Header.js                      # 내용 그대로 옮긴다
 git mv src/components/TodoItem.js src/ui/TodoItem.js                  # 옮기면서 aria-label 과 공통 클래스를 지운다
 cat > src/ui/TodoItem.js <<'EOF'
-export const TodoItem = (title) => `<li class="todo"><span>${title}</span>
-  <button data-action="delete"><svg aria-hidden="true" width="16" height="16"></svg></button></li>`;
+function TodoItem(title) { return `<li class="todo"><span>${title}</span>
+  <button data-action="delete"><svg aria-hidden="true" width="16" height="16"></svg></button></li>`; }
 EOF
-printf '.todo button { outline: none; }\n' > src/todo.css               # focus-visible 없는 포커스 제거
-sed -i '' 's/initial-scale=1"/initial-scale=1, maximum-scale=1, user-scalable=no"/' src/index.html
+printf '.todo button { outline: none; }\n' > src/todo.css               # focus-visible 없는 포커스 제거(화면에 연결한다)
+sed -i '' -e 's/initial-scale=1"/initial-scale=1, maximum-scale=1, user-scalable=no"/' \
+  -e 's|href="app.css">|href="app.css"><link rel="stylesheet" href="todo.css">|' \
+  -e 's|components/Header.js|ui/Header.js|' -e 's|components/TodoItem.js|ui/TodoItem.js|' src/index.html
 sed -i '' 's/위에서 추가해 보세요/할일을 추가해 주세요/' src/components/EmptyState.js   # 이모지는 그대로 둔다
 cat > src/i18n/ko.json <<'EOF'
 {"saved": "저장이 완료됬어요",
@@ -4294,7 +4343,6 @@ cat > src/i18n/ko.json <<'EOF'
 EOF
 printf '# 이용약관\n\n회원은 비밀번호를 안전하게 관리할 수 있습니다.\n' > docs/policy/terms.md
 printf '# review\n\n할 일을 적고 끝내는 작은 웹 페이지예요.\n' > README.md
-sed -i '' 's|import { Header } from "./components/Header.js";|import { Header } from "./ui/Header.js";|; s|import { TodoItem } from "./components/TodoItem.js";|import { TodoItem } from "./ui/TodoItem.js";|' src/app.js
 mkdir -p docs/tasks/T-001
 printf '## r1\n- 바꾼 파일: src/, docs/policy/terms.md, README.md\n### 디자인 점검\n- 어긴 곳 없음\n### 문구 점검\n- 어긴 곳 없음\n' > docs/tasks/T-001/report.md
 git add -A && git commit -qm "[T-001] r1 할 일 화면 다듬기"
@@ -4316,7 +4364,7 @@ EOF
 cd "$REPO_ROOT"
 ```
 
-Expected: 커밋 하나(`[T-001] r1 …`), 마지막 줄 `working <바탕 커밋 sha>`. 작업 Dispatch 가 없으므로 리뷰의 작업 retain 은 건너뛴다(설계 6.1 2). GNU `sed` 면 `sed -i ''` 를 `sed -i` 로 바꾼다(macOS 기본은 BSD `sed`).
+Expected: 커밋 하나(`[T-001] r1 …`), 마지막 줄 `working <바탕 커밋 sha>`. 삭제 버튼은 공통 클래스(`.btn` 의 `:focus-visible` 링)를 잃고 화면에 연결한 `src/todo.css` 의 `outline: none` 을 받아 키보드 포커스 표시가 사라진다(메뉴 버튼은 링이 그대로다). 작업 Dispatch 가 없으므로 리뷰의 작업 retain 은 건너뛴다(설계 6.1 2). GNU `sed` 면 `sed -i ''` 를 `sed -i` 로 바꾼다(macOS 기본은 BSD `sed`).
 
 - [ ] **Step 4: (1) 셸 코디네이터로 bind → lint → review → wait → review-finish**
 
@@ -4350,6 +4398,7 @@ git -C "$E2E/review" log --oneline -3
 - `text_findings` 가 이 여섯이다: `src/components/EmptyState.js:1` 의 금지 표기 "할일"→"할 일", `src/i18n/ko.json:1` 오탈자 "됬", `:2` 높임법 섞임(해요체 2줄, 하십시오체 1줄. 하십시오체 줄: 2), `:3` 상투어 "혁신적"·이중피동 "되어진", `:4` 챗봇 잔재 "물론입니다". i18n 변수 손상과 정책 문서의 의무 표현 변경은 자동 검사가 찾지 않는다(리뷰어가 본다).
 - 리뷰 프롬프트가 `## 기준` → `## 디자인 기준`(1–9) → `## 문구 기준` → `## REVIEW_FILE 형식` 순서이고 두 경고 목록이 있다.
 - Codex 리뷰 파일이 `VERDICT: REQUEST_CHANGES` 이고: 삭제 버튼 `aria-label` 제거 `(회귀)`·포커스 제거·확대 막기가 즉시 차단 P1, i18n 변수 `{count}` 손상·정책 의무 표현 변경("하여야 합니다" → "할 수 있습니다")이 문구 P1, 기존 이모지는 `(기존)` P3, 내용 그대로 옮긴 `Header.js` 는 지적하지 않는다. 보고서의 "어긴 곳 없음" 이 실제와 다르다고 적는다. 디자인 지적은 15개 이하, 렌더하지 못한 것은 "확인 못 함" 이다. `## 직접 확인한 것` 에 연 페이지(경로·폭) 또는 "렌더링은 코드로만 봤다: <이유>" 가 있다.
+- 화면에서 포커스 표시가 실제로 사라졌는지 운영자도 본다: Chrome DevTools MCP 로 `file://$E2E/review/src/index.html` 을 `new_page` 로 열고 `press_key` Tab 을 두 번(메뉴 버튼 → 삭제 버튼) 누른 뒤 `evaluate_script` 로 `[document.activeElement.dataset.action, getComputedStyle(document.activeElement).outlineStyle]` 이 `["delete", "none"]` 인지 보고, 자기가 연 페이지만 `close_page` 한다. 도구가 없으면 그렇게 적고 넘어간다.
 - 기대와 다르면(경고 누락·오탐, 판정·분류가 다름) 원인을 코드·프롬프트에서 찾는다. 자동 검사나 프롬프트의 결함이면 고친다(재현 테스트 먼저). 리뷰어 판단의 차이면 기록만 한다.
 
 - [ ] **Step 6: (1) 정리**
@@ -4362,21 +4411,24 @@ herdr-app do space.close --id "$S" --confirmed true
 
 Expected: 시험이 만든 터미널이 남지 않는다. 사용자의 다른 터미널은 그대로다.
 
-- [ ] **Step 7: (2) 플러그인을 시험 프로젝트 범위에만 설치하고 init**
+- [ ] **Step 7: (2) 플러그인을 이 세션에만 불러 init(설치하지 않는다)**
 
 ```bash
 herdr-app do space.new --name hteam-e2e-p4-revive --folder "$E2E/revive"   # 값을 $S2, $T2 로 적는다
-cd "$E2E/revive"
-claude plugin marketplace add "$REPO_ROOT" --scope project
-claude plugin install herdr-orch@herdr-team --scope project
-claude plugin install herdr-team@herdr-team --scope project
-cd "$REPO_ROOT"
+mkdir -p "$E2E/revive/.claude"
+python3 -c 'import json,sys; json.dump({"env": {"HERDR_TEAM_PLUGIN_ROOT": sys.argv[2]}}, open(sys.argv[1], "w"), indent=2)' \
+  "$E2E/revive/.claude/settings.local.json" "$REPO_ROOT/herdr-team"
 hc run --bg --json --no-parent --no-notify --name hteam-e2e4-main --cwd "$E2E/revive" \
   --label herdr.space="$S2" --label herdr.tab="$T2" -- \
-  claude --permission-mode bypassPermissions "/herdr-team:init 할 일 메모 웹 페이지(정적 HTML·JS). 이번 시험은 코디네이터 자동 부활만 본다."
+  claude --permission-mode bypassPermissions --plugin-dir "$REPO_ROOT/herdr-team" --plugin-dir "$REPO_ROOT/herdr-orch" \
+  "/herdr-team:init 할 일 메모 웹 페이지(정적 HTML·JS). 이번 시험은 코디네이터 자동 부활만 본다."
 ```
 
-`hc wait hteam-e2e4-main --timeout 600` 과 `hc read hteam-e2e4-main --lines 80` 으로 따라간다. init 4단계 표에서 director·designer 를 빼고(화면 디자인을 하지 않는다), `[agents.claude].args` 에 `--permission-mode=bypassPermissions` 를 승인한다(코디네이터가 사람 없이 돈다. Codex 우회는 승인하지 않는다). Expected: doctor 통과, scaffold 의 `created` 에 `.herdr-team/text-rules.md`, 코디네이터가 "팀" 탭에 bind, 메인이 watch 를 띄움, `setup-done` 뒤 `chore: herdr-team 세팅` 커밋. `.herdr-team/config.toml` 에 `auto_up = true` 가 있다.
+- `--plugin-dir` 는 그 세션에만 플러그인(스킬·훅)을 불러오고 설치 기록을 쓰지 않는다(`claude --help`). 플러그인 기록이 없으면 프로젝트 shim(`.herdr-team/bin/hteam`)이 플러그인을 찾지 못하므로(설계 3.4, exit 12 `plugin_missing`) 시험 프로젝트의 `.claude/settings.local.json` 의 `env` 로 `HERDR_TEAM_PLUGIN_ROOT` 를 준다. 이 프로젝트에서 뜨는 Claude 세션(메인, `hteam up` 이 띄우는 코디네이터)이 모두 받는다(hc 가 띄우는 프로그램의 환경에 기대지 않는다). 자동 실행한 `hteam up` 은 훅의 플러그인 루트(`bin/hteam`)를 바로 부르므로 shim 을 거치지 않는다.
+- init 4단계 표에서 director·designer 를 빼고(화면 디자인을 하지 않는다), `[agents.claude].args` 를 Other 로 `["--permission-mode=bypassPermissions", "--plugin-dir=<REPO_ROOT>/herdr-team", "--plugin-dir=<REPO_ROOT>/herdr-orch"]`(`<REPO_ROOT>` 는 실제 절대 경로)로 승인한다(코디네이터가 사람 없이 돈다. Codex 우회는 승인하지 않는다). `hteam up` 은 이 args 를 코디네이터 argv 에 그대로 붙인다(`setup.up`: `argv += [*cfg.args("claude"), "--", COORD_PROMPT]`. horch 는 Claude 워커에 `--agent-arg` 로 넘긴다). 그래서 코디네이터도 같은 플러그인(훅)을 받는다. init 이 이 줄을 넣지 않았으면 init 뒤 운영자가 `.herdr-team/config.toml` 에 넣는다(그 뒤 띄우는 코디네이터부터 적용된다). 그래도 이 시험은 된다: 이 시험의 코디네이터가 하는 일(`hteam bind`, `hteam wait`, `hteam notify`)은 shim 과 `HERDR_TEAM_PLUGIN_ROOT` 로 되고 플러그인 훅은 실수 방지용이다(설계 9.4).
+- `hc wait hteam-e2e4-main --timeout 600` 과 `hc read hteam-e2e4-main --lines 80` 으로 따라간다.
+
+Expected: doctor 통과, scaffold 의 `created` 에 `.herdr-team/text-rules.md`, 코디네이터가 "팀" 탭에 bind, 메인이 watch 를 띄움, `setup-done` 뒤 `chore: herdr-team 세팅` 커밋. `.herdr-team/config.toml` 에 `auto_up = true` 와 위 args 가 있다. 코디네이터 터미널의 `hc get <터미널> --json` 의 `argv` 에 `--plugin-dir=…` 둘이 있다(init 뒤 운영자가 넣었으면 Step 8 에서 다시 띄운 코디네이터부터 있다).
 
 - [ ] **Step 8: (2) 첫 확인 기록 → 코디네이터 끝내기 → REVIVED**
 
@@ -4401,18 +4453,13 @@ Expected: FAILED 문구, 메인 답변 첫 줄의 알림, 새로 띄우지 않�
 hc ls --all --json          # hteam-e2e4-main, hteam-coord-*, 셸로 바뀐 코디네이터 터미널을 찾는다
 hc kill <각 시험 터미널> --json; hc rm <각 시험 터미널> --json
 herdr-app do space.close --id "$S2" --confirmed true
-cd "$E2E/revive"
-claude plugin uninstall herdr-team@herdr-team --scope project
-claude plugin uninstall herdr-orch@herdr-team --scope project
-claude plugin marketplace remove herdr-team --scope project
-cd "$REPO_ROOT"
-diff <(python3 -m json.tool "$E2E/pre/installed_plugins.json") <(python3 -m json.tool ~/.claude/plugins/installed_plugins.json) || true
-diff <(python3 -m json.tool "$E2E/pre/known_marketplaces.json") <(python3 -m json.tool ~/.claude/plugins/known_marketplaces.json) || true
+cmp "$E2E/pre/installed_plugins.json" ~/.claude/plugins/installed_plugins.json && echo installed_plugins 같음
+cmp "$E2E/pre/known_marketplaces.json" ~/.claude/plugins/known_marketplaces.json && echo known_marketplaces 같음
 diff "$E2E/pre/codex-config.toml" ~/.codex/config.toml || true
 hc ls --all --json
 ```
 
-Expected: 시험이 만든 터미널이 남지 않는다. 사용자의 다른 터미널은 그대로다. 전역 플러그인 기록의 herdr 항목이 사라진다(다른 마켓플레이스의 `lastUpdated`, 플러그인 CLI 가 다시 쓰며 빠지는 최상위 `enabledPlugins` 키 차이만 남을 수 있다). Codex 설정 차이는 시험 폴더의 신뢰 항목뿐이다(지우지 않고 보고한다). 사용자에게 보고할 남은 것을 적는다: `~/.claude/plugins/cache/herdr-team/` 복사본, npx 캐시의 `chrome-devtools-mcp@1.10.1`, Codex 신뢰 항목과 세션 기록, `~/.claude.json` 의 시험 폴더 항목, `~/.claude/projects/` 의 시험 세션 기록, `$E2E` 폴더, 그 밖에 찾은 것.
+Expected: 시험이 만든 터미널이 남지 않는다. 사용자의 다른 터미널은 그대로다. `installed_plugins 같음`·`known_marketplaces 같음` 이 둘 다 나온다(플러그인을 설치하지 않았으므로 바이트까지 같아야 한다. 최상위 `enabledPlugins` 키도 그대로다). 다르면 실패로 적고 차이를 사용자에게 보고한다(스냅숏으로 덮어쓰지 않는다). Codex 설정 차이는 (1) 의 시험 폴더 신뢰 항목뿐이어야 한다(지우지 않고 보고한다). 사용자에게 보고할 남은 것을 적는다: npx 캐시의 `chrome-devtools-mcp@1.10.1`, Codex 신뢰 항목과 세션 기록, `~/.claude.json` 의 시험 폴더 항목, `~/.claude/projects/` 의 시험 세션 기록, `$E2E` 폴더(시험 프로젝트의 `.claude/settings.local.json` 포함), 그 밖에 찾은 것.
 
 - [ ] **Step 11: 설계 머리 상태 줄과 15.4 에 결과 기록**
 
@@ -4423,12 +4470,12 @@ Expected: 시험이 만든 터미널이 남지 않는다. 사용자의 다른 �
 ```markdown
 #### 4단계 (YYYY-MM-DD)
 
-환경: <hc·Claude Code·codex-cli·Python 버전>. 버리는 시험 프로젝트 둘을 새 space 에 만들었다. (1) 은 플러그인을 설치하지 않고 이 저장소의 `hteam` 을 셸 코디네이터에서 불렀고, (2) 는 플러그인을 시험 프로젝트 범위에만 설치했다(끝나고 제거).
+환경: <hc·Claude Code·codex-cli·Python 버전>. 버리는 시험 프로젝트 둘을 새 space 에 만들었다. 플러그인은 설치하지 않았다: (1) 은 이 저장소의 `hteam` 을 셸 코디네이터에서 불렀고, (2) 는 메인·코디네이터를 `claude --plugin-dir` 로 띄우고 shim 에 `HERDR_TEAM_PLUGIN_ROOT`(시험 프로젝트 `.claude/settings.local.json`)를 줬다. 전역 플러그인 기록은 시작 전과 같았다(<cmp 결과>).
 
 - (1) 리뷰만: <scaffold(text-rules.md·developer owns·auto_up), 바탕·가짜 워커 커밋, 셸 코디네이터 bind·review·review-finish 출력>
 - (1) 자동 검사: <lint --task 의 findings(지운 aria-label 은 옛 경로 이름, 포커스 제거, 확대 막기, 기존 이모지, 내용 그대로 옮긴 파일 없음)와 text_findings(분류별)>
-- (1) 리뷰 프롬프트와 Codex 판정: <절 순서, 즉시 차단 P1·문구 P1·(기존) P3·옮긴 파일 미지적, 보고서 "어긴 곳 없음" 지적, 디자인 지적 수, 렌더링 방법, 판정 커밋>
-- (2) init 과 첫 확인: <init 4단계 표, 코디네이터 bind, 첫 프롬프트의 checked_at>
+- (1) 리뷰 프롬프트와 Codex 판정: <절 순서, 즉시 차단 P1·문구 P1·(기존) P3·옮긴 파일 미지적, 보고서 "어긴 곳 없음" 지적, 디자인 지적 수, 렌더링 방법, 판정 커밋, 운영자가 본 삭제 버튼의 포커스(outlineStyle)>
+- (2) init 과 첫 확인: <init 4단계 표, `[agents.claude].args` 의 `--plugin-dir`, 코디네이터 bind 와 argv, 첫 프롬프트의 checked_at>
 - (2) REVIVED: <kill 뒤 hc get 상태(exited·lost), 프롬프트의 문구와 메인 첫 줄, auto-up.log 머리·launched, spawned_at(T), 새 코디네이터 bind mode use, tell → progress 로 메일함 이어짐>
 - (2) FAILED: <두 번째 kill 시각(T+…초), 문구, 새로 띄우지 않음, spawned_at 그대로>
 - 발견한 문제와 처리: <없음 또는 목록(고친 커밋, Codex 리뷰 결과)>
@@ -4491,9 +4538,18 @@ main 에 병합하지 않는다(컨트롤러가 herdr-team 0.2.0 병합을 한�
 4. textlint 세부: 번역투의 일치 글자는 "에 있어서" 또는 "에 있어"(뒤 공백은 넣지 않는다). 쉼표 세 규칙을 한 정규식으로 묶어 "하지만," 을 "지만," 으로 다시 세지 않는다. 영문 상투어의 낱말 경계는 앞뒤에 영문·숫자·`_` 가 붙지 않는 것이다(한글이 붙어도 잡는다). Markdown 인라인 코드는 공백 하나로 바꿔 지운다. 높임법 섞임의 적은 쪽 줄이 5개를 넘으면 `, …` 를 붙인다. 용어집의 쓰지 않는 표기는 쉼표(ASCII·전각)로 나누고, 금지 칸이 빈 행은 덮기 판정에도 쓰지 않는다(설계 "그 행을 무시한다").
 5. 이름: `compose.guarded`·`findings_list`·`design_findings`·`text_findings`·`text_section`, `textlint.targets`·`scan`·`text_lint`·`load_glossary`·`visible_lines`·`ending_styles`, `designdiff.design_diff_lint`·`has_focus_alternative`, `autoup.decide`·`check`·`spawn_up`·`within`, 훅의 `auto_up`·`HOOK_START`, `Project.text_rules`·`auto_up`·`auto_up_pid`·`auto_up_log`, `Config.auto_up`. `hteam lint --task` 는 `compose.design_findings`·`text_findings` 를 그대로 써서 리뷰 프롬프트와 같은 목록을 낸다.
 6. designdiff 세부: 확대 막기는 한 줄에 하나(발췌는 첫 일치 위치부터), 포커스 제거의 발췌는 줄 전체, `maximumScale` 에도 뒤 조건(숫자·`.` 아님)을 붙인다. 대체 포커스의 Tailwind `focus:` 클래스는 콜론 뒤 `!` 를 떼고 클래스 낱말로 비교한다.
-7. autoup 세부: `auto-up.pid` 를 "쓴 지" 는 mtime 이다. `STARTING_S` 는 `coord.STARTING_S` 와 같은 값을 따로 둔다(시험이 같은지 본다). 훅 시작 시각은 훅 스크립트를 불러온 때다. 판정·띄우기의 예외는 `check` 가 `checked_at` 만 쓰려 한 뒤 다시 내고, 훅이 `auto-up` 라벨로 기록한다(설계 9.5 "훅의 예외 처리가 `checked_at` 만 쓰려 한다" 를 `check` 안에서 한다). 시험은 마감을 줄이려고 `autoup.HOOK_DEADLINE_S` 를 패치하고 4초 규칙은 훅 모듈의 `HOOK_START` 를 당긴다(환경 변수 조정값을 새로 두지 않는다).
-8. 실환경 (1) 의 시험 파일: 설계 15.2 (1) 의 항목을 정한 파일로 옮겼다(Task 6 Step 2·3). 계획 작성 때 그 Step 2·3 과 `lint --task` 를 가짜 없이 돌려 Step 5 의 `findings`·`text_findings` 를 얻었다. 셸 코디네이터는 플러그인을 설치하지 않고 이 저장소의 `herdr-team/bin/hteam` 을 부르고, 태스크 상태 파일은 hteam 의 `state`·`tasks._new_round` 로 쓴다(손으로 JSON 을 짓지 않는다).
+7. autoup 세부: `auto-up.pid` 를 "쓴 지" 는 mtime 이다. `STARTING_S` 는 `coord.STARTING_S` 와 같은 값을 따로 둔다(시험이 같은지 본다). 훅 시작 시각은 훅 스크립트를 불러온 때다. 판정·띄우기의 예외는 `check` 가 `checked_at` 만 쓰려 한 뒤 다시 내고, 훅이 `auto-up` 라벨로 기록한다(설계 9.5 "훅의 예외 처리가 `checked_at` 만 쓰려 한다" 를 `check` 안에서 한다). 시험은 `autoup._clock` 을 가상 시계로 바꾸고 패치한 단계가 시계를 옮겨 남은 시간을 정한다. 훅의 4초 규칙은 훅 모듈의 `HOOK_START` 를 5초 당긴다(환경 변수 조정값을 새로 두지 않는다).
+8. 실환경 (1) 의 시험 파일: 설계 15.2 (1) 의 항목을 정한 파일로 옮겼다(Task 6 Step 2·3). 계획 작성 때 그 Step 2·3 과 `lint --task` 를 가짜 없이 돌려 Step 5 의 `findings`·`text_findings` 를 얻었다. 셸 코디네이터는 이 저장소의 `herdr-team/bin/hteam` 을 부르고, 태스크 상태 파일은 hteam 의 `state`·`tasks._new_round` 로 쓴다(손으로 JSON 을 짓지 않는다). 시험 화면은 `file://` 로 그려지게 ES 모듈 대신 `<script>` 를 쓴다. 실환경은 플러그인을 설치하지 않는다: (2) 는 `claude --plugin-dir` 와 시험 프로젝트 `.claude/settings.local.json` 의 `HERDR_TEAM_PLUGIN_ROOT` 로 한다.
 9. 테스트 파일 배치(설계 15.1 이 나눠 두라고 한 것): text-rules·review-text·review-prompt 자리 → `test_review.py` 의 `TextTemplateTest`, design-rules·review-design·직무 문서 → `test_design_docs.py` 의 `DesignRulesTest`·`TextRulesDocTest`, 메인 규칙·설정 템플릿·up 스킬의 자동 부활 → `test_setup.py` 의 `test_auto_up_in_templates`, `herdr.probe`·`procs` 의 시간 제한 → `test_config.py` 의 `ProbeTimeoutTest`.
+
+## Codex 계획 리뷰 r1 의 처리(`.codex-reviews/team-p4-plan-r1.md`, P0·P1 없음, P2 4)
+
+| # | 지적 | 처리 | 고친 곳 |
+|---|---|---|---|
+| 1 | [P2] 실환경 정리가 사용자 `installed_plugins.json` 의 최상위 `enabledPlugins` 키 손실을 허용한다(2·3단계에서 플러그인 CLI 가 실제로 떨어뜨렸다) | 고침. 플러그인을 설치하지 않는다. (2) 의 메인은 `claude --plugin-dir <저장소>/herdr-team --plugin-dir <저장소>/herdr-orch`(그 세션에만), 시험 프로젝트 `[agents.claude].args` 에 같은 `--plugin-dir=…` 둘(`setup.up` 이 코디네이터 argv 에 이 args 를 붙인다는 것을 코드로 확인), shim 은 시험 프로젝트 `.claude/settings.local.json` 의 `HERDR_TEAM_PLUGIN_ROOT` 로 플러그인을 찾는다(플러그인 기록이 없으면 shim 이 exit 12 다). 전역 파일 셋은 시작 전 스냅숏과 끝의 `cmp`·`diff` 가 같아야 성공이다(Codex 신뢰 항목만 예외로 보고, 다르면 실패로 보고하고 덮어쓰지 않는다). 설치·제거 단계를 뺐다 | Task 6 안전 규칙, Step 1·7·10·11 |
+| 2 | [P2] `compose.text_section` 이 `textlint.targets()` 를 `guarded` 밖에서 부른다(예외가 리뷰를 멈춘다) | 고침. 대상 판정이 예외로 끝나면 문구 절을 붙이고 경고 자리에 `compose.failure` 한 줄을 넣는다. 그 경우 리뷰가 진행되는(`reviewing`, 프롬프트에 한 줄) 시험을 더했다. 디자인 절은 같은 구조가 아니다: 붙는 조건은 직무·설정뿐이고 파일을 읽는 일은 모두 두 검사(designdiff·내용 검사) 안이며 둘 다 `guarded` 다(고칠 것 없음) | Task 1 `compose.py`, `test_review.py` 의 `test_target_check_failure_keeps_the_section_and_the_review_goes_on` |
+| 3 | [P2] 실환경의 `src/todo.css` 를 화면이 불러오지 않는다 | 고침. 가짜 워커 커밋이 `index.html` 에 `todo.css` 링크를 더한다. 시험 화면은 `file://` 로 그려지게 ES 모듈 대신 `<script>` 로 바꿨다. 운영자가 Chrome DevTools MCP 로 Tab 두 번 뒤 삭제 버튼의 `outlineStyle` 이 `none` 인지 본다. Step 2·3·`lint --task` 를 다시 가짜 없이 돌려 기대 출력(4개·6개, `src/index.html:3` 의 확대 막기 발췌 포함)이 같음을 확인했다 | Task 6 Step 2·3·5 |
+| 4 | [P2] 마감 시험(`delay 1.95` 대 마감 2.9, "남은 시간 > 1.5")이 실행 속도에 기댄다 | 고침. `autoup._clock` 을 두고 시험은 가상 시계로 바꾼다. 패치한 단계(ps·hc·sh)가 시계를 정한 만큼 옮겨 남은 시간을 고정하고 시간 제한 값을 정확히 비교한다(`(5, 3, 5, 5)`, `(5, 3, 2, 1.5)`). 띄운 뒤 시간이 모자라는 경우도 실제 분리 실행 대신 가상 시계로 본다. 실제 분리 실행 시험(`SpawnTest`)은 결과(프로세스 종료·pid 파일·로그·`run.json`)만 본다. test_autoup 22개가 16.9초에서 7.4초로 줄었다 | Task 4 `autoup.py`, `test_autoup.py` 의 `Clock`·`BudgetTest` |
 
 ## 4단계에 넣지 않은 것
 
