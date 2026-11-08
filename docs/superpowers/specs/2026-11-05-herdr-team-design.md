@@ -441,6 +441,7 @@ exclusive = false     # 선택, 기본 false. true 면 테스트 실행을 한 �
   - `[test]: 모르는 키 {정렬한 키를 ", " 로}`
   - quick·full 각각 문자열이 아니거나 앞뒤 공백을 뗀 뒤 비면 `[test]: {이름} 는 비지 않은 명령 문자열이어야 한다`
   - 비지 않은 quick 에 `{files}` 가 정확히 한 번이 아니면 `[test]: quick 은 {files} 를 정확히 한 번 담는다`
+  - quick 의 `{files}` 가 셸 따옴표·`$( )`·백틱 문맥의 따옴표 안이거나 `\` 바로 뒤면 `[test]: quick 의 {files} 는 따옴표 밖에 둔다(hteam 이 파일을 따로 인자로 넘긴다)`
   - full 이 문자열이고 `{files}` 를 담으면 `[test]: full 은 {files} 를 담지 않는다`
   - timeout_min 이 정수(불리언 제외)가 아니거나 1–240 밖이면 `[test]: timeout_min 은 1–240 정수`
   - ok_exit 가 비지 않은 정수(불리언 제외) 목록이 아니면 `[test]: ok_exit 는 정수 목록`
@@ -489,7 +490,7 @@ exclusive = false     # 선택, 기본 false. true 면 테스트 실행을 한 �
 - 상태: 끝나지 않음(시간 초과) → `timeout`, exit 126·127 → `unrunnable`(`ok_exit` 보다 먼저 본다), `ok_exit` 안 → `passed`, 그 밖 → `failed`. 결과 `{status, exit, seconds(단조 시계, 소수 한 자리), tail}`.
 - tail: 로그 끝 64 KiB 만 읽어 UTF-8(바꿈 문자)로 풀고, 공백뿐인 줄을 빼고, 줄마다 300자로 자르고, 마지막 60줄을 줄바꿈으로 잇는다. 읽지 못하면 빈 문자열.
 - exclusive 잠금: `exclusive = true` 면 명령 한 번(시도 하나) 동안만 `.herdr-team/state/tests/.lock` 의 flock 을 쥔다. 비차단으로 0.2초마다 시도하고 대기 상한은 `timeout_min × 60` 초다. 넘으면 exit 4 `test_lock_timeout`(`테스트 잠금(exclusive)을 {N}초 안에 얻지 못했다. 다른 테스트 실행이 끝난 뒤 다시 한다`). 이 잠금은 비차단 시도라 hteam 의 다른 잠금(프로젝트 → finish → 태스크, 13장)과 교착하지 않는다.
-- quick(`run_quick`): 파일이 없으면 돌리지 않고 `{status: "skipped", exit: null, seconds: 0.0, command: null, log: null, tail: "", files: []}`(통과로 본다). 명령은 `quick` 의 `{files}` 를 셸 인용(`shlex.quote`)한 파일들을 공백으로 이은 것으로 바꾼 것이다. 1차(`-quick-a1`)가 `failed` 가 아니면(passed·timeout·unrunnable) 그대로 끝난다(시간 초과는 다시 돌리지 않는다). 1차가 `failed` 면 바로 2차(`-quick-a2`). 2차가 passed 면 `status: "flaky"` 와 `first: {exit, log}`(1차), 아니면 2차 결과다. 결과에 `files`.
+- quick(`run_quick`): 파일이 없으면 돌리지 않고 `{status: "skipped", exit: null, seconds: 0.0, command: null, log: null, tail: "", files: []}`(통과로 본다). 실행은 `{files}` 를 `"$@"` 로 바꾼 스크립트를 `/bin/sh -c <스크립트> sh <파일들>` 로 돌린다(파일 이름이 셸 문법으로 다시 읽히지 않는다). 기록·로그의 `command` 는 보이기용으로 `{files}` 를 셸 인용한 파일들로 바꾼 문자열이다. 1차(`-quick-a1`)가 `failed` 가 아니면(passed·timeout·unrunnable) 그대로 끝난다(시간 초과는 다시 돌리지 않는다). 1차가 `failed` 면 바로 2차(`-quick-a2`). 2차가 passed 면 `status: "flaky"` 와 `first: {exit, log}`(1차), 아니면 2차 결과다. 결과에 `files`.
 - full 은 한 번만 돈다.
 
 기록(`run_task`·`run_final`):
@@ -504,7 +505,7 @@ exclusive = false     # 선택, 기본 false. true 면 테스트 실행을 한 �
 
 - 테스트는 다른 워커가 일하는 같은 작업 폴더에서 돈다. 커밋 안 된 다른 파일이 결과에 섞일 수 있다(`dirty` 로 가르기만 한다).
 - quick 의 "관련 테스트" 는 테스트 도구의 판단(import 관계)에 기댄다. 동적 import·설정 파일·테스트 데이터 변경은 놓칠 수 있고 묶음 full 이 잡는다.
-- 바뀐 파일이 아주 많으면 `{files}` 명령이 인자 길이 제한에 걸릴 수 있다. `-` 로 시작하는 파일 이름은 셸 인용만 하므로 테스트 도구가 옵션으로 읽을 수 있다. `{files}` 에 코드가 아닌 파일(md·json·잠금 파일)도 들어간다(pytest 는 감싸는 스크립트가 필요하다).
+- 바뀐 파일이 아주 많으면 `{files}` 명령이 인자 길이 제한에 걸릴 수 있다. `-` 로 시작하는 파일 이름은 셸 인용만 하므로 테스트 도구가 옵션으로 읽을 수 있다. `{files}` 에 코드가 아닌 파일(md·json·잠금 파일)도 들어간다(pytest 는 감싸는 스크립트가 필요하다). 사용자가 확정한 명령이 값을 스스로 다시 해석하면(eval, 변수를 거친 산술 `x="$1"; $((x))`) 막지 못한다.
 - 로그 이름이 초 단위 시각이라 같은 태스크·종류를 1초 안에 두 번 돌리면 겹친다. 로그는 지우지 않고 쌓인다.
 - 126·127 을 `ok_exit` 보다 먼저 봐서 `ok_exit` 에 넣어도 실행 불가다.
 - 같은 태스크 테스트를 동시에 돌리면(백그라운드 `--full` 과 quick) 기록 파일을 잠그지 않고 읽고 써서 한 종류의 기록을 잃을 수 있다(잃으면 리뷰 관문이 다시 돌린다).

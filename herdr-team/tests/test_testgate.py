@@ -39,7 +39,7 @@ class ConfigTest(unittest.TestCase):
                           "[test]: ok_exit 는 정수 목록"])
         self.assertEqual(testgate.config_problems({"quick": "a {files} {files}", "full": "b", "timeout_min": 241})[0],
                          "[test]: quick 은 {files} 를 정확히 한 번 담는다")
-        quoted = "[test]: quick 의 {files} 는 따옴표 밖에 둔다(hteam 이 파일마다 인용한다)"
+        quoted = "[test]: quick 의 {files} 는 따옴표 밖에 둔다(hteam 이 파일을 따로 인자로 넘긴다)"
         for bad in ('fake-test "{files}"', "fake-test '{files}'", 'x "a $(b)" "{files}"', "x 'a' \"p {files} q\"",
                     'x "$(echo "{files}")"', "pytest \\{files}", 'pytest "\\{files}"', "x '$( {files}", "pytest a#b' {files}"):
             self.assertEqual(testgate.config_problems({"quick": bad, "full": "b"}), [quoted], bad)
@@ -299,6 +299,7 @@ class QuickTest(GateCase):
         self.assertEqual((code, out["status"]), (0, "passed"), out)
         self.assertEqual(self.gate_calls()[-1]["args"], ["src/$(touch INJECTED).py"])
         self.assertFalse((self.proj / "INJECTED").exists())
+        self.assertEqual(out["command"], "fake-test 'src/$(touch INJECTED).py'")
 
     def test_final_full_records_the_head_it_started_on(self):
         self.commit("docs/planning/tasks.toml", '[test]\nquick = "fake-test {files}"\n'
@@ -378,6 +379,23 @@ class ExecuteTest(GateCase):
         out = self.run_execute("sleep 30 & sleep 30", 0.5)
         self.assertEqual((out["status"], out["exit"]), ("timeout", None))
         self.assertLess(time.monotonic() - start, 10)
+
+    def test_file_names_are_arguments_not_shell_text(self):
+        # 검사를 거치지 않는 경로: 따옴표·백틱 문맥의 {files} 라도 파일 이름은 셸 문법으로 다시 읽히지 않는다
+        self.env["FAKE_DIR"] = str(self.tmp / "fake")
+        files = ["src/$(touch INJECTED).py", "src/`touch INJECTED2`.py", "src/a[$(touch INJECTED3)].py"]
+        for i, quick in enumerate(('fake-test "{files}"', 'out=`fake-test {files}`; true', "fake-test {files}")):
+            cfg = testgate.GateConfig(quick, "fake-test --all", 30, (0,), False)
+            with mock.patch.dict(os.environ, self.env, clear=True):
+                out = testgate.run_quick(self.p, cfg, files, f"x{i}")
+            self.assertEqual(out["status"], "passed", out)
+            for name in ("INJECTED", "INJECTED2", "INJECTED3"):
+                self.assertFalse((self.proj / name).exists(), (quick, name))
+        self.assertEqual(self.gate_calls()[-1]["args"], files)
+        self.assertEqual(out["command"], "fake-test 'src/$(touch INJECTED).py' 'src/`touch INJECTED2`.py' "
+                         "'src/a[$(touch INJECTED3)].py'")
+        shown = (self.proj / out["log"]).read_text().splitlines()[0]
+        self.assertEqual(shown, "$ " + out["command"])
 
     def test_term_ignoring_child_is_killed(self):
         pid_file = self.tmp / "child.pid"

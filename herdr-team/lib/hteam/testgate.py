@@ -61,9 +61,9 @@ def _int(value) -> bool:
 
 
 def _quoted_files(command: str) -> bool:
-    """`{files}` 가 셸 따옴표 안에 있는가. hteam 은 파일마다 shlex.quote 로 인용해 넣으므로 이미 따옴표 안이면(또는 앞에
-    가려지지 않은 역슬래시가 있으면: 첫 작은따옴표를 가린다) 인용이 깨져 파일 이름이 셸에서 실행된다. `$(...)`·백틱 안은
-    새 인용 문맥이라 맨 위 문맥만 본다. 따옴표 밖 단어 시작의 `#` 는 줄 끝까지 주석이다."""
+    """`{files}` 가 셸 따옴표 안에 있는가(또는 앞에 가려지지 않은 역슬래시가 있는가). 보안은 위치 인자가 맡고(파일은
+    `"$@"` 로 넘어가 셸 문법으로 다시 읽히지 않는다) 이 검사는 잘못 쓴 설정을 알린다: 따옴표 안의 `"$@"` 는 파일이 따로
+    넘어가지 않는다. `$(...)`·백틱 안은 새 인용 문맥이라 맨 위 문맥만 본다. 따옴표 밖 단어 시작의 `#` 는 줄 끝까지 주석이다."""
     stack = [["top", ""]]  # [종류(top·$(·`), 따옴표(""·'·")]
     i = 0
     while i < len(command):
@@ -120,7 +120,7 @@ def config_problems(raw) -> list[str]:
     if isinstance(quick, str) and quick.strip() and quick.count("{files}") != 1:
         found.append("[test]: quick 은 {files} 를 정확히 한 번 담는다")
     if isinstance(quick, str) and _quoted_files(quick):
-        found.append("[test]: quick 의 {files} 는 따옴표 밖에 둔다(hteam 이 파일마다 인용한다)")
+        found.append("[test]: quick 의 {files} 는 따옴표 밖에 둔다(hteam 이 파일을 따로 인자로 넘긴다)")
     if isinstance(full, str) and "{files}" in full:
         found.append("[test]: full 은 {files} 를 담지 않는다")
     timeout = raw.get("timeout_min", DEFAULT_TIMEOUT_MIN)
@@ -397,16 +397,16 @@ def read_tail(log: Path) -> str:
     return "\n".join(lines[-TAIL_LINES:])
 
 
-def execute(p, command: str, log: Path, timeout_s: float, ok_exit) -> dict:
-    """`/bin/sh -c <명령>`, cwd 프로젝트 루트, stdin /dev/null, 출력은 로그 하나, 새 세션(자기 프로세스 그룹).
+def execute(p, command: str, log: Path, timeout_s: float, ok_exit, args=(), shown: str | None = None) -> dict:
+    """`/bin/sh -c <명령> sh <args…>`(args 는 위치 인자 $1…), 로그 첫 줄은 shown(없으면 명령). cwd 프로젝트 루트, stdin /dev/null, 출력은 로그 하나, 새 세션(자기 프로세스 그룹).
     hteam 이 중단되면(SIGINT·SIGTERM) 그룹을 끝내고 다시 올린다(기록 없이 끝난다)."""
     log.parent.mkdir(parents=True, exist_ok=True)
     start = time.monotonic()
     with open(log, "w", encoding="utf-8") as fh:
-        fh.write(f"$ {show(command)}\n")  # 첫 줄 하나. 여러 줄 명령의 줄바꿈은 \n 으로 보인다
+        fh.write(f"$ {show(shown or command)}\n")  # 첫 줄 하나. 여러 줄 명령의 줄바꿈은 \n 으로 보인다
         fh.flush()
         try:
-            proc = subprocess.Popen(["/bin/sh", "-c", command], cwd=str(p.root), stdin=subprocess.DEVNULL, stdout=fh,
+            proc = subprocess.Popen(["/bin/sh", "-c", command, "sh", *args], cwd=str(p.root), stdin=subprocess.DEVNULL, stdout=fh,
                                     stderr=subprocess.STDOUT, start_new_session=True, env=_env())
         except OSError as exc:
             raise HteamError("test_unrunnable", f"[test] 명령을 실행하지 못했다: {exc}", USAGE) from None
@@ -452,12 +452,12 @@ def run_lock(p, cfg: GateConfig, wait_s: float) -> Iterator[None]:
 
 
 def attempt(p, cfg: GateConfig, command: str, name: str, timeout_s: float | None = None,
-            lock_wait: float | None = None) -> dict:
+            lock_wait: float | None = None, args=(), shown: str | None = None) -> dict:
     limit = cfg.timeout_min * 60
     with run_lock(p, cfg, limit if lock_wait is None else lock_wait):
         log = log_path(p, name)
-        result = execute(p, command, log, limit if timeout_s is None else timeout_s, cfg.ok_exit)
-    return {"command": command, "log": log.relative_to(p.root).as_posix(), **result}
+        result = execute(p, command, log, limit if timeout_s is None else timeout_s, cfg.ok_exit, args, shown)
+    return {"command": shown or command, "log": log.relative_to(p.root).as_posix(), **result}
 
 
 def run_quick(p, cfg: GateConfig, files: list[str], name: str) -> dict:
@@ -465,11 +465,13 @@ def run_quick(p, cfg: GateConfig, files: list[str], name: str) -> dict:
     if not files:
         return {"status": "skipped", "exit": None, "seconds": 0.0, "command": None, "log": None, "tail": "",
                 "files": []}
-    command = cfg.quick.replace("{files}", " ".join(shlex.quote(f) for f in files))
-    first = attempt(p, cfg, command, f"{name}-quick-a1")
+    # 파일은 위치 인자로 넘긴다: 이름이 셸 문법으로 다시 읽히지 않는다. 기록·로그에 보이는 명령만 shlex.quote 한 문자열이다
+    script = cfg.quick.replace("{files}", '"$@"')
+    shown = cfg.quick.replace("{files}", " ".join(shlex.quote(f) for f in files))
+    first = attempt(p, cfg, script, f"{name}-quick-a1", args=files, shown=shown)
     if first["status"] != "failed":  # 시간 초과는 다시 돌리지 않는다
         return {**first, "files": files}
-    second = attempt(p, cfg, command, f"{name}-quick-a2")
+    second = attempt(p, cfg, script, f"{name}-quick-a2", args=files, shown=shown)
     if second["status"] == "passed":
         return {**second, "status": "flaky", "first": {"exit": first["exit"], "log": first["log"]}, "files": files}
     return {**second, "files": files}
