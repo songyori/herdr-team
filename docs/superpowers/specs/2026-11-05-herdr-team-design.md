@@ -477,7 +477,7 @@ exclusive = false     # 선택, 기본 false. true 면 테스트 실행을 한 �
 - quick 파일: 작업 커밋이 바꾼 파일(프로젝트 기준, `review.changed_files`) 가운데 보고서 경로 밖이고 프로젝트 안(`../` 아님)이며 지금 작업 트리에 일반 파일로 있는 것(지운 파일 제외), 정렬.
 - quick 사전 거부(실행 전, quick 만): 작업 커밋이 없으면 exit 2 `no_work_commit`(`` 아직 `[T-xxx]` 작업 커밋이 없다. 작업을 먼저 커밋한 뒤 hteam test 를 돌린다(quick 은 커밋된 변경만 본다) ``). 상태의 owns 안이고 보고서 경로 밖인 커밋 안 된 변경(`gitio.dirty`: 추적 파일 변경과 추적하지 않는 새 파일. 무시된 파일은 안 나온다)이 있으면 exit 2 `uncommitted_owned`(`` T-xxx: 소유 경로에 커밋하지 않은 변경이 있다: {a, b}. quick 은 커밋된 변경만 본다. 워커는 커밋하거나 지운 뒤 hteam test 를 다시 돌린다. 리뷰에서 나왔으면 `hteam fix T-xxx --note "커밋 안 된 파일을 커밋하거나 지운다"` 로 되돌려 보낸다 ``). 커밋 전에 돌린 quick 이 통과로 기록돼 리뷰에서 재사용되는 구멍을 막는다. full 은 이 검사를 하지 않는다.
 - `dirty`(실행 직후): 추적 파일의 커밋 안 된 변경(`gitio.tracked_changes`, 추적하지 않는 파일 제외) 가운데 허용 경로 밖, 정렬. 태스크 실행은 허용 = 상태 owns + `docs/tasks/T-xxx/**`, 태스크 없는 full 은 허용 없음. 다른 워커의 작업 중 파일 탓인 실패를 리뷰어가 가르는 데 쓴다.
-- 이 단계의 `git status` 조회(`gitio.dirty`·`tracked_changes`)는 `GIT_OPTIONAL_LOCKS=0` 으로 부른다(`gitio.run` 에 환경 인자). `hteam test` 는 워커가 자주 부르므로 status 가 index 를 새로 쓰며 `index.lock` 을 쥐어 다른 워커의 커밋을 실패시키지 않게 한다(orca-team `READ_ONLY_GIT`). `git show`·`cat-file` 은 index 를 잠그지 않는다.
+- 이 단계의 `git status` 조회(`gitio.dirty`·`modified_tracked`)는 `GIT_OPTIONAL_LOCKS=0` 으로 부른다(`git diff` 에는 효과가 없어, diff 기반인 `tracked_changes` 는 index 를 쓸 수 있다. 관문의 dirty 조회는 status 기반 `modified_tracked`)(`gitio.run` 에 환경 인자). `hteam test` 는 워커가 자주 부르므로 status 가 index 를 새로 쓰며 `index.lock` 을 쥐어 다른 워커의 커밋을 실패시키지 않게 한다(orca-team `READ_ONLY_GIT`). `git show`·`cat-file` 은 index 를 잠그지 않는다.
 
 실행(`execute`):
 

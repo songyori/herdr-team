@@ -60,6 +60,25 @@ def _int(value) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _quoted_files(command: str) -> bool:
+    """`{files}` 가 셸 따옴표(작은·큰따옴표) 안에 있는가. hteam 은 파일마다 shlex.quote 로 인용해 넣으므로 이미 따옴표
+    안이면 인용이 깨져 파일 이름이 셸에서 실행된다. 따옴표 밖의 역슬래시는 다음 글자를 가리고, 큰따옴표 안에서도 그렇다."""
+    quote, i = "", 0
+    while i < len(command):
+        ch = command[i]
+        if command.startswith("{files}", i) and quote:
+            return True
+        if ch == "\\" and quote != "'":
+            i += 2
+            continue
+        if quote:
+            quote = "" if ch == quote else quote
+        elif ch in "'\"":
+            quote = ch
+        i += 1
+    return False
+
+
 def config_problems(raw) -> list[str]:
     """`[test]` 형식 검사(설계 5.7). 해당하는 문제를 모두 모은다. 문구는 orca-team 원문 그대로다."""
     if not isinstance(raw, dict):
@@ -75,6 +94,8 @@ def config_problems(raw) -> list[str]:
     quick, full = raw.get("quick"), raw.get("full")
     if isinstance(quick, str) and quick.strip() and quick.count("{files}") != 1:
         found.append("[test]: quick 은 {files} 를 정확히 한 번 담는다")
+    if isinstance(quick, str) and _quoted_files(quick):
+        found.append("[test]: quick 의 {files} 는 따옴표 밖에 둔다(hteam 이 파일마다 인용한다)")
     if isinstance(full, str) and "{files}" in full:
         found.append("[test]: full 은 {files} 를 담지 않는다")
     timeout = raw.get("timeout_min", DEFAULT_TIMEOUT_MIN)
@@ -300,7 +321,7 @@ def check_committed(p, st: dict, commits: list[dict]) -> None:
 def dirty_files(p, allowed: list[str]) -> list[str]:
     """실행 직후 추적 파일의 커밋 안 된 변경(추적하지 않는 파일 제외) 가운데 allowed 밖, 정렬."""
     prefix = gitio.top_prefix(p.root)
-    found = (gitio.from_top(prefix, x) for x in gitio.tracked_changes(p.root))
+    found = (gitio.from_top(prefix, x) for x in gitio.modified_tracked(p.root))
     return sorted(x for x in found if x.startswith("../") or not matches_any(x, allowed))
 
 
@@ -480,11 +501,13 @@ def run_task(p, tid: str, kind: str) -> dict:
 def run_final(p) -> dict:
     """태스크 없는 full(마무리, 설계 8.4): `state/tests/final.json` 의 full."""
     cfg = approved_config(p)
+    start = gitio.head(p.root)  # 실행 전 HEAD 로 기록한다: 실행 중 들어온 커밋에 passed 가 붙지 않게
     result = attempt(p, cfg, cfg.full, "final-full")
     if result["status"] == "unrunnable":
         raise _unrunnable(result)
-    entry = {"head": gitio.head(p.root), "config": digest(cfg), **result, "dirty": dirty_files(p, []),
-             "at": _local_now()}
+    end = gitio.head(p.root)
+    entry = {"head": start, "head_moved": end if end != start else None, "config": digest(cfg), **result,
+             "dirty": dirty_files(p, []), "at": _local_now()}
     _save(p.tests / "final.json", "full", entry)
     return {"task": None, "kind": "full", **entry}
 

@@ -39,6 +39,11 @@ class ConfigTest(unittest.TestCase):
                           "[test]: ok_exit 는 정수 목록"])
         self.assertEqual(testgate.config_problems({"quick": "a {files} {files}", "full": "b", "timeout_min": 241})[0],
                          "[test]: quick 은 {files} 를 정확히 한 번 담는다")
+        quoted = "[test]: quick 의 {files} 는 따옴표 밖에 둔다(hteam 이 파일마다 인용한다)"
+        for bad in ('fake-test "{files}"', "fake-test '{files}'", 'x "a $(b)" "{files}"', "x 'a' \"p {files} q\""):
+            self.assertEqual(testgate.config_problems({"quick": bad, "full": "b"}), [quoted], bad)
+        for good in ('fake-test "a b" {files}', "fake-test 'a b' \\' {files}", 'x "{" {files}'):
+            self.assertEqual(testgate.config_problems({"quick": good, "full": "b"}), [], good)
         with self.assertRaises(HteamError) as cm:
             testgate.parse_config({"quick": "a"})
         self.assertEqual((cm.exception.code, cm.exception.exit_code), ("bad_test_config", 2))
@@ -285,6 +290,23 @@ class QuickTest(GateCase):
         code, out = self.run_test("T-002")
         self.assertEqual((code, out["head"], out["files"]), (0, code_sha, ["tests/grp/test_a.py"]), out)
 
+    def test_command_substitution_in_file_name_is_not_run(self):
+        self.commit("src/$(touch INJECTED).py", "a\n", "[T-001] 이름에 명령 치환")
+        code, out = self.run_test("T-001")
+        self.assertEqual((code, out["status"]), (0, "passed"), out)
+        self.assertEqual(self.gate_calls()[-1]["args"], ["src/$(touch INJECTED).py"])
+        self.assertFalse((self.proj / "INJECTED").exists())
+
+    def test_final_full_records_the_head_it_started_on(self):
+        self.commit("docs/planning/tasks.toml", '[test]\nquick = "fake-test {files}"\n'
+                    'full = "git commit -q --allow-empty -m moved"\n', "plan: full 이 커밋한다")
+        self.approve_gate()
+        start = self.head()
+        code, out = self.run_test("--full")
+        self.assertEqual((code, out["status"], out["head"], out["head_moved"]), (0, "passed", start, self.head()), out)
+        self.assertNotEqual(start, self.head())
+        self.assertEqual(json.loads((self.state_dir / "tests" / "final.json").read_text())["full"]["head"], start)
+
     def test_final_full(self):
         self.gate_modes("fail")
         code, out = self.run_test("--full")
@@ -292,6 +314,7 @@ class QuickTest(GateCase):
                          (1, None, "full", "failed", self.head()), out)
         saved = json.loads((self.state_dir / "tests" / "final.json").read_text())
         self.assertEqual((saved["full"]["head"], saved["full"]["status"]), (self.head(), "failed"))
+        self.assertIsNone(saved["full"]["head_moved"])
         self.assertTrue(out["log"].startswith(".herdr-team/state/tests/logs/final-full-"))
 
     def test_test_command_env_drops_role_variables(self):
@@ -302,12 +325,22 @@ class QuickTest(GateCase):
         self.assertEqual(call["env"], {"HTEAM_ROLE": False, "HTEAM_LAUNCH": False, "HC_TERMINAL_ID": False})
         self.assertEqual(Path(call["cwd"]).resolve(), self.proj.resolve())
 
+    def test_dirty_check_leaves_the_index_alone(self):
+        self.commit("src/a.py", "a\n", "[T-001] a")
+        os.utime(self.proj / "src/a.py", (1_000_000_000, 1_000_000_000))  # 내용은 그대로, 상태 정보만 바뀐다
+        index = self.proj / ".git" / "index"
+        before = (index.stat().st_ino, index.stat().st_mtime_ns)
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            self.assertEqual(testgate.dirty_files(self.p, ["src/**"]), [])
+        after = (index.stat().st_ino, index.stat().st_mtime_ns)
+        self.assertEqual(before, after)
+
     def test_git_status_runs_without_optional_locks(self):
         self.commit("src/a.py", "a\n", "[T-001] a")
         seen, real = [], subprocess.run
 
         def spy(argv, **kw):
-            if "status" in argv or "diff" in argv:
+            if "status" in argv:
                 seen.append((kw.get("env") or {}).get("GIT_OPTIONAL_LOCKS"))
             return real(argv, **kw)
         with mock.patch.dict(os.environ, self.env, clear=True), mock.patch("hteam.gitio.subprocess.run", spy):
@@ -345,7 +378,7 @@ class ExecuteTest(GateCase):
 
     def test_term_ignoring_child_is_killed(self):
         pid_file = self.tmp / "child.pid"
-        out = self.run_execute(f"sh -c 'trap \"\" TERM; echo $$ > {pid_file}; sleep 30' & wait", 0.5)
+        out = self.run_execute(f"sh -c 'trap \"\" TERM; echo $$ > {pid_file}; sleep 30' & wait", 3.0)  # trap 이 걸릴 시간을 넉넉히
         self.assertEqual(out["status"], "timeout")
         pid = int(pid_file.read_text())
         deadline = time.monotonic() + 3

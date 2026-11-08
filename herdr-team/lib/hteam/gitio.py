@@ -18,8 +18,9 @@ NO_FSMONITOR = ("-c", "core.fsmonitor=false")
 # 같은 조회가 fsmonitor 에 속지 않게 NO_FSMONITOR 도 붙인다.
 ABSOLUTE = ("-c", "diff.relative=false", *NO_FSMONITOR)
 
-# 읽기만 하는 status 조회의 환경(설계 5.7): git status 가 index 를 새로 쓰며 index.lock 을 쥐지 않게 한다. hteam test 는
-# 워커가 자주 부르므로 같은 폴더에서 일하는 다른 워커의 커밋을 실패시키지 않게 한다
+# 읽기만 하는 `git status` 조회의 환경(설계 5.7): status 가 index 를 새로 쓰며 index.lock 을 쥐지 않게 한다. hteam test 는
+# 워커가 자주 부르므로 같은 폴더에서 일하는 다른 워커의 커밋을 실패시키지 않게 한다. `git diff` 에는 효과가 없다
+# (diff 는 상태 정보가 바뀌면 이 변수와 관계없이 index 를 새로 쓴다). 그래서 테스트 관문은 status 기반 modified_tracked 를 쓴다
 READ_ONLY = {"GIT_OPTIONAL_LOCKS": "0"}
 
 
@@ -189,6 +190,15 @@ def dirty(root, pathspecs: list[str]) -> list[str]:
 def file_mode(root) -> bool:
     """git 이 실행 비트를 보는가(core.fileMode, 없으면 true). false 면 git 처럼 변조 검사도 실행 비트를 보지 않는다."""
     return run(root, "config", "--bool", "core.fileMode", check=False).stdout.strip() != "false"
+
+
+def modified_tracked(root) -> list[str]:
+    """HEAD 와 다른 추적 파일(작업 트리나 인덱스 어느 한쪽이라도, 추적하지 않는 파일 제외), 최상위 기준, 저장소 전체.
+    status 기반이라 GIT_OPTIONAL_LOCKS=0 으로 index 를 쓰지 않는다(tracked_changes 의 git diff 는 쓴다). 변조 검사처럼
+    fileMode·ignoreStat 을 고정해 견주지 않는다: 보여 주는 용도다."""
+    out = run(root, *ABSOLUTE, "status", "--porcelain=v1", "-z", "--untracked-files=no", "--no-renames",
+              raw=True, env=READ_ONLY).stdout
+    return sorted({entry[3:] for entry in _zb(out)})
 
 
 def tracked_changes(root, exec_bit: bool | None = None) -> list[str]:
