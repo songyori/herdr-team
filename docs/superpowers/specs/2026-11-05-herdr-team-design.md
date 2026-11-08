@@ -545,22 +545,23 @@ orca-team 0.5.1 을 옮긴다. 전에는 코디네이터가 죽으면 메인이 
 - UserPromptSubmit(`role-mark`): 역할 판별(캐시가 없을 때만)은 그대로 한다. 그 뒤 매 프롬프트, 역할이 메인이면 `autoup.check(p, force=False)`. 결과 문구가 있으면 `{"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": "<문구>"}}` 를 낸다.
 - 돌지 않는 때: 코디네이터·워커·리뷰어 세션, 역할을 모를 때, `state/setup-mode` 가 있을 때, `$HC_TERMINAL_ID` 가 없는 메인(Herdr 밖. `up` 이 exit 5 로 끝나고 SessionStart 가 이미 Herdr 안에서 다시 열라고 알린다).
 - `autoup` 모듈은 이 두 훅 안에서만 늦게 가져온다(guard 훅은 도구 호출마다 돈다).
-- 시간(사용자 결정: 훅 15초 + 4초 규칙): `hooks.json` 의 훅 제한 15초는 그대로 둔다(지금 값). 훅이 시작한 지 4초가 지났으면(역할 판별의 horch status·hc 조회가 오래 걸렸다) 이번 확인을 건너뛴다. 상태 파일에 아무것도 쓰지 않는다(`checked_at` 도 바꾸지 않으므로 다음 프롬프트가 60초 간격과 관계없이 바로 확인한다). 예산: 시작 판정 4초 + hc 조회 3초 + 띄우기 대기 5초 + 파일 쓰기 1초 미만 = 13초 안이므로 15초 제한 안에 끝난다.
+- 시간(사용자 결정: 훅 15초 + 4초 규칙): `hooks.json` 의 훅 제한 15초는 그대로 둔다(지금 값). 훅이 시작한 지 4초가 지났으면(역할 판별의 horch status·hc 조회가 오래 걸렸다) 이번 확인을 건너뛴다. 상태 파일에 아무것도 쓰지 않는다(`checked_at` 도 바꾸지 않으므로 다음 프롬프트가 60초 간격과 관계없이 바로 확인한다).
+- 마감(Codex 설계 리뷰 r1): 훅 시작 시각 + 12초(`HOOK_DEADLINE_S`)를 전체 마감으로 둔다. 바깥 프로그램을 부르는 단계는 모두 `min(자기 제한, 마감 − 지금)` 을 시간 제한으로 받는다: 진행 중 확인의 `ps`(`procs.record_alive`, 자기 제한 5초), `hc get`(`herdr.probe`, 3초), sh 대기(`spawn_up`, 5초), 띄운 뒤의 `ps`(`procs.start_time`, 5초). 그래서 `procs` 의 `_ps_state`·`start_time`·`alive`·`record_alive` 에 `timeout` 인자(기본 5초, 지금 값)를 더한다. 띄우기 전 단계에서 남은 시간이 1초 아래면 그 단계 앞에서 멈추고 아무것도 쓰지 않는다(4초 규칙과 같이 다음 프롬프트가 바로 확인한다). 띄운 뒤에는 멈추지 않는다: `procs.start_time` 에 남은 시간이 1초 아래면 부르지 않고 `started: null` 로 쓴다(그 pid 가 있으면 진행 중으로 보지만 60초 지난 기록은 보지 않으므로 pid 재사용의 영향은 60초다). 최악: 마감까지 12초(4초 판정까지의 역할 판별과 그 뒤의 ps·hc·sh·ps 를 모두 포함) + 마감 뒤의 파일 쓰기(바깥 프로그램 없음, 1초 미만) = 13초 안이므로 15초 제한 안에 끝난다.
 
-결정 `autoup.decide(p)` → (할 일, 문구). 파일을 쓰지 않고 hc 조회는 많아야 한 번이다. 앞에서 정해지면 멈춘다.
+결정 `autoup.decide(p, deadline)` → (할 일, 문구) 또는 시간 부족. 파일을 쓰지 않고 hc 조회는 많아야 한 번이다. 앞에서 정해지면 멈춘다.
 
 1. 자격 없음 → (없음, 없음): `run.json` 에 `run_id` 가 없다(bind 한 적 없음), `run.json` 을 읽지 못한다(`status`·`up` 이 `bad_run_file` 로 알린다), `state/setup-mode` 가 있다. 메인 세션인지는 훅이 먼저 본다.
 2. 설정을 읽지 못하거나 검사(4.2)에 실패한다 → (없음, 없음).
-3. 시작 유예 중이거나 자동 실행이 진행 중이다 → (없음, 없음). 시작 유예: `launched_at`(없으면 `pending_launch.at`) 뒤 180초 안(9.3 의 `STARTING_S`, bind 여부와 관계없다). 진행 중: `auto-up.pid` 의 `{pid, started}` 가 살아 있는 같은 프로세스이고(`procs.record_alive`) 파일을 쓴 지 60초 안이다. 60초가 지난 기록은 진행 중으로 보지 않는다.
+3. 시작 유예 중이거나 자동 실행이 진행 중이다 → (없음, 없음). 시작 유예: `launched_at`(없으면 `pending_launch.at`) 뒤 180초 안(9.3 의 `STARTING_S`, bind 여부와 관계없다). 진행 중: `auto-up.pid` 가 쓴 지 60초 안이고 그 `{pid, started}` 가 살아 있는 같은 프로세스다(`procs.record_alive`, 마감까지 남은 시간 안. `ps` 를 돌리지 못하면 지금처럼 살아 있다고 본다). 60초가 지난 기록은 `ps` 없이 진행 중이 아니다.
 4. `run.json` 에 `coordinator_terminal` 이 없다 → (없음, NO_HANDLE). hc 를 부르지 않는다.
-5. `herdr.probe(coordinator_terminal, coordinator_argv, timeout=3)`:
+5. `herdr.probe(coordinator_terminal, coordinator_argv, timeout=min(3, 마감 − 지금))`:
    - `live` → (없음, 없음).
    - `unverifiable` → (없음, UNKNOWN).
    - `exited`·`lost`(확실히 죽음) → `auto-up.json` 의 `spawned_at` 이 600초 안이면 (없음, FAILED)(auto_up 값과 관계없다). 아니면 auto_up 이 true 면 (띄우기, REVIVED), false 면 (없음, DISABLED).
 
 판정의 Herdr 차이(orca-team 은 `orca terminal show` 의 `connected`·`agentIdentity`·`terminal_handle_stale` 을 봤다):
 
-- `herdr.probe` 에 시간 제한 인자 `timeout`(기본 10초, 지금 값)을 더하고 자동 확인만 3초를 쓴다. 판정은 9.3·horch 와 같은 규칙(`herdr.verdict`)이다: `hc get` 의 `state` 가 `finished` 면 exited, `live` 인데 `reason: stopped_by_restart` 거나 argv 가 기록과 다르면 lost, 그 밖의 `live` 는 live, 다른 상태와 hc 실패(없음·실행 실패·시간 초과·`not_found`·출력 해석 실패)는 unverifiable.
+- `herdr.probe` 에 시간 제한 인자 `timeout`(기본 10초, 지금 값)을 더하고 자동 확인만 3초를 쓴다. 판정은 9.3·horch 와 같은 규칙(`herdr.verdict`)이다: `hc get` 의 `state` 가 `finished` 면 exited, `live` 인데 `reason: stopped_by_restart` 거나 argv 가 기록과 다르면 lost, 그 밖의 `live` 는 live, 다른 상태와 hc 실패(없음·실행 실패·시간 초과·`not_found`·출력 해석 실패)는 unverifiable. 변경 범위(Codex 설계 리뷰 r1): 지금 `herdr._hc` 는 `subprocess.run(text=True)` 가 UTF-8 이 아닌 출력에서 내는 `UnicodeDecodeError`(`ValueError`)를 잡지 않아 `probe` 가 예외로 끝난다. `_hc` 한 곳에서 이것을 `HteamError("hc_failed", …, data={"kind": "bad_output"})` 로 바꿔 `probe` 가 unverifiable 을 내게 한다(`herdr.py` 한 곳. `up`·`watch`·Stop 훅의 같은 경로도 확인 불가가 된다).
 - 코디네이터는 `hc run --keep` 으로 뜬다(9.3). Herdr 를 다시 시작하거나 프로그램이 신호로 죽으면 hc 가 프로그램을 셸로 바꾸므로 argv 가 달라져 lost 다. Claude 가 스스로 끝나면 exited 다. 둘 다 다시 띄운다.
 - `hc rm` 으로 지운 코디네이터(사용자 결정: rm 된 코디네이터는 안내만): orca-team 은 닫힌 핸들을 죽음으로 봤다. hteam 은 hc 가 터미널을 모르는 것(`hc get` 의 `not_found` → `probe` 의 unverifiable)을 확인 불가로 보고 자동으로 띄우지 않는다. UNKNOWN 안내만 한다. horch `run-use` 도 같은 규칙이라 그 소유자를 `--force` 없이 넘겨받지 않으므로, 띄워도 새 코디네이터가 bind 하지 못한다. 사용자는 `/herdr-team:up` 으로 푼다: 지금처럼 `hteam up` 이 exit 3 `coordinator_unverifiable` 을 내면 스킬이 사용자에게 그 pane 이 끝났는지 묻는다. 끝났다고 하면 `hteam up --force --wait-run 180` 으로 띄우고, bind 가 `run-use --force` 로 넘겨받는다(9.3).
 - 메인을 코디네이터로 기록하는 실수 막기(orca-team 은 `ORCA_TERMINAL_HANDLE` 을 물려줘 `orch up` 이 영수증의 메인 핸들을 거르게 했다): hteam 에는 영수증에서 핸들을 찾는 단계가 없다. 코디네이터 주소는 `hc run --bg --no-parent --json` 이 돌려준 새 터미널 주소이고, 그것이 메인 터미널(`require_main` 이 확인한 `$HC_TERMINAL_ID`)과 같으면 이번에 바꾼 키를 되돌리고 `same_terminal` 로 거부한다(`setup.up`). bind 는 코디네이터 자신의 `$HC_TERMINAL_ID` 를 기록한다(`setup.bind`). 그래서 훅은 자기 환경을 그대로 물려준다: `$HC_TERMINAL_ID`(메인 터미널)가 있어야 `up` 의 `require_main`·`herdr.space` 라벨 조회·`same_terminal` 검사가 맞게 돈다.
@@ -568,12 +569,14 @@ orca-team 0.5.1 을 옮긴다. 전에는 코디네이터가 죽으면 메인이 
 확인 `autoup.check(p, force)`:
 
 1. 자격 없음(결정 1), 훅이 시작한 지 4초가 지남(위 "시간"), 또는 (force 가 아니고 `auto-up.json` 의 `checked_at` 이 60초 안) → 없음. 아무 파일도 쓰지 않는다.
-2. `checked_at = 지금` 을 먼저 쓴다.
-3. `decide`. 띄우기면 `spawn_up`. 성공하면 `spawned_at = 지금`, 실패하면 문구를 UNKNOWN 으로 바꾸고 `spawned_at` 은 쓰지 않는다.
+2. `decide(p, 마감)`. 시간 부족이면 없음이고 아무 파일도 쓰지 않는다. 띄우기면 `spawn_up(p, 마감)`. pid 를 받으면 성공이고 문구는 REVIVED, 실패하면 문구를 UNKNOWN 으로 바꾼다.
+3. `auto-up.json` 을 한 번에 쓴다: `checked_at = 지금`, 띄우기에 성공했으면 `spawned_at = 지금`(실패하면 그대로), 그리고 4 의 `notice`. orca-team 처럼 `checked_at` 을 먼저 쓰지 않고 끝에 쓰는 것은 시간 부족으로 멈춘 확인이 아무것도 남기지 않게 하려는 것이다(Codex 설계 리뷰 r1). 2 가 예외로 끝나면 훅의 예외 처리가 `checked_at` 만 쓰려 한다(같은 예외가 프롬프트마다 마감까지 기다리게 하지 않는다. 그 쓰기도 실패하면 넘어간다).
 4. 같은 안내 줄이기: 실제로 띄우지 않았고 문구가 지난 `notice` 와 같으면 반복이다. 문구가 없으면 `notice` 를 지우고(다음 문제는 다시 알린다), 있으면 `notice` 에 남긴다.
 5. 반복이고 force 가 아니면 없음, 아니면 문구. 실제로 띄운 REVIVED 는 지난 `notice` 와 같아도 늘 넘긴다. 세션 시작(force)도 늘 넘긴다.
 
-`spawn_up(p)`: 훅의 인터프리터(`sys.executable`)로 플러그인 `bin/hteam up --root <루트>` 를 `/bin/sh -c '"$0" "$@" </dev/null >>"$HTEAM_AUTO_UP_LOG" 2>&1 & echo $!' <python> <플러그인 루트>/bin/hteam up --root <루트>` 로 실행한다. cwd 는 프로젝트 루트, 환경은 훅의 것에 `HTEAM_AUTO_UP_LOG`(로그 경로)만 더한다, `start_new_session=True`, sh 를 5초까지 기다린다. sh 는 pid 를 찍고 바로 끝나므로 훅이 끝나도 `hteam up` 은 계속 돌고 남는 자식 객체가 없다. 실행 전에 로그에 `--- <시각> hteam up (자동)` 머리를 덧붙인다. 마지막 출력 줄을 pid 로 읽어 `procs.start_time` 과 함께 `auto-up.pid` 에 `{pid, started}` 로 쓴다(`watch.pid` 와 같은 꼴, pid 재사용을 가린다). OSError·SubprocessError·시간 초과·pid 해석 실패면 실패다. `--wait-run` 은 주지 않는다(기다리지 않는다).
+`spawn_up(p, 마감)`: 훅의 인터프리터(`sys.executable`)로 `/bin/sh -c '"$0" "$@" </dev/null >>"$HTEAM_AUTO_UP_LOG" 2>&1 & echo $!' <python> <플러그인 루트>/bin/hteam --root <루트> up` 을 실행한다(`--root` 는 최상위 파서의 옵션이라 하위 명령 앞에 둔다, `cli.build_parser`). cwd 는 프로젝트 루트, 환경은 훅의 것에 `HTEAM_AUTO_UP_LOG`(로그 경로)만 더한다, `start_new_session=True`, sh 를 `min(5, 마감 − 지금)` 초까지 기다린다. sh 는 pid 를 찍고 바로 끝나므로 훅이 끝나도 `hteam up` 은 계속 돌고 남는 자식 객체가 없다. 실행 전에 로그에 `--- <시각> hteam up (자동)` 머리를 덧붙인다. 마지막 출력 줄을 pid 로 읽어 `procs.start_time`(위 "마감")과 함께 `auto-up.pid` 에 `{pid, started}` 로 쓴다(`watch.pid` 와 같은 꼴, pid 재사용을 가린다). OSError·SubprocessError·시간 초과·pid 해석 실패면 실패다. `--wait-run` 은 주지 않는다(기다리지 않는다).
+
+띄운 `hteam up` 이 바로 실패한 경우(Codex 설계 리뷰 r1): pid 를 받으면 `spawned_at` 을 쓰므로, `up` 이 곧바로 실패해(`coordinator_unverifiable`, `launch_uncertain`, 설정·`run.json` 오류 등) 코디네이터가 여전히 죽어 있으면 다음 확인은 600초 안의 재사망과 같이 FAILED 다. hteam 은 둘을 가르지 않고 FAILED 문구가 "다시 꺼졌거나 뜨지 못했다" 를 함께 말하며 `auto-up.log` 를 보라고 한다. 가르려면 `run.json` 의 `launched_at`·`pending_launch.at` 이 `spawned_at` 뒤에 생겼는지를 시각으로 견줘야 하는데, 어느 쪽이든 할 일(10분 동안 다시 띄우지 않고 사용자가 로그를 보고 `/herdr-team:up`)이 같으므로 단순한 쪽을 고른다. 다른 `up` 이 먼저 띄워 `launch_raced` 로 진 경우는 코디네이터가 살아 있으므로 live 이고 아무것도 알리지 않는다.
 
 안내 문구(모두 `herdr-team: ` 로 시작한다):
 
@@ -581,13 +584,13 @@ orca-team 0.5.1 을 옮긴다. 전에는 코디네이터가 죽으면 메인이 
 - UNKNOWN: `코디네이터가 살아 있는지 확인하지 못했거나 자동으로 다시 띄우지 못했다(hc 조회 실패·시간 초과·터미널 없음, 기록: .herdr-team/state/auto-up.log). 답변 첫 줄에 사용자에게 한 줄로 알리고 팀 탭의 코디네이터 pane 을 확인해 달라고 한다. 끝났다고 확인되면 /herdr-team:up 을 실행한다.`
 - NO_HANDLE: `코디네이터 실행 기록이 불확실하다(run.json 에 코디네이터 터미널이 없다). 답변 첫 줄에 사용자에게 한 줄로 알리고 /herdr-team:up 결과를 확인한다.`
 - DISABLED: `코디네이터가 꺼져 있다(config.toml 의 [coordinator] auto_up = false). 답변 첫 줄에 사용자에게 한 줄로 알리고 /herdr-team:up 을 안내한다.`
-- FAILED: `자동으로 다시 띄운 코디네이터가 10분 안에 다시 꺼졌다(기록: .herdr-team/state/auto-up.log). 답변 첫 줄에 사용자에게 한 줄로 알리고, 원인을 확인한 뒤 /herdr-team:up 을 실행하도록 안내한다. 10분 동안은 자동으로 다시 띄우지 않는다.`
+- FAILED: `자동으로 다시 띄운 코디네이터가 10분 안에 다시 꺼졌거나 뜨지 못했다(기록: .herdr-team/state/auto-up.log). 답변 첫 줄에 사용자에게 한 줄로 알리고, 그 기록으로 원인을 확인한 뒤 /herdr-team:up 을 실행하도록 안내한다. 10분 동안은 자동으로 다시 띄우지 않는다.`
 
 SessionStart 의 메인 안내: `- 먼저 /herdr-team:up 을 실행한다. 산출물 작업은 … tell 로 …` 줄을 둘로 나눈다. 문구가 있으면 `- <문구>`, 없으면 기본 줄 `` - 코디네이터는 훅이 확인하고 꺼져 있으면 자동으로 다시 띄운다(config.toml [coordinator] auto_up). watch 가 꺼져 있으면 Bash `run_in_background: true` 로 `.herdr-team/bin/hteam watch` 를 띄운다. 코디네이터 상태가 의심되면 `/herdr-team:up` 을 실행한다. `` 그리고 산출물 작업을 `hteam tell` 로 넘기라는 줄. Herdr 밖 안내와 답하지 않은 질문 줄은 그대로다.
 
 메인 규칙(`CLAUDE.section.md`): `- 세션을 다시 열었으면 /herdr-team:up 을 먼저 실행한다.` 를 `- 코디네이터는 훅이 확인하고 꺼져 있으면 자동으로 다시 띄운다(config.toml [coordinator] auto_up). 훅 안내가 없는데 코디네이터 상태가 의심되면 /herdr-team:up 을 실행한다. 메인을 다시 열었는데 답하지 않은 질문이 있으면 /herdr-team:up 이 다시 묻는다.` 로 바꾼다. 문구가 "답변 첫 줄에 한 줄로 알린다" 를 스스로 담는다.
 
-상수: `CHECK_INTERVAL_S = 60`, `RETRY_WINDOW_S = 600`, `PID_STALE_S = 60`, `PROBE_TIMEOUT_S = 3`, `SPAWN_WAIT_S = 5`, `HOOK_START_BUDGET_S = 4`, `STARTING_S = 180`(기존), 훅 제한 15초(`hooks.json`, 기존).
+상수: `CHECK_INTERVAL_S = 60`, `RETRY_WINDOW_S = 600`, `PID_STALE_S = 60`, `PROBE_TIMEOUT_S = 3`, `SPAWN_WAIT_S = 5`, `PS_TIMEOUT_S = 5`(기존 `procs` 값), `HOOK_START_BUDGET_S = 4`, `HOOK_DEADLINE_S = 12`, `STARTING_S = 180`(기존), 훅 제한 15초(`hooks.json`, 기존).
 
 상태 파일: `state/auto-up.json`(`checked_at`, `spawned_at`, `notice`), `state/auto-up.pid`(`{pid, started}`), `state/auto-up.log`(자동 실행한 `hteam up` 의 출력을 덧붙인다), 훅 예외는 `state/hook-errors.log`. 쓰기는 원자적(임시 파일 + `os.replace`)이고 잠그지 않는다: 두 메인 세션이 동시에 띄워도 `hteam up` 의 `run.json` 잠금이 하나만 띄운다(아래). `auto-up.json` 이 JSON 객체가 아니면 빈 기록으로 본다(확인할 때가 된다). 시각 비교 `within(시각, s)` 는 `0 <= 흐른 초 < s` 다. 없음·해석 실패·미래 시각은 안이 아니다(확인할 때가 되고, 재사망 창은 지난 것으로 본다).
 
@@ -603,6 +606,8 @@ SessionStart 의 메인 안내: `- 먼저 /herdr-team:up 을 실행한다. 산�
 - hc core 가 꺼져 있거나 터미널이 지워졌으면(`hc rm`) UNKNOWN 만 알린다(사용자 결정: rm 된 코디네이터는 안내만).
 - 메인 세션 밖에서 죽으면 다음 메인 프롬프트(최대 60초 간격)나 세션 시작까지 모른다.
 - 죽은 코디네이터 터미널(끝난 터미널, 셸로 바뀐 터미널)은 팀 탭에 남는다(`hteam up` 의 기존 동작).
+- 메인 세션이 둘이고 두 훅이 동시에 `auto-up.json` 을 읽고 쓰면(잠그지 않는다) 한쪽이 쓴 `spawned_at` 을 다른 쪽이 덮어 지울 수 있다. 그러면 10분 재사망 막음이 풀려 한 번 더 띄울 수 있다(Codex 설계 리뷰 r1, 기록만). 한 메인 세션의 훅은 차례로 돌므로 메인 세션이 하나면 생기지 않는다. 두 번 띄우는 것 자체는 `up` 의 `run.json` 잠금이 막는다.
+- 띄운 `up` 이 바로 실패한 것과 띄운 코디네이터가 다시 죽은 것을 가르지 않는다(둘 다 FAILED, 위).
 - 자동 실행한 `hteam up` 은 메인 세션과 같은 권한·환경으로 돌고 코디네이터는 `[agents.claude].args`(승인한 우회 포함)로 뜬다(14장).
 
 ## 10. 기획 인터뷰 (planner)
@@ -848,6 +853,7 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
 - 금지 표기가 쓰는 표기가 아닌 다른 낱말 안에 있으면 잡힌다(예: 금지 표기 "회원"(호칭)이 "회원가입" 안에서. "회원가입" 이 어느 행의 쓰는 표기도 아니면 덮기 규칙이 걸리지 않는다). 리뷰어가 걸러 낸다.
 - 추가한 줄 판정이 "내용이 같은 지금 줄" 기준이라, 태스크가 추가한 줄과 내용이 똑같은 기존 줄이 같은 파일에 있으면 그 줄도 검사된다.
 - 리뷰 한 번에 문구 검사와 디자인 검사가 각각 파일×커밋 수만큼 git 을 부른다(11.6 의 한계 3).
+- 병합 커밋(Codex 설계 리뷰 r1, 기록만): 자동 검사(문구·디자인)는 첫 부모와 견준 diff 를 보는데, 공통 리뷰 프롬프트는 리뷰어에게 `git show <sha>` 로 diff 를 보라고 한다(병합 커밋이면 합친 diff 다). 둘이 다른 diff 를 볼 수 있다. 워커는 경로 지정 커밋만 하고 병합 커밋을 만들지 않으므로(5.5) 보통은 생기지 않는다.
 - better-writing 의 "확인 창보다 되돌리기", "설정은 켜진 상태로 설명", "입력란 안내는 예시로" 는 넣지 않았다(16장).
 
 ## 12. 이미지 (`/herdr-team:image`, `hteam image`)
@@ -920,11 +926,11 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
 - 4단계(orca-team 0.5.x 테스트를 개념 단위로 옮긴다):
   - `tests/test_textlint.py`: 분류마다 잡는 예(됬, 안되요, 되어진, 되어졌, 에 있어서, 혁신적, Seamless, 라고 할 수 있, 물론입니다, `그리고,`, `며,`, `해서,`, `하고,`), 한 줄 출력 형식, 정상 문장 0건("회원님은 언제든지 탈퇴할 수 있습니다", "결제는 카드를 통해 진행해요", `unlock()`, "로그인이 필요", "신고, 차단, 숨기기", "경고, 오류, 정보", "참고, 아래 표"), 식별자 키 `{"lock.unlock": "잠금 해제"}` 0건, 모바일 형식과 주석 줄(swift·xml·strings·dart·yaml·html), Markdown 펜스·인라인 코드는 빼고 `* 글머리` 는 검사, 추가한 줄만·다른 태스크 커밋 줄은 무시, 용어집 덮기(같은 행·다른 행), 괄호 조건 표기 버림, 용어집 형식 오류·없음·UTF-8 아님, 높임법 판정·한 번 보고·동점이면 하십시오체, 발췌 60자와 `…`, 주석에만 한글인 파일은 대상 아님, 대상·비대상(제외 glob 전부, `notes.md`), 내용이 `++` 로 시작하는 줄, git 오류는 그 파일만, `:(top,literal)` 경로(`[id]`), UTF-8 아닌 diff 는 그 파일만, 50건 상한(53건 → 51줄, 마지막 `… 외 3건`), 하위 폴더 프로젝트, 병합 커밋(첫 부모와 견줌). `gitio.diff_lines`: 추가·지운 줄을 세고 커밋을 걸쳐 합치고 파일 머리를 빼고 git 오류면 None.
   - `tests/test_designdiff.py`: 지운 `aria-label` 보고, 옮기거나 줄을 바꾼 신호는 보고 안 함, `aria-labelledby` 를 `aria-label` 과 따로 셈, 동작·한글 줄바꿈 신호(`prefers-reduced-motion`, `keep-all`, `break-keep`), 앱 신호(`semanticsLabel`, `semanticLabel`, `contentDescription`), 추가한 줄의 확대 막기(`maximum-scale=1.0, user-scalable=no` 와 Next.js 객체는 잡고 `maximum-scale=5` 는 아님), focus-visible 없는 포커스 제거(`.btn:focus { outline: none }`·`focus:outline-none` 단독·`dark:focus:outline-none` 은 잡고, focus-visible 있는 파일·`focus:ring-2`·`dark:focus:ring-2`·`md:focus:ring-2`·`focus:!ring-2`·`outline-offset: 0` 은 아님), Tailwind v4 `outline-hidden` 은 포커스 제거, 지운 `:focus-visible` 을 `:focus` 로 부르지 않음, CRLF 파일, 준 커밋이 추가한 줄만, 비대상·제외·git 오류 건너뜀, 지운 파일은 지운 줄만, 옮긴 파일 보고 안 함, 컴포넌트 추출 보고 안 함, 여러 커밋에 걸쳐 지웠다 되살림 보고 안 함, 순감소는 파일별로 보고, 다른 파일의 실제 감소가 있을 때 내용 그대로 옮긴 파일은 보고 안 함(옛 경로 이름으로 실제 감소만), 평범한 식별자(`const role = user.role`, `navigator.language`, `focus: {`)는 신호 아님, 속성 꼴(role, alt, `focus:`, `motion-safe:`, lang)은 신호, `.md` 는 대상 아님, 약한 포커스 대체(`ring-0`·`shadow-none`·`ring-transparent`·`outline-hidden`·`outline-style`)는 대체 아님.
-  - `tests/test_autoup.py`: exited·lost 면 띄움, live 는 아무것도 안 함, unverifiable(`not_found` 포함)은 UNKNOWN 만, auto_up false 는 DISABLED 만, 코디네이터 터미널 없음은 NO_HANDLE(hc 호출 0), 시작 유예·진행 중이면 건너뜀, 60초 지난 pid 파일·다른 프로세스가 다시 쓴 pid 는 무시, 10분 안 재사망은 FAILED 이고 띄우지 않음, 자격 없음(run_id 없음·setup-mode·`run.json` 손상)은 hc 를 부르지 않고 아무것도 쓰지 않음, 설정 오류는 건너뜀, 60초 간격과 force(두 번째는 없음·hc 1회), 실제로 띄우면 늘 알림, 같은 문구는 바뀌거나 force 일 때만, 손상된 `auto-up.json` 은 확인할 때가 됨, 띄우기 실패는 UNKNOWN 이고 `spawned_at` 을 쓰지 않음, 분리 실행이 실제 `hteam up` 을 돌림(가짜 hc 로 새 코디네이터 터미널이 기록되고 로그에 `hteam up (자동)`·`launched`), 띄운 `hteam up` 이 훅의 `$HC_TERMINAL_ID` 를 물려받음.
+  - `tests/test_autoup.py`: exited·lost 면 띄움, live 는 아무것도 안 함, unverifiable(`not_found` 포함)은 UNKNOWN 만, auto_up false 는 DISABLED 만, 코디네이터 터미널 없음은 NO_HANDLE(hc 호출 0), 시작 유예·진행 중이면 건너뜀, 60초 지난 pid 파일·다른 프로세스가 다시 쓴 pid 는 무시, 10분 안 재사망은 FAILED 이고 띄우지 않음, 자격 없음(run_id 없음·setup-mode·`run.json` 손상)은 hc 를 부르지 않고 아무것도 쓰지 않음, 설정 오류는 건너뜀, 60초 간격과 force(두 번째는 없음·hc 1회), 실제로 띄우면 늘 알림, 같은 문구는 바뀌거나 force 일 때만, 손상된 `auto-up.json` 은 확인할 때가 됨, 띄우기 실패는 UNKNOWN 이고 `spawned_at` 을 쓰지 않음, 분리 실행이 실제 `hteam --root <루트> up` 을 돌림(가짜 hc 로 새 코디네이터 터미널이 기록되고 로그에 `hteam up (자동)`·`launched`), 띄운 `hteam up` 이 훅의 `$HC_TERMINAL_ID` 를 물려받음, 띄운 `up` 이 바로 실패하고 코디네이터가 죽어 있으면 다음 확인은 FAILED, 마감(훅 시작 + 12초)이 모자라면 `ps`·hc·sh 단계 앞에서 멈추고 아무것도 쓰지 않음(가짜 hc `delay`), 띄운 뒤 시간이 모자라면 `start_time` 없이 `started: null`, 각 단계가 남은 시간을 시간 제한으로 받음, 예외로 끝나면 `checked_at` 만 남음.
   - `tests/test_hooks.py`: 프롬프트가 죽은 코디네이터를 되살림, 간격 안의 프롬프트는 건너뜀, 세션 시작은 간격과 관계없이 확인, 코디네이터·워커·리뷰어 세션은 건너뜀, auto_up false 는 안내만, setup-mode 는 건너뜀, `$HC_TERMINAL_ID` 없는 메인은 건너뜀, 훅 시작 4초 예산을 넘으면 건너뛰고 `auto-up.json` 을 쓰지 않음(다음 프롬프트가 간격과 관계없이 바로 확인), 예외는 막지 않음(`auto-up.json` 을 디렉터리로 만들어 예외 → 세션 시작은 기본 줄, `hook-errors.log` 에 `auto-up`), 세션 시작 기본 줄 문구.
   - `tests/test_review.py`: 한글 UI 문구를 바꾼 태스크에 문구 절과 경고, 깨끗한 문구는 `- 없음`, 한글이 없으면 문구 절 없음(자리표시·빈 줄 셋 없음), 제외 경로(tester 의 `tests/`, director 의 `docs/design/system/`, designer `notes.md`)는 문구 절 없음, text-rules.md 없는 프로젝트는 문구 절 없음, 디렉터 없는 프로젝트에도 문구 절, Codex 워커 태스크의 Claude 리뷰어 프롬프트에도 같은 절, 디자인 절 다음에 문구 절, 검사 실패가 리뷰를 막지 않고 한 줄, developer 프롬프트에 디자인 규칙과 경고, 확대 막기 경고, diff 검사가 내용 검사보다 앞, 합친 경고 50건 상한(40 + 20 → 50 + `… 외 10건`), 한 검사가 실패해도 다른 검사 결과는 남음.
   - `tests/test_lint.py`: `design_findings` 는 상한이 없고 `cap` 이 자른다, `lint --task` 의 `findings`·`text_findings`.
-  - `tests/test_config.py`: `auto_up` 은 없으면 true, 불리언이 아니면 `bad_config`. `herdr.probe` 의 시간 제한(가짜 hc `delay` 로 3초 넘으면 unverifiable).
+  - `tests/test_config.py`: `auto_up` 은 없으면 true, 불리언이 아니면 `bad_config`. `herdr.probe` 의 시간 제한(가짜 hc `delay` 로 3초 넘으면 unverifiable), `hc` 출력이 UTF-8 이 아니면 `probe` 가 예외 없이 unverifiable, `procs` 함수의 `timeout` 인자.
   - `tests/test_setup.py`: scaffold 가 `text-rules.md` 를 만들고 developer owns 에 세 경로가 있다. 이미 있는 `up` 경쟁 테스트(`launch_raced`, bind 뒤의 up)가 그대로 통과한다.
   - 템플릿 테스트(지금처럼 `tests/test_design_docs.py`·`test_lint.py`·`test_setup.py`·`test_review.py` 에 나눠 둔다): text-rules 의 §0–§5·출처 제목과 핵심 문구, "designer·developer 태스크", §1 이 §4 앞. design-rules 의 절 순서, §1 번호 10개, 즉시 차단 항목이 review-design 의 목록과 집합이 같고 10개, §7 에 되돌리기·다시 시도·임시 페이지 되돌림, 옛 소절 이름 `### 금지 목록 점검` 이 직무 문서에 없음(review-design 의 호환 문장에만). review-design 의 번호 1–9 와 `{{lint}}` 하나, 등급 문장들. review-text 의 핵심 문구와 `{{text_lint}}` 만. review-prompt 의 `{{design}}{{text}}## REVIEW_FILE 형식`. planner 가 voice.md 를 쓰고 형식 예시가 있음, designer·developer 가 문구 규칙을 따름, developer owns 에 정책·사용자 문서, `CLAUDE.section.md` 위치 줄과 자동 부활 줄, config 템플릿의 `auto_up = true`, 템플릿에 물결표 범위(`\d~\d`)가 없음.
   - 버전 세 곳(`lib/hteam/paths.py` 의 `VERSION`, `herdr-team/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` 의 herdr-team 항목)이 0.2.0 으로 같다(`tests/test_cli.py`).
@@ -947,11 +953,15 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
 
 (2) 자동 부활(실제 hc):
 
-1. 새 space 의 시험 터미널에서 시험 메인 Claude 세션을 열고 `/herdr-team:init` 으로 세팅한다(코디네이터 Claude 가 팀 탭에 bind 한다). SessionStart 뒤 `state/auto-up.json` 에 `checked_at` 이 있다.
-2. `hc kill <코디네이터 터미널>`(시험 터미널). `hc get` 의 상태를 적는다(exited, 또는 `--keep` 이 셸로 바꿔 argv 가 다른 lost).
-3. 60초가 지난 뒤 시험 메인에 요청 하나를 보낸다(`hc send`). 확인할 것: 그 프롬프트에서 REVIVED 문구, 메인 답변 첫 줄의 알림, `state/auto-up.log` 의 `--- … hteam up (자동)` 머리와 `launched`, 팀 탭의 새 코디네이터 하나, `run.json` 의 `run_id` 그대로·bind `mode: use`, 메인이 그 요청을 `hteam tell` 로 넘겼고 새 코디네이터가 처리한다(Run 메일함으로 이어짐).
-4. 10분 안에 새 코디네이터를 다시 `hc kill` 하고 60초 뒤 메인 프롬프트 하나 → FAILED 문구, 새로 띄우지 않음.
+순서는 자동 확인의 조건에 맞춘다(Codex 설계 리뷰 r1): 세션을 처음 열 때의 SessionStart 에는 Run 이 없고(`run_id` 없음) init 동안은 `setup-mode` 라 확인하지 않는다. 띄운 코디네이터는 `launched_at` 뒤 180초 동안 시작 중이라 확인이 건너뛴다. FAILED 는 `spawned_at` 뒤 600초 안이어야 나온다.
+
+1. 새 space 의 시험 터미널에서 시험 메인 Claude 세션을 열고 `/herdr-team:init` 으로 세팅한다(코디네이터 Claude 가 팀 탭에 bind 하고 `setup-done` 이 `setup-mode` 를 지운다). init 이 끝난 뒤 메인에 프롬프트 하나를 보낸다(`hc send`). `state/auto-up.json` 에 `checked_at` 이 생긴다(시작 유예 중이어도 확인 기록은 남는다).
+2. `run.json` 의 `launched_at` 뒤 180초가 지나기를 기다린다. 그다음 `hc kill <코디네이터 터미널>`(시험 터미널). `hc get` 의 상태를 적는다(exited, 또는 `--keep` 이 셸로 바꿔 argv 가 다른 lost).
+3. 마지막 확인(`checked_at`) 뒤 60초가 지난 뒤 메인에 요청 하나를 보낸다. 확인할 것: 그 프롬프트에서 REVIVED 문구, 메인 답변 첫 줄의 알림, `state/auto-up.log` 의 `--- … hteam up (자동)` 머리와 `launched`, `auto-up.json` 의 `spawned_at`(이 시각을 T 로 적는다), 팀 탭의 새 코디네이터 하나, `run.json` 의 `run_id` 그대로·bind `mode: use`, 메인이 그 요청을 `hteam tell` 로 넘겼고 새 코디네이터가 처리한다(Run 메일함으로 이어짐).
+4. 새 코디네이터의 `launched_at` 뒤 180초가 지나기를 기다린다(T 뒤 약 185초). 그사이의 프롬프트는 시작 유예라 아무것도 알리지 않는다. 그다음 새 코디네이터를 `hc kill` 하고, 마지막 확인 뒤 60초가 지난 뒤 메인 프롬프트 하나 → FAILED 문구, 새로 띄우지 않음, `spawned_at` 그대로. 이 프롬프트는 T + 600초 전이어야 한다(위 순서면 T 뒤 약 250초다).
 5. 정리: 시험 터미널·탭만 끝내고 지운다.
+
+걸리는 시간: init(운영자가 승인 표에 답하는 시간을 빼면 5분 안팎) 뒤 약 10분이다: 유예 3분 + 간격 1분 + 부활과 bind 1–2분 + 유예 3분 + 간격 1분.
 
 보지 않는 것: 워커 문서 동작(planner 의 voice.md·용어집 확정, designer·developer 의 `### 문구 점검`·`### 디자인 점검`, developer 의 임시 확인 페이지, director 의 §3·§4 반영), 앱(Flutter·iOS·Android) 신호, Herdr 재시작 뒤 부활, UNKNOWN·DISABLED·NO_HANDLE(단위 테스트로만).
 
@@ -967,7 +977,7 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
    2. 문구 규칙: `templates/text-rules.md`·`review-text.md`, `textlint.py`, 리뷰 프롬프트 문구 절과 `{{design}}{{text}}` 자리표시, scaffold 의 `text-rules.md`(11.7).
    3. 디자인 규칙: `templates/design-rules.md`·`review-design.md`(11.5), `lint.py` 나누기(`design_findings`·`cap`·`read_source`), `designdiff.py`, 디자인 절의 합치기(designdiff 먼저, 50건), `hteam lint --task` 출력(11.6).
    4. 직무 문서·코디네이터·메인 규칙: planner(10장), director·designer·developer(11.1–11.3, 11.5 의 즉시 차단·되돌리기·오류 복구 줄, 11.7 의 문구 규칙), `coordinator.md`, `CLAUDE.section.md` 위치 줄, config 템플릿의 developer owns.
-   5. 코디네이터 자동 부활: `[coordinator] auto_up`(4.1·4.2), `herdr.probe` 의 `timeout`, `autoup.py`, 훅(`session-start`·`role-mark`), up 스킬 description, `CLAUDE.section.md` 의 자동 부활 줄(9.5).
+   5. 코디네이터 자동 부활: `[coordinator] auto_up`(4.1·4.2), `herdr.probe` 의 `timeout` 과 `herdr._hc` 의 디코딩 오류 처리, `procs` 의 `timeout`, `autoup.py`(훅 시작 + 12초 마감), 훅(`session-start`·`role-mark`), up 스킬 description, `CLAUDE.section.md` 의 자동 부활 줄(9.5).
    6. README 와 버전: "문구 규칙" 절, 디자인 절(규칙 확장·리뷰 방식·자동 검사), 복구 절(자동 부활과 수동 복구, 끄는 법, 로그, 재사망 10분, 안내 반복 규칙, 한계), 0.1.x 업그레이드 안내(아래), 버전 0.2.0(`paths.VERSION`, `herdr-team/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`). herdr-orch 는 바꾸지 않는다(0.1.2).
 
    그다음 브랜치 Codex 리뷰, 실환경(15.2 의 4단계 둘), main 병합. 리뷰 지적은 P0·P1, 기본 경로의 P2, 회귀를 고치고 가장자리 경우의 P2 는 알려진 한계로 적는다(사용자 결정).
