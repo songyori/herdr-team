@@ -211,8 +211,9 @@ class LintCommandTest(TeamCase):
         text = (self.team / "design-rules.md").read_text(encoding="utf-8")
         self.assertEqual(text, (ROOT / "templates/design-rules.md").read_text(encoding="utf-8"))
         import re
-        self.assertEqual([int(m) for m in re.findall(r"(?m)^(\d+)\. ", text)], list(range(1, 11)))  # 금지 규칙 10개
-        for needle in ("### 금지 목록 점검", "hteam lint --task T"):
+        rules = text[text.index("## §1 금지 목록 (AI 티)"):text.index("## §2 ")]
+        self.assertEqual([int(m) for m in re.findall(r"(?m)^(\d+)\. ", rules)], list(range(1, 11)))  # 금지 목록 10개
+        for needle in ("### 디자인 점검", "`hteam review`", "## 즉시 차단 항목"):
             self.assertIn(needle, text)
 
 

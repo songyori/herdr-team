@@ -1,6 +1,6 @@
 """디자인 자동 검사(설계 11.6): `hteam lint --task T`.
 
-리뷰 대상 커밋이 바꾼 파일에서 AI 티 금지 목록(`.herdr-team/design-rules.md`)의 1(이모지), 2(왼쪽 강조 테두리),
+리뷰 대상 커밋이 바꾼 파일에서 디자인 규칙(`.herdr-team/design-rules.md`) §1 의 1(이모지), 2(왼쪽 강조 테두리),
 3(파랑·보라 그라디언트) 의심 위치를 찾는다. 결과는 경고다(블록 인용처럼 정당한 쓰임이 있다). 판정은 리뷰어가 한다.
 리뷰 프롬프트의 디자인 절(compose.review_prompt)이 시도 기록의 바뀐 파일로 부른다. 표준 라이브러리 정규식만 쓰고
 git·hc·horch·codex 를 부르지 않는다(명령 `lint --task` 만 review 의 대상 커밋 계산과 compose 의 절 목록을 거친다).

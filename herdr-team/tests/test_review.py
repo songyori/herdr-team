@@ -196,7 +196,8 @@ class DesignSectionTest(ReviewCase):
         text = self.prompt("T-001", "designer", {"docs/design/screens/home/index.html":
                                                  '<div style="border-left: 4px solid #2563eb">🚀</div>\n'},
                            owns="docs/design/screens/home/**")
-        for needle in ("## 디자인 기준", "`.herdr-team/design-rules.md`", "`### 금지 목록 점검`",
+        for needle in ("## 디자인 기준", "`.herdr-team/design-rules.md`", "`### 디자인 점검`", "`### 금지 목록 점검`",
+                       "1. UI 를 바꾼 태스크면", "9. 밀도·모서리·말투", "`(새로 생김)`·`(회귀)`·`(기존)`",
                        "`### 시스템 추가 제안`",
                        "- docs/design/screens/home/index.html:1: 이모지(🚀)",
                        "- docs/design/screens/home/index.html:1: 왼쪽 강조 테두리("):
@@ -232,8 +233,7 @@ class DesignSectionTest(ReviewCase):
     def test_developer_prompt_without_findings(self):
         text = self.prompt("T-001", "developer", {"src/app.py": "print('x')\n"})
         self.assertIn("## 디자인 기준", text)
-        self.assertIn("자동 검사(`hteam lint`, 의심 위치. 정당한 쓰임도 있으니 열어 보고 판단한다):\n- 없음\n\n"
-                      "## REVIEW_FILE 형식", text)
+        self.assertIn("이 태스크가 만든 것인지 diff 로 확인한다):\n- 없음\n\n## REVIEW_FILE 형식", text)
 
     def test_other_roles_have_no_design_section(self):
         text = self.prompt("T-001", "tester", {"tests/a.txt": "x\n"})

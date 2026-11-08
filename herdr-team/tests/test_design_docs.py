@@ -64,7 +64,7 @@ class DirectorDocTest(unittest.TestCase):
         for rel in DIRECTOR_OWNS:
             self.assertIn(rel.removesuffix("**").rstrip("/") if rel.endswith("**") else rel, out)
             self.assertTrue(within(rel, "docs/design/**"), rel)
-        for needle in ("`### 금지 목록 점검`", "`### 확인한 화면`(글로만 적는다", "확인용 스크린숏을 커밋하지 않는다",
+        for needle in ("`### 디자인 점검`", "`### 확인한 화면`(글로만 적는다", "확인용 스크린숏을 커밋하지 않는다",
                        "`## Network requests`"):
             self.assertIn(needle, out)
         self.assertNotIn("shots/", self.text)
@@ -108,7 +108,7 @@ class DesignerDocTest(unittest.TestCase):
     def test_report_items_and_screenshots(self):
         out = section(self.text, "산출물")
         for needle in ("- `- 아티팩트: <claude.ai URL 또는 없음>`", "- `- 디자인 시스템: <design_system_url 또는 없음>`",
-                       "`### 시스템 추가 제안`", "`### 금지 목록 점검`", "`### 확인한 화면`", "`### 이미지`"):
+                       "`### 시스템 추가 제안`", "`### 디자인 점검`", "`### 확인한 화면`", "`### 이미지`"):
             self.assertIn(needle, out)
         shots = section(self.text, "확인한 화면")
         # 실환경(2단계): designer 가 스크린숏 PNG 를 화면 폴더에 커밋하고 DevTools 출력 제목을 보고서에 붙였다.
@@ -125,7 +125,7 @@ class DeveloperDocTest(unittest.TestCase):
         text = (ROOT / "templates" / "roles" / "developer.md").read_text(encoding="utf-8")
         rules = section(text, "화면 규칙")
         for needle in ("key `ui-foundation`", "CSS 변수", "공통 컴포넌트", "직접 쓰지 않는다", "프리앰블의 ask 명령",
-                       "토큰 갱신 태스크", "`### 금지 목록 점검`", "시스템이 없을 때", "`## 확정 값`",
+                       "토큰 갱신 태스크", "`### 디자인 점검`", "시스템이 없을 때", "`## 확정 값`",
                        "확인용 스크린숏을 커밋하지 않는다", "`## Network requests`"):
             self.assertIn(needle, rules)
         self.assertNotIn("shots/", text)
@@ -138,6 +138,94 @@ class DeveloperDocTest(unittest.TestCase):
         self.assertIn("화면 원본(`index.html`)·`notes.md` 에서 여러 화면이 함께 쓰는 공통 컴포넌트를 만든다", rules)
         designer = (ROOT / "templates" / "roles" / "designer.md").read_text(encoding="utf-8")
         self.assertIn("CSS 변수와 공통 컴포넌트로 옮긴다", section(designer, "시스템이 없을 때"))
+
+
+RULES = ROOT / "templates" / "design-rules.md"
+REVIEW_DESIGN = ROOT / "templates" / "review-design.md"
+
+
+def blocks(text: str) -> list[str]:
+    """즉시 차단 항목 목록(`- ` 또는 들여 쓴 `- ` 글머리)."""
+    return [line.strip()[2:] for line in text.split("\n") if line.strip().startswith("- ")]
+
+
+class DesignRulesTest(unittest.TestCase):
+    """디자인 규칙 §0–§7·즉시 차단 항목과 리뷰 디자인 절 기준 1–9(설계 11.5)."""
+
+    def setUp(self):
+        self.rules = RULES.read_text(encoding="utf-8")
+        self.review = REVIEW_DESIGN.read_text(encoding="utf-8")
+
+    def test_sections_in_order(self):
+        heads = [line for line in self.rules.split("\n") if line.startswith("#")]
+        self.assertEqual(heads, ["# 디자인 규칙", "## §0 범위", "## §1 금지 목록 (AI 티)", "## §2 접근성 (WCAG 2.2 AA)",
+                                 "## §3 색", "## §4 글자", "## §5 레이아웃", "## §6 표면·동작", "## §7 상태",
+                                 "## 즉시 차단 항목", "## 자동 검사", "## 출처"])
+        counts = {"§1 금지 목록 (AI 티)": 10, "§2 접근성 (WCAG 2.2 AA)": 14, "§3 색": 7, "§4 글자": 10, "§5 레이아웃": 10,
+                  "§6 표면·동작": 11, "§7 상태": 5}
+        for title, n in counts.items():
+            found = re.findall(r"(?m)^(\d+)\. ", section(self.rules, title))
+            self.assertEqual([int(x) for x in found], list(range(1, n + 1)), title)
+
+    def test_head_and_substitutions(self):
+        head = self.rules[:self.rules.index("## §0 범위")]
+        for needle in ("`### 디자인 점검`", "`## rN`", "§1 항목마다 지켰는지", "§2–§6 에서 어긴 곳과 예외·근거",
+                       "§7 에서 확인한 상태와 확인 방법", "`hteam review`", "판정은 리뷰어가 한다"):
+            self.assertIn(needle, head)
+        self.assertIn("디렉터가 없는 프로젝트는 화면 `notes.md` 의 `## 확정 값`", section(self.rules, "§0 범위"))
+        self.assertIn("developer 는 프리앰블의 ask 명령으로 코디네이터에게 묻는다", section(self.rules, "§0 범위"))
+        self.assertIn("Tailwind 조합은 한 줄 또는 한 클래스 목록 안에서 본다", section(self.rules, "자동 검사"))
+        self.assertIn("herdr-team 은 orca-team 0.5.2 에서 옮겼다", section(self.rules, "출처"))
+        self.assertIn("jakubkrehel/skills", section(self.rules, "출처"))
+        for old in (".orchestration", "orch review", "리포트", "r{round}", "Codex", "ask 로 묻는다"):
+            self.assertNotIn(old, self.rules)
+        state = section(self.rules, "§7 상태")
+        for needle in ("되돌리기", "다시 시도", "임시 확인 페이지", "확인 뒤 되돌린다", "`.herdr-team/text-rules.md` §3 의 4번"):
+            self.assertIn(needle, state)
+
+    def test_immediate_blocks_match_the_review_list(self):
+        rules = blocks(section(self.rules, "즉시 차단 항목"))
+        grade = self.review[self.review.index("6. 디자인 지적의 심각도"):self.review.index("   - P2:")]
+        review = [b for b in blocks(grade) if not b.startswith("P1:")]
+        self.assertEqual(len(rules), 10)
+        self.assertEqual(set(rules), set(review))
+        self.assertIn("보고서에 예외를 적었어도 리뷰어는 P1(REQUEST_CHANGES)로 판정한다", section(self.rules, "즉시 차단 항목"))
+
+    def test_review_design_criteria(self):
+        self.assertEqual([int(x) for x in re.findall(r"(?m)^(\d+)\. ", self.review)], list(range(1, 10)))
+        self.assertEqual(re.findall(r"\{\{(\w+)\}\}", self.review), ["browser", "lint"])
+        for needle in ("(이전 버전 프로젝트는 `### 금지 목록 점검`)", "`(새로 생김)`·`(회귀)`·`(기존)`",
+                       "`(기존)` 은 P3 로 3개까지만 적는다", "즉시 차단 항목은 보고서에 예외를 적었어도 P1 이다",
+                       "§ 제목이 없는 이전 버전 규칙 파일이면 P2 는 적지 않고 §1 과 즉시 차단 항목만 본다",
+                       "디자인 지적은 15개까지 적고", "\"확인 못 함\"", "design-rules §3 의 7번",
+                       "기본·hover·focus·눌림·disabled·로딩·error 중 해당하는 것",
+                       "\"지운 줄에서 … 줄었다\" 는 4번, \"확대 막기\"·\"포커스 표시 제거\" 는 6번의 즉시 차단 항목 후보다"):
+            self.assertIn(needle, self.review)
+        self.assertLess(self.review.index("9. 밀도"), self.review.index("렌더링:"))
+        self.assertLess(self.review.index("렌더링:"), self.review.index("{{lint}}"))
+
+    def test_role_docs(self):
+        for role in ("director", "designer", "developer"):
+            text = (ROOT / "templates" / "roles" / f"{role}.md").read_text(encoding="utf-8")
+            for needle in ("§1 AI 티 금지 목록, §2–§7", "즉시 차단 항목(design-rules)은 예외가 인정되지 않는다",
+                           "§7 의 4번", "§7 의 5번", "`### 디자인 점검`"):
+                self.assertIn(needle, text, role)
+        for path in (ROOT / "templates").rglob("*.md"):  # 옛 소절 이름은 리뷰 디자인 절의 호환 문장에만 있다
+            if path != REVIEW_DESIGN:
+                self.assertNotIn("금지 목록 점검", path.read_text(encoding="utf-8"), path)
+        director = (ROOT / "templates" / "roles" / "director.md").read_text(encoding="utf-8")
+        system = section(director, "단계 ③ 디자인 시스템")
+        for needle in ("design-rules §3 을 따른다", "design-rules §4 를 따른다", "`word-break: keep-all`",
+                       "`font-display: swap`", "눌림·disabled·로딩"):
+            self.assertIn(needle, system)
+        designer = (ROOT / "templates" / "roles" / "designer.md").read_text(encoding="utf-8")
+        self.assertIn("§7 의 상태(기본, hover, focus, 눌림, 비활성, 로딩, 빈 상태, 오류, 좁은 폭, 긴 글 중 해당하는 것)를 시안에 넣는다",
+                      designer)
+        self.assertIn("design-rules §7 의 상태(빈 상태, 로딩, 오류 포함)와 반응형(모바일·데스크톱 기준폭)", designer)
+        developer = (ROOT / "templates" / "roles" / "developer.md").read_text(encoding="utf-8")
+        rules = section(developer, "화면 규칙")
+        for needle in ("임시 확인 페이지", "커밋하지 않는다", "확인 뒤 되돌린다", "Storybook", "§7 줄에는 상태와 방법만 적는다"):
+            self.assertIn(needle, rules)
 
 
 class TextRulesDocTest(unittest.TestCase):

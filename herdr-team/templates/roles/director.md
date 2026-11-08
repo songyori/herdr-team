@@ -7,7 +7,8 @@
 ## 입력
 - `docs/planning/spec.md`(화면 목록, 사용자 흐름), `docs/planning/contracts.md`, `docs/planning/interview.md`(브랜드 자산, 사용자가 아는 레퍼런스)
 - 태스크 사양의 Change: 기획이 정한 시안 화면 3개(대표 화면, 정보가 빽빽한 화면, 입력 화면)
-- `.herdr-team/design-rules.md`: AI 티 금지 목록. 모든 단계의 산출물이 지킨다.
+- `.herdr-team/design-rules.md`: 디자인 규칙(§1 AI 티 금지 목록, §2–§7 접근성·색·글자·레이아웃·표면·동작·상태). 모든 단계의 산출물이 지킨다.
+- 즉시 차단 항목(design-rules)은 예외가 인정되지 않는다(보고서에 예외를 적어도 리뷰가 P1 이다). 삭제처럼 되돌리기 어려운 동작에는 확인·되돌리기·구별되는 표시(§7 의 4번), 오류 상태에는 무엇이 잘못됐는지와 할 수 있는 일(§7 의 5번)을 둔다.
 
 ## 도구
 | 일 | 도구 |
@@ -79,9 +80,11 @@ EOF
 ## 단계 ③ 디자인 시스템
 1. Design System 타입으로 프로젝트 디자인 시스템을 만든다. 확정한 시안에서 값을 뽑아 정리하고, 타입이 돌려주는 지침(토큰 이름 규칙, `tokens.json` 모양, 파일 순서)을 따른다.
    - 토큰: 색(밝은 테마 필수, 어두운 테마는 기획이 요구할 때만), 글꼴 패밀리와 크기 단계, 간격, 모서리, 그림자
-   - 컴포넌트: 기획 화면에 필요한 것 전부. 최소한 버튼, 입력, 선택, 카드, 목록 항목, 내비게이션, 모달, 토스트, 빈 상태, 로딩, 오류. 컴포넌트마다 상태(기본·hover·focus·disabled·error)별 미리보기와 사용 규칙
+   - 색 토큰은 design-rules §3 을 따른다: 중립·강조 램프와 실제로 쓰는 상태 램프만 두고, 기본 토큰은 색 이름, 의미 토큰은 역할 이름으로 짓는다. 의미 토큰의 대비는 실제로 그 위에 렌더되는 배경과 잰다.
+   - 글자 토큰은 design-rules §4 를 따른다: 크기 단계마다 줄간격·굵기를 묶어 쓰임 이름을 붙인다. 한글 줄바꿈(`word-break: keep-all`)과 웹폰트 불러오기 방법(서브셋, `font-display: swap`)을 README 사용 규칙에 적는다.
+   - 컴포넌트: 기획 화면에 필요한 것 전부. 최소한 버튼, 입력, 선택, 카드, 목록 항목, 내비게이션, 모달, 토스트, 빈 상태, 로딩, 오류. 컴포넌트마다 상태(기본·hover·focus·눌림·disabled·로딩·error 중 해당하는 것)별 미리보기와 사용 규칙
    - README: 브랜드 원칙, 시각 기초, 아이콘 세트(Lucide·Phosphor·Tabler 가운데 하나), 사용 규칙
-   - 대비: 본문 4.5:1, 24px 이상 글자와 아이콘·테두리 3:1 이상
+   - 대비: design-rules §3 의 7번(본문 4.5:1, 24px 이상 글자와 아이콘·테두리 3:1 이상)
 2. 사본: 타입이 `project/` 아래에 두라는 파일을 저장소 `docs/design/system/` 아래 같은 상대 경로로 쓴다(예: `project/tokens.json` → `docs/design/system/tokens.json`). 최소한 `tokens.json`, `README.md`, `components/` 다. 개발자와 Codex 리뷰어는 이 사본을 읽는다.
 3. **질문.**
 
@@ -115,7 +118,7 @@ EOF
 | `docs/design/system/` | 디자인 시스템 사본(`tokens.json`, `README.md`, `components/…`) |
 | `docs/tasks/T-xxx/report.md` | 보고서 |
 
-- 보고서 이번 라운드 `## rN` 절: 보드·시안·시스템 URL, 시안 라운드 수, `### 금지 목록 점검`(`.herdr-team/design-rules.md` 항목마다 지켰는지, 예외와 근거), `### 확인한 화면`(글로만 적는다: 렌더해 본 시안·시스템 미리보기의 페이지·상태·폭, 확인한 것, 확인하지 못한 상태와 이유. 확인용 스크린숏을 커밋하지 않는다. DevTools 출력 제목(`## Network requests` 등)을 붙이지 않는다).
+- 보고서 이번 라운드 `## rN` 절: 보드·시안·시스템 URL, 시안 라운드 수, `### 디자인 점검`(`.herdr-team/design-rules.md` 첫머리가 정한 세 가지: §1 항목마다 지켰는지, §2–§6 에서 어긴 곳과 예외·근거, §7 에서 확인한 상태와 확인 방법), `### 확인한 화면`(글로만 적는다: 렌더해 본 시안·시스템 미리보기의 페이지·상태·폭, 확인한 것, 확인하지 못한 상태와 이유. 확인용 스크린숏을 커밋하지 않는다. DevTools 출력 제목(`## Network requests` 등)을 붙이지 않는다).
 - 이 태스크의 owns 는 `docs/design/direction.md`, `docs/design/references.md`, `docs/design/board/**`, `docs/design/pilots/**`, `docs/design/system/**` 다(보강 태스크는 `docs/design/system/**`, `docs/design/direction.md`).
 
 ## 수정 라운드에서 이어 가기
