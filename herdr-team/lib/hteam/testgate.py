@@ -567,6 +567,35 @@ def gate_results(p, st: dict, role: str, commits: list[dict]) -> dict | None:
     return {**out, "quick": quick}
 
 
+def retry_results(p, st: dict, role: str, commits: list[dict], prev: dict | None) -> dict | None:
+    """`review --retry`(설계 6.1): code_head·식별값·확정 여부가 앞 시도의 관문 결과(prev)와 같으면 그것을 그대로 쓰고,
+    다르면 관문을 다시 돌린다."""
+    if role not in GATED_ROLES:
+        return None
+    cfg = load_config(p)
+    if cfg is None:
+        return None
+    value = digest(cfg)
+    if (prev and prev.get("head") == code_head(p, st["id"], commits) and prev.get("config") == value
+            and bool(prev.get("skipped")) == (not is_approved(p, value))):
+        return prev
+    return gate_results(p, st, role, commits)
+
+
+def summary(tests: dict | None) -> dict:
+    """출력·history 에 더하는 관문 요약: {tests: {종류: status}} 또는 {tests_skipped: "unapproved"}. 관문이 없으면 {}."""
+    if not tests:
+        return {}
+    if tests.get("skipped"):
+        return {"tests_skipped": tests["skipped"]}
+    return {"tests": {k: tests[k]["status"] for k in ("quick", "full") if k in tests}}
+
+
+def failed_quick(tests: dict | None) -> bool:
+    """developer 관문의 quick 이 failed·timeout 이다(리뷰어를 띄우지 않고 반려한다)."""
+    return bool(tests) and "quick" in tests and tests["quick"].get("status") not in PASSED
+
+
 def describe(entry: dict, kind: str) -> list[str]:
     """관문 결과 한 종류의 줄(설계 6.2). 명령은 JSON 문자열(util.dumps)로 보인다: 여러 줄 명령이 새 줄·절을 만들지 못하고,
     UTF-8 이 아닌 파일 이름(os.fsdecode 의 서로게이트)도 `\\udcXX` 로 보여 프롬프트·반려 파일을 쓸 수 있다."""

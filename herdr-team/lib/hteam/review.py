@@ -15,7 +15,7 @@ import hashlib
 import os
 from typing import Iterator
 
-from . import compose, config, dispatch, gitio, plan, procs, roles, specs, state
+from . import compose, config, dispatch, gitio, plan, procs, roles, specs, state, testgate
 from .errors import CONFLICT, FAIL, HteamError
 from .globs import covers_tree, matches_any
 from .horch import Horch
@@ -23,6 +23,7 @@ from .paths import SHIM, find_project, review_rel
 from .util import die_at, now, show, write_atomic
 
 AUTO_ATTEMPTS = 2  # 라운드당 자동 시도(설계 6.3 6)
+GATE_PROBLEM = "hteam 테스트 관문: quick 이 통과하지 못했다."
 VERDICTS = ("APPROVE", "REQUEST_CHANGES")
 # 리뷰 시도를 띄우거나 복구할 수 있는 상태: 첫 시도·복구는 working, 자동 재시도·--retry·그 복구는 reviewing
 REVIEW_STATES = frozenset({"working", "reviewing"})
@@ -110,10 +111,28 @@ def prechecks(p, cfg, st: dict, spec, commits: list[dict], files: list[str]) -> 
     return found
 
 
-def _precheck_fail(p, tid: str, n: int, problems: list[str]) -> dict:
+def _gate_text(tid: str, n: int, tests: dict) -> str:
+    """테스트 관문 반려 파일(설계 6.1 4a). 명령은 JSON 문자열, 출력 끝은 가변 길이 펜스로 넣는다."""
+    quick = tests["quick"]
+    tail = f"\n출력 끝:\n{testgate.fenced(quick['tail'])}\n" if quick.get("tail") else ""
+    return (f"# {tid} r{n} 리뷰 (출처: hteam 테스트 관문)\n\n리뷰어를 띄우지 않았다. 수정 라운드에서 다음을 고친다.\n\n"
+            f"## 지적 사항\n- [P1] {GATE_PROBLEM}\n\n## 테스트 관문\n"
+            + "".join(f"- {x}\n" for x in testgate.describe(quick, "quick")) + tail
+            + f"\n고친 뒤 `{SHIM} test {tid}` 로 다시 확인한다.\n실패가 이 태스크 탓이 아니면(소유 경로 밖 코드, 위의 커밋 안 된 "
+            "다른 파일) 코드를 고치지 말고 근거를 보고서에 적은 뒤 프리앰블의 ask 명령으로 코디네이터에게 묻는다.\n\n"
+            "VERDICT: REQUEST_CHANGES\n")
+
+
+def _precheck_fail(p, tid: str, n: int, problems: list[str], tests: dict | None = None,
+                   expect: frozenset = frozenset({"working"})) -> dict:
+    """리뷰어 없이 hteam 이 REQUEST_CHANGES 를 쓴다: 사전 검사(설계 6.1 4)와 테스트 관문(4a, tests 가 있다. --retry 가 다시
+    돌린 관문이면 expect 는 reviewing). 라운드를 하나 쓴다."""
     rel = review_rel(tid, n)
-    text = (f"# {tid} r{n} 리뷰 (출처: hteam 사전 검사)\n\n리뷰어를 띄우지 않았다. 수정 라운드에서 다음을 고친다.\n\n"
-            "## 지적 사항\n" + "".join(f"- [P1] {show(x)}\n" for x in problems) + "\nVERDICT: REQUEST_CHANGES\n")
+    if tests is not None:
+        text = _gate_text(tid, n, tests)
+    else:
+        text = (f"# {tid} r{n} 리뷰 (출처: hteam 사전 검사)\n\n리뷰어를 띄우지 않았다. 수정 라운드에서 다음을 고친다.\n\n"
+                "## 지적 사항\n" + "".join(f"- [P1] {show(x)}\n" for x in problems) + "\nVERDICT: REQUEST_CHANGES\n")
     write_atomic(p.root / rel, text)
     die_at("after_precheck_write")
     if gitio.dirty(p.root, [gitio.literal(rel)]):
@@ -121,13 +140,16 @@ def _precheck_fail(p, tid: str, n: int, problems: list[str]) -> dict:
     else:  # 앞 호출이 같은 내용을 커밋한 뒤 상태를 쓰기 전에 죽었다. 빈 커밋을 만들지 않는다
         sha = gitio.last_commit(p.root, rel)
     die_at("after_precheck_commit")
-    with state.edit(p, tid, expect={"working"}) as st:
+    info = testgate.summary(tests)
+    with state.edit(p, tid, expect=expect) as st:
         rd = st["rounds"][-1]
         _check_round(tid, rd)
         rd.update(verdict="REQUEST_CHANGES", review_source="hteam", prechecks=problems)
-        state.move(st, "changes", "precheck")
+        if tests is not None:
+            rd["tests"] = tests
+        state.move(st, "changes", "precheck", **info)
     return {"task": tid, "round": n, "status": "changes", "verdict": "REQUEST_CHANGES", "source": "hteam",
-            "problems": problems, "commit": sha}
+            "problems": problems, "commit": sha, **info}
 
 
 def _changes(p, prefix: str, exec_bit: bool) -> tuple[dict[str, str | None], dict[str, str | None]]:
@@ -249,6 +271,7 @@ def _launch_attempt(p, cfg, h, tid: str, k: int) -> dict:
             (p.root / att["file"]).unlink(missing_ok=True)
             pick(cur)["reset"] = True
     spec = specs.load(p, tid)
+    info = testgate.summary(att["inputs"].get("tests"))  # 출력·history 의 관문 요약(설계 6.1 4a)
     prompt = p.task_dir(tid) / f"r{rd['round']}-review-a{k}.md"
     if not prompt.is_file():
         write_atomic(prompt, compose.review_prompt(p, cfg, spec, rd, att))
@@ -259,11 +282,12 @@ def _launch_attempt(p, cfg, h, tid: str, k: int) -> dict:
         with dispatch.owned(p, tid, pick, REVIEW_STATES) as cur:
             if res["mode"] == "adopt":  # 실제로 도는 리뷰어에 맞춘다
                 pick(cur).update(agent=res["agent"], model=res["model"], effort=res["effort"])
-            state.move(cur, "reviewing", "review", attempt=k, dispatch=res["dispatch"])
+            state.move(cur, "reviewing", "review", attempt=k, dispatch=res["dispatch"], **info)
     except HteamError as exc:
         dispatch.left_running(exc, res, h)
         raise
-    out = {"task": tid, "round": rd["round"], "attempt": k, "status": "reviewing", "reviewer": att["agent"], **res}
+    out = {"task": tid, "round": rd["round"], "attempt": k, "status": "reviewing", "reviewer": att["agent"], **res,
+           **info}
     if res["mode"] == "adopt" and res.get("state") in ("settled", "retained", "released", "abandoned"):
         out["next"] = [SHIM, "review-finish", tid]
     return out
@@ -293,8 +317,9 @@ def _finish_write(p, tid: str, k: int) -> Iterator[tuple[dict, dict]]:
 
 
 def _new_attempt(p, cfg, h, tid: str, *, commits: list[dict], files: list[str], extra: bool,
-                 failed: tuple[int, str, list[str]] | None = None) -> dict:
-    """새 시도: 기준점·결과 경로·실행 키·입력을 시도 기록에 먼저 쓴다. 남은 결과 파일은 지운다(설계 6.1 6).
+                 failed: tuple[int, str, list[str]] | None = None, tests: dict | None = None) -> dict:
+    """새 시도: 기준점·결과 경로·실행 키·입력(대상 커밋, 바뀐 파일, 관문 결과 tests)을 시도 기록에 먼저 쓴다. 남은 결과 파일은
+    지운다(설계 6.1 6). 프롬프트·복구·자동 재시도는 이 입력을 다시 쓴다(관문을 다시 돌리지 않는다).
 
     failed=(k, 사유, 경고)면 실패한 시도 k 의 결과도 같은 쓰기에 남긴다. 그래서 자동 재시도 사이에 죽어도 열린 시도가
     남고 review 가 그것을 이어 띄운다(설계 6.3 6). 기준점은 git 을 부르므로 잠금 밖에서 만들고, 잠금 안에서 상태를 다시 본다."""
@@ -314,7 +339,7 @@ def _new_attempt(p, cfg, h, tid: str, *, commits: list[dict], files: list[str], 
         title = roles.review_title(tid, rd["round"], k)
         att = {**dispatch.new_slot(title), "attempt": k, "agent": choice.reviewer, "model": choice.review_model,
                "effort": choice.review_effort, "file": review_rel(tid, rd["round"], k), "baseline": base,
-               "inputs": {"commits": commits, "files": files}, "result": None, "reason": None, "tamper": None,
+               "inputs": {"commits": commits, "files": files, "tests": tests}, "result": None, "reason": None, "tamper": None,
                "extra": extra, "dispatch_end": None, "verdict_read": None, "verdict_sha": None, "reset": False,
                "warnings": []}
         rd["reviews"].append(att)
@@ -339,8 +364,10 @@ def _recover(p, cfg, h, st: dict, att: dict) -> dict:
                 if slot.get("result") is not None or slot.get("dispatch") != att["dispatch"]:
                     raise HteamError("attempt_changed", f"{tid} 리뷰 시도 a{k} 가 그 사이 바뀌었다", CONFLICT,
                                      "hteam status 로 태스크 상태를 확인한다")
-                state.move(cur, "reviewing", "review", attempt=k, dispatch=att["dispatch"])
-            out = {"task": tid, "attempt": k, "status": "reviewing", "dispatch": att["dispatch"], "mode": "recorded"}
+                state.move(cur, "reviewing", "review", attempt=k, dispatch=att["dispatch"],
+                           **testgate.summary(att["inputs"].get("tests")))
+            out = {"task": tid, "attempt": k, "status": "reviewing", "dispatch": att["dispatch"], "mode": "recorded",
+                   **testgate.summary(att["inputs"].get("tests"))}
             # 리뷰어가 먼저 끝났으면 그 worker_done(next 가 review 였다)은 다시 오지 않는다. 태스크 잠금 밖에서 본다
             try:
                 row, why = dispatch.slot_row(h.workers(), att), "worker-list 에 그 행이 없다"
@@ -368,7 +395,8 @@ def _recover(p, cfg, h, st: dict, att: dict) -> dict:
 def review(p, tid: str, retry: bool = False) -> dict:
     """처음 읽은 라운드로 판정·시도·상태를 쓰므로 호출 내내 finish 잠금을 쥔다(설계 6.4). 라운드를 닫는 fix·drop 의
     취소·정리도 같은 잠금 안에서 하므로, 이 호출이 도는 동안 새 라운드가 생기지 않는다(옛 review 가 새 라운드에
-    판정을 쓰지 않는다). 잠금 순서는 finish → 태스크다. review-finish 의 자동 재시도는 이 함수를 거치지 않는다."""
+    판정을 쓰지 않는다). 잠금 순서는 finish → 태스크다. review-finish 의 자동 재시도는 이 함수를 거치지 않는다.
+    테스트 관문(설계 6.1 4a)도 이 잠금 안에서 돈다(그동안 같은 태스크의 fix·drop·review-finish 는 기다린다)."""
     with state.finish_lock(p, tid):
         return _review(p, tid, retry)
 
@@ -392,7 +420,11 @@ def _review(p, tid: str, retry: bool) -> dict:
             raise HteamError("no_failed_review", f"{tid} 에 실패·무효로 멈춘 리뷰가 없다", CONFLICT,
                              "--retry 는 review_failed·review_tampered 뒤 사용자가 다시 하라고 했을 때만 쓴다")
         commits = target_commits(p, st)
-        return _new_attempt(p, cfg, h, tid, commits=commits, files=changed_files(p, commits), extra=True)
+        # 사전 검사는 하지 않는다. 관문은 입력(code_head·식별값·확정 여부)이 바뀌었을 때만 다시 돌린다(설계 6.1)
+        tests = testgate.retry_results(p, st, spec.role, commits, (last.get("inputs") or {}).get("tests"))
+        if testgate.failed_quick(tests):
+            return _precheck_fail(p, tid, rd["round"], [GATE_PROBLEM], tests, expect=frozenset({"reviewing"}))
+        return _new_attempt(p, cfg, h, tid, commits=commits, files=changed_files(p, commits), extra=True, tests=tests)
     if st["status"] != "working":
         raise HteamError("bad_state", f"{tid} 는 {st['status']} 다(review 는 working 에서)", CONFLICT,
                          data={"status": st["status"]})
@@ -407,7 +439,12 @@ def _review(p, tid: str, retry: bool) -> dict:
     problems = prechecks(p, cfg, st, spec, commits, files)
     if problems:
         return {**_precheck_fail(p, tid, rd["round"], problems), "warnings": warnings}
-    res = _new_attempt(p, cfg, h, tid, commits=commits, files=files, extra=False)
+    # 테스트 관문(설계 6.1 4a): 사전 검사를 통과한 뒤에만, 상태 전이 전에 돈다. 실행 불가·잠금 대기 초과·중단은 예외로
+    # 올라가고 아무것도 쓰지 않는다(working 그대로, 다시 부르면 retain 은 그대로 된다)
+    tests = testgate.gate_results(p, st, spec.role, commits)
+    if testgate.failed_quick(tests):
+        return {**_precheck_fail(p, tid, rd["round"], [GATE_PROBLEM], tests), "warnings": warnings}
+    res = _new_attempt(p, cfg, h, tid, commits=commits, files=files, extra=False, tests=tests)
     res["warnings"] = warnings + res.get("warnings", [])
     return res
 
@@ -564,7 +601,7 @@ def _finish(p, tid: str) -> dict:
         auto = [a for a in rd["reviews"] if not a.get("extra") and not a.get("canceled")]
         if not att.get("extra") and len(auto) < AUTO_ATTEMPTS:
             res = _new_attempt(p, cfg, h, tid, commits=att["inputs"]["commits"], files=att["inputs"]["files"],
-                               extra=False, failed=(k, reason, warnings))
+                               extra=False, failed=(k, reason, warnings), tests=att["inputs"].get("tests"))
             return {**res, "retried": True, "failed_attempt": k, "reason": reason}
         with _finish_write(p, tid, k) as (_, a):
             a.update(result="failed", reason=reason, warnings=warnings)

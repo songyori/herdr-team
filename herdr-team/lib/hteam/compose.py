@@ -1,7 +1,7 @@
 """워커 사양 조립(설계 5.5)과 리뷰 프롬프트 조립(6.2). horch 프리앰블이 이 사양 앞에 붙는다."""
 from __future__ import annotations
 
-from . import designdiff, lint, testgate, textlint
+from . import designdiff, lint, specs, state, testgate, textlint
 from .errors import USAGE, HteamError
 from .paths import SHIM, TEMPLATES, report_rel, review_rel
 from .util import fill, show
@@ -192,15 +192,84 @@ def text_section(p, files: list[str], shas: list[str]) -> str:
     return fill(_template("review-text.md"), text_lint=findings_list(found)).rstrip() + "\n\n"
 
 
+# 기준 1 의 둘째 문장(설계 6.2 {{verify_rule}}). 넷 중 하나로 늘 정해진다(verify_rule)
+VERIFY_DEFAULT = "보고서의 검증 출력을 그대로 믿지 말고 직접 실행해 본다."
+VERIFY_GATED = ("테스트는 아래 hteam 테스트 결과를 쓴다. 전체 테스트를 돌리지 않고, 결과가 의심되면 그 테스트 하나만 직접 "
+                "돌린다. 빌드·화면 확인은 직접 해도 된다.")
+VERIFY_PENDING = ("보고서의 검증 출력을 그대로 믿지 말고 직접 실행해 본다. 다만 확정하지 않은 `[test]` 명령(quick·full, 그것을 "
+                  "그대로 쓴 보고서·Acceptance 의 명령 포함)은 직접 돌리지 않는다(확정 뒤에 리뷰하는 태스크는 관문이 돌리고, 이미 "
+                  "관문 없이 리뷰한 태스크는 다시 리뷰하지 않으므로 마무리의 마지막 full 이 돌린다). 돌리지 못한 검증은 "
+                  "`## 직접 확인한 것` 에 그 사실을 적는다.")
+SKIPPED_LINE = ("- 확정하지 않은 테스트 명령이라 관문을 건너뛰었다(커밋된 docs/planning/tasks.toml 의 [test] 를 사용자가 "
+                "확정하지 않았다). 그 명령은 직접 돌리지 않는다. 다른 검증은 위 기준 1 대로 한다.")
+GROUP_FILES_SHOWN = 15
+
+
+def verify_rule(p, role: str, tests: dict | None) -> str:
+    """관문 결과(시도 기록 inputs.tests)가 있으면 관문 문장(건너뛰었으면 확정 전 문장). 관문 직무인데 결과가 없으면 HEAD 에
+    [test] 가 없었다(지금 문장). 관문 없는 직무(planner·director·designer)는 지금 [test] 를 보고 확정하지 않았거나 읽지
+    못하면 확정 전 문장, 없거나 확정했으면 지금 문장이다(그 리뷰는 [test] 오류로 멈추지 않는다)."""
+    if tests is not None:
+        return VERIFY_PENDING if tests.get("skipped") else VERIFY_GATED
+    if role in testgate.GATED_ROLES:
+        return VERIFY_DEFAULT
+    return VERIFY_PENDING if testgate.gate_state(p)["state"] in ("unapproved", "error") else VERIFY_DEFAULT
+
+
+def _lines(items: list[str]) -> str:
+    return "\n".join(f"- {x}" for x in items)
+
+
+def tests_section(tests: dict | None) -> str:
+    """테스트 절(설계 6.2): developer 관문의 quick 결과. 건너뛰었으면(확정하지 않은 [test]) 한 줄. 없으면 빈 문자열."""
+    if not tests:
+        return ""
+    if tests.get("skipped"):
+        return f"## hteam 테스트 결과\n{SKIPPED_LINE}\n\n"
+    if "quick" not in tests:
+        return ""
+    return fill(_template("review-tests.md"), test_lines=_lines(testgate.describe(tests["quick"], "quick"))).rstrip() + "\n\n"
+
+
+def _group_task(p, tid: str) -> str:
+    try:
+        st, spec = state.require(p, tid), specs.load(p, tid)
+        commits = testgate.work_commits(p, st)
+        files = testgate.changed_files(p, commits)
+    except (HteamError, OSError, ValueError):
+        return f"- {tid} — 상태를 읽지 못했다"
+    shown = ", ".join(show(f) for f in files[:GROUP_FILES_SHOWN]) or "없음"
+    more = f" 외 {len(files) - GROUP_FILES_SHOWN}개" if len(files) > GROUP_FILES_SHOWN else ""
+    return f"- {tid} [{st.get('role')}] {spec.title} — 작업 커밋 {len(commits)}개, 바꾼 파일: {shown}{more}"
+
+
+def group_section(p, spec, tests: dict | None) -> str:
+    """묶음 절(설계 6.2): 관문 결과가 있는 tester 태스크만. 선행 태스크마다 작업 커밋 수와 바꾼 파일, full 결과."""
+    if not tests or spec.role != testgate.TESTER_ROLE:
+        return ""
+    if tests.get("skipped"):
+        full_lines, full_tail = "- full: 돌리지 않음(확정하지 않은 테스트 명령)", ""
+    else:
+        full = tests["full"]
+        full_lines = _lines(testgate.describe(full, "full"))
+        failed = full.get("status") not in testgate.PASSED and full.get("tail")
+        full_tail = f"출력 끝:\n{testgate.fenced(full['tail'])}\n\n" if failed else ""
+    return fill(_template("review-group.md"), group_key=spec.front.get("plan_key") or spec.id,
+                group_tasks="\n".join(_group_task(p, d) for d in spec.depends_on) or "- 없음",
+                full_lines=full_lines, full_tail=full_tail).rstrip() + "\n\n"
+
+
 def review_prompt(p, cfg, spec, rd: dict, att: dict) -> str:
     """리뷰 프롬프트(설계 6.2). 입력(대상 커밋, 바뀐 파일)은 시도 기록에 저장된 것을 쓴다. 이번 라운드에 요청(사용자
     요청·코디네이터 메모·디렉터 보강, round_requests)이 있으면 그 요청과 그 라운드 작업 사양을 보이고 기준에 한 줄을 더한다
     (없으면 그대로).
-    기준 뒤에 디자인 절(design_section), 문구 절(text_section) 순서로 붙인다. 없는 절은 빈 문자열이다."""
+    기준 뒤에 테스트 절(tests_section), 묶음 절(group_section), 디자인 절(design_section), 문구 절(text_section) 순서로
+    붙인다. 없는 절은 빈 문자열이다. 관문 결과는 시도 기록 inputs.tests 를 쓴다(관문을 다시 돌리지 않는다)."""
     tid, n = spec.id, rd["round"]
     prior = [review_rel(tid, r) for r in range(1, n) if (p.root / review_rel(tid, r)).is_file()]
     commits = att["inputs"]["commits"]
     files = att["inputs"]["files"]
+    tests = att["inputs"].get("tests")
     shas = [c["sha"] for c in commits]
     request, request_rule = "", ""
     asks = round_requests(p, rd)
@@ -214,7 +283,8 @@ def review_prompt(p, cfg, spec, rd: dict, att: dict) -> str:
                 round=str(n), attempt=str(att["attempt"]), title=spec.title, review_file=att["file"],
                 spec_path=f".herdr-team/tasks/{tid}.md", role_doc=f".herdr-team/roles/{spec.role}.md",
                 report=report_rel(tid), prior=", ".join(f"`{x}`" for x in prior) or "없음", request=request,
-                request_rule=request_rule,
+                request_rule=request_rule, verify_rule=verify_rule(p, spec.role, tests), tests=tests_section(tests),
+                group=group_section(p, spec, tests),
                 design=design_section(p, cfg, spec, files, shas, att.get("agent") or "codex"),
                 text=text_section(p, files, shas),
                 commits="\n".join(f"- {c['sha'][:10]} {c['subject']}" for c in commits) or "- 없음",
