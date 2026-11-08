@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""테스트용 가짜 테스트 명령(설계 15.1). `[test]` 의 quick·full 이 부른다(시험 폴더 안에서만 돈다).
+
+받은 인자와 환경 변수(HTEAM_ROLE·HTEAM_LAUNCH·HC_TERMINAL_ID 유무)를 `$FAKE_DIR/test-args.jsonl` 에 한 줄씩 남기고,
+`$FAKE_DIR/test_modes.txt` 의 첫 단어대로 끝난다(한 번 쓴 단어는 지운다. 없으면 pass):
+  pass 0, fail 1(`FAIL tests/a.test.ts > 더하기` 를 낸다), five 5, missing 127, sleep 30초 잔다.
+출력에 빈 줄을 넣어 hteam 의 tail 이 빈 줄을 빼는지 본다.
+"""
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+
+def main() -> int:
+    fake = Path(os.environ["FAKE_DIR"])
+    fake.mkdir(parents=True, exist_ok=True)
+    seen = {k: k in os.environ for k in ("HTEAM_ROLE", "HTEAM_LAUNCH", "HC_TERMINAL_ID")}
+    with (fake / "test-args.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"args": sys.argv[1:], "env": seen, "cwd": os.getcwd()}, ensure_ascii=False) + "\n")
+    modes = fake / "test_modes.txt"
+    words = modes.read_text(encoding="utf-8").split() if modes.exists() else []
+    if words:
+        modes.write_text(" ".join(words[1:]), encoding="utf-8")
+    mode = words[0] if words else "pass"
+    print("실행:", " ".join(sys.argv[1:]))
+    print()
+    print("   ")
+    sys.stdout.flush()
+    if mode == "fail":
+        print("FAIL tests/a.test.ts > 더하기")
+        return 1
+    if mode == "five":
+        print("모은 테스트가 없다")
+        return 5
+    if mode == "missing":
+        return 127
+    if mode == "sleep":
+        time.sleep(30)
+    print("ok")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

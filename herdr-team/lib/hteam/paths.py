@@ -46,6 +46,8 @@ class Project:
         self.auto_up = self.state / "auto-up.json"
         self.auto_up_pid = self.state / "auto-up.pid"
         self.auto_up_log = self.state / "auto-up.log"
+        self.tests = self.state / "tests"  # 테스트 기록 T-xxx.json·final.json, exclusive 잠금 .lock(설계 5.7)
+        self.test_logs = self.tests / "logs"
 
     def ensure_state(self) -> None:
         for folder in (self.state, self.task_states, self.answers, self.sessions):

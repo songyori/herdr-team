@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO = ROOT.parent
@@ -268,6 +269,40 @@ class TeamCase(unittest.TestCase):
 
     def task_state(self, tid: str) -> dict:
         return json.loads((self.state_dir / "tasks" / f"{tid}.json").read_text(encoding="utf-8"))
+
+    # --- 테스트 관문(5단계) ---
+    def use_gate(self, quick: str = "fake-test {files}", full: str = "fake-test --all", extra: str = "", *,
+                 approve: bool = True, commit: bool = True) -> None:
+        """docs/planning/tasks.toml 에 [test] 를 쓰고(commit 이면 커밋하고) approve 면 사용자 확정을 기록한다. 가짜 테스트
+        명령(tests/fakes/fake-test, PATH 에 있다)은 $FAKE_DIR 에 받은 인자를 남긴다."""
+        self.env["FAKE_DIR"] = str(self.tmp / "fake")
+        rel = "docs/planning/tasks.toml"
+        text = f"[test]\nquick = {json.dumps(quick)}\nfull = {json.dumps(full)}\n{extra}"
+        if commit:
+            self.commit(rel, text, "plan: [test]")
+        else:
+            (self.proj / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.proj / rel).write_text(text, encoding="utf-8")
+        if approve:
+            self.approve_gate()
+
+    def approve_gate(self) -> None:
+        """HEAD 의 [test] 를 확정 기록에 더한다(메인의 확정 답과 같다). 확정 기록은 시험 HOME 아래에 있다."""
+        from hteam import testgate
+        from hteam.paths import Project
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            p = Project(self.proj)
+            cfg = testgate.load_config(p)
+            testgate.approve(p, testgate.digest(cfg), "out-test", cfg.quick, cfg.full)
+
+    def gate_modes(self, *words: str) -> None:
+        """가짜 테스트 명령이 차례로 쓸 동작(pass·fail·five·missing·sleep)."""
+        (self.tmp / "fake").mkdir(exist_ok=True)
+        (self.tmp / "fake" / "test_modes.txt").write_text(" ".join(words), encoding="utf-8")
+
+    def gate_calls(self) -> list[dict]:
+        path = self.tmp / "fake" / "test-args.jsonl"
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
 
     # --- 실행 ---
     def _env(self, as_: str | None, terminal: str | None, extra: dict | None) -> dict:

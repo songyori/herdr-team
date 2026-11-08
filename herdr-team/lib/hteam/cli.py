@@ -26,6 +26,7 @@ COMMAND_MODULES: tuple[str, ...] = (
     "image",
     "coord",
     "setup",
+    "testgate",
 )
 
 
@@ -54,8 +55,10 @@ def main(argv: list[str]) -> int:
     try:
         args = build_parser().parse_args(argv)
         result = args.func(args)
-        # 결과의 _after(인자 없는 함수)는 출력에 넣지 않고 JSON 을 출력한 뒤에 부른다.
+        # 결과의 _after(인자 없는 함수)는 출력에 넣지 않고 JSON 을 출력한 뒤에 부른다. _exit 는 성공 봉투와 함께 낼 exit
+        # 코드다(hteam test 의 failed·timeout 은 결과를 출력하고 exit 1, 설계 5.7)
         after = result.pop("_after", None)
+        code = result.pop("_exit", 0)
         # 성공 봉투도 try 안에서 직렬화한다. dict 가 아니거나 JSON 으로 못 바꾸면 internal 오류로 알린다.
         line = dumps({"ok": True, **result})
     except HteamError as exc:
@@ -68,7 +71,7 @@ def main(argv: list[str]) -> int:
     sys.stdout.flush()
     if after:
         _run_after(after)  # 출력한 뒤에야 한다(watch 커서: 적어도 한 번 전달)
-    return 0
+    return code
 
 
 def _run_after(after) -> None:

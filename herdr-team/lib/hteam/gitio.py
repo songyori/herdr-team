@@ -18,6 +18,10 @@ NO_FSMONITOR = ("-c", "core.fsmonitor=false")
 # 같은 조회가 fsmonitor 에 속지 않게 NO_FSMONITOR 도 붙인다.
 ABSOLUTE = ("-c", "diff.relative=false", *NO_FSMONITOR)
 
+# 읽기만 하는 status 조회의 환경(설계 5.7): git status 가 index 를 새로 쓰며 index.lock 을 쥐지 않게 한다. hteam test 는
+# 워커가 자주 부르므로 같은 폴더에서 일하는 다른 워커의 커밋을 실패시키지 않게 한다
+READ_ONLY = {"GIT_OPTIONAL_LOCKS": "0"}
+
 
 def _name(args: tuple[str, ...]) -> str:
     """오류 메시지의 git 하위 명령(앞의 `-c 이름=값` 은 건너뛴다)."""
@@ -28,12 +32,12 @@ def _name(args: tuple[str, ...]) -> str:
 
 
 def run(root, *args: str, check: bool = True, input: str | bytes | None = None,
-        raw: bool = False) -> subprocess.CompletedProcess:
+        raw: bool = False, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     """raw 면 입출력을 바이트로 둔다(파일명이 UTF-8 이 아닐 수 있는 출력은 부르는 쪽이 os.fsdecode 로 푼다. input 도
-    바이트로 준다)."""
+    바이트로 준다). env 는 지금 환경에 더할 변수다(READ_ONLY 등)."""
     try:
         proc = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=not raw, input=input,
-                              timeout=120)
+                              timeout=120, env={**os.environ, **env} if env else None)
     except FileNotFoundError:
         raise HteamError("git_missing", "git 이 없다", MISSING) from None
     except subprocess.TimeoutExpired:
@@ -172,7 +176,7 @@ def dirty(root, pathspecs: list[str]) -> list[str]:
     if not pathspecs:
         return []
     out = run(root, *ABSOLUTE, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames", "--",
-              *pathspecs, raw=True).stdout
+              *pathspecs, raw=True, env=READ_ONLY).stdout
     entries, found = _zb(out), []
     i = 0
     while i < len(entries):
@@ -195,8 +199,9 @@ def tracked_changes(root, exec_bit: bool | None = None) -> list[str]:
     assume-unchanged 를 새로 붙이지 않게). 이미 붙은 숨김 플래그는 git diff 가 보지 않으므로 changed_entries 가 따로 본다."""
     flags = (*ABSOLUTE, "-c", "core.ignoreStat=false",
              *(() if exec_bit is None else ("-c", f"core.fileMode={'true' if exec_bit else 'false'}")))
-    work = _zb(run(root, *flags, "diff", "--name-only", "-z", "--no-renames", "HEAD", raw=True).stdout)
-    staged = _zb(run(root, *flags, "diff", "--cached", "--name-only", "-z", "--no-renames", "HEAD", raw=True).stdout)
+    work = _zb(run(root, *flags, "diff", "--name-only", "-z", "--no-renames", "HEAD", raw=True, env=READ_ONLY).stdout)
+    staged = _zb(run(root, *flags, "diff", "--cached", "--name-only", "-z", "--no-renames", "HEAD", raw=True,
+                     env=READ_ONLY).stdout)
     return sorted(set(work) | set(staged))
 
 
@@ -285,6 +290,14 @@ def _ref_present(root, ref: str) -> bool:
         return True
     listed = run(root, "for-each-ref", "--format=%(refname)", ref).stdout.split()
     return ref in listed
+
+
+def head_file(root, top_path: str) -> str | None:
+    """HEAD 에 커밋된 파일(git 최상위 기준 경로)의 내용. `git cat-file -e` 가 실패하면(파일 없음, 커밋 없음) None.
+    있으면 `git show` 로 읽는다(index 를 잠그지 않는다). git 오류는 git_failed, UTF-8 이 아니면 UnicodeDecodeError."""
+    if run(root, "cat-file", "-e", f"HEAD:{top_path}", check=False).returncode != 0:
+        return None
+    return run(root, "show", f"HEAD:{top_path}", raw=True).stdout.decode("utf-8")
 
 
 def has_head(root) -> bool:
