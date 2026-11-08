@@ -4,7 +4,7 @@ from __future__ import annotations
 import sys
 import time
 
-from . import outbox, state
+from . import outbox, state, testgate
 from .errors import CONFLICT, DENIED, TIMEOUT, USAGE, HteamError
 from .horch import Horch
 from .paths import SHIM, find_project
@@ -59,7 +59,8 @@ def wait_answer(p, tid: str, oid: str) -> dict:
         time.sleep(min(poll, left))
 
 
-def ask(p, tid: str, text: str) -> dict:
+def ask(p, tid: str, text: str, confirm: bool = False) -> dict:
+    """confirm(`--test-confirm`, 설계 5.7)이면 작업 트리 tasks.toml 의 [test] 로 `## 테스트 명령` 절과 식별값을 붙인다."""
     st = state.require(p, tid)
     if st.get("role") not in ASK_ROLES:
         raise HteamError("not_ask_role", f"{tid} 는 {st.get('role')} 직무다(ask-user 는 planner·director 만)", CONFLICT,
@@ -68,6 +69,9 @@ def ask(p, tid: str, text: str) -> dict:
         raise HteamError("bad_state", f"{tid} 는 {st['status']} 다(ask-user 는 working 에서)", CONFLICT)
     _check_caller(p, st)
     render = outbox.read_render(text, ASK_ROLES[st["role"]])
+    fields = {"type": "ask", "from": tid, "round": st["round"], "render": render}
+    if confirm:
+        fields.update(outbox.test_confirm(render, testgate.worktree_config(p)))
 
     def one_open(entries: list[dict]) -> None:
         for e in entries:
@@ -75,7 +79,7 @@ def ask(p, tid: str, text: str) -> dict:
                 raise HteamError("question_open", f"{tid} 에 답을 기다리는 질문 {e['id']} 가 있다", CONFLICT,
                                  f"`{SHIM} ask-user --task {tid} --wait {e['id']}`", data={"id": e["id"]})
 
-    entry = outbox.append(p, {"type": "ask", "from": tid, "round": st["round"], "render": render}, guard=one_open)
+    entry = outbox.append(p, fields, guard=one_open)
     return wait_answer(p, tid, entry["id"])
 
 
@@ -115,8 +119,10 @@ def history(p, tid: str) -> dict:
 def _cmd(args) -> dict:
     p = find_project(args.root)
     tid = args.task
+    if args.test_confirm and args.json is None:
+        raise HteamError("usage", "--test-confirm 은 --json 과 함께 쓴다", USAGE)
     if args.json is not None:
-        return ask(p, tid, sys.stdin.read() if args.json == "-" else args.json)
+        return ask(p, tid, sys.stdin.read() if args.json == "-" else args.json, args.test_confirm)
     if args.wait:
         _entry(p, tid, args.wait)
         return wait_answer(p, tid, args.wait)
@@ -136,4 +142,5 @@ def register(sub) -> None:
     mode.add_argument("--ack", metavar="ID")
     mode.add_argument("--pending", action="store_true")
     mode.add_argument("--history", action="store_true")
+    s.add_argument("--test-confirm", action="store_true", help="기획 확정 질문에 [test] 의 테스트 명령 절을 붙인다")
     s.set_defaults(func=_cmd)

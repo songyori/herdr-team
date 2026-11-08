@@ -1,4 +1,4 @@
-"""태스크 그래프(설계 5.2): `plan check`(읽기 전용), `plan apply [--append]`."""
+"""태스크 그래프(설계 5.2): `plan check`(읽기 전용), `plan apply [--append]`. `[test]` 가 있으면 그 형식과 묶음 규칙도 본다."""
 from __future__ import annotations
 
 import hashlib
@@ -7,7 +7,7 @@ import re
 import tomllib
 from pathlib import Path
 
-from . import config, gitio, roles, specs, state
+from . import config, gitio, roles, specs, state, testgate
 from .errors import CONFLICT, USAGE, HteamError
 from .globs import any_overlap, owns_problem, within
 from .paths import find_project
@@ -18,9 +18,11 @@ KEY_RE = re.compile(r"[a-z0-9-]+")
 TEXT_FIELDS = ("title", "target", "change", "constraints")
 REQUIRED = ("key", "role", "title", "owns", "target", "change", "constraints", "acceptance")
 ALLOWED = frozenset(REQUIRED + ("depends_on",))
+NO_TEST = object()  # tasks.toml 에 [test] 가 없다(validate 의 test 기본값)
 
 
-def read_tasks(path: Path) -> list[dict]:
+def read_plan_data(path: Path) -> dict:
+    """tasks.toml 의 TOML 표 전체(`task` 목록과 `[test]` 등, 설계 5.2). task 는 [[task]] 표의 목록이어야 한다."""
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -30,7 +32,11 @@ def read_tasks(path: Path) -> list[dict]:
     tasks = data.get("task", [])
     if not isinstance(tasks, list) or not all(isinstance(t, dict) for t in tasks):
         raise HteamError("bad_plan", "tasks.toml 은 [[task]] 표의 목록이다", USAGE)
-    return tasks
+    return data
+
+
+def plan_tasks(data: dict) -> list[dict]:
+    return data.get("task", [])
 
 
 def _str_list(value, nonempty: bool = True) -> bool:
@@ -106,9 +112,43 @@ def _cycle(deps: dict[str, list[str]]) -> list[str] | None:
     return None
 
 
-def validate(cfg, tasks: list[dict]) -> tuple[list[str], list[list[str]]]:
-    """(오류 목록, 병렬 깊이 묶음). 구조 오류가 있으면 그래프 검사는 하지 않는다."""
+def group_problems(keys: dict[str, dict], fresh: set[str]) -> list[str]:
+    """묶음 규칙(설계 5.2, `[test]` 가 있을 때). 묶음은 tester 태스크 하나와 그 depends_on 의 developer 태스크들이다.
+    fresh(아직 적용하지 않은 key) 안의 태스크만 본다. 직무 이름은 설정과 관계없이 글자 그대로다. 문구는 orca-team 원문이다."""
+    testers = [k for k, t in keys.items() if t["role"] == testgate.TESTER_ROLE]
+    found = []
+    for k in testers:
+        if k not in fresh:
+            continue
+        want = [f"tests/{k}/**", f"docs/qa/{k}.md"]
+        if sorted(keys[k]["owns"]) != sorted(want):
+            found.append(f'{k}: tester 태스크 owns 는 정확히 ["{want[0]}", "{want[1]}"] 다')
+        others = [d for d in keys[k].get("depends_on", []) if keys[d]["role"] != testgate.DEVELOPER_ROLE]
+        if others:
+            found.append(f"{k}: tester 태스크의 depends_on 에는 developer 태스크만 둔다({', '.join(others)})")
+    for k, t in keys.items():
+        if t["role"] != testgate.DEVELOPER_ROLE or k not in fresh:
+            continue
+        on_tester = [d for d in t.get("depends_on", []) if keys[d]["role"] == testgate.TESTER_ROLE]
+        if on_tester:
+            found.append(f"{k}: developer 태스크는 tester 태스크에 의존하지 않는다({', '.join(on_tester)}). "
+                         "다음 묶음 구현이 앞 묶음 테스트를 기다리지 않게 한다")
+        if all(o == "README.md" or o.startswith("docs/") for o in t["owns"]):  # 문서 전용은 묶음에 넣지 않아도 된다
+            continue
+        holders = [s for s in testers if k in keys[s].get("depends_on", [])]
+        if len(holders) != 1:
+            found.append(f"{k}: 문서 전용이 아닌 developer 태스크는 정확히 한 tester 태스크(묶음)의 depends_on 에 "
+                         f"든다(지금: {', '.join(holders) or '없음'})")
+    return found
+
+
+def validate(cfg, tasks: list[dict], test=NO_TEST, applied=()) -> tuple[list[str], list[list[str]]]:
+    """(오류 목록, 병렬 깊이 묶음). 구조 오류가 있으면 그래프 검사는 하지 않는다. test 는 tasks.toml 의 `[test]` 값이다
+    (없으면 NO_TEST): 있으면 그 형식을 필드 오류와 함께 모으고, 그래프 검사가 통과하면 묶음 규칙을 아직 적용하지 않은
+    key(applied 밖)에 본다(설계 5.2)."""
     errors, keys = _fields(cfg, tasks)
+    if test is not NO_TEST:
+        errors += testgate.config_problems(test)
     if errors:
         return errors, []
     deps = {k: list(t.get("depends_on", [])) for k, t in keys.items()}
@@ -149,6 +189,7 @@ def validate(cfg, tasks: list[dict]) -> tuple[list[str], list[list[str]]]:
             elif cfg.is_approval(keys[a]["role"]) and cfg.is_approval(keys[b]["role"]):
                 errors.append(f"승인 직무 태스크 {a}·{b} 가 의존 관계이고 owns 가 겹친다({x} ↔ {y}). 선행이 "
                               "awaiting_user 로 잠금을 쥔 채 후행을 기다려 일괄 승인이 교착된다. owns 를 나누거나 승인 묶음을 나눈다")
+    graph_ok = not errors
     if "director" in cfg.roles and any(t["role"] == "designer" for t in keys.values()):
         directors = [k for k, t in keys.items() if t["role"] == "director"]
         if len(directors) != 1:
@@ -159,6 +200,8 @@ def validate(cfg, tasks: list[dict]) -> tuple[list[str], list[list[str]]]:
                 if t["role"] == "designer" and not asset_only and directors[0] not in ancestors(k):
                     errors.append(f"{k}: 에셋 전용이 아닌 designer 태스크는 director 태스크 {directors[0]} 에 "
                                   "직간접으로 의존해야 한다")
+    if graph_ok and test is not NO_TEST:
+        errors += group_problems(keys, set(keys) - set(applied))
     depth: dict[str, int] = {}
 
     def level(k: str) -> int:
@@ -175,8 +218,8 @@ def validate(cfg, tasks: list[dict]) -> tuple[list[str], list[list[str]]]:
     return errors, groups
 
 
-def _checked(cfg, tasks: list[dict]) -> list[list[str]]:
-    errors, groups = validate(cfg, tasks)
+def _checked(cfg, data: dict, applied=()) -> list[list[str]]:
+    errors, groups = validate(cfg, plan_tasks(data), data.get("test", NO_TEST), applied)
     if errors:
         raise HteamError("plan_invalid", f"tasks.toml 검사 실패({len(errors)}건)", USAGE,
                          data={"errors": errors, "groups": groups})
@@ -185,13 +228,16 @@ def _checked(cfg, tasks: list[dict]) -> list[list[str]]:
 
 def check(p, cfg, path: Path) -> dict:
     """읽기 전용. 파일 검사에 더해 이미 적용한 계획(plan.json)이 있으면 apply --append 가 받아들일지도 본다.
-    그래서 기획 태스크의 사전 검사가 승인 전에 막는다(승인 뒤에는 고칠 라운드가 없다)."""
-    tasks = read_tasks(path)
-    groups = _checked(cfg, tasks)
+    그래서 기획 태스크의 사전 검사가 승인 전에 막는다(승인 뒤에는 고칠 라운드가 없다). 묶음 규칙은 적용한 key 를 빼고
+    본다(apply --append 와 같다). 출력 test 는 그 파일에 `[test]` 가 있는지다."""
+    data = read_plan_data(path)
+    tasks = plan_tasks(data)
     plan = read_json(p.plan_file, None)
+    known = _surviving(p, plan) if plan is not None and "test" in data else None
+    groups = _checked(cfg, data, known or {})
     if plan is not None:
-        _keep_applied(_surviving(p, plan), tasks)
-    return {"tasks": len(tasks), "groups": groups}
+        _keep_applied(known if known is not None else _surviving(p, plan), tasks)
+    return {"tasks": len(tasks), "groups": groups, "test": "test" in data}
 
 
 def _surviving(p, plan: dict) -> dict:
@@ -346,9 +392,11 @@ def apply(p, cfg, append: bool) -> dict:
     된다. pending ID 는 specs.next_id 가 예약한다."""
     path = p.root / PLAN_FILE
     with state.project_lock(p):
-        tasks = read_tasks(path)
-        groups = _checked(cfg, tasks)
+        data = read_plan_data(path)
+        tasks = plan_tasks(data)
         plan = read_json(p.plan_file, None)
+        # 묶음 규칙은 적용한 key 를 빼고 본다. 쓰기 전이라 복구(_settle) 뒤에도 남을 key 를 읽기 전용으로 센다
+        groups = _checked(cfg, data, _surviving(p, plan) if plan is not None and "test" in data else {})
         resumed = None
         if plan is not None and plan.get("pending"):
             plan, resumed = _settle(p, plan)

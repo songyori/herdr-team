@@ -939,6 +939,65 @@ class ComposeTest(StartCase):
             self.assertIn(needle, text)
 
 
+class TestBlockTest(StartCase):
+    """워커 사양의 테스트 절(설계 5.5, orca-team TestBlockTest): 작업 규칙 다음, 수정 블록 앞."""
+
+    def spec_text(self, tid="T-001", rnd=1, **rd):
+        cfg = config.load(self.p)
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            return compose.work_spec(self.p, cfg, specs.load(self.p, tid), {"round": rnd, **rd}, ["src/**"])
+
+    def test_developer_block_order_and_text(self):
+        self.use_gate()
+        self.write_spec("T-001")
+        text = self.spec_text()
+        self.assertIn("(리뷰 사전 검사가 수정 라운드로 돌려보낸다).\n\n## 테스트\n- 순서: 작업을 `[T-001]` 커밋으로 먼저 "
+                      "커밋한다 → `.herdr-team/bin/hteam test T-001` 를 돌린다 → 보고서를 따로 커밋한다.", text)
+        for needle in ("done 전에 `.herdr-team/bin/hteam test T-001` 가 통과해야 한다(exit 0)",
+                       "소유 경로 안의 `.gitignore`(예: `src/.gitignore`)", "전체 테스트는 돌리지 않는다",
+                       "`timeout: 600000`"):
+            self.assertIn(needle, text)
+        self.commit("docs/reviews/T-001/r1.md", "VERDICT: REQUEST_CHANGES\n", "[T-001] review r1: REQUEST_CHANGES")
+        text = self.spec_text(rnd=2, note="P1 반영")
+        self.assertLess(text.index("\n## 테스트\n"), text.index("\n## 수정 라운드 r2\n"))
+        self.assertIn("끝났다는 알림에서 출력을 읽는다.\n\n## 수정 라운드 r2\n", text)
+        self.assertNotIn("\n\n\n", text)
+
+    def test_tester_block(self):
+        self.use_gate()
+        self.write_spec("T-002", "tester", owns="tests/grp/**, docs/qa/grp.md")
+        text = self.spec_text("T-002")
+        for needle in ("`.herdr-team/bin/hteam test T-002 --full`", "다시 돌리지 않는다", "제품 코드는 고치지 않는다",
+                       "약하게 만들거나 건너뛰거나 지우지 않는다", "`## 회귀`"):
+            self.assertIn(needle, text)
+        self.assertNotIn("done 전에", text)  # tester 에게는 quick 통과를 요구하지 않는다
+
+    def test_no_block_cases(self):
+        self.write_spec("T-001")
+        self.write_spec("T-003", "planner", owns="docs/planning/**")
+        self.assertNotIn("## 테스트", self.spec_text())  # [test] 없음
+        self.use_gate(commit=False, approve=False)  # 커밋하지 않은 표
+        self.assertNotIn("## 테스트", self.spec_text())
+        self.commit("docs/planning/tasks.toml", '[test]\nquick = "x"\nfull = "y"\n', "plan: 깨진 표")
+        self.assertNotIn("## 테스트", self.spec_text())  # 형식 오류: 리뷰 관문이 알린다
+        self.use_gate()
+        self.assertNotIn("## 테스트", self.spec_text("T-003"))  # 관문 없는 직무
+        (self.proj / "docs/planning/tasks.toml").write_text("깨짐 [", encoding="utf-8")  # 작업 트리만 깬다
+        self.assertIn("\n## 테스트\n", self.spec_text())
+
+    def test_pending_block_until_confirmed(self):
+        self.use_gate(approve=False)
+        self.write_spec("T-001")
+        text = self.spec_text()
+        self.assertIn("\n## 테스트(확정 대기)\n- `docs/planning/tasks.toml` 의 `[test]` 를 사용자가 아직 확정하지 않았다.", text)
+        for needle in ("`.herdr-team/bin/hteam test` 는 돌리지 않는다", "### 테스트 확정 대기", "\"[test] 확정 필요\"",
+                       "확정을 기다리며 멈추지 않는다"):
+            self.assertIn(needle, text)
+        self.assertNotIn("\n## 테스트\n", text)
+        self.approve_gate()
+        self.assertIn("\n## 테스트\n", self.spec_text())
+
+
 class BarrierTest(unittest.TestCase):
     def test_go_never_communicates_with_closed_stdin(self):
         """Python 3.11 의 communicate() 는 닫힌 stdin 을 flush 하다 ValueError 를 낸다. 장벽은 바이트를 직접 쓰고

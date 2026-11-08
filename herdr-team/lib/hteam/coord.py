@@ -5,7 +5,7 @@ import json
 import re
 import time
 
-from . import approval, config, dispatch, herdr, outbox, roles, state, tasks
+from . import approval, config, dispatch, herdr, outbox, roles, state, tasks, testgate
 from .errors import USAGE, HteamError
 from .horch import Horch
 from .paths import SHIM, find_project
@@ -644,7 +644,7 @@ def status(p) -> dict:
         run_error = exc.message
     out = {"tasks": items, "config_error": config_error, "run_error": run_error, "horch_error": horch_error,
            "horch": horch_cmd, "coordinator": coordinator_view(p, run), "watch_alive": outbox.watch_alive(p),
-           "open_questions": questions, "unread_outbox": outbox.unread(p)}
+           "open_questions": questions, "unread_outbox": outbox.unread(p), "test_gate": testgate.gate_state(p)}
     if warnings:
         out["warnings"] = warnings
     return out

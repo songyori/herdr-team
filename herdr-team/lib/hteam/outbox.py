@@ -16,7 +16,7 @@ import sys
 import time
 import unicodedata
 
-from . import herdr, procs, roles, state
+from . import herdr, procs, roles, state, testgate
 from .errors import CONFLICT, DENIED, FAIL, USAGE, HteamError
 from .horch import Horch
 from .paths import SHIM, find_project
@@ -107,6 +107,18 @@ def read_render(text: str, default_header: str) -> dict:
     except ValueError as exc:
         raise HteamError("bad_render", f"질문 JSON 을 읽지 못했다: {exc}", USAGE) from exc
     return validate_render(obj, default_header)
+
+
+def test_confirm(render: dict, cfg) -> dict:
+    """`--test-confirm`(설계 5.7): render.context 끝에 `## 테스트 명령` 절을 붙인 질문 필드와 확정 식별값. 붙인 뒤 context 가
+    4000자를 넘으면 exit 2(묻는 쪽이 줄인다)."""
+    context = render.get("context")
+    joined = (context.rstrip("\n") + "\n\n" if context else "") + testgate.confirm_section(cfg)
+    if len(joined) > 4000:
+        raise HteamError("bad_render", f"테스트 명령 절을 붙이면 context 가 4000자를 넘는다({len(joined)}자)", USAGE,
+                         "context 를 줄인다(기획 확정 질문이면 태스크 그래프 표의 제목 열부터 뺀다)")
+    return {"render": {**render, "context": joined}, "test_digest": testgate.digest(cfg),
+            "test_commands": {"quick": cfg.quick, "full": cfg.full}}
 
 
 def _parse(raw: bytes) -> tuple[int, list[tuple[int, dict]], list[int]]:
@@ -379,18 +391,25 @@ def tell(p, text: str) -> dict:
     return {"message": out["message"], "wake": out.get("wake")}
 
 
-def notify(p, kind: str, body: str | None, json_text: str | None) -> dict:
+def notify(p, kind: str, body: str | None, json_text: str | None, confirm: bool = False) -> dict:
+    if confirm and kind != "question":
+        raise HteamError("usage", "--test-confirm 은 --type question 에만 쓴다", USAGE)
     if kind in ("question", "approval"):
         if json_text is None:
             raise HteamError("usage", f"--type {kind} 는 --json - 로 질문(render)을 준다", USAGE)
         fields = {"type": kind, "render": read_render(json_text, "질문" if kind == "question" else "승인"),
                   "from": "coordinator"}
+        if confirm:  # 커밋된 HEAD 의 [test] 를 확정할 질문(설계 5.7)
+            fields.update(test_confirm(fields["render"], testgate.require_config(p)))
     else:
         if not body:
             raise HteamError("usage", f"--type {kind} 는 --body 가 필요하다", USAGE)
         fields = {"type": kind, "body": body, "from": "coordinator"}
     entry = append(p, fields)
-    return {"id": entry["id"], "type": kind}
+    out = {"id": entry["id"], "type": kind}
+    if confirm:
+        out["test_digest"] = entry["test_digest"]
+    return out
 
 
 def _orphaned(p) -> bool:
@@ -486,30 +505,48 @@ def _entry(p, oid: str) -> dict:
     return entry
 
 
+def _record_confirm(p, entry: dict, text: str) -> bool:
+    """테스트 명령 확정 질문(test_digest 가 있는 항목)에 첫 선택지(추천안) label 그대로 답하면 답을 쓰기 전에 그 식별값을
+    확정 기록에 더한다(설계 5.7. 이미 있으면 그대로, 확정 기록이 손상됐으면 bad_test_approvals 로 멈춘다). 그 밖의 답은
+    기록하지 않는다."""
+    digest = entry.get("test_digest")
+    options = (entry.get("render") or {}).get("options") or [{}]
+    if not digest or text != options[0].get("label"):
+        return False
+    commands = entry.get("test_commands") or {}
+    testgate.approve(p, digest, entry["id"], commands.get("quick"), commands.get("full"))
+    return True
+
+
 def answer(p, oid: str, text: str) -> dict:
     """메인의 답(설계 7.4). 메인 확인을 어떤 쓰기보다 먼저 한다.
 
     question·approval 은 답 파일을 먼저 남기고 보낸 뒤 sent_at 을 적는다. 보내지 못하면 sent_at 이 없어 열린 질문에
-    unsent 로 남는다. 같은 답으로 다시 실행하면 다시 보낸다(적어도 한 번)."""
+    unsent 로 남는다. 같은 답으로 다시 실행하면 다시 보낸다(적어도 한 번). 테스트 명령 확정 질문은 답을 쓰기 전에 확정
+    기록을 남긴다(_record_confirm, 기록 뒤 죽어 다시 부르면 같은 값을 다시 더한다)."""
     require_main(p)
     entry = _entry(p, oid)
     if entry["type"] not in ("ask", "question", "approval"):
         raise HteamError("not_a_question", f"{oid} 는 {entry['type']} 라 답할 수 없다", USAGE)
     if entry["type"] == "ask":
+        if answer_of(p, oid) is not None:  # 이미 답한 질문에 확정 기록을 남기지 않는다
+            raise HteamError("already_answered", f"{oid} 에는 이미 답했다", CONFLICT)
+        confirmed = _record_confirm(p, entry, text)
         if not _link_answer(p, oid, text):
             raise HteamError("already_answered", f"{oid} 에는 이미 답했다", CONFLICT)
-        return {"id": oid, "type": "ask", "delivered": "file"}
+        return {"id": oid, "type": "ask", "delivered": "file", "test_confirmed": confirmed}
     previous = answer_of(p, oid)
     if previous is not None and previous.get("answer") != text:
         raise HteamError("already_answered", f"{oid} 에는 이미 다른 답을 했다", CONFLICT)
     run_id = _run_id(p)
     note_main(p)
+    confirmed = _record_confirm(p, entry, text)
     if not _link_answer(p, oid, text) and (answer_of(p, oid) or {}).get("answer") != text:
         raise HteamError("already_answered", f"{oid} 에는 이미 다른 답을 했다", CONFLICT)
     out = _send(p, run_id, f"[main] reply {oid}", text)  # 다시 실행하면 같은 답을 다시 보낸다(적어도 한 번)
     write_json(p.answers / f"{oid}.json", {**(answer_of(p, oid) or {"id": oid, "answer": text}), "sent_at": now(),
                                           "message": out["message"]})
-    return {"id": oid, "type": entry["type"], "sent": True, "message": out["message"]}
+    return {"id": oid, "type": entry["type"], "sent": True, "message": out["message"], "test_confirmed": confirmed}
 
 
 def applied_ids(p) -> dict:
@@ -552,7 +589,7 @@ def _cmd_notify(args) -> dict:
     p = find_project(args.root)
     roles.require_coordinator(p)
     text = sys.stdin.read() if args.json == "-" else args.json
-    return notify(p, args.type, args.body, text)
+    return notify(p, args.type, args.body, text, args.test_confirm)
 
 
 def _cmd_watch(args) -> dict:
@@ -586,6 +623,7 @@ def register(sub) -> None:
     body = s.add_mutually_exclusive_group(required=True)
     body.add_argument("--body")
     body.add_argument("--json", help="'-' 면 표준 입력")
+    s.add_argument("--test-confirm", action="store_true", help="커밋된 [test] 의 확정 질문(question 만)")
     s.set_defaults(func=_cmd_notify)
     sub.add_parser("watch").set_defaults(func=_cmd_watch)
     s = sub.add_parser("answer")

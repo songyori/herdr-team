@@ -1,10 +1,11 @@
 """기획 인터뷰(설계 10장): planner 직무 문서의 체크리스트·확정 질문·리뷰 기준, 수정 라운드의 열린 질문."""
 import json
 import re
+import tomllib
 import unittest
 
 from tests.helpers import ROOT, TeamCase
-from hteam import outbox, state
+from hteam import outbox, plan, state, testgate
 from hteam.paths import Project
 
 PLANNER = ROOT / "templates" / "roles" / "planner.md"
@@ -12,7 +13,7 @@ PLANNER = ROOT / "templates" / "roles" / "planner.md"
 CHECKLIST = ["목적과 성공 기준", "사용자와 상황", "범위", "사용자 흐름", "화면 목록", "데이터와 상태", "오류",
              "비기능 요구", "기술 스택과 실행 환경", "인터페이스 계약", "브랜드 자산과 아는 레퍼런스",
              "문구 기준(서비스 문구·정책 문서·사용자 문서의 문체, 사용자 호칭, 버튼·메뉴 라벨 형태, 핵심 용어 표기)", "범위 밖"]
-HEREDOC = re.compile(r"ask-user --task T-xxx --json - <<'EOF'\n(.*?)\nEOF", re.S)
+HEREDOC = re.compile(r"ask-user --task T-xxx --json -(?: --test-confirm)? <<'EOF'\n(.*?)\nEOF", re.S)
 
 
 def section(text: str, title: str) -> str:
@@ -63,6 +64,51 @@ class PlannerDocTest(unittest.TestCase):
         fmt = section(self.text, "tasks.toml 형식")
         for path in outputs:
             self.assertIn(f"`{path}`", fmt)
+
+
+class BatchDocTest(unittest.TestCase):
+    """묶음·[test] 규칙(설계 5.8, 10장): planner·tester·developer 직무 문서."""
+
+    def setUp(self):
+        self.planner = PLANNER.read_text(encoding="utf-8")
+
+    def test_planner_example_passes_format_and_group_rules(self):
+        block = re.search(r"## tasks.toml 형식\n\n```toml\n(.*?)```", self.planner, re.S).group(1)
+        data = tomllib.loads(block)
+        self.assertEqual(testgate.config_problems(data["test"]), [])
+        # 예시는 발췌라 블록 밖 태스크(ui-foundation)에 의존한다. 그 의존을 빼고 묶음 규칙을 본다(그래프 검사는 plan check 의 일)
+        keys = {t["key"]: {**t, "depends_on": [d for d in t.get("depends_on", []) if d in {x["key"] for x in data["task"]}]}
+                for t in data["task"]}
+        self.assertEqual(plan.group_problems(keys, set(keys)), [])
+        self.assertEqual(keys["login-test"]["owns"], ["tests/login-test/**", "docs/qa/login-test.md"])
+
+    def test_planner_rules_and_confirm_question(self):
+        fmt = section(self.planner, "tasks.toml 형식")
+        for needle in ('`["tests/<key>/**", "docs/qa/<key>.md"]`', "`{files}` 를 정확히 한 번 담는다", "`ok_exit = [0, 5]`",
+                       "`exclusive = true`", "`[test]` 는 커밋해야 적용된다", "developer 태스크 3–6개",
+                       "developer 태스크는 tester 태스크에 의존하지 않는다", "tester 태스크의 `depends_on` 에는 developer 태스크만",
+                       "\"`[test]` 의 quick·full 명령이 실행된다\""):
+            self.assertIn(needle, fmt)
+        confirm = section(self.planner, "확정 질문")
+        self.assertIn("ask-user --task T-xxx --json - --test-confirm <<'EOF'", confirm)
+        for needle in ("`## 테스트 명령` 절", "확정한 뒤 `[test]` 를 고치면 확정 질문을 다시 한다", "4000자를 넘으면"):
+            self.assertIn(needle, confirm)
+        context = json.loads(HEREDOC.findall(self.planner)[-1])["context"]
+        self.assertIn("| app-test | tester | 앱 묶음 테스트 | app |", context)
+        self.assertNotIn("| e2e |", context)
+        self.assertIn("확정 질문을 `--test-confirm` 으로 했다", section(self.planner, "리뷰 기준(리뷰어가 본다)"))
+
+    def test_tester_and_developer_docs(self):
+        tester = (ROOT / "templates/roles/tester.md").read_text(encoding="utf-8")
+        for needle in ("`.herdr-team/bin/hteam test T-xxx --full`", "제품 회귀", "`tests/<key>/`", "`docs/qa/<key>.md`",
+                       "약하게 만들거나 건너뛰거나 지우지 않는다", "자동 반려하지 않는다", "확정한 `[test]`",
+                       "`## 테스트(확정 대기)`", "### 테스트 확정 대기", "마무리의 마지막 `hteam test --full`",
+                       "developer 의 단위 테스트"):
+            self.assertIn(needle, tester)
+        developer = (ROOT / "templates/roles/developer.md").read_text(encoding="utf-8")
+        for needle in ("확정한 `[test]` 가 있으면(워커 사양에 `## 테스트` 절이 있다)", "전체 테스트는 돌리지 않는다",
+                       "`## 테스트(확정 대기)`", "\"[test] 확정 필요\"", "단위 테스트는 owns 안에서만 쓴다"):
+            self.assertIn(needle, developer)
 
 
 class FixRoundQuestionTest(TeamCase):

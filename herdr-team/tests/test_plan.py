@@ -564,7 +564,7 @@ class PlanApplyTest(TeamCase):
         self.write_plan([task("a")])
         p = Project(self.proj)
         p.ensure_state()
-        real, seen = plan.read_tasks, []
+        real, seen = plan.read_plan_data, []
 
         def spy(path):
             with open(p.lock, "a+") as fh:  # 다른 열린 파일로 잠금을 잡아 보면 지금 잠겨 있는지 안다
@@ -576,7 +576,7 @@ class PlanApplyTest(TeamCase):
                     seen.append(True)
             return real(path)
 
-        with mock.patch.object(plan, "read_tasks", spy), mock.patch.dict(os.environ, self.env, clear=True):
+        with mock.patch.object(plan, "read_plan_data", spy), mock.patch.dict(os.environ, self.env, clear=True):
             out = plan.apply(p, config.load(p), False)
         self.assertEqual((seen, out["applied"]), ([True], [{"key": "a", "id": "T-001"}]))
 
@@ -588,6 +588,89 @@ class PlanApplyTest(TeamCase):
         state.create(Project(self.proj), "T-001", "developer")
         self.assertEqual(plan.order(Project(self.proj)), ["T-002", "T-003", "T-001"])
         self.assertTrue(gitio.is_repo(self.proj))
+
+
+TEST_TABLE = '[test]\nquick = "npx vitest related --run --passWithNoTests {files}"\nfull = "npx vitest run"\n'
+GROUP_CONFIG = BASE_CONFIG.replace('owns = ["src/**"]', 'owns = ["src/**", "README.md", "docs/user/**", "docs/policy/**"]')
+
+
+class GroupRuleTest(TeamCase):
+    """묶음 규칙(설계 5.2, orca-team GroupRuleTest)."""
+
+    def setUp(self):
+        super().setUp()
+        self.init_project(config=GROUP_CONFIG)
+        self.setup_run()
+        self.path = self.proj / "docs/planning/tasks.toml"
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def valid(self):
+        return [task("store", owns=["src/store/**"]), task("ui", owns=["src/ui/**"], deps=["store"]),
+                task("guide", owns=["docs/user/**"]),
+                task("grp", "tester", ["tests/grp/**", "docs/qa/grp.md"], deps=["store", "ui"])]
+
+    def check(self, tasks, table=TEST_TABLE):
+        self.path.write_text(toml(tasks) + "\n" + table, encoding="utf-8")
+        return self.hteam("plan", "check", as_=None)
+
+    def test_valid_groups_pass_and_report_test(self):
+        code, out = self.check(self.valid())
+        self.assertEqual((code, out["test"]), (0, True), out)
+        code, out = self.check(self.valid() + [task("extra", owns=["src/extra/**"])], table="")
+        self.assertEqual((code, out["test"]), (0, False), out)
+
+    def test_rule_messages(self):
+        cases = [
+            (self.valid() + [task("extra", owns=["src/extra/**"])],
+             "extra: 문서 전용이 아닌 developer 태스크는 정확히 한 tester 태스크(묶음)의 depends_on 에 든다(지금: 없음)"),
+            (self.valid() + [task("grp2", "tester", ["tests/grp2/**", "docs/qa/grp2.md"], deps=["store"])],
+             "store: 문서 전용이 아닌 developer 태스크는 정확히 한 tester 태스크(묶음)의 depends_on 에 든다(지금: grp, grp2)"),
+            ([*self.valid()[:3], task("grp", "tester", ["tests/**"], deps=["store", "ui"])],
+             'grp: tester 태스크 owns 는 정확히 ["tests/grp/**", "docs/qa/grp.md"] 다'),
+            ([task("plan-a", "planner", ["docs/planning/**"]), *self.valid()[:3],
+              task("grp", "tester", ["tests/grp/**", "docs/qa/grp.md"], deps=["store", "ui", "plan-a"])],
+             "grp: tester 태스크의 depends_on 에는 developer 태스크만 둔다(plan-a)"),
+            (self.valid() + [task("next", owns=["src/next/**"], deps=["grp"]),
+                             task("grp2", "tester", ["tests/grp2/**", "docs/qa/grp2.md"], deps=["next"])],
+             "next: developer 태스크는 tester 태스크에 의존하지 않는다(grp). 다음 묶음 구현이 앞 묶음 테스트를 기다리지 않게 한다"),
+        ]
+        for tasks, needle in cases:
+            code, out = self.check(tasks)
+            self.assertEqual((code, out["error"]["code"]), (2, "plan_invalid"), (needle, out))
+            self.assertIn(needle, out["errors"])
+
+    def test_test_table_format_errors_reported(self):
+        code, out = self.check(self.valid(), table='[test]\nquick = "npx vitest"\nfull = "npx vitest run"\n')
+        self.assertEqual((code, out["error"]["code"]), (2, "plan_invalid"), out)
+        self.assertIn("[test]: quick 은 {files} 를 정확히 한 번 담는다", out["errors"])
+
+    def test_append_checks_only_new_tasks(self):
+        old = [task("old", owns=["src/old/**"])]
+        self.path.write_text(toml(old), encoding="utf-8")
+        self.assertEqual(self.hteam("plan", "apply")[0], 0)
+        tasks = old + [task("new1", owns=["src/new1/**"]),
+                       task("grp", "tester", ["tests/grp/**", "docs/qa/grp.md"], deps=["new1"]),
+                       task("new2", owns=["src/new2/**"])]
+        code, out = self.check(tasks)
+        self.assertEqual((code, out["error"]["code"]), (2, "plan_invalid"), out)
+        self.assertEqual([e for e in out["errors"] if "문서 전용이 아닌" in e],
+                         ["new2: 문서 전용이 아닌 developer 태스크는 정확히 한 tester 태스크(묶음)의 depends_on 에 든다(지금: 없음)"])
+        code, out = self.hteam("plan", "apply", "--append")
+        self.assertEqual((code, out["error"]["code"]), (2, "plan_invalid"), out)
+        self.path.write_text(toml(tasks[:3]) + "\n" + TEST_TABLE, encoding="utf-8")
+        code, out = self.hteam("plan", "apply", "--append")
+        self.assertEqual((code, [a["key"] for a in out["applied"]]), (0, ["new1", "grp"]), out)
+
+    def test_planner_review_precheck_uses_group_rules(self):
+        self.write_spec("T-001", role="planner", title="기획", owns="docs/planning/**")
+        self.assertEqual(self.hteam("start", "T-001")[0], 0)
+        did = self.task_state("T-001")["rounds"][-1]["work"]["dispatch"]
+        text = toml(self.valid() + [task("extra", owns=["src/extra/**"])]) + "\n" + TEST_TABLE
+        self.act(did, {"write": {"docs/planning/tasks.toml": text}, "commit": "[T-001] r1 기획",
+                       "done": {"outcome": "succeeded", "summary": "끝"}})
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual((code, out["status"], out["source"]), (0, "changes", "hteam"), out)
+        self.assertIn("extra: 문서 전용이 아닌 developer 태스크", out["problems"][0])
 
 
 class OwnsWithinTest(TeamCase):

@@ -1,10 +1,12 @@
 """메인 연결(설계 7장): render 검사, notify·watch·answer·applied·reask·tell, ask-user."""
 import json
+import os
 import time
 import unittest
+from unittest import mock
 
 from tests.helpers import COORD, TeamCase
-from hteam import outbox, state
+from hteam import outbox, state, testgate
 from hteam.errors import HteamError
 from hteam.paths import Project
 
@@ -250,6 +252,102 @@ class AskUserTest(LinkCase):
         with state.edit(self.p, "T-001") as st:
             state.move(st, "reviewing", "review")
         self.assertEqual(outbox.open_questions(self.p), [])
+
+
+class TestConfirmTest(LinkCase):
+    """테스트 명령 확정(설계 5.7): --test-confirm 질문의 `## 테스트 명령` 절·식별값, 메인 answer 의 확정 기록, status."""
+
+    def setUp(self):
+        super().setUp()
+        self.env["HTEAM_ASK_TIMEOUT"] = "0.5"
+        self.write_spec("T-001", "planner")
+        state.create(self.p, "T-001", "planner")
+        self.assertEqual(self.hteam("start", "T-001")[0], 0)
+        self.term = self.dispatch_row(self.work_dispatch("T-001"))["terminal"]
+        self.plan = self.proj / "docs/planning/tasks.toml"
+        self.plan.parent.mkdir(parents=True, exist_ok=True)
+
+    def ask(self, obj=None):
+        return self.hteam("ask-user", "--task", "T-001", "--json", "-", "--test-confirm", as_=None, terminal=self.term,
+                          stdin=json.dumps(obj or render(context="## 계획 핵심\n- 할 일 앱")))
+
+    def entries(self):
+        return [json.loads(x) for x in (self.state_dir / "outbox.jsonl").read_text().splitlines()]
+
+    def approvals(self):
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            return [a["digest"] for a in testgate.read_approvals(self.p)], testgate.approvals_path(self.p)
+
+    def test_ask_user_attaches_section_and_first_option_confirms(self):
+        self.plan.write_text('[test]\nquick = " npx vitest related --run {files}"\nfull = "npx vitest run"\n',
+                             encoding="utf-8")  # 커밋 전(작업 트리)이다
+        code, out = self.ask()
+        self.assertEqual((code, out["status"]), (4, "waiting"), out)
+        entry = self.entries()[-1]
+        want = testgate.digest(testgate.parse_config({"quick": "npx vitest related --run {files}", "full": "npx vitest run"}))
+        self.assertEqual(entry["test_digest"], want)
+        self.assertEqual(entry["render"]["context"], "## 계획 핵심\n- 할 일 앱\n\n## 테스트 명령\n" + testgate.CONFIRM_LINE +
+                         '\n```toml\nquick = "npx vitest related --run {files}"\nfull = "npx vitest run"\n'
+                         "timeout_min = 30\nok_exit = [0]\nexclusive = false\n```")
+        code, out = self.hteam("answer", entry["id"], "localStorage (추천)", terminal=COORD, as_=None)
+        self.assertEqual(code, 5, out)  # 코디네이터 터미널은 답하지 못한다(기록도 없다)
+        self.assertEqual(self.approvals()[0], [])
+        code, out = self.hteam("answer", entry["id"], "localStorage (추천)", as_="main")
+        self.assertEqual((code, out["test_confirmed"]), (0, True), out)
+        digests, path = self.approvals()
+        self.assertEqual(digests, [want])
+        self.assertFalse(str(path).startswith(str(self.proj)))
+
+    def test_ask_user_refusals(self):
+        code, out = self.ask()
+        self.assertEqual((code, out["error"]["code"]), (2, "no_test_config"), out)
+        self.plan.write_text('[test]\nquick = "x"\nfull = "y"\n', encoding="utf-8")
+        code, out = self.ask()
+        self.assertEqual((code, out["error"]["code"]), (2, "bad_test_config"), out)
+        self.plan.write_text('[test]\nquick = "x {files}"\nfull = "y"\n', encoding="utf-8")
+        code, out = self.ask(render(context="가" * 3900))
+        self.assertEqual((code, out["error"]["code"]), (2, "bad_render"), out)
+        self.assertIn("4000자를 넘는다", out["error"]["message"])
+        self.assertFalse((self.state_dir / "outbox.jsonl").exists())
+
+    def test_notify_reads_head_and_only_first_option_confirms(self):
+        code, out = self.hteam("notify", "--type", "question", "--json", "-", "--test-confirm", stdin=json.dumps(render()))
+        self.assertEqual((code, out["error"]["code"]), (2, "no_test_config"), out)
+        code, out = self.hteam("notify", "--type", "progress", "--body", "x", "--test-confirm")
+        self.assertEqual((code, out["error"]["code"]), (2, "usage"), out)
+        self.use_gate(approve=False)
+        self.assertEqual(self.hteam("status")[1]["test_gate"]["state"], "unapproved")
+        self.assertIn("--test-confirm", self.hteam("status")[1]["test_gate"]["hint"])
+        code, out = self.hteam("notify", "--type", "question", "--json", "-", "--test-confirm", stdin=json.dumps(render()))
+        self.assertEqual(code, 0, out)
+        first = out["id"]
+        self.assertEqual(out["test_digest"], self.entries()[-1]["test_digest"])
+        self.assertTrue(self.entries()[-1]["render"]["context"].startswith("## 테스트 명령\n"))
+        code, out = self.hteam("answer", first, "서버 DB", as_="main")
+        self.assertEqual((code, out["test_confirmed"]), (0, False), out)
+        self.assertEqual(self.approvals()[0], [])
+        code, out = self.hteam("notify", "--type", "question", "--json", "-", "--test-confirm", stdin=json.dumps(render()))
+        second = out["id"]
+        for _ in range(2):  # 끊겨 다시 보내도 기록은 하나다
+            code, out = self.hteam("answer", second, "localStorage (추천)", as_="main")
+            self.assertEqual((code, out["test_confirmed"]), (0, True), out)
+        self.assertEqual(len(self.approvals()[0]), 1)
+        gate = self.hteam("status")[1]["test_gate"]
+        self.assertEqual((gate["state"], gate["digest"], gate["error"]), ("approved", self.approvals()[0][0], None))
+
+    def test_broken_record_stops_the_answer(self):
+        self.use_gate(approve=False)
+        code, out = self.hteam("notify", "--type", "question", "--json", "-", "--test-confirm", stdin=json.dumps(render()))
+        oid = out["id"]
+        path = self.approvals()[1]
+        path.parent.mkdir(parents=True)
+        path.write_text("[1, 2]", encoding="utf-8")
+        code, out = self.hteam("answer", oid, "localStorage (추천)", as_="main")
+        self.assertEqual((code, out["error"]["code"]), (1, "bad_test_approvals"), out)
+        self.assertIn(str(path), out["error"]["message"])
+        self.assertEqual(path.read_text(encoding="utf-8"), "[1, 2]")
+        self.assertFalse((self.state_dir / "answers" / f"{oid}.json").exists())
+        self.assertEqual(self.hteam("status")[1]["test_gate"]["state"], "error")
 
 
 class HerdrVerdictTest(unittest.TestCase):
