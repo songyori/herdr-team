@@ -53,7 +53,7 @@ hteam 명령이 exit 5 `not_coordinator` 를 주면 `hteam up` 이 새 코디네
 | `escalation` | 내용을 정리해 메인에 묻는다 |
 
 ## 리뷰 결과
-- 작업 `worker_done`(성공) 뒤 `hteam review T` 는 늘 Bash `run_in_background: true` 로 부른다(테스트 관문이 테스트를 돌려 오래 걸릴 수 있다). 끝났다는 알림에서 출력을 읽고 아래대로 한다. 같은 태스크의 `review` 가 끝나기 전에 그 태스크의 `fix`·`drop` 을 부르면 관문이 끝날 때까지 기다린다. 끝나지 않은 `review` 가 있는 동안 `hteam status` 의 next 가 다시 `review` 를 주어도 또 띄우지 않는다(두 번째 호출은 같은 잠금에서 기다리고, 앞 호출이 리뷰어를 띄웠거나 반려했으면 exit 3 으로 끝난다).
+- `hteam review T` 는 늘 Bash `run_in_background: true` 로 부른다(작업 `worker_done`(성공) 뒤든 `hteam status`·`start` 의 next 로 받았든. 테스트 관문이 테스트를 돌려 오래 걸릴 수 있다). 끝났다는 알림에서 출력을 읽고 아래대로 한다. 같은 태스크의 `review` 가 끝나기 전에 그 태스크의 `fix`·`drop` 을 부르면 관문이 끝날 때까지 기다린다. 끝나지 않은 `review` 가 있는 동안 `hteam status` 의 next 가 다시 `review` 를 주어도 또 띄우지 않는다(두 번째 호출은 같은 잠금에서 기다리고, 앞 호출이 리뷰어를 띄웠거나 반려했으면 exit 3 으로 끝난다).
 - `review` 가 바로 `status: changes`(`source: hteam`)를 주면 사전 검사에 걸린 것이다. `hteam fix T --note "<problems 요약>"`.
 - `status: changes`, `source: hteam` 이고 `tests` 가 있으면(`{"quick": "failed"}`·`{"quick": "timeout"}`) 테스트 관문 반려다. `hteam fix T --note "<quick 실패 요약>"`. 같은 테스트 실패로 hteam 반려가 두 라운드 이어지면 `fix` 하지 않고 "메인에 묻기" 대로 묻는다. 실패가 그 태스크 탓이 아닐 수 있다(소유 경로 밖 코드, 다른 워커의 커밋 안 된 파일). 리뷰 파일(`docs/reviews/T-xxx/r<N>.md`)의 출력 끝으로 같은 실패인지 본다.
 - `review` 가 exit 2 로 `[test]` 문제를 알리면 라운드는 쓰이지 않았다(상태 `working`). `error.code` 로 가른다: `test_unrunnable`·`bad_test_config`·`plan_unreadable` 이면 커밋된 `docs/planning/tasks.toml` 의 `[test]` 를 고치는 기획 태스크를 만든다(사용자가 직접 넣은 `[test]` 면 메인에 묻는다). 고친 뒤 같은 태스크를 다시 `hteam review`(백그라운드). `uncommitted_owned` 면 `hteam fix T --note "커밋 안 된 파일을 커밋하거나 지운다"`. exit 4 `test_lock_timeout` 이면 고칠 것은 없다. 다른 테스트 실행이 끝난 뒤 같은 태스크를 다시 `hteam review`.

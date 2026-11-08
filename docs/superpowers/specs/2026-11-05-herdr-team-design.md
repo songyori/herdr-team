@@ -712,7 +712,7 @@ Codex 리뷰어에게는 `AGENTS.md` 의 리뷰어 규칙도 적용된다(9.1). 
 - 바꿀 때: 리뷰 파일의 마지막 `VERDICT:` 줄(판정 읽기와 같은 줄: 앞뒤 공백을 뗀 줄이 `VERDICT:` 로 시작하는 마지막 줄) 앞에 `> hteam 판정 맞추기: 막는 지적(`## 지적 사항` 의 P1 줄, `## 이전 지적 확인` 의 미해결 줄) {셈}개라 {바뀐 판정} 로 바꿨다(원래 {원래 판정}).` 와 빈 줄을 끼우고 그 줄을 `VERDICT: {바뀐 판정}` 으로 바꾼다. 셈은 내릴 때 넓은 셈, 올릴 때 엄격한 셈이다.
 - 기록과 복구: 판정을 읽을 때 원래 바이트의 해시(지금의 `verdict_sha`), 원래 판정(`verdict_raw`), 맞춘 판정(`verdict_read`), 맞춘 내용의 해시(`final_sha`, 바꾸지 않았으면 원래 해시), `verdict_adjusted`(`"APPROVE→REQUEST_CHANGES"` 등, 바꾸지 않았으면 null)를 한 번에 시도 기록에 남긴다. 7 의 최종화는 시도 파일이 있으면 그 해시가 `verdict_sha` 와 같은지 보고 맞춘 내용을 `rN.md` 에 원자적으로 쓴 뒤 시도 파일들을 지운다(바꾸지 않았으면 지금처럼 옮긴다). 시도 파일이 없으면(이미 옮김) `rN.md` 가 `final_sha` 와 같아야 한다. 맞추기는 같은 바이트에 늘 같은 결과라 다시 불러도 결과가 같다.
 - 남는 곳: 리뷰 커밋 제목은 바뀐 판정(`[T-xxx] review rN: {바뀐 판정}`), 본문 첫 줄 `판정 맞추기: {원래}→{바뀐 것}(`## 지적 사항` 의 P1 줄과 `## 이전 지적 확인` 의 미해결 줄 수 기준)`(추적하지 않는 새 파일 경고가 있으면 빈 줄 뒤에 이어 쓴다). history 의 `verdict` 사건과 `review-finish` 출력에 `verdict_adjusted`. 상태 `approved`·`changes` 와 라운드 기록의 판정은 바뀐 판정을 따른다.
-- 한계: CRLF 리뷰 파일은 절 정규식(`[ \t]*\n`)에 맞지 않아 맞추지 않는다. 라운드 2 규칙(라운드 절)을 리뷰어가 따르지 않아도 hteam 은 판정·P1 수만 맞춘다.
+- 한계: CRLF 리뷰 파일은 절 정규식(`[ \t]*\n`)에 맞지 않아 맞추지 않는다. `## 지적 사항` 안 펜스 코드에 `## ` 로 시작하는 줄이 있으면 절이 거기서 끝난 것으로 읽어, 그 줄이 첫 P1 줄보다 앞이면 P1 을 세지 못하고 REQUEST_CHANGES 를 APPROVE 로 내린다(최종 리뷰, 리뷰어가 지적 본문에 마크다운 제목 줄을 펜스로 넣을 때만). 라운드 2 규칙(라운드 절)을 리뷰어가 따르지 않아도 hteam 은 판정·P1 수만 맞춘다.
 
 리뷰어 생사는 horch 가 판정한다. 리뷰어가 `idle`(done 없이 턴을 마침)이면 코디네이터가 `horch send` 로 done 을 요구한다. 그래도 안 되면 `worker-abandon --kill` 하고 `review-finish` 가 시도 실패로 처리한다.
 
@@ -857,7 +857,7 @@ orca-team 0.6.0 의 `orch followups`(`lib/orch/followups.py`)를 `lib/hteam/foll
 
 코디네이터 문서(`templates/coordinator.md`, orca-team 0576df2 의 0.6.0 문단을 옮긴다. 치환: `orch` → `hteam`, `orch task new developer "…"` 와 front matter `owns:` → `hteam task new --role developer --title "…" --owns "…"`, `.orchestration/tasks/` → `.herdr-team/tasks/`, `orch notify --type question --json -` → `hteam notify --type question --json -`, 오류 문구로 가르기 → `error.code` 로 가르기, `/orca-team:up` → `/herdr-team:up`):
 
-- 작업 `worker_done`(성공): `hteam review T` 를 늘 Bash `run_in_background: true` 로 부른다(테스트 관문이 오래 걸릴 수 있다). 끝났다는 알림에서 출력을 읽고 아래 "리뷰 결과" 대로 한다. 같은 태스크의 `review` 가 끝나기 전에 그 태스크의 `fix`·`drop` 을 부르면 관문이 끝날 때까지 기다린다. 끝나지 않은 `review` 가 있는 동안 `hteam status` 의 next 가 다시 `review` 를 주어도 또 띄우지 않는다(두 번째 호출은 finish 잠금에서 기다린다. 앞 호출이 리뷰어를 띄웠거나 반려했으면 exit 3 로 끝난다).
+- `hteam review T`(작업 `worker_done`(성공) 뒤든 `hteam status`·`start` 의 next 로 받았든): 늘 Bash `run_in_background: true` 로 부른다(테스트 관문이 오래 걸릴 수 있다). 끝났다는 알림에서 출력을 읽고 아래 "리뷰 결과" 대로 한다. 같은 태스크의 `review` 가 끝나기 전에 그 태스크의 `fix`·`drop` 을 부르면 관문이 끝날 때까지 기다린다. 끝나지 않은 `review` 가 있는 동안 `hteam status` 의 next 가 다시 `review` 를 주어도 또 띄우지 않는다(두 번째 호출은 finish 잠금에서 기다린다. 앞 호출이 리뷰어를 띄웠거나 반려했으면 exit 3 로 끝난다).
 - 리뷰어 수정 요청(`status: changes`, `source` 가 hteam 아님): `hteam fix T`(메모 없이). 리뷰 파일은 새 워커가 수정 블록에서 읽는다(5.5). `--note` 는 리뷰에 없는 지시가 있을 때만 쓰고 P2·P3·`## 후속` 은 넣지 않는다. 메모는 다음 라운드의 요청(`round_requests`)이 돼 라운드 절의 4 번 줄이 "반영하지 않았으면 P1" 로 보므로, 리뷰 요약을 넣으면 P2 가 막는 지적이 된다(orca-team 원문도 `orch fix T-xxx`(필요하면 `--note`)).
 - 리뷰 결과에 더하는 것:
   - `review` 가 `status: changes`, `source: hteam` 이고 `tests` 가 있으면(`{"quick": "failed"}`·`{"quick": "timeout"}`) 테스트 관문 반려다. `hteam fix T --note "<quick 실패 요약>"`. 같은 테스트 실패로 hteam 반려가 두 라운드 이어지면 `fix` 하지 않고 "메인에 묻기" 대로 묻는다. 실패가 그 태스크 탓이 아닐 수 있다(소유 경로 밖 코드, 다른 워커의 커밋 안 된 파일). 리뷰 파일(`docs/reviews/T-xxx/r<N>.md`)의 출력 끝으로 같은 실패인지 본다.

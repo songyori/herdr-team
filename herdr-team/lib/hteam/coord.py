@@ -515,7 +515,8 @@ def next_step(cfg, st: dict, by_task: dict[str, dict], have_rows: bool,
             return None, live
         return H("accept", tid), None
     if s == "changes":
-        return _fix(cfg, tid, st["round"], "리뷰 지적을 반영한다")
+        # 리뷰 파일은 새 워커가 수정 블록에서 읽는다. 메모는 다음 라운드의 요청이 돼 리뷰어가 P2 까지 막으므로 붙이지 않는다
+        return _fix(cfg, tid, st["round"], None)
     if s == "awaiting_user":
         return _awaiting(cfg, st, appr)
     return None, None

@@ -244,7 +244,7 @@ def run_work(p, cfg, h, tid: str) -> dict:
     return out
 
 
-def fix_next(cfg, tid: str, rnd: int, note: str) -> tuple[list[str] | None, str | None]:
+def fix_next(cfg, tid: str, rnd: int, note: str | None) -> tuple[list[str] | None, str | None]:
     """다음 명령으로 fix 를 권하되 라운드 상한(max_rounds)에 닿았으면 권하지 않고 그 까닭을 준다: fix 가 --force-round 없이
     exit 3 로 거부하고 상한은 사용자가 정한다(설계 13장). cfg 가 None(설정을 읽지 못했다)이면 상한을 보지 않는다.
     coord 의 wait 주석·status next 와 이어 붙인 작업 워커의 next(_adopted_next)가 같이 쓴다."""
@@ -252,7 +252,7 @@ def fix_next(cfg, tid: str, rnd: int, note: str) -> tuple[list[str] | None, str 
     if limit is not None and rnd >= limit:
         return None, (f"max_rounds({limit}) 에 닿았다. fix 는 --force-round 없이 exit 3 로 거부한다. 메인에 묻고, 사용자가 "
                       f"계속하라고 하면 {SHIM} fix {tid} --force-round --note …")
-    return [SHIM, "fix", tid, "--note", note], None
+    return [SHIM, "fix", tid, *(("--note", note) if note else ())], None  # 리뷰 수정 요청은 메모 없이(설계 10장)
 
 
 def _adopted_next(cfg, tid: str, rnd: int, res: dict) -> tuple[list[str] | None, str | None]:

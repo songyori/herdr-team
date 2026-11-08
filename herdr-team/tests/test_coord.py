@@ -292,6 +292,16 @@ class WhichStatusTest(CoordCase):
         self.assertIsNone(nxt["T-002"][0])
         self.assertIn("max_rounds", nxt["T-002"][1])
 
+    def test_status_next_for_changes_has_no_note(self):
+        # 리뷰 수정 요청 뒤 next 는 메모 없는 fix 다(설계 10장): 메모는 다음 라운드의 요청이 돼 리뷰어가 P2 까지 막는다
+        self.started("T-002", "tester")
+        self.act_work("T-002", {"tests/t.py": "1\n"})
+        self.hteam("review", "T-002")
+        self.act_review("T-002", "REQUEST_CHANGES")
+        self.hteam("review-finish", "T-002")
+        nxt = {t["id"]: t["next"] for t in self.hteam("status")[1]["tasks"]}
+        self.assertEqual(nxt["T-002"], [H, "fix", "T-002"])
+
     def test_status_hint_for_round_being_closed(self):
         self.started()
         with state.edit(self.p, "T-001") as st:
