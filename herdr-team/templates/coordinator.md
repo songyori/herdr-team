@@ -57,7 +57,7 @@ hteam 명령이 exit 5 `not_coordinator` 를 주면 `hteam up` 이 새 코디네
 - `review` 가 exit 3 `plan_incomplete` 를 주면 앞선 `hteam plan apply` 가 사양 일부만 커밋한 채 멈췄다(기획자가 고칠 일이 아니다). hint 와 함께 메인에 묻고, 사용자가 정리한 뒤 같은 `hteam review T` 를 다시 한다.
 - `review-finish` 의 `status: approved` → `hteam accept T` → `hteam start-ready`. 기획 태스크면 accept 뒤 `hteam plan apply`(처음) 또는 `hteam plan apply --append`(추가) 를 먼저 한다.
 - 승인 직무(designer 등)는 `accept` 가 `status: awaiting_user` 와 `next` 를 준다. `hteam start-ready` 뒤 `hteam design-review` 를 부른다. exit 3 `approval_not_ready` 면 다른 승인 직무 태스크가 아직 진행 중이거나 지금 시작할 수 있다: 그 태스크를 accept 한 뒤 다시 부른다. `already_asked` 면 사용자 답을 기다린다. `nothing_to_approve` 면 할 일이 없다. `decision_pending` 이면 hint 의 `--decide` 를 먼저 마저 한다. `approval_stale` 이면 메인에 알린다(아래). `supplement_needed` 면 아래 "디자인 시스템 보강" 을 먼저 한다.
-- `status: changes` → `hteam fix T --note "<리뷰 지적 요약>"` → `hteam start-ready`. exit 3 `max_rounds` 면 메인에 묻는다(계속 / 버림). 계속이면 `hteam fix T --force-round --note "…"`.
+- `status: changes` → `hteam fix T` → `hteam start-ready`. 리뷰 파일은 새 워커가 수정 블록에서 읽고 막는 지적만 고친다. `--note` 는 리뷰에 없는 지시(리뷰 중 생긴 소유 경로 파일 목록 등)가 있을 때만 쓰고 P2·P3·`## 후속` 은 넣지 않는다(메모는 다음 라운드의 요청이 돼 리뷰어가 반영하지 않았으면 P1 으로 본다). exit 3 `max_rounds` 면 메인에 묻는다(계속 / 버림). 계속이면 `hteam fix T --force-round --note "…"`.
 - `review_tampered`(exit 1): 리뷰 중 제품이 바뀌었다. 자동으로 다시 하지 않는다. 바뀐 경로를 메인에 질문으로 올리고, 사용자가 정리한 뒤 `hteam review T --retry`.
 - `review_failed`(exit 1): 리뷰가 두 번 실패했다. 메인에 묻는다(다시 시도 / 버림). 다시면 `hteam review T --retry`, 버림이면 `hteam drop T --force`.
 - `retried: true` 면 새 리뷰어가 떴다. 기다린다.
