@@ -1,10 +1,14 @@
 """디자인 직무 문서(설계 11.1–11.3): director 의 세 단계·질문 형식·산출물, scaffold, 설정."""
 import json
 import re
+import shutil
+import tempfile
+import tomllib
 import unittest
+from pathlib import Path
 
 from tests.helpers import ROOT
-from hteam import outbox
+from hteam import config, outbox, textlint
 from hteam.globs import within
 
 DIRECTOR = ROOT / "templates" / "roles" / "director.md"
@@ -134,6 +138,64 @@ class DeveloperDocTest(unittest.TestCase):
         self.assertIn("화면 원본(`index.html`)·`notes.md` 에서 여러 화면이 함께 쓰는 공통 컴포넌트를 만든다", rules)
         designer = (ROOT / "templates" / "roles" / "designer.md").read_text(encoding="utf-8")
         self.assertIn("CSS 변수와 공통 컴포넌트로 옮긴다", section(designer, "시스템이 없을 때"))
+
+
+class TextRulesDocTest(unittest.TestCase):
+    """문구 규칙을 쓰는 직무 문서·코디네이터·메인 규칙·설정 템플릿(설계 10장·11.7)."""
+
+    @staticmethod
+    def read(rel):
+        return (ROOT / "templates" / rel).read_text(encoding="utf-8")
+
+    def test_planner_writes_voice_doc(self):
+        text = self.read("roles/planner.md")
+        self.assertIn("`docs/planning/voice.md`: 문구 기준", section(text, "산출물"))
+        checklist = section(text, "인터뷰 체크리스트")
+        for needle in ("12. 문구 기준(", "질문 1개", "서비스 문구 해요체, 정책 문서 하십시오체", "용어집은 따로 묻지 않는다"):
+            self.assertIn(needle, checklist)
+        self.assertIn("용어집 표(쓰는 표기, 쓰지 않는 표기. 핵심 용어 10개 이내)", section(text, "확정 질문"))
+        tasks = section(text, "tasks.toml 형식")
+        for needle in ("`docs/policy/**`", "`README.md`, `docs/user/**`", "developer 태스크로 만들고",
+                       "`docs/planning/voice.md` 와 `.herdr-team/text-rules.md` 를 따른다"):
+            self.assertIn(needle, tasks)
+        fmt = text[text.index("## voice.md 형식\n"):text.index("## 하지 않는 것\n")]
+        for needle in ("메모 칸에 적는다", "괄호로 조건을 붙인 표기는 검사하지 않는다", "바뀌는 부분만 고친다"):
+            self.assertIn(needle, fmt)
+        example = re.search(r"```markdown\n(.*?)```", fmt, re.S).group(1)
+        for line in ("# 문구 기준", "## 문체", "- 서비스 문구: 해요체", "- 정책 문서: 하십시오체", "- 사용자 문서: 해요체",
+                     "## 라벨", "## 용어집", "| 쓰는 표기 | 쓰지 않는 표기 | 메모 |"):
+            self.assertIn(line + "\n", example)
+        root = Path(tempfile.mkdtemp(prefix="hteam-voice-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        (root / "docs/planning").mkdir(parents=True)
+        (root / "docs/planning/voice.md").write_text(example, encoding="utf-8")
+        self.assertEqual(textlint.load_glossary(root), [("로그인", ["로그 인", "로긴"]), ("회원가입", ["회원 가입"])])
+
+    def test_writers_follow_text_rules(self):
+        for role, own in (("designer", "실제 서비스에 그대로 들어갈 문구로 쓴다"),
+                          ("developer", "디자인 시안의 문구가 있으면 그대로 옮기고")):
+            text = self.read(f"roles/{role}.md")
+            self.assertIn("`.herdr-team/text-rules.md`(문구 규칙)와 `docs/planning/voice.md`(문구 기준", section(text, "입력"))
+            rules = section(text, "문구 규칙")
+            for needle in ("`### 문구 점검`", "text-rules §1–§4 를 지켰는지", "voice.md 는 고치지 않는다", "`## rN`", own):
+                self.assertIn(needle, rules, role)
+        self.assertIn("`### 문구 점검`", section(self.read("roles/designer.md"), "산출물"))
+        for role in ("director", "tester", "planner"):  # E5: 문구 점검 대상이 아니다
+            self.assertNotIn("문구 점검", self.read(f"roles/{role}.md"), role)
+
+    def test_coordinator_and_main_rules_name_voice(self):
+        coord = self.read("coordinator.md")
+        self.assertIn("`docs/planning/`(spec.md, contracts.md, interview.md, voice.md) 과 사양·직무 문서로 답한다", coord)
+        self.assertIn("문구 기준(`docs/planning/voice.md`)", coord)
+        main = self.read("CLAUDE.section.md")
+        self.assertIn("기획 `docs/planning/`(spec.md, contracts.md, tasks.toml, interview.md, voice.md)", main)
+        self.assertIn("- 문구: `.herdr-team/text-rules.md`(작성·리뷰 공통 규칙), `docs/planning/voice.md`(planner 가 정한 "
+                      "문체·호칭·라벨·용어집).", main)
+
+    def test_developer_owns_user_and_policy_docs(self):
+        raw = tomllib.loads(self.read("config.toml"))
+        self.assertEqual(raw["roles"]["developer"]["owns"], ["src/**", "README.md", "docs/user/**", "docs/policy/**"])
+        self.assertEqual(config.validate(raw), [])
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@
 ## 입력
 - `docs/planning/`(spec.md, contracts.md), 선행 태스크 보고서 `docs/tasks/<T>/report.md`
 - 화면을 구현하면: 디자인 시스템이 있으면(설정에 `[roles.director]` 가 있다) `docs/design/system/`(디자인 시스템 사본 `tokens.json`·`README.md`·`components/`, 시스템 URL 은 `docs/design/direction.md` 의 `design_system_url:` 줄), 없으면 화면 notes.md 의 `## 확정 값`. 그리고 `docs/design/screens/<화면>/`(화면 원본과 notes.md. 아티팩트 URL 은 디자인 태스크 보고서), `assets/<화면>/`, `.herdr-team/design-rules.md`
+- `.herdr-team/text-rules.md`(문구 규칙)와 `docs/planning/voice.md`(문구 기준: 문체·호칭·라벨·용어집. 있으면)
 
 ## 화면 규칙
 - UI 기반 태스크(tasks.toml key `ui-foundation`), 디자인 시스템이 있을 때: `docs/design/system/tokens.json` 을 프로젝트의 CSS 변수나 프레임워크 테마로 옮기고, 시스템 컴포넌트(README 와 `components/`)를 공통 컴포넌트로 만든다. 토큰 이름은 시스템 이름을 그대로 쓴다.
@@ -14,6 +15,11 @@
 - 토큰 갱신 태스크(디렉터 보강 뒤): 바뀐 `tokens.json`·컴포넌트를 CSS 변수·공통 컴포넌트에 옮긴다.
 - 아이콘은 디자인 시스템이 정한 아이콘 세트만 쓴다(시스템이 없으면 `## 확정 값` 의 세트). `.herdr-team/design-rules.md` 를 지킨다.
 - 화면을 바꾼 태스크는 보고서 이번 라운드 절에 `### 금지 목록 점검`(항목마다 지켰는지, 예외와 근거)과 `### 확인한 화면`(글로만 적는다: 구현한 상태를 실제로 렌더해 본 페이지·상태·폭, 확인 방법, 확인하지 못한 상태와 이유)을 둔다. 확인용 스크린숏을 커밋하지 않는다. DevTools 출력 제목(`## Network requests` 등)을 붙이지 않는다.
+
+## 문구 규칙
+- 서비스 문구(UI 라벨·버튼·오류·알림, i18n 파일), 정책 문서(`docs/policy/`), 사용자 문서(`README.md`, `docs/user/`)를 쓰거나 바꾸면 `.herdr-team/text-rules.md` 와 `docs/planning/voice.md` 를 지킨다. 디자인 시안의 문구가 있으면 그대로 옮기고, 규칙에 어긋나면 고친 뒤 `### 문구 점검` 에 적는다.
+- 그런 태스크의 보고서 이번 라운드 `## rN` 절 안에 `### 문구 점검` 소절을 둔다: text-rules §1–§4 를 지켰는지, 예외와 근거, 용어집에 없는 새 핵심 용어.
+- voice.md 는 고치지 않는다. 용어집에 없는 용어가 꼭 필요하면 `### 문구 점검` 에 적는다.
 
 ## 산출물
 - owns 안의 코드와 그 단위 테스트

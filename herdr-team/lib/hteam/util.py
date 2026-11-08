@@ -120,8 +120,8 @@ def env_float(name: str, default: float) -> float:
 _SLOT = re.compile(r"\{\{(\w+)\}\}")
 
 
-def fill(text: str, **values: str) -> str:
-    """템플릿의 `{{이름}}` 을 채운다. 모르는 이름은 KeyError(템플릿 버그)."""
+def fill(text: str, /, **values: str) -> str:
+    """템플릿의 `{{이름}}` 을 채운다. 모르는 이름은 KeyError(템플릿 버그). 템플릿은 위치 인자라 `{{text}}` 도 채운다."""
     return _SLOT.sub(lambda m: str(values[m.group(1)]), text)
 
 

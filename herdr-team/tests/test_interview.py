@@ -10,7 +10,8 @@ from hteam.paths import Project
 PLANNER = ROOT / "templates" / "roles" / "planner.md"
 # 설계 10장의 체크리스트 순서 그대로
 CHECKLIST = ["목적과 성공 기준", "사용자와 상황", "범위", "사용자 흐름", "화면 목록", "데이터와 상태", "오류",
-             "비기능 요구", "기술 스택과 실행 환경", "인터페이스 계약", "브랜드 자산과 아는 레퍼런스", "범위 밖"]
+             "비기능 요구", "기술 스택과 실행 환경", "인터페이스 계약", "브랜드 자산과 아는 레퍼런스",
+             "문구 기준(서비스 문구·정책 문서·사용자 문서의 문체, 사용자 호칭, 버튼·메뉴 라벨 형태, 핵심 용어 표기)", "범위 밖"]
 HEREDOC = re.compile(r"ask-user --task T-xxx --json - <<'EOF'\n(.*?)\nEOF", re.S)
 
 
@@ -26,7 +27,7 @@ class PlannerDocTest(unittest.TestCase):
 
     def test_checklist_is_the_design_list(self):
         items = re.findall(r"(?m)^(\d+)\. (.+)$", section(self.text, "인터뷰 체크리스트"))
-        self.assertEqual([int(n) for n, _ in items], list(range(1, 13)))
+        self.assertEqual([int(n) for n, _ in items], list(range(1, 14)))
         self.assertEqual([t for _, t in items], CHECKLIST)
         for word in ("`미정`", "`결정`", "`자동 결정`", "`범위 밖`"):
             self.assertIn(word, section(self.text, "인터뷰 체크리스트"))
@@ -38,7 +39,7 @@ class PlannerDocTest(unittest.TestCase):
             outbox.validate_render(obj, "기획")  # ask-user 가 받는 형식 그대로다(어기면 exit 2)
         confirm = found[-1]
         self.assertEqual([o["label"] for o in confirm["options"]], ["확정 (추천)", "수정할 부분 있음"])
-        for part in ("계획 핵심", "자동 결정", "태스크 그래프"):
+        for part in ("계획 핵심", "자동 결정", "용어집", "| 쓰는 표기 | 쓰지 않는 표기 |", "태스크 그래프"):
             self.assertIn(part, confirm["context"])
 
     def test_confirmation_resume_and_review_rules(self):
@@ -46,7 +47,7 @@ class PlannerDocTest(unittest.TestCase):
         for needle in ("마지막 질문은 늘 확정 질문이다", "`plan check` 가 통과한 뒤", "확정 질문을 다시 한다"):
             self.assertIn(needle, confirm)
         review = section(self.text, "리뷰 기준(리뷰어가 본다)")
-        for needle in ("ask-user --task <이 태스크> --history", "답이 `확정 (추천)` 이다", "12항목", "`render.context`"):
+        for needle in ("ask-user --task <이 태스크> --history", "답이 `확정 (추천)` 이다", "13항목", "`render.context`"):
             self.assertIn(needle, review)
         self.assertIn("--wait <id>", section(self.text, "사용자에게 묻기"))
         self.assertIn("designer 태스크", section(self.text, "tasks.toml 형식"))

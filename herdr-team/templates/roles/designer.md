@@ -8,6 +8,7 @@
 - `docs/planning/`(spec.md 의 사용자 흐름·화면 목록, contracts.md), 선행 태스크 보고서 `docs/tasks/<T>/report.md`
 - 디자인 시스템이 있으면(설정에 `[roles.director]` 가 있다): `docs/design/direction.md`(확정한 디자인 방향과 `design_system_url: <URL>` 줄), `docs/design/system/`(디자인 시스템 사본 `tokens.json`, `README.md`, `components/`)
 - `.herdr-team/design-rules.md`(AI 티 금지 목록)
+- `.herdr-team/text-rules.md`(문구 규칙)와 `docs/planning/voice.md`(문구 기준: 문체·호칭·라벨·용어집. 있으면)
 - 있으면 `docs/design/screens/` 의 앞서 만든 화면(같은 앱 안에서 모양을 맞춘다)
 
 ## 시작
@@ -40,6 +41,11 @@
 - `### 시스템 추가 제안` 은 "없음" 한 줄이다(보강할 시스템이 없다).
 - UI 기반 태스크(developer, tasks.toml key `ui-foundation`)가 모든 화면의 `## 확정 값` 과 화면 원본을 CSS 변수와 공통 컴포넌트로 옮긴다. 화면마다 같은 요소(버튼·입력 등)는 같은 모양으로 그린다. `.herdr-team/design-rules.md` 를 지킨다.
 
+## 문구 규칙
+- 화면 시안에 넣는 문구(라벨·버튼·오류·알림·빈 화면 문구)는 `.herdr-team/text-rules.md` 와 `docs/planning/voice.md` 를 지킨다. 실제 서비스에 그대로 들어갈 문구로 쓴다.
+- 문구가 있는 화면을 만들거나 바꾼 태스크는 보고서 이번 라운드 `## rN` 절 안에 `### 문구 점검` 소절을 둔다: text-rules §1–§4 를 지켰는지, 예외와 근거, 용어집에 없는 새 핵심 용어.
+- voice.md 는 고치지 않는다. 용어집에 없는 용어가 꼭 필요하면 `### 문구 점검` 에 적는다.
+
 ## 산출물
 - `docs/design/screens/<화면>/index.html`: 화면 원본. 파일 하나로 열리고 외부 리소스(CDN·웹 글꼴·원격 이미지)를 쓰지 않는다(`assets/<화면>/` 의 에셋은 쓴다). Codex 리뷰어와 개발 워커가 이 파일을 읽는다.
 - `docs/design/screens/<화면>/notes.md`: 상태(기본·빈 목록·로딩·오류), 상호작용, 좁은 화면 기준, 쓴 토큰 이름과 컴포넌트 이름(시스템이 없으면 `## 확정 값`).
@@ -51,6 +57,7 @@
   - `- 디자인 시스템: <design_system_url 또는 없음>`
   - `### 시스템 추가 제안`: "없음" 또는 목록(무엇·왜·어느 화면)
   - `### 금지 목록 점검`: `.herdr-team/design-rules.md` 항목마다 지켰는지, 예외와 근거
+  - `### 문구 점검`: 문구가 있는 화면을 만들거나 바꿨을 때(위 "문구 규칙")
   - `### 확인한 화면`: 글로만 적는다(아래 "확인한 화면")
   - `### 이미지`: `hteam image` 를 썼으면 프롬프트, 만든 수, 채택한 파일과 이유
 

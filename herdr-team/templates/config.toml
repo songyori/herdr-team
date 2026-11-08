@@ -64,7 +64,8 @@ claude_model = "opus"
 claude_effort = "xhigh"
 codex_model = "gpt-6.1-sol"
 codex_effort = "xhigh"
-owns = ["src/**"]
+# 정책·사용자 문서를 맡는 직무가 따로 없어 developer 가 맡는다(설계 11.7)
+owns = ["src/**", "README.md", "docs/user/**", "docs/policy/**"]
 
 [roles.tester]
 title = "테스트"

@@ -101,15 +101,50 @@ def log_since(root, base: str) -> list[tuple[str, str]]:
     return pairs
 
 
-def commit_files(root, sha: str) -> list[str]:
-    """커밋이 바꾼 경로(최상위 기준). 병합 커밋은 첫 부모와 견준다(기본 diff-tree 는 병합에 빈 목록을 낸다).
-    이름 바꾸기는 옛 경로와 새 경로를 다 낸다."""
+def _against(root, sha: str) -> tuple[str, ...]:
+    """diff-tree 가 견줄 대상: 병합 커밋은 첫 부모와(기본 diff-tree 는 병합에 빈 목록·합친 diff 를 낸다), 그 밖은 부모와
+    (뿌리 커밋은 --root 로 빈 트리와)."""
     parents = run(root, "rev-list", "--parents", "-n", "1", sha).stdout.split()[1:]
-    if len(parents) > 1:
-        args = ("diff-tree", "-r", "--name-only", "-z", "--no-renames", parents[0], sha)
-    else:
-        args = ("diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "--root", "--no-renames", sha)
+    return (parents[0], sha) if len(parents) > 1 else ("--no-commit-id", "--root", sha)
+
+
+def commit_files(root, sha: str) -> list[str]:
+    """커밋이 바꾼 경로(최상위 기준). 병합 커밋은 첫 부모와 견준다. 이름 바꾸기는 옛 경로와 새 경로를 다 낸다."""
+    args = ("diff-tree", "--name-only", "-r", "-z", "--no-renames", *_against(root, sha))
     return _zb(run(root, *ABSOLUTE, *args, raw=True).stdout)
+
+
+def diff_lines(root, shas: list[str], rel: str) -> tuple[list[str], list[str]] | None:
+    """커밋들(shas)이 파일 rel(root 기준, `../` 가능)에서 (추가한 줄, 지운 줄) 내용. 커밋을 걸쳐 합친 멀티셋이다(설계 11.7).
+
+    부모는 commit_files 와 같다. `-U0` diff 의 hunk(`@@`) 안 `+`·`-` 줄만 모은다: `diff --git` 에서 hunk 상태를 끄므로
+    `+++`·`---` 머리는 빠지고 내용이 `++` 로 시작하는 줄은 남는다. CRLF 파일의 줄 끝 \\r 은 뗀다(지금 파일은 read_text 가
+    줄바꿈을 바꿔 읽는다). 경로는 `:(top,literal)` 로 넘긴다(`[id]` 같은 이름이 glob 으로 풀리지 않게). git 이 실패하거나
+    출력이 UTF-8 이 아니면 None(그 파일 검사만 건너뛴다)."""
+    spec = f":(top,literal){to_top(top_prefix(root), rel)}"
+    added: list[str] = []
+    removed: list[str] = []
+    for sha in shas:
+        try:
+            out = run(root, *ABSOLUTE, "diff-tree", "-r", "-p", "-U0", "--no-color", "--no-ext-diff", "--no-textconv",
+                      "--no-renames", *_against(root, sha), "--", spec, raw=True).stdout.decode("utf-8")
+        except (HteamError, UnicodeDecodeError):
+            return None
+        hunk = False
+        for line in out.split("\n"):
+            if line.startswith("diff --git "):
+                hunk = False
+            elif line.startswith("@@"):
+                hunk = True
+            elif hunk and line[:1] in ("+", "-"):
+                (added if line[0] == "+" else removed).append(line[1:].removesuffix("\r"))
+    return added, removed
+
+
+def added_lines(root, shas: list[str], rel: str) -> set[str] | None:
+    """diff_lines 의 추가한 줄 집합. None 이면 None."""
+    lines = diff_lines(root, shas, rel)
+    return None if lines is None else set(lines[0])
 
 
 def diff_names(root, a: str, b: str) -> list[str]:

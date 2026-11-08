@@ -32,7 +32,7 @@ diff 는 `git show <sha>` 로 본다.
 3. 버그, 보안, 회귀 위험.
 4. 수정 라운드면 이전 리뷰의 지적을 모두 다뤘는가.{{request_rule}}
 
-{{design}}## REVIEW_FILE 형식
+{{design}}{{text}}## REVIEW_FILE 형식
 # {{task_id}} r{{round}} 리뷰
 ## 판정 근거
 ## 지적 사항

@@ -102,7 +102,7 @@ class ScaffoldTest(TeamCase):
         self.assertEqual(code, 0, out)
         for rel in (".herdr-team/config.toml", ".herdr-team/coordinator.md", ".herdr-team/roles/planner.md",
                     ".herdr-team/roles/director.md", ".herdr-team/roles/designer.md", ".herdr-team/roles/developer.md",
-                    ".herdr-team/roles/tester.md", ".herdr-team/design-rules.md",
+                    ".herdr-team/roles/tester.md", ".herdr-team/design-rules.md", ".herdr-team/text-rules.md",
                     ".herdr-team/bin/hteam",
                     ".herdr-team/project.md", "CLAUDE.md", "AGENTS.md", ".gitignore"):
             self.assertIn(rel, out["created"])
@@ -116,6 +116,10 @@ class ScaffoldTest(TeamCase):
         cfg = config.load(p)
         for role in cfg.roles:
             self.assertTrue(p.role_doc(role).is_file(), role)
+        self.assertEqual((self.team / "text-rules.md").read_text(encoding="utf-8"),
+                         (ROOT / "templates/text-rules.md").read_text(encoding="utf-8"))
+        # 정책·사용자 문서를 맡는 직무가 없어 developer 가 맡는다(설계 4.1·11.7)
+        self.assertEqual(cfg.owns("developer"), ["src/**", "README.md", "docs/user/**", "docs/policy/**"])
         (self.team / "coordinator.md").write_text("바꿈\n")
         code, out = self.scaffold()
         self.assertEqual((code, out["created"]), (0, []), out)

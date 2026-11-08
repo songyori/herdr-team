@@ -6,7 +6,7 @@ from pathlib import Path
 
 from tests.helpers import ROOT, TeamCase
 from hteam import state
-from hteam.lint import DESIGN_ROLES, MAX_BYTES, MAX_FINDINGS, design_lint, hue_family, scan
+from hteam.lint import DESIGN_ROLES, MAX_BYTES, MAX_FINDINGS, cap, design_findings, design_lint, hue_family, scan
 from hteam.paths import Project
 
 VS16 = chr(0xFE0F)  # 이모지 표시 선택자. 소스에서 보이지 않으므로 이름으로 쓴다
@@ -164,6 +164,11 @@ class ScanTest(unittest.TestCase):
         found = design_lint(self.root, [rel])
         self.assertEqual(len(found), MAX_FINDINGS + 1)
         self.assertEqual(found[-1], "… 외 10건")
+        # 상한 없는 목록과 자르기는 따로다(디자인 절이 diff 검사와 합친 뒤 자른다, 설계 11.6)
+        whole = design_findings(self.root, [rel])
+        self.assertEqual(len(whole), MAX_FINDINGS + 10)
+        self.assertEqual(cap(whole), found)
+        self.assertEqual(cap(whole[:3]), whole[:3])
 
     def test_many_gradients_keep_line_numbers(self):
         line = "linear-gradient(blue, purple)\n"
@@ -191,6 +196,11 @@ class LintCommandTest(TeamCase):
         self.assertEqual(code, 0, out)
         self.assertEqual(out["files"], ["docs/tasks/T-001/report.md", "src/app.css", "src/app.py"])
         self.assertEqual(out["findings"], ["src/app.css:1: 왼쪽 강조 테두리(.card { border-left: 4px solid #2563eb; })"])
+        self.assertIsNone(out["text_findings"])  # text-rules.md 가 없는 프로젝트(0.1.x)
+        self.commit(".herdr-team/text-rules.md", "# 문구 규칙\n", "chore: 문구 규칙")
+        self.commit("src/app.tsx", 'a = "저장됬어요";\n', "[T-001] 문구")
+        code, out = self.hteam("lint", "--task", "T-001", as_=None)
+        self.assertEqual(out["text_findings"], ['src/app.tsx:1: 오탈자 "됬"(a = "저장됬어요";)'], out)
 
     def test_scaffold_copies_design_rules(self):
         desc = self.tmp / "desc.txt"

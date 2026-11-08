@@ -3,7 +3,8 @@
 리뷰 대상 커밋이 바꾼 파일에서 AI 티 금지 목록(`.herdr-team/design-rules.md`)의 1(이모지), 2(왼쪽 강조 테두리),
 3(파랑·보라 그라디언트) 의심 위치를 찾는다. 결과는 경고다(블록 인용처럼 정당한 쓰임이 있다). 판정은 리뷰어가 한다.
 리뷰 프롬프트의 디자인 절(compose.review_prompt)이 시도 기록의 바뀐 파일로 부른다. 표준 라이브러리 정규식만 쓰고
-git·hc·horch·codex 를 부르지 않는다(명령 `lint --task` 만 review 의 대상 커밋 계산을 거친다).
+git·hc·horch·codex 를 부르지 않는다(명령 `lint --task` 만 review 의 대상 커밋 계산과 compose 의 절 목록을 거친다).
+read_source·cap 은 문구 검사(textlint)도 함께 쓴다.
 """
 from __future__ import annotations
 
@@ -228,33 +229,52 @@ def scan(rel: str, text: str) -> list[str]:
     return out
 
 
-def design_lint(root: Path, files: list[str]) -> list[str]:
-    """files(프로젝트 기준 경로) 가운데 검사 대상의 의심 위치. 대상 확장자가 아니거나, 제외 경로거나, 프로젝트 밖(`../`)
-    이거나, 없거나, 1 MB 를 넘거나, UTF-8 이 아니면 보지 않는다. MAX_FINDINGS 를 넘으면 마지막 항목이 `… 외 N건`."""
+def read_source(root: Path, rel: str) -> str | None:
+    """검사할 파일 내용(프로젝트 기준 경로). 파일이 아니거나(없음·삭제·폴더), 1 MiB 를 넘거나, UTF-8 이 아니면 None.
+    내용·문구·diff 검사가 함께 쓴다."""
+    path = Path(root) / rel
+    try:
+        if not path.is_file() or path.stat().st_size > MAX_BYTES:
+            return None
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def cap(items: list[str], limit: int = MAX_FINDINGS) -> list[str]:
+    """limit 를 넘으면 앞 limit 건과 마지막 `… 외 N건`."""
+    return items if len(items) <= limit else [*items[:limit], f"… 외 {len(items) - limit}건"]
+
+
+def design_findings(root: Path, files: list[str]) -> list[str]:
+    """files(프로젝트 기준 경로) 가운데 검사 대상의 의심 위치(상한 없음). 대상 확장자가 아니거나, 제외
+    경로거나, 프로젝트 밖(`../`)이거나, read_source 가 읽지 못하면 보지 않는다."""
     found: list[str] = []
     for rel in files:
         if rel.startswith("../") or Path(rel).suffix.lower() not in SUFFIXES or matches_any(rel, EXCLUDE):
             continue
-        path = Path(root) / rel
-        try:
-            if not path.is_file() or path.stat().st_size > MAX_BYTES:
-                continue
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        found += scan(rel, text)
-    if len(found) > MAX_FINDINGS:
-        found = [*found[:MAX_FINDINGS], f"… 외 {len(found) - MAX_FINDINGS}건"]
+        text = read_source(root, rel)
+        if text is not None:
+            found += scan(rel, text)
     return found
 
 
+def design_lint(root: Path, files: list[str]) -> list[str]:
+    """design_findings 를 MAX_FINDINGS 로 자른 것(넘으면 마지막 항목이 `… 외 N건`)."""
+    return cap(design_findings(root, files))
+
+
 def lint_task(p, tid: str) -> dict:
-    """태스크의 리뷰 대상 커밋(review.target_commits)이 바꾼 파일을 검사한다. 읽기만 한다."""
-    from . import review, state  # review 가 compose 를 거쳐 이 모듈을 쓴다. 불러오는 순서가 꼬이지 않게 여기서 가져온다
+    """태스크의 리뷰 대상 커밋(review.target_commits)이 바꾼 파일을 리뷰 프롬프트와 같은 규칙으로 검사한다. 읽기만 한다.
+    findings 는 디자인 절의 경고 목록(디렉터 직무 유무와 관계없이), text_findings 는 문구 절의 경고 목록
+    (`.herdr-team/text-rules.md` 가 없으면 None)."""
+    from . import compose, review, state  # review·compose 가 이 모듈을 쓴다. 불러오는 순서가 꼬이지 않게 여기서 가져온다
     st = state.require(p, tid)
     commits = review.target_commits(p, st) if st.get("base") else []
     files = review.changed_files(p, commits)
-    return {"task": tid, "files": files, "findings": design_lint(p.root, files)}
+    shas = [c["sha"] for c in commits]
+    return {"task": tid, "files": files, "findings": compose.design_findings(p, files, shas),
+            "text_findings": compose.text_findings(p, files, shas)}
 
 
 def _cmd(args) -> dict:

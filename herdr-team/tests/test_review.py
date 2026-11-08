@@ -5,9 +5,10 @@ import subprocess
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from tests.helpers import BASE_CONFIG, TeamCase
-from hteam import gitio, state
+from tests.helpers import BASE_CONFIG, ROOT, TeamCase
+from hteam import compose, gitio, state, textlint
 from hteam.paths import Project
 
 
@@ -261,6 +262,129 @@ class NoDirectorDesignTest(DesignSectionTest):
 
     def test_claude_reviewer_uses_its_own_devtools(self):
         pass  # 디자인 절이 없다(위 시험)
+
+
+class TextSectionTest(ReviewCase):
+    """리뷰 프롬프트의 문구 절(설계 6.2·11.7): `.herdr-team/text-rules.md` 가 있고 바뀐 파일에 문구 대상이 있으면 직무와
+    관계없이 붙는다. 디자인 절 다음, REVIEW_FILE 형식 앞이다."""
+
+    def setUp(self):
+        TeamCase.setUp(self)
+        self.init_project(config=DESIGN_CONFIG, roles=("planner", "director", "designer", "developer", "tester"))
+        self.commit(".herdr-team/text-rules.md", (ROOT / "templates/text-rules.md").read_text(encoding="utf-8"),
+                    "chore: 문구 규칙")
+        self.setup_run()
+        self.p = Project(self.proj)
+
+    def prompt(self, tid, role, files, **kw):
+        self.started(tid, role, **kw)
+        self.assertEqual(self.act_work(tid, files)[0], 0)
+        code, out = self.hteam("review", tid)
+        self.assertEqual(code, 0, out)
+        return (self.state_dir / f"tasks/{tid}/r1-review-a1.md").read_text(encoding="utf-8")
+
+    def test_korean_ui_text_adds_text_section_with_lint(self):
+        text = self.prompt("T-001", "developer", {"src/app.tsx": 'const a = "결제가 완료됬어요";\n'})
+        self.assertIn("## 문구 기준\n- 이 태스크가 바꾼 서비스 문구·정책 문서·사용자 문서를 `.herdr-team/text-rules.md`", text)
+        self.assertIn("자동 검사(`hteam review`, 이 태스크가 추가한 줄의 의심 위치. 정당한 쓰임도 있으니 직접 열어 보고 판단한다):\n"
+                      '- src/app.tsx:1: 오탈자 "됬"(const a = "결제가 완료됬어요";)\n\n## REVIEW_FILE 형식', text)
+        self.assertLess(text.index("## 디자인 기준"), text.index("## 문구 기준"))
+        self.assertNotIn("\n\n\n", text)
+
+    def test_clean_korean_text_reports_none(self):
+        text = self.prompt("T-001", "developer", {"src/app.tsx": 'const a = "저장했어요";\n'})
+        self.assertIn("직접 열어 보고 판단한다):\n- 없음\n\n## REVIEW_FILE 형식", text)
+
+    def test_no_korean_text_has_no_text_section(self):
+        text = self.prompt("T-001", "developer", {"src/app.tsx": "const a = 1;\n", "src/app.py": "print('저장')\n"})
+        self.assertNotIn("## 문구 기준", text)
+        self.assertNotIn("{{", text)
+        self.assertNotIn("\n\n\n", text)
+
+    def test_excluded_paths_have_no_text_section(self):
+        cases = (("T-001", "tester", {"tests/a.md": "저장됬다\n"}, None),
+                 ("T-002", "director", {"docs/design/system/README.md": "시스템됬다\n"}, "docs/design/system/**"),
+                 ("T-003", "designer", {"docs/design/screens/home/notes.md": "메모됬다\n"}, "docs/design/screens/home/**"))
+        for tid, role, files, owns in cases:
+            self.assertNotIn("## 문구 기준", self.prompt(tid, role, files, owns=owns), tid)
+
+    def test_project_without_text_rules_has_no_text_section(self):
+        self.git("rm", "-q", "--", ".herdr-team/text-rules.md")
+        self.git("commit", "-q", "-m", "chore: 0.1.x 프로젝트")
+        self.assertNotIn("## 문구 기준", self.prompt("T-001", "developer", {"src/app.tsx": 'a = "저장됬어요";\n'}))
+
+    def test_text_section_without_design_section(self):
+        self.commit(".herdr-team/config.toml", BASE_CONFIG, "chore: 디렉터 없음")
+        text = self.prompt("T-001", "developer", {"src/app.tsx": 'a = "저장됬어요";\n'})
+        self.assertIn("## 문구 기준", text)
+        self.assertNotIn("## 디자인 기준", text)
+
+    def test_claude_reviewer_gets_the_same_text_section(self):
+        self.write_spec("T-001", "developer")
+        state.create(self.p, "T-001", "developer")
+        self.assertEqual(self.hteam("start", "T-001", "--worker", "codex")[0], 0)
+        self.assertEqual(self.act_work("T-001", {"src/app.tsx": 'a = "저장됬어요";\n'})[0], 0)
+        self.assertEqual(self.hteam("review", "T-001")[0], 0)
+        self.assertEqual(self.attempt("T-001")["agent"], "claude")
+        text = (self.state_dir / "tasks/T-001/r1-review-a1.md").read_text(encoding="utf-8")
+        self.assertIn('## 문구 기준', text)
+        self.assertIn('- src/app.tsx:1: 오탈자 "됬"(a = "저장됬어요";)', text)
+
+    def test_check_failure_is_one_line_and_keeps_the_section(self):
+        sha = self.commit("src/app.tsx", 'a = "저장됬어요";\n', "[T-001] 작업")
+        with mock.patch.object(textlint, "text_lint", side_effect=RuntimeError("터졌다\n  둘째 줄")):
+            section = compose.text_section(self.p, ["src/app.tsx"], [sha])
+        self.assertIn("## 문구 기준", section)
+        self.assertIn("판단한다):\n- 자동 검사 실패: RuntimeError: 터졌다 둘째 줄\n\n", section)
+        long = compose.guarded(lambda: (_ for _ in ()).throw(ValueError("가" * 300)))
+        self.assertEqual(len(long), 1)
+        self.assertEqual(len(long[0]), 200)
+
+    def test_target_check_failure_keeps_the_section_and_the_review_goes_on(self):
+        # Codex 계획 r1: 문구 대상 판정(textlint.targets)도 자동 검사다. 예외로 끝나도 리뷰 프롬프트를 쓰고 리뷰어를 띄운다
+        from hteam import review
+        self.started("T-001", "developer")
+        self.assertEqual(self.act_work("T-001", {"src/app.tsx": 'a = "저장됬어요";\n'})[0], 0)
+        with mock.patch.dict(os.environ, self._env("coordinator", None, None), clear=True), \
+                mock.patch.object(textlint, "targets", side_effect=RuntimeError("대상 판정\n실패")):
+            out = review.review(self.p, "T-001")
+        self.assertEqual(out["status"], "reviewing", out)
+        text = (self.state_dir / "tasks/T-001/r1-review-a1.md").read_text(encoding="utf-8")
+        self.assertIn("## 문구 기준", text)
+        self.assertIn("판단한다):\n- 자동 검사 실패: RuntimeError: 대상 판정 실패\n\n## REVIEW_FILE 형식", text)
+
+
+class TextTemplateTest(unittest.TestCase):
+    """문구 규칙·리뷰 문구 절·리뷰 프롬프트 템플릿(설계 11.7·6.2)."""
+
+    def test_text_rules(self):
+        text = (ROOT / "templates/text-rules.md").read_text(encoding="utf-8")
+        heads = [line for line in text.split("\n") if line.startswith("#")]
+        self.assertEqual(heads, ["# 문구 규칙 (한국어 텍스트)", "## §0 범위", "## §1 보존 — 다른 모든 규칙보다 우선",
+                                 "## §2 맞춤법·표기", "## §3 문체·용어 일관성", "## §4 AI 티·번역투", "## §5 리뷰 심각도",
+                                 "## 출처"])
+        for needle in ("designer·developer 태스크", "`### 문구 점검`", "`## rN`", "`hteam review`", "판정은 리뷰어가 한다",
+                       "i18n 변수(`{name}`, `{{count}}`, `%s`, `%(name)s`)", "\"하여야 한다·하여야 합니다\"",
+                       "P1(REQUEST_CHANGES)", "`.herdr-team/design-rules.md` §1 의 1번", "im-not-ai", "yoonmoon",
+                       "herdr-team 은 orca-team 0.5.0 에서 옮겼다"):
+            self.assertIn(needle, text)
+        for old in (".orchestration", "orch review", "리포트", "r{round}", "Codex"):
+            self.assertNotIn(old, text)
+
+    def test_review_text_and_prompt_slots(self):
+        import re
+        text = (ROOT / "templates/review-text.md").read_text(encoding="utf-8")
+        self.assertEqual(re.findall(r"\{\{(\w+)\}\}", text), ["text_lint"])
+        for needle in ("## 문구 기준", "`.herdr-team/text-rules.md` 와 `docs/planning/voice.md`(있으면)", "P3 로만 적는다",
+                       "`### 문구 점검` 을 요구하면", "이 태스크가 추가한 줄의 의심 위치"):
+            self.assertIn(needle, text)
+        prompt = (ROOT / "templates/review-prompt.md").read_text(encoding="utf-8")
+        self.assertIn("\n\n{{design}}{{text}}## REVIEW_FILE 형식\n", prompt)
+
+    def test_no_tilde_ranges_in_templates(self):
+        import re
+        for path in (ROOT / "templates").rglob("*.md"):
+            self.assertIsNone(re.search(r"\d~\d", path.read_text(encoding="utf-8")), path)
 
 
 class PrecheckTest(ReviewCase):

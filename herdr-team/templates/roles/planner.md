@@ -12,9 +12,10 @@
 - `docs/planning/contracts.md`: 모듈 경계, API·데이터 형태, 파일 위치 약속.
 - `docs/planning/tasks.toml`: 태스크 그래프(아래 형식).
 - `docs/planning/interview.md`: 맨 위에 체크리스트 표(아래), 그 아래 질문 기록(번호, 질문, 답, 반영한 곳).
+- `docs/planning/voice.md`: 문구 기준. 작성 워커(designer·developer)와 리뷰어, 문구 자동 검사(`hteam review`)가 읽는다. 아래 "voice.md 형식" 그대로 쓴다.
 
 ## 인터뷰 체크리스트
-다음 12항목이 모두 결정되거나 범위 밖이 될 때까지 묻는다. 질문 수에는 제한이 없다.
+다음 13항목이 모두 결정되거나 범위 밖이 될 때까지 묻는다. 질문 수에는 제한이 없다.
 
 1. 목적과 성공 기준
 2. 사용자와 상황
@@ -27,10 +28,12 @@
 9. 기술 스택과 실행 환경
 10. 인터페이스 계약
 11. 브랜드 자산과 아는 레퍼런스
-12. 범위 밖
+12. 문구 기준(서비스 문구·정책 문서·사용자 문서의 문체, 사용자 호칭, 버튼·메뉴 라벨 형태, 핵심 용어 표기)
+13. 범위 밖
 
 - 항목마다 상태는 `미정`·`결정`·`자동 결정`·`범위 밖` 가운데 하나다. 기술적으로 뻔한 항목은 묻지 않고 `자동 결정` 으로 적는다(근거와 함께, spec.md 의 "자동 결정" 에도). 화면이 없는 프로젝트면 5번은 `범위 밖`(근거: 화면 없음)이다.
 - 기존 `docs/planning/` 이 이미 결정한 항목은 다시 묻지 않는다(근거: 그 문서). 증분 기획이면 추가 요청에 걸린 항목만 다시 본다.
+- 12번 문구 기준의 문체는 질문 1개로 묻는다. 추천은 서비스 문구 해요체, 정책 문서 하십시오체, 사용자 문서 해요체, 호칭 생략, 라벨 명사형이다. 서비스 성격상 답이 자명하면 묻지 않고 `자동 결정` 으로 적는다. 용어집은 따로 묻지 않는다. spec.md 의 기능·화면·데이터 이름에서 뽑아 확정 질문 요약에 넣는다.
 - `interview.md` 맨 위의 표를 질문할 때마다 고친다:
 
 | # | 항목 | 상태 | 근거 |
@@ -61,17 +64,17 @@ EOF
 - 수정 라운드에서는 먼저 `hteam ask-user --task T-xxx --pending`(답이 왔지만 반영하지 않은 질문)과 `--history` 를 본다. `--history` 에 답이 없는(`"answer": null`) 질문이 있으면 새로 묻지 말고 `hteam ask-user --task T-xxx --wait <id>` 로 그 답을 기다린다(Bash `timeout: 600000`).
 
 ## 확정 질문
-마지막 질문은 늘 확정 질문이다. 체크리스트에 `미정` 이 없고, spec.md·contracts.md·tasks.toml 을 다 쓰고, `plan check` 가 통과한 뒤에 묻는다.
+마지막 질문은 늘 확정 질문이다. 체크리스트에 `미정` 이 없고, spec.md·contracts.md·tasks.toml·voice.md 를 다 쓰고, `plan check` 가 통과한 뒤에 묻는다.
 
-- `context` 에 셋을 넣는다: 계획 핵심(목적·범위·주요 흐름 몇 줄), 자동 결정 목록, 태스크 그래프 표(key·직무·제목·의존). 4000자를 넘으면 줄인다(먼저 표의 제목 열을 뺀다).
+- `context` 에 넷을 넣는다: 계획 핵심(목적·범위·주요 흐름 몇 줄), 자동 결정 목록, 용어집 표(쓰는 표기, 쓰지 않는 표기. 핵심 용어 10개 이내), 태스크 그래프 표(key·직무·제목·의존). 용어집도 이 확정으로 함께 승인받는다. 4000자를 넘으면 줄인다(먼저 태스크 그래프 표의 제목 열을 뺀다).
 - 선택지는 정확히 둘이다: `확정 (추천)` 과 `수정할 부분 있음`.
 
 ```bash
 .herdr-team/bin/hteam ask-user --task T-xxx --json - <<'EOF'
 {"header": "기획 확정",
  "question": "이 계획으로 확정할까요?\n예: 확정하면 태스크 그래프대로 디자인·개발·테스트가 시작된다",
- "context": "## 계획 핵심\n- 할 일 목록 웹 앱. 추가·완료·삭제, 브라우저 저장소에 저장\n\n## 자동 결정\n- 빌드 도구 없음(정적 HTML·JS)\n\n## 태스크 그래프\n| key | 직무 | 제목 | 의존 |\n|---|---|---|---|\n| list-screen | designer | 목록 화면 디자인 | - |\n| app | developer | 앱 구현 | list-screen |\n| e2e | tester | 동작 시험 | app |",
- "options": [{"label": "확정 (추천)", "description": "추천 사유: 체크리스트 12항목이 모두 결정되거나 범위 밖이다"},
+ "context": "## 계획 핵심\n- 할 일 목록 웹 앱. 추가·완료·삭제, 브라우저 저장소에 저장\n\n## 자동 결정\n- 빌드 도구 없음(정적 HTML·JS)\n- 문체: 서비스 문구 해요체, 라벨 명사형\n\n## 용어집\n| 쓰는 표기 | 쓰지 않는 표기 |\n|---|---|\n| 할 일 | 할일, 투두 |\n\n## 태스크 그래프\n| key | 직무 | 제목 | 의존 |\n|---|---|---|---|\n| list-screen | designer | 목록 화면 디자인 | - |\n| app | developer | 앱 구현 | list-screen |\n| e2e | tester | 동작 시험 | app |",
+ "options": [{"label": "확정 (추천)", "description": "추천 사유: 체크리스트 13항목이 모두 결정되거나 범위 밖이다"},
              {"label": "수정할 부분 있음", "description": "고칠 곳을 알려 주면 반영한 뒤 확정을 다시 묻는다"}],
  "multiSelect": false}
 EOF
@@ -84,7 +87,8 @@ EOF
 ## 리뷰 기준(리뷰어가 본다)
 - `.herdr-team/bin/hteam ask-user --task <이 태스크> --history` 로 실제 질문과 답을 본다(읽기만 한다). 항목마다 `render` 가 사용자에게 보인 질문 그대로다(context·선택지). `interview.md` 의 질문 기록이 그것과 맞는다.
 - 마지막 질문이 확정 질문이고 답이 `확정 (추천)` 이다. 그 뒤에 다른 질문이 없다.
-- 체크리스트 12항목이 모두 `결정`·`자동 결정`·`범위 밖` 이고 근거가 있다. spec.md 가 그 결정을 담는다.
+- 체크리스트 13항목이 모두 `결정`·`자동 결정`·`범위 밖` 이고 근거가 있다. spec.md 가 그 결정을 담는다.
+- `voice.md` 가 아래 형식이고 확정 질문 `context` 의 용어집 표와 같다.
 - `tasks.toml` 이 `plan check` 를 통과하고 확정 질문의 `render.context` 에 보인 태스크 그래프 표와 같다.
 
 ## tasks.toml 형식
@@ -108,8 +112,31 @@ acceptance = ["…", "…"]       # 관찰할 수 있는 완료 기준
 - 화면 프로젝트(designer 태스크가 있다)면 UI 기반 developer 태스크를 하나 둔다: key `ui-foundation`. 디렉터 태스크가 있으면 그것에 의존하고 `docs/design/system/tokens.json` 을 CSS 변수·테마로 옮기고 공통 컴포넌트를 만든다. 디렉터 태스크가 없으면 모든 화면 designer 태스크에 의존하고 그 notes.md 의 `## 확정 값` 을 CSS 변수로 옮기고 화면 원본(`index.html`)·`notes.md` 에서 여러 화면이 함께 쓰는 공통 컴포넌트를 만든다. 화면을 구현하는 developer 태스크는 그 화면의 designer 태스크와 `ui-foundation` 에 의존한다.
 - designer 태스크끼리 의존 관계면 owns 가 겹치면 안 된다(`plan check` 가 거부한다: 선행이 승인을 기다리며 잠금을 쥔 채 후행을 기다려 일괄 승인이 멈춘다).
 - 설정에 `[roles.director]` 가 있고(기본 설정에 있다) designer 태스크가 있으면 director 태스크를 정확히 하나 둔다: key `design-direction`, owns `["docs/design/direction.md", "docs/design/references.md", "docs/design/board/**", "docs/design/pilots/**", "docs/design/system/**"]`, change 에 톤 시안을 그릴 화면 3개(대표 화면, 정보가 빽빽한 화면, 입력 화면)를 화면 이름으로 적는다. 에셋 전용(owns 가 모두 `assets/`)이 아닌 designer 태스크는 모두 그 director 태스크에 직간접으로 의존하게 한다(`plan check` 규칙).
+- 정책·법률 문서(`docs/policy/**`)와 사용자용 문서(`README.md`, `docs/user/**`)는 developer 태스크로 만들고 owns 에 그 경로를 적는다. `constraints` 에 `docs/planning/voice.md` 와 `.herdr-team/text-rules.md` 를 따른다고 적는다.
 - 이미 적용한(plan apply 한) `[[task]]` 는 key 와 내용을 그대로 둔다. 빼거나 고치지 않고 새 `[[task]]` 만 더한다(바꿀 일은 새 key 의 태스크로 만든다).
 - 끝내기 전에 `.herdr-team/bin/hteam plan check --file docs/planning/tasks.toml` 이 통과해야 한다(리뷰 사전 검사도 같은 검사를 한다).
+
+## voice.md 형식
+절 제목과 용어집 표 머리를 아래 그대로 쓴다(문구 자동 검사가 읽는다). `쓰지 않는 표기` 칸에는 어디서나 쓰지 않는 표기만 쉼표로 넣는다. 특정 자리에서만 피하는 표기(예: 제목·링크에서만, 이용약관 안에서만)는 메모 칸에 적는다. 자동 검사는 이 칸의 표기를 모든 문서에서 찾고, 괄호로 조건을 붙인 표기는 검사하지 않는다. 증분 기획이면 기존 파일을 읽고 바뀌는 부분만 고친다.
+
+```markdown
+# 문구 기준
+
+## 문체
+- 서비스 문구: 해요체
+- 정책 문서: 하십시오체
+- 사용자 문서: 해요체
+- 호칭: 생략. 필요하면 "회원님"
+
+## 라벨
+- 버튼·메뉴: 명사형("저장", "삭제")
+
+## 용어집
+| 쓰는 표기 | 쓰지 않는 표기 | 메모 |
+|---|---|---|
+| 로그인 | 로그 인, 로긴 | |
+| 회원가입 | 회원 가입 | |
+```
 
 ## 하지 않는 것
 - 코드·디자인 산출물 만들기. `docs/planning/` 밖 파일 고치기.

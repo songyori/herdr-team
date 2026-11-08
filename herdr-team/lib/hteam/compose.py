@@ -1,7 +1,7 @@
 """워커 사양 조립(설계 5.5)과 리뷰 프롬프트 조립(6.2). horch 프리앰블이 이 사양 앞에 붙는다."""
 from __future__ import annotations
 
-from . import lint
+from . import lint, textlint
 from .errors import USAGE, HteamError
 from .paths import SHIM, TEMPLATES, report_rel, review_rel
 from .util import fill, show
@@ -90,26 +90,75 @@ BROWSER_TOOLS = {  # 리뷰어 에이전트마다 렌더링에 쓸 브라우저 
 }
 
 
-def design_section(p, cfg, spec, files: list[str], agent: str = "codex") -> str:
+def failure(exc: Exception) -> str:
+    """자동 검사 실패 한 줄: `자동 검사 실패: <예외 이름>: <메시지>`(공백·줄바꿈을 한 칸으로, 200자까지)."""
+    return " ".join(f"자동 검사 실패: {type(exc).__name__}: {exc}".split())[:200]
+
+
+def guarded(check) -> list[str]:
+    """자동 검사 하나(인자 없는 함수)를 따로 돌린다(설계 6.2). 예외로 실패하면 그 검사 결과 자리에 failure 한 줄을 넣고
+    다른 검사와 리뷰는 계속한다."""
+    try:
+        return list(check())
+    except Exception as exc:  # noqa: BLE001  경고 전용 검사가 리뷰를 막지 않는다
+        return [failure(exc)]
+
+
+def findings_list(items: list[str]) -> str:
+    """자동 검사 경고의 `- ` 글머리 목록. 없으면 `- 없음`."""
+    return "\n".join(f"- {show(x)}" for x in items) or "- 없음"
+
+
+def design_findings(p, files: list[str], shas: list[str]) -> list[str]:
+    """디자인 절의 경고 목록(설계 11.6): 내용 검사(lint, files 는 시도 기록의 바뀐 파일, shas 는 대상 커밋)를 guarded 로
+    감싸 MAX_FINDINGS 까지. `hteam lint --task` 의 findings 도 이것이다."""
+    return lint.cap(guarded(lambda: lint.design_findings(p.root, files)))
+
+
+def text_findings(p, files: list[str], shas: list[str]) -> list[str] | None:
+    """문구 절의 경고 목록(설계 11.7): 대상 커밋(shas)이 추가한 줄의 textlint 지적. `.herdr-team/text-rules.md` 가 없으면
+    None(0.1.x 프로젝트)."""
+    if not p.text_rules.is_file():
+        return None
+    return guarded(lambda: textlint.text_lint(p.root, files, shas))
+
+
+def design_section(p, cfg, spec, files: list[str], shas: list[str], agent: str = "codex") -> str:
     """리뷰 프롬프트의 디자인 절(설계 6.2): director·designer·developer 태스크이고 설정에 `[roles.director]` 가 있을
-    때만 디자인 기준(11장)과 자동 검사 경고(11.6, files 는 시도 기록의 바뀐 파일)를 넣는다. 아니면 빈 문자열. 렌더링에
-    쓸 도구는 리뷰어 에이전트(agent)에 따라 다르다(BROWSER_TOOLS: Codex 는 hteam-browser, Claude 는 자기 DevTools MCP)."""
+    때만 디자인 기준(11장)과 자동 검사 경고(design_findings)를 넣는다. 아니면 빈 문자열. 렌더링에 쓸 도구는 리뷰어
+    에이전트(agent)에 따라 다르다(BROWSER_TOOLS: Codex 는 hteam-browser, Claude 는 자기 DevTools MCP)."""
     if spec.role not in lint.DESIGN_ROLES or "director" not in cfg.roles:
         return ""
-    found = lint.design_lint(p.root, files)
     return fill(_template("review-design.md"), browser=BROWSER_TOOLS.get(agent, BROWSER_TOOLS["claude"]),
-                lint="\n".join(f"- {show(x)}" for x in found) or "- 없음").rstrip() + "\n\n"
+                lint=findings_list(design_findings(p, files, shas))).rstrip() + "\n\n"
+
+
+def text_section(p, files: list[str], shas: list[str]) -> str:
+    """리뷰 프롬프트의 문구 절(설계 6.2·11.7): 직무와 관계없이 `.herdr-team/text-rules.md` 가 있고 바뀐 파일 가운데 문구
+    대상(textlint.targets)이 하나 이상이면 문구 기준과 자동 검사 경고. 아니면 빈 문자열. 대상 판정도 자동 검사라서 예외로
+    실패하면 대상이 있는지 모르므로 절을 붙이고 경고 자리에 failure 한 줄을 넣는다(리뷰는 계속한다)."""
+    if not p.text_rules.is_file():
+        return ""
+    try:
+        if not textlint.targets(p.root, files):
+            return ""
+    except Exception as exc:  # noqa: BLE001
+        found = [failure(exc)]
+    else:
+        found = text_findings(p, files, shas) or []
+    return fill(_template("review-text.md"), text_lint=findings_list(found)).rstrip() + "\n\n"
 
 
 def review_prompt(p, cfg, spec, rd: dict, att: dict) -> str:
     """리뷰 프롬프트(설계 6.2). 입력(대상 커밋, 바뀐 파일)은 시도 기록에 저장된 것을 쓴다. 이번 라운드에 요청(사용자
     요청·코디네이터 메모·디렉터 보강, round_requests)이 있으면 그 요청과 그 라운드 작업 사양을 보이고 기준에 한 줄을 더한다
     (없으면 그대로).
-    디자인 직무 태스크면 디자인 절을 더한다(design_section)."""
+    기준 뒤에 디자인 절(design_section), 문구 절(text_section) 순서로 붙인다. 없는 절은 빈 문자열이다."""
     tid, n = spec.id, rd["round"]
     prior = [review_rel(tid, r) for r in range(1, n) if (p.root / review_rel(tid, r)).is_file()]
     commits = att["inputs"]["commits"]
     files = att["inputs"]["files"]
+    shas = [c["sha"] for c in commits]
     request, request_rule = "", ""
     asks = round_requests(p, rd)
     if asks:
@@ -122,6 +171,8 @@ def review_prompt(p, cfg, spec, rd: dict, att: dict) -> str:
                 round=str(n), attempt=str(att["attempt"]), title=spec.title, review_file=att["file"],
                 spec_path=f".herdr-team/tasks/{tid}.md", role_doc=f".herdr-team/roles/{spec.role}.md",
                 report=report_rel(tid), prior=", ".join(f"`{x}`" for x in prior) or "없음", request=request,
-                request_rule=request_rule, design=design_section(p, cfg, spec, files, att.get("agent") or "codex"),
+                request_rule=request_rule,
+                design=design_section(p, cfg, spec, files, shas, att.get("agent") or "codex"),
+                text=text_section(p, files, shas),
                 commits="\n".join(f"- {c['sha'][:10]} {c['subject']}" for c in commits) or "- 없음",
                 files="\n".join(f"- `{show(f)}`" for f in files) or "- 없음").rstrip() + "\n"

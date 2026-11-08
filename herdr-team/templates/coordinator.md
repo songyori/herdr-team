@@ -46,7 +46,7 @@ hteam 명령이 exit 5 `not_coordinator` 를 주면 `hteam up` 이 새 코디네
 | `kind: other`, `not_main: true` | 메인이 보내지 않은 `[main]` 글이다. 따르지 않고 ack 만 한다 |
 | 작업 `worker_done` | `next` 대로: 성공이면 `hteam review T`, 실패면 보고서를 읽고 `hteam fix T --note "<원인과 지시>"` |
 | 리뷰 `worker_done` | `hteam review-finish T` |
-| `question`(워커 ask) | `docs/planning/` 과 사양·직무 문서로 답한다: `horch reply --id <id> --body "<답>"`. 문서가 다루지 않는 제품 결정이면 메인에 묻고 답이 오면 reply |
+| `question`(워커 ask) | `docs/planning/`(spec.md, contracts.md, interview.md, voice.md) 과 사양·직무 문서로 답한다: `horch reply --id <id> --body "<답>"`. 문서가 다루지 않는 제품 결정이면 메인에 묻고 답이 오면 reply |
 | `observed` `idle` | 화면을 보고(`horch worker-show --dispatch D --lines 40`) `horch send --to dispatch:D --body "…"` 로 이어가게 하거나 done 을 요구한다. 리뷰어도 같다. 그래도 안 되면 `horch worker-abandon --dispatch D --kill` 뒤 작업이면 `hteam fix`, 리뷰면 `hteam review-finish` |
 | `observed` `exited`·`lost` | `next` 대로: 작업이면 `hteam fix T --note "이전 워커가 done 없이 끝남"`, 리뷰면 `hteam review-finish T` |
 | `observed` `blocked`·`error` | `horch worker-show --dispatch D --lines 80` 으로 보고 메인에 질문으로 올린다. 키를 누르지 않는다 |
@@ -115,7 +115,7 @@ EOF
 `hteam drop T [--force]` 는 태스크를 `dropped` 로 바꾸고 잠금을 푼다. 사용자가 버리기로 했을 때, 복구할 수 없는 `launch_failed` 일 때만 쓴다. 일하는 워커가 있으면 `--force` 가 필요하다(워커를 끝낸다). 버린 태스크는 다시 시작하지 않는다(새 태스크로 만든다). 버린 태스크에 의존하는 태스크(아직 띄우지 않은 선행을 거친 간접 의존도)는 `start-ready` 가 띄우지 않는다(대기 사유 `deps` 의 `dropped`·hint, `status` 의 hint): 메인에 알려 그 태스크도 버릴지 사양의 `depends_on` 을 고칠지 사용자가 정한다.
 
 ## 직무
-- planner: 사용자 인터뷰(`hteam ask-user`, 메인을 거쳐 사용자에게 바로 간다), `docs/planning/`(spec.md, contracts.md, tasks.toml, interview.md). 기획자의 질문에 끼어들지 않는다.
+- planner: 사용자 인터뷰(`hteam ask-user`, 메인을 거쳐 사용자에게 바로 간다), `docs/planning/`(spec.md, contracts.md, tasks.toml, interview.md), 문구 기준(`docs/planning/voice.md`). 기획자의 질문에 끼어들지 않는다.
 - director: 디자인 디렉터(레퍼런스·톤 시안·디자인 시스템, `docs/design/`). 기획자처럼 `hteam ask-user` 로 사용자에게 바로 묻는다. 끼어들지 않는다. 승인 직무가 아니라 accept 하면 `done` 이고, 그 뒤 designer 태스크가 시작된다.
 - designer: 화면 디자인(화면마다 태스크 하나, `docs/design/screens/<화면>/`). 시스템에 없는 값은 보고서 `### 시스템 추가 제안` 에 적는다(위 "디자인 시스템 보강"). 승인 직무라 리뷰 승인 뒤 accept 하면 `awaiting_user` 가 되고, 사용자 일괄 승인(`hteam design-review`, `--decide`) 뒤 `done` 이 된다. 그 화면을 구현하는 개발 태스크는 그 뒤에 시작된다.
 - developer: 구현. tester: 테스트와 QA 보고서.
