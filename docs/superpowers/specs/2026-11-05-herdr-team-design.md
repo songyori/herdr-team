@@ -31,6 +31,8 @@ herdr-team 은 Herdr(herdr-app 창 + herdr-core `hc`) 위에서 직무 팀으로
 | 주기 | 네 기능을 한 주기(계획·구현·리뷰·실환경)로 한다. main 병합 때 herdr-team 0.2.0. herdr-orch 는 바꾸지 않는다(0.1.2) |
 | 실환경 | 둘만 본다: (1) 리뷰만(일부러 문구·디자인 위반을 넣은 가짜 워커 커밋을 실제 Codex 리뷰어가 리뷰), (2) 실제 hc 에서 시험 코디네이터 터미널을 끝내고 다음 메인 프롬프트에서 자동 부활. 사용자 hc core 는 건드리지 않고 시험 터미널만 쓴다. 워커 문서 동작(voice.md 등)은 실환경으로 보지 않는다(15.2) |
 | 리뷰 수정 범위 | P0·P1, 기본 경로의 P2, 회귀를 고친다. 가장자리 경우의 P2 는 알려진 한계로 적는다 |
+| 훅 시간 | `hooks.json` 의 15초 제한을 그대로 둔다. 자동 부활 확인은 훅이 시작한 지 4초가 지났으면 건너뛰고 상태 파일에 쓰지 않는다(9.5) |
+| `hc rm` 된 코디네이터 | 자동으로 띄우지 않고 UNKNOWN 안내만 한다. `/herdr-team:up` 이 사용자에게 확인한 뒤 `--force` 로 띄운다(9.5) |
 
 ## 2. 용어
 
@@ -543,7 +545,7 @@ orca-team 0.5.1 을 옮긴다. 전에는 코디네이터가 죽으면 메인이 
 - UserPromptSubmit(`role-mark`): 역할 판별(캐시가 없을 때만)은 그대로 한다. 그 뒤 매 프롬프트, 역할이 메인이면 `autoup.check(p, force=False)`. 결과 문구가 있으면 `{"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": "<문구>"}}` 를 낸다.
 - 돌지 않는 때: 코디네이터·워커·리뷰어 세션, 역할을 모를 때, `state/setup-mode` 가 있을 때, `$HC_TERMINAL_ID` 가 없는 메인(Herdr 밖. `up` 이 exit 5 로 끝나고 SessionStart 가 이미 Herdr 안에서 다시 열라고 알린다).
 - `autoup` 모듈은 이 두 훅 안에서만 늦게 가져온다(guard 훅은 도구 호출마다 돈다).
-- 시간: `hooks.json` 의 훅 제한은 15초다(지금 값, 바꾸지 않는다). 자동 확인은 hc 조회 3초 + 띄우기 대기 5초 + 파일 쓰기로 10초 안에 끝난다. 훅이 시작한 지 4초가 지났으면(역할 판별의 horch·hc 조회가 오래 걸렸다) 이번에는 확인하지 않고 아무것도 쓰지 않는다. 다음 프롬프트가 확인한다.
+- 시간(사용자 결정: 훅 15초 + 4초 규칙): `hooks.json` 의 훅 제한 15초는 그대로 둔다(지금 값). 훅이 시작한 지 4초가 지났으면(역할 판별의 horch status·hc 조회가 오래 걸렸다) 이번 확인을 건너뛴다. 상태 파일에 아무것도 쓰지 않는다(`checked_at` 도 바꾸지 않으므로 다음 프롬프트가 60초 간격과 관계없이 바로 확인한다). 예산: 시작 판정 4초 + hc 조회 3초 + 띄우기 대기 5초 + 파일 쓰기 1초 미만 = 13초 안이므로 15초 제한 안에 끝난다.
 
 결정 `autoup.decide(p)` → (할 일, 문구). 파일을 쓰지 않고 hc 조회는 많아야 한 번이다. 앞에서 정해지면 멈춘다.
 
@@ -560,12 +562,12 @@ orca-team 0.5.1 을 옮긴다. 전에는 코디네이터가 죽으면 메인이 
 
 - `herdr.probe` 에 시간 제한 인자 `timeout`(기본 10초, 지금 값)을 더하고 자동 확인만 3초를 쓴다. 판정은 9.3·horch 와 같은 규칙(`herdr.verdict`)이다: `hc get` 의 `state` 가 `finished` 면 exited, `live` 인데 `reason: stopped_by_restart` 거나 argv 가 기록과 다르면 lost, 그 밖의 `live` 는 live, 다른 상태와 hc 실패(없음·실행 실패·시간 초과·`not_found`·출력 해석 실패)는 unverifiable.
 - 코디네이터는 `hc run --keep` 으로 뜬다(9.3). Herdr 를 다시 시작하거나 프로그램이 신호로 죽으면 hc 가 프로그램을 셸로 바꾸므로 argv 가 달라져 lost 다. Claude 가 스스로 끝나면 exited 다. 둘 다 다시 띄운다.
-- orca-team 은 닫힌 핸들을 죽음으로 봤다. hteam 은 hc 가 터미널을 모르는 것(`not_found`, `hc rm` 뒤)을 확인 불가로 본다. horch `run-use` 도 같은 규칙이라 그 소유자를 `--force` 없이 넘겨받지 않으므로, 띄워도 새 코디네이터가 bind 하지 못한다. 그래서 UNKNOWN 을 알리고 사용자가 `/herdr-team:up`(확인 불가면 끝났는지 묻고 `--force`)으로 푼다.
+- `hc rm` 으로 지운 코디네이터(사용자 결정: rm 된 코디네이터는 안내만): orca-team 은 닫힌 핸들을 죽음으로 봤다. hteam 은 hc 가 터미널을 모르는 것(`hc get` 의 `not_found` → `probe` 의 unverifiable)을 확인 불가로 보고 자동으로 띄우지 않는다. UNKNOWN 안내만 한다. horch `run-use` 도 같은 규칙이라 그 소유자를 `--force` 없이 넘겨받지 않으므로, 띄워도 새 코디네이터가 bind 하지 못한다. 사용자는 `/herdr-team:up` 으로 푼다: 지금처럼 `hteam up` 이 exit 3 `coordinator_unverifiable` 을 내면 스킬이 사용자에게 그 pane 이 끝났는지 묻는다. 끝났다고 하면 `hteam up --force --wait-run 180` 으로 띄우고, bind 가 `run-use --force` 로 넘겨받는다(9.3).
 - 메인을 코디네이터로 기록하는 실수 막기(orca-team 은 `ORCA_TERMINAL_HANDLE` 을 물려줘 `orch up` 이 영수증의 메인 핸들을 거르게 했다): hteam 에는 영수증에서 핸들을 찾는 단계가 없다. 코디네이터 주소는 `hc run --bg --no-parent --json` 이 돌려준 새 터미널 주소이고, 그것이 메인 터미널(`require_main` 이 확인한 `$HC_TERMINAL_ID`)과 같으면 이번에 바꾼 키를 되돌리고 `same_terminal` 로 거부한다(`setup.up`). bind 는 코디네이터 자신의 `$HC_TERMINAL_ID` 를 기록한다(`setup.bind`). 그래서 훅은 자기 환경을 그대로 물려준다: `$HC_TERMINAL_ID`(메인 터미널)가 있어야 `up` 의 `require_main`·`herdr.space` 라벨 조회·`same_terminal` 검사가 맞게 돈다.
 
 확인 `autoup.check(p, force)`:
 
-1. 자격 없음(결정 1) 또는 (force 가 아니고 `auto-up.json` 의 `checked_at` 이 60초 안) → 없음. 아무 파일도 쓰지 않는다.
+1. 자격 없음(결정 1), 훅이 시작한 지 4초가 지남(위 "시간"), 또는 (force 가 아니고 `auto-up.json` 의 `checked_at` 이 60초 안) → 없음. 아무 파일도 쓰지 않는다.
 2. `checked_at = 지금` 을 먼저 쓴다.
 3. `decide`. 띄우기면 `spawn_up`. 성공하면 `spawned_at = 지금`, 실패하면 문구를 UNKNOWN 으로 바꾸고 `spawned_at` 은 쓰지 않는다.
 4. 같은 안내 줄이기: 실제로 띄우지 않았고 문구가 지난 `notice` 와 같으면 반복이다. 문구가 없으면 `notice` 를 지우고(다음 문제는 다시 알린다), 있으면 `notice` 에 남긴다.
@@ -598,7 +600,7 @@ SessionStart 의 메인 안내: `- 먼저 /herdr-team:up 을 실행한다. 산�
 알려진 한계(고치지 않는다):
 
 - 살아 있지만 멈춘 코디네이터(권한 창 대기, 응답 없음)는 live 라 알지 못한다.
-- hc core 가 꺼져 있거나 터미널이 지워졌으면(`hc rm`) UNKNOWN 만 알린다.
+- hc core 가 꺼져 있거나 터미널이 지워졌으면(`hc rm`) UNKNOWN 만 알린다(사용자 결정: rm 된 코디네이터는 안내만).
 - 메인 세션 밖에서 죽으면 다음 메인 프롬프트(최대 60초 간격)나 세션 시작까지 모른다.
 - 죽은 코디네이터 터미널(끝난 터미널, 셸로 바뀐 터미널)은 팀 탭에 남는다(`hteam up` 의 기존 동작).
 - 자동 실행한 `hteam up` 은 메인 세션과 같은 권한·환경으로 돌고 코디네이터는 `[agents.claude].args`(승인한 우회 포함)로 뜬다(14장).
@@ -887,7 +889,7 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
 | hteam 커밋이 워커 커밋의 `index.lock` 과 겹침 | 경로 지정 커밋이 10초까지 기다렸다 다시 한다(다른 git 이 잠금 파일을 쥐고 있을 때만: git 의 `File exists` 이거나 실패 직후 잠금 파일이 있을 때. 번역된 로캘의 git 도 잠금 파일로 가른다. 권한 오류 등은 기다리지 않는다). 그래도 남으면 메인에 알린다(지우지 않는다) |
 | 코디네이터가 죽음 | 4단계: 메인 세션 훅이 확실히 죽은 것(exited·lost)을 보면 `hteam up` 을 분리 실행한다(9.5, `[coordinator] auto_up = false` 면 안내만). 그 밖에는 메인의 `/herdr-team:up` 또는 `hteam up` 이 다시 띄운다. 어느 쪽이든 `hteam bind` 가 `run-use` 로 넘겨받고, ack 안 된 메시지와 꺼진 동안 쌓인 `tell` 은 새 코디네이터에게 온다 |
 | 자동으로 다시 띄운 코디네이터가 10분 안에 다시 죽음 | FAILED 안내만 하고 10분 동안 다시 띄우지 않는다(9.5). 기록은 `state/auto-up.log` |
-| 코디네이터 상태를 확인할 수 없음(hc 실패, `hc rm` 으로 지운 터미널) | 자동 부활은 UNKNOWN 안내만 한다. 사용자가 끝났다고 확인하면 `/herdr-team:up` 이 `hteam up --force` 로 띄운다 |
+| 코디네이터 상태를 확인할 수 없음(hc 실패, `hc rm` 으로 지운 터미널) | 자동 부활은 UNKNOWN 안내만 한다(사용자 결정: rm 된 코디네이터는 안내만). `/herdr-team:up` 이 `coordinator_unverifiable` 에서 사용자에게 확인하고, 끝났다고 하면 `hteam up --force` 로 띄운다 |
 | 문구·디자인 자동 검사가 예외로 실패 | 그 검사 자리에 `자동 검사 실패: …` 한 줄을 넣고 다른 검사와 리뷰는 계속한다(6.2) |
 | 메인이 꺼짐 | `/herdr-team:up` 이 `reask` 로 열린 질문을 다시 묻는다 |
 | 설정이 깨짐 | 설정을 읽는 명령은 exit 2. 통신 명령은 계속 동작. `status` 에 `config_error` |
@@ -919,7 +921,7 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
   - `tests/test_textlint.py`: 분류마다 잡는 예(됬, 안되요, 되어진, 되어졌, 에 있어서, 혁신적, Seamless, 라고 할 수 있, 물론입니다, `그리고,`, `며,`, `해서,`, `하고,`), 한 줄 출력 형식, 정상 문장 0건("회원님은 언제든지 탈퇴할 수 있습니다", "결제는 카드를 통해 진행해요", `unlock()`, "로그인이 필요", "신고, 차단, 숨기기", "경고, 오류, 정보", "참고, 아래 표"), 식별자 키 `{"lock.unlock": "잠금 해제"}` 0건, 모바일 형식과 주석 줄(swift·xml·strings·dart·yaml·html), Markdown 펜스·인라인 코드는 빼고 `* 글머리` 는 검사, 추가한 줄만·다른 태스크 커밋 줄은 무시, 용어집 덮기(같은 행·다른 행), 괄호 조건 표기 버림, 용어집 형식 오류·없음·UTF-8 아님, 높임법 판정·한 번 보고·동점이면 하십시오체, 발췌 60자와 `…`, 주석에만 한글인 파일은 대상 아님, 대상·비대상(제외 glob 전부, `notes.md`), 내용이 `++` 로 시작하는 줄, git 오류는 그 파일만, `:(top,literal)` 경로(`[id]`), UTF-8 아닌 diff 는 그 파일만, 50건 상한(53건 → 51줄, 마지막 `… 외 3건`), 하위 폴더 프로젝트, 병합 커밋(첫 부모와 견줌). `gitio.diff_lines`: 추가·지운 줄을 세고 커밋을 걸쳐 합치고 파일 머리를 빼고 git 오류면 None.
   - `tests/test_designdiff.py`: 지운 `aria-label` 보고, 옮기거나 줄을 바꾼 신호는 보고 안 함, `aria-labelledby` 를 `aria-label` 과 따로 셈, 동작·한글 줄바꿈 신호(`prefers-reduced-motion`, `keep-all`, `break-keep`), 앱 신호(`semanticsLabel`, `semanticLabel`, `contentDescription`), 추가한 줄의 확대 막기(`maximum-scale=1.0, user-scalable=no` 와 Next.js 객체는 잡고 `maximum-scale=5` 는 아님), focus-visible 없는 포커스 제거(`.btn:focus { outline: none }`·`focus:outline-none` 단독·`dark:focus:outline-none` 은 잡고, focus-visible 있는 파일·`focus:ring-2`·`dark:focus:ring-2`·`md:focus:ring-2`·`focus:!ring-2`·`outline-offset: 0` 은 아님), Tailwind v4 `outline-hidden` 은 포커스 제거, 지운 `:focus-visible` 을 `:focus` 로 부르지 않음, CRLF 파일, 준 커밋이 추가한 줄만, 비대상·제외·git 오류 건너뜀, 지운 파일은 지운 줄만, 옮긴 파일 보고 안 함, 컴포넌트 추출 보고 안 함, 여러 커밋에 걸쳐 지웠다 되살림 보고 안 함, 순감소는 파일별로 보고, 다른 파일의 실제 감소가 있을 때 내용 그대로 옮긴 파일은 보고 안 함(옛 경로 이름으로 실제 감소만), 평범한 식별자(`const role = user.role`, `navigator.language`, `focus: {`)는 신호 아님, 속성 꼴(role, alt, `focus:`, `motion-safe:`, lang)은 신호, `.md` 는 대상 아님, 약한 포커스 대체(`ring-0`·`shadow-none`·`ring-transparent`·`outline-hidden`·`outline-style`)는 대체 아님.
   - `tests/test_autoup.py`: exited·lost 면 띄움, live 는 아무것도 안 함, unverifiable(`not_found` 포함)은 UNKNOWN 만, auto_up false 는 DISABLED 만, 코디네이터 터미널 없음은 NO_HANDLE(hc 호출 0), 시작 유예·진행 중이면 건너뜀, 60초 지난 pid 파일·다른 프로세스가 다시 쓴 pid 는 무시, 10분 안 재사망은 FAILED 이고 띄우지 않음, 자격 없음(run_id 없음·setup-mode·`run.json` 손상)은 hc 를 부르지 않고 아무것도 쓰지 않음, 설정 오류는 건너뜀, 60초 간격과 force(두 번째는 없음·hc 1회), 실제로 띄우면 늘 알림, 같은 문구는 바뀌거나 force 일 때만, 손상된 `auto-up.json` 은 확인할 때가 됨, 띄우기 실패는 UNKNOWN 이고 `spawned_at` 을 쓰지 않음, 분리 실행이 실제 `hteam up` 을 돌림(가짜 hc 로 새 코디네이터 터미널이 기록되고 로그에 `hteam up (자동)`·`launched`), 띄운 `hteam up` 이 훅의 `$HC_TERMINAL_ID` 를 물려받음.
-  - `tests/test_hooks.py`: 프롬프트가 죽은 코디네이터를 되살림, 간격 안의 프롬프트는 건너뜀, 세션 시작은 간격과 관계없이 확인, 코디네이터·워커·리뷰어 세션은 건너뜀, auto_up false 는 안내만, setup-mode 는 건너뜀, `$HC_TERMINAL_ID` 없는 메인은 건너뜀, 훅 시작 4초 예산을 넘으면 건너뜀, 예외는 막지 않음(`auto-up.json` 을 디렉터리로 만들어 예외 → 세션 시작은 기본 줄, `hook-errors.log` 에 `auto-up`), 세션 시작 기본 줄 문구.
+  - `tests/test_hooks.py`: 프롬프트가 죽은 코디네이터를 되살림, 간격 안의 프롬프트는 건너뜀, 세션 시작은 간격과 관계없이 확인, 코디네이터·워커·리뷰어 세션은 건너뜀, auto_up false 는 안내만, setup-mode 는 건너뜀, `$HC_TERMINAL_ID` 없는 메인은 건너뜀, 훅 시작 4초 예산을 넘으면 건너뛰고 `auto-up.json` 을 쓰지 않음(다음 프롬프트가 간격과 관계없이 바로 확인), 예외는 막지 않음(`auto-up.json` 을 디렉터리로 만들어 예외 → 세션 시작은 기본 줄, `hook-errors.log` 에 `auto-up`), 세션 시작 기본 줄 문구.
   - `tests/test_review.py`: 한글 UI 문구를 바꾼 태스크에 문구 절과 경고, 깨끗한 문구는 `- 없음`, 한글이 없으면 문구 절 없음(자리표시·빈 줄 셋 없음), 제외 경로(tester 의 `tests/`, director 의 `docs/design/system/`, designer `notes.md`)는 문구 절 없음, text-rules.md 없는 프로젝트는 문구 절 없음, 디렉터 없는 프로젝트에도 문구 절, Codex 워커 태스크의 Claude 리뷰어 프롬프트에도 같은 절, 디자인 절 다음에 문구 절, 검사 실패가 리뷰를 막지 않고 한 줄, developer 프롬프트에 디자인 규칙과 경고, 확대 막기 경고, diff 검사가 내용 검사보다 앞, 합친 경고 50건 상한(40 + 20 → 50 + `… 외 10건`), 한 검사가 실패해도 다른 검사 결과는 남음.
   - `tests/test_lint.py`: `design_findings` 는 상한이 없고 `cap` 이 자른다, `lint --task` 의 `findings`·`text_findings`.
   - `tests/test_config.py`: `auto_up` 은 없으면 true, 불리언이 아니면 `bad_config`. `herdr.probe` 의 시간 제한(가짜 hc `delay` 로 3초 넘으면 unverifiable).
