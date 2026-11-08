@@ -24,7 +24,7 @@
 - 권한 확인(실수 방지용, 보안 경계가 아님): 지금 그대로다. 새 `test`·`followups`·`upgrade` 는 역할을 확인하지 않고 config.toml 을 읽지 않는다(설계 4.2·8.3. `find_project` 가 config.toml 이 있는 프로젝트를 찾기만 한다). `notify --test-confirm` 은 `notify` 처럼 코디네이터, `ask-user --test-confirm` 은 그 태스크의 작업 워커, 확정 기록을 쓰는 `answer` 는 `require_main` 뒤에만 쓴다.
 - 상태 쓰기: 태스크마다 flock(`state/tasks/T-xxx.lock`) 아래에서 이전 상태를 다시 확인하고 임시 파일 + `os.replace` 로 쓴다. 잠금 순서는 늘 프로젝트(`state/lock`) → finish(`state/tasks/T-xxx.finish.lock`) → 태스크. 리뷰 관문은 finish 잠금 안에서 돌고 프로젝트·태스크 잠금을 쥐지 않는다(설계 6.1 4a). 테스트 기록(`state/tests/`)과 확정 기록은 잠그지 않고 원자적으로만 쓴다(한계, 설계 5.7). exclusive 잠금(`state/tests/.lock`)은 비차단 시도(0.2초 간격)라 다른 잠금과 교착하지 않는다.
 - 손상된 기록을 없는 것으로 보지 않는다: 확정 기록은 엄격 읽기(`util.read_json_strict`, 없으면 빈 목록, 있는데 읽지 못하거나 `{"approved": [{digest, …}]}` 꼴이 아니면 exit 1 `bad_test_approvals`(경로 포함), 파일은 그대로). 그때 리뷰 관문(developer·tester 리뷰)·`hteam test`·`answer` 의 기록이 멈추고 `status` 의 `test_gate.state` 는 `error` 다. 테스트 기록(`state/tests/T-xxx.json`)은 잃어도 다시 돌릴 뿐이라 느슨하게 읽는다(JSON 객체가 아니면 빈 기록).
-- 사용자·워커 글은 `--옵션=값` 한 인자로 넘긴다. 경로는 손실 없이 다룬다(git 출력은 바이트로 읽어 `os.fsdecode`, JSON 은 `util.dumps`, 사람이 읽는 글은 `util.show`). 커밋은 늘 경로 지정(`git add -- <경로>` + `git commit -m … -- <경로>`, 경로는 `:(literal)`). 리뷰 프롬프트·반려 파일의 테스트 명령은 JSON 문자열(`json.dumps(command, ensure_ascii=False)`), tail 은 가변 길이 펜스(안의 가장 긴 백틱 연속 + 1, 최소 3), 로그 첫 줄은 `$ ` + `util.show(명령)`(여러 줄 명령도 한 줄)로 넣는다(설계 6.2·14장).
+- 사용자·워커 글은 `--옵션=값` 한 인자로 넘긴다. 경로는 손실 없이 다룬다(git 출력은 바이트로 읽어 `os.fsdecode`, JSON 은 `util.dumps`, 사람이 읽는 글은 `util.show`). 커밋은 늘 경로 지정(`git add -- <경로>` + `git commit -m … -- <경로>`, 경로는 `:(literal)`). 리뷰 프롬프트·반려 파일의 테스트 명령은 JSON 문자열(`util.dumps(command)`: UTF-8 이 아닌 파일 이름의 서로게이트도 `\udcXX` 로 보여 파일을 쓸 수 있다, Codex 계획 리뷰 r1), tail 은 가변 길이 펜스(안의 가장 긴 백틱 연속 + 1, 최소 3), 로그 첫 줄은 `$ ` + `util.show(명령)`(여러 줄 명령도 한 줄)로 넣는다(설계 6.2·14장).
 - `hc run` 은 늘 `--no-notify` 를 붙인다(코드의 `herdr.run_bg` 는 이미 붙인다. 실환경 확인의 시험용 `hc run` 도 같다).
 - 시각: 상태·확정 기록의 `at` 은 UTC `%Y-%m-%dT%H:%M:%SZ`(`util.now`). 테스트 기록의 `at` 은 로컬 시간대 ISO 8601 초 단위, 로그 이름의 시각은 로컬 `YYYYmmdd-HHMMSS`(설계 5.7). 태스크 ID 는 `T-` + 숫자 3자리 이상.
 - 설계의 5단계 값(그대로 쓴다): `[test]` 키 `quick`·`full`·`timeout_min`(기본 30, 1–240 정수, 불리언 아님)·`ok_exit`(기본 `[0]`, 비지 않은 정수 목록)·`exclusive`(기본 false), 형식 문구(orca-team 원문, 설계 5.7), 관문 직무 `developer`·`tester`(설정과 관계없이 글자 그대로), 통과 상태 passed·flaky·skipped, 126·127 은 `ok_exit` 보다 먼저 unrunnable, tail 은 로그 끝 64 KiB·공백뿐인 줄 빼기·줄마다 300자·마지막 60줄, 그룹 종료 SIGTERM → 5초 동안 0.05초마다 → SIGKILL(`ProcessLookupError`·`PermissionError` 는 사라짐), 로그 이름 `T-xxx-r<라운드>-quick-a1`·`-quick-a2`·`-full`·`final-full`, 테스트 명령 환경에서 빼는 `HTEAM_ROLE`·`HTEAM_LAUNCH`·`HC_TERMINAL_ID`, 관문의 git status 조회 `GIT_OPTIONAL_LOCKS=0`, 보고서 경로 `docs/tasks/T-xxx/`·`docs/qa/`, dirty 표시 20개, 묶음 절의 바꾼 파일 15개, 식별값은 정규화 값 `json.dumps(sort_keys=True, ensure_ascii=False)` 의 SHA-256, 확정 기록 위치는 루트 실제 경로의 SHA-1 앞 16자, 확정 질문 context 4000자, 판정 맞추기 정규식 일곱(설계 6.3 원문), followups 의 `ITEM_ID_RE`·`EMPTY_RE`·`SOURCE_RE`(설계 8.4 원문).
@@ -100,7 +100,7 @@ docs/superpowers/specs/2026-11-05-herdr-team-design.md   머리 상태 줄과 15
 - `hteam status` 의 `test_gate`(Task 2): `{state: none|approved|unapproved|error, digest, error}`, unapproved 면 `hint`.
 - `hteam plan check` 출력의 `test`(Task 2): 그 파일에 `[test]` 가 있는지.
 - 시도 기록 `inputs.tests`(Task 3): 관문 결과 `{head, config, quick | full | skipped: "unapproved"}` 또는 null(관문 없음). 관문 반려 라운드 기록에 `review_source: "hteam"`, `tests`. `review` 출력과 history(`precheck`·`review` 사건)에 `tests: {종류: status}` 또는 `tests_skipped: "unapproved"`.
-- 시도 기록의 판정(Task 4): `verdict_sha`(원래 바이트), `verdict_raw`(원래 판정), `verdict_read`(맞춘 판정), `final_sha`(맞춘 내용, 바꾸지 않았으면 `verdict_sha`), `verdict_adjusted`(`"REQUEST_CHANGES→APPROVE"` 등, 아니면 null). `review-finish` 출력과 history 의 `verdict` 사건에 `verdict_adjusted`.
+- 시도 기록의 판정(Task 4): `verdict_sha`(원래 바이트), `verdict_raw`(원래 판정), `verdict_read`(맞춘 판정), `final_sha`(맞춘 내용, 바꾸지 않았으면 `verdict_sha`), `verdict_adjusted`(`"REQUEST_CHANGES→APPROVE"` 등, 아니면 null). `review-finish` 출력과 history 의 `verdict` 사건에 `verdict_adjusted`. `review-finish` 출력에 판정의 출처 `source`(리뷰어 에이전트 `codex`·`claude`. hteam 반려의 `source: "hteam"` 과 가른다, Codex 계획 리뷰 r1).
 - `hteam followups` 출력(Task 5): `{"tasks", "regressions", "followups", "planning_gaps"}`(항목 `{task, round, id, text}`).
 - `hteam upgrade` 출력(Task 6): `{"updated", "created", "skipped": [{path, reason}], "manual": [{path, reason}], "diff_stat", "next"}`.
 
@@ -136,7 +136,7 @@ docs/superpowers/specs/2026-11-05-herdr-team-design.md   머리 상태 줄과 15
   - `fence(text) -> str`(백틱 펜스), `fenced(text, lang="") -> str`, `confirm_section(cfg) -> str`(`## 테스트 명령` 절)
   - `work_commits(p, st)`, `changed_files(p, commits)`, `task_target(p, tid) -> (st, commits)`(exit 2 `bad_task_id`·`not_started`), `code_head(p, tid, commits) -> str | None`, `quick_files(p, tid, commits) -> list[str]`, `check_committed(p, st, commits)`(exit 2 `no_work_commit`·`uncommitted_owned`), `dirty_files(p, allowed) -> list[str]`
   - `execute(p, command, log, timeout_s, ok_exit) -> {"status", "exit", "seconds", "tail"}`(exit 2 `test_unrunnable`), `kill_group(proc)`, `read_tail(log) -> str`, `run_lock(p, cfg, wait_s)`(exit 4 `test_lock_timeout`), `attempt(p, cfg, command, name, timeout_s=None, lock_wait=None) -> {"command", "log"(프로젝트 기준), **execute}`, `run_quick(p, cfg, files, name)`
-  - `records(p, tid) -> dict`, `record_task(p, cfg, st, commits, kind) -> 기록`, `run_task(p, tid, kind) -> {"task", "kind", **기록}`, `run_final(p)`, `gate_results(p, st, role, commits) -> dict | None`, `describe(entry, kind) -> list[str]`
+  - `records(p, tid) -> dict`, `record_task(p, cfg, st, commits, kind) -> 기록`, `run_task(p, tid, kind) -> {"task", "kind", **기록}`, `run_final(p)`, `gate_results(p, st, role, commits) -> dict | None`, `describe(entry, kind) -> list[str]`(명령은 `util.dumps`)
   - `gitio.READ_ONLY`, `gitio.run(..., env=None)`, `gitio.head_file(root, top_path) -> str | None`, `Project.tests`, `Project.test_logs`, 결과의 `_exit`(cli)
   - 시험 도우미 `TeamCase.use_gate(quick="fake-test {files}", full="fake-test --all", extra="", *, approve=True, commit=True)`, `approve_gate()`, `gate_modes(*words)`, `gate_calls() -> [{"args", "env", "cwd"}]`
 
@@ -315,6 +315,15 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(len(base), 64)
         for changed in ({"quick": "c {files}", "full": "b"}, {"quick": "a {files}", "full": "b", "ok_exit": [0, 5]}):
             self.assertNotEqual(testgate.digest(testgate.parse_config(changed)), base)
+
+    def test_describe_shows_non_utf8_names(self):
+        # Codex 계획 리뷰 r1: quick 파일 이름은 os.fsdecode 로 보존해 서로게이트를 담을 수 있다. 보이는 줄은 UTF-8 로 써진다
+        entry = {"status": "failed", "seconds": 0.1, "exit": 1, "command": "true src/a\udcff.py", "log": "x.log",
+                 "dirty": ["lib/b\udcfe.py"]}
+        lines = testgate.describe(entry, "quick")
+        self.assertEqual(lines[1], 'quick 명령: "true src/a\\udcff.py"')
+        self.assertEqual(lines[-1], "실행 때 커밋 안 된 다른 파일: lib/b\\xfe.py")
+        "\n".join(lines).encode("utf-8")
 
     def test_fence_is_longer_than_backticks_inside(self):
         self.assertEqual(testgate.fence("plain"), "```")
@@ -846,7 +855,7 @@ from . import gitio, state
 from .errors import FAIL, TIMEOUT, USAGE, HteamError
 from .globs import matches_any
 from .paths import SHIM, find_project
-from .util import now, read_json, read_json_strict, show, write_json
+from .util import dumps, now, read_json, read_json_strict, show, write_json
 
 PLAN_FILE = "docs/planning/tasks.toml"  # plan.PLAN_FILE 과 같다(plan 이 이 모듈을 쓰므로 따로 둔다)
 KEYS = ("quick", "full", "timeout_min", "ok_exit", "exclusive")
@@ -1339,13 +1348,14 @@ def gate_results(p, st: dict, role: str, commits: list[dict]) -> dict | None:
 
 
 def describe(entry: dict, kind: str) -> list[str]:
-    """관문 결과 한 종류의 줄(설계 6.2). 명령은 JSON 문자열로 보인다(여러 줄 명령이 새 줄·절을 만들지 못한다)."""
+    """관문 결과 한 종류의 줄(설계 6.2). 명령은 JSON 문자열(util.dumps)로 보인다: 여러 줄 명령이 새 줄·절을 만들지 못하고,
+    UTF-8 이 아닌 파일 이름(os.fsdecode 의 서로게이트)도 `\\udcXX` 로 보여 프롬프트·반려 파일을 쓸 수 있다."""
     first = f"{kind}: {STATUS_TEXT.get(entry.get('status'), entry.get('status'))}"
     if entry.get("command"):
         first += f" ({entry['seconds']}초" + (f", exit {entry['exit']})" if entry.get("exit") is not None else ")")
     lines = [first]
     if entry.get("command"):
-        lines += [f"{kind} 명령: {json.dumps(entry['command'], ensure_ascii=False)}", f"{kind} 로그: {entry['log']}"]
+        lines += [f"{kind} 명령: {dumps(entry['command'])}", f"{kind} 로그: {entry['log']}"]
     if entry.get("status") == "flaky" and isinstance(entry.get("first"), dict):
         lines.append(f"{kind} 첫 실행 로그: {entry['first'].get('log')}")
     dirty = list(entry.get("dirty") or [])
@@ -1375,7 +1385,7 @@ def register(sub) -> None:
 - [ ] **Step 4: 통과 확인**
 
 Run: Step 2 와 같은 명령. 그다음 전체 모음 `bash herdr-team/tests/run.sh` 를 백그라운드로 하나 돌린다(gitio 의 status 환경이 리뷰 사전 검사·변조 검사에도 닿는다).
-Expected: OK(27개). 전체 모음도 OK 다(이 태스크 뒤 809개). 시간 초과·SIGTERM 무시 자식 시험이 각각 몇 초 걸린다(그룹 종료의 5초 유예).
+Expected: OK(28개). 전체 모음도 OK 다(이 태스크 뒤 810개). 시간 초과·SIGTERM 무시 자식 시험이 각각 몇 초 걸린다(그룹 종료의 5초 유예).
 
 - [ ] **Step 5: 커밋**
 
@@ -2619,7 +2629,7 @@ full = "npx vitest run"
 - [ ] **Step 4: 통과 확인**
 
 Run: Step 2 와 같은 명령. 그다음 `bash herdr-team/tests/run.sh -k test_plan -k test_mainlink -k test_interview -k test_start -k test_setup` 로 둘레를 본다(plan 의 읽기를 나눴고 status·work_spec 에 git 조회가 더해진다).
-Expected: OK(23개). 둘레 명령(`test_plan`·`test_mainlink`·`test_interview`·`test_start`·`test_setup`)도 OK 다.
+Expected: OK(23개). 둘레 명령(`test_plan`·`test_mainlink`·`test_interview`·`test_start`·`test_setup`, 259개)도 OK 다.
 
 - [ ] **Step 5: 커밋**
 
@@ -2657,7 +2667,7 @@ Expected: 문법 검사·`git grep` 출력 없음, 커밋 성공. 구현자는 �
 **Files:**
 - Create: `herdr-team/templates/review-tests.md`, `herdr-team/templates/review-group.md`
 - Modify: `herdr-team/lib/hteam/review.py`(`GATE_PROBLEM`·`_gate_text`·`_precheck_fail`·`_launch_attempt`·`_new_attempt`·`_recover`·`review`·`_review`·`_finish` 의 자동 재시도), `herdr-team/lib/hteam/testgate.py`(`retry_results`·`summary`·`failed_quick`), `herdr-team/lib/hteam/compose.py`(`VERIFY_DEFAULT`·`VERIFY_GATED`·`VERIFY_PENDING`·`SKIPPED_LINE`·`GROUP_FILES_SHOWN`·`verify_rule`·`tests_section`·`group_section`·`review_prompt`), `herdr-team/templates/review-prompt.md`
-- Test: `herdr-team/tests/test_review.py`(`GateCase`·`ReviewGateTest`·`GateUnapprovedTest`·`NoGateTest`·`ReviewGroupTest`, `TextTemplateTest` 의 자리)
+- Test: `herdr-team/tests/test_review.py`(`GateCase`·`ReviewGateTest`·`GateTextTest`·`GateUnapprovedTest`·`NoGateTest`·`ReviewGroupTest`, `TextTemplateTest` 의 자리)
 
 **Interfaces:**
 - Consumes: Task 1 의 `testgate.gate_results`·`load_config`·`code_head`·`digest`·`is_approved`·`describe`·`fenced`·`work_commits`·`changed_files`·`gate_state`·`PASSED`·`GATED_ROLES`·`TESTER_ROLE`, Task 2 의 확정 상태, `review._precheck_fail`·`_new_attempt`·`_launch_attempt`(기존)
@@ -2927,6 +2937,18 @@ class ReviewGateTest(GateCase):
         self.assertIn("출처: hteam 테스트 관문", (self.proj / "docs/reviews/T-001/r1.md").read_text(encoding="utf-8"))
 
 
+class GateTextTest(unittest.TestCase):
+    def test_non_utf8_names_are_written(self):
+        # Codex 계획 리뷰 r1: quick 명령에 든 UTF-8 이 아닌 파일 이름(서로게이트)이 반려 파일·프롬프트 쓰기를 막지 않는다
+        from hteam import review
+        quick = {"status": "failed", "seconds": 0.1, "exit": 1, "command": "true src/a\udcff.py", "log": "x.log",
+                 "tail": "FAIL", "dirty": ["lib/b\udcfe.py"], "files": ["src/a\udcff.py"]}
+        tests = {"head": None, "config": "x", "quick": quick}
+        for text in (review._gate_text("T-001", 1, tests), compose.tests_section(tests)):
+            self.assertIn('quick 명령: "true src/a\\udcff.py"', text)
+            text.encode("utf-8")
+
+
 class GateUnapprovedTest(ReviewCase):
     """확정하지 않은 [test](설계 5.7): 관문을 건너뛰고 알린다. 명령은 돌지 않는다."""
 
@@ -3033,8 +3055,8 @@ if __name__ == "__main__":
 
 - [ ] **Step 2: 실패 확인**
 
-Run: `bash herdr-team/tests/run.sh -k TextTemplateTest -k ReviewGateTest -k GateUnapprovedTest -k NoGateTest -k ReviewGroupTest`
-Expected: `FAILED (failures=7, errors=12)`(23개). ERROR — `ReviewGateTest`·`GateUnapprovedTest`·`NoGateTest`·`ReviewGroupTest` 의 대부분(출력·history·시도 기록에 `tests`·`tests_skipped`·`inputs.tests` 가 없어 `KeyError`, `AttributeError: module 'hteam.compose' has no attribute 'VERIFY_DEFAULT'`). FAIL — 관문이 없어 테스트 명령이 돌지 않는 시험(`test_code_change_runs_again`·`test_config_change_runs_again`·`test_full_record_reuse`·`test_gate_runs_inside_the_finish_lock`·`test_multiline_command_stays_one_line`·`test_group_without_dependencies`)과 `TextTemplateTest.test_review_text_and_prompt_slots`(자리 `{{tests}}{{group}}` 이 없다).
+Run: `bash herdr-team/tests/run.sh -k TextTemplateTest -k ReviewGateTest -k GateTextTest -k GateUnapprovedTest -k NoGateTest -k ReviewGroupTest`
+Expected: `FAILED (failures=7, errors=13)`(24개). ERROR — `ReviewGateTest`·`GateUnapprovedTest`·`NoGateTest`·`ReviewGroupTest` 의 대부분(출력·history·시도 기록에 `tests`·`tests_skipped`·`inputs.tests` 가 없어 `KeyError`, `AttributeError: module 'hteam.compose' has no attribute 'VERIFY_DEFAULT'`), `GateTextTest.test_non_utf8_names_are_written`(`AttributeError: module 'hteam.review' has no attribute '_gate_text'`). FAIL — 관문이 없어 테스트 명령이 돌지 않는 시험(`test_code_change_runs_again`·`test_config_change_runs_again`·`test_full_record_reuse`·`test_gate_runs_inside_the_finish_lock`·`test_multiline_command_stays_one_line`·`test_group_without_dependencies`)과 `TextTemplateTest.test_review_text_and_prompt_slots`(자리 `{{tests}}{{group}}` 이 없다).
 
 - [ ] **Step 3: 구현**
 
@@ -3536,7 +3558,7 @@ def _new_attempt(p, cfg, h, tid: str, *, commits: list[dict], files: list[str], 
 - [ ] **Step 4: 통과 확인**
 
 Run: Step 2 와 같은 명령. 그다음 전체 모음 `bash herdr-team/tests/run.sh` 를 백그라운드로 하나 돌린다(리뷰 프롬프트와 시도 기록이 바뀐다).
-Expected: OK(23개). 전체 모음도 OK 다(이 태스크 뒤 846개).
+Expected: OK(24개). 전체 모음도 OK 다(이 태스크 뒤 848개).
 
 - [ ] **Step 5: 커밋**
 
@@ -3563,7 +3585,7 @@ Expected: 문법 검사·`git grep` 출력 없음, 커밋 성공. 구현자는 �
 
 - `review-prompt.md`: 기준 4 를 "이전 리뷰의 P1 지적이 모두 반영됐는가." 로, 기준 다음에 `## 등급과 판정`(설계 원문, `r{{round}}-F1`), 자리표시를 `{{tests}}{{round_scope}}{{group}}{{design}}{{text}}## REVIEW_FILE 형식` 으로, REVIEW_FILE 형식을 설계 6.2 의 일곱 절(판정 근거 → 이전 지적 확인 → 지적 사항 → 후속 → 기획 누락 → 회귀 → 직접 확인한 것)로 바꾸고 "P1 이 하나라도 있으면 REQUEST_CHANGES 다." 는 지운다.
 - 라운드 절(`compose.round_section`, 새 `templates/review-round.md`): 지금 라운드보다 앞선 라운드 가운데 시도 결과가 판정인 시도가 있는 마지막 라운드(`prev`)가 있을 때만 붙는다. 그 시도 `inputs.commits` 의 마지막 sha(`prev_head`)가 지금 대상 커밋에 있으면 그 뒤 커밋만 새 커밋으로 보이고, 없거나 비었으면 "지난 리뷰의 커밋 기록이 없다" 와 "기록 없음". 이번 라운드에 요청(`compose.round_requests`)이 있으면 4 번 줄(`compose.REQUEST_SCOPE`)을 더한다. `review_prompt` 는 상태의 라운드 기록(`rounds`)을 새 인자로 받는다(`_launch_attempt` 가 넘긴다).
-- 판정 맞추기(`review.align_verdict`, 설계 6.3 의 정규식·넓은 셈·엄격한 셈·비대칭 결정·끼우는 문장): `review-finish` 의 판정 읽기(`_read_verdict`)가 같은 바이트로 맞추고 `verdict_sha`·`verdict_raw`·`verdict_read`·`final_sha`·`verdict_adjusted` 를 한 번에 시도 기록에 남긴다. 최종화는 시도 파일이 있으면 그 해시가 `verdict_sha` 와 같은지 보고 맞춘 내용을 `rN.md` 에 원자적으로 쓰고(바꾸지 않았으면 지금처럼 옮긴다), 시도 파일이 없으면 `rN.md` 가 `final_sha`(옛 기록은 `verdict_sha`)와 같아야 한다. 커밋 제목은 맞춘 판정, 본문 첫 줄은 `판정 맞추기: {원래}→{바뀐 것}(…기준)`(추적하지 않는 새 파일 경고가 있으면 빈 줄 뒤에). history 의 `verdict` 사건과 출력에 `verdict_adjusted`. hteam 반려(사전 검사·관문)는 `review-finish` 를 거치지 않으므로 맞추지 않는다.
+- 판정 맞추기(`review.align_verdict`, 설계 6.3 의 정규식·넓은 셈·엄격한 셈·비대칭 결정·끼우는 문장): `review-finish` 의 판정 읽기(`_read_verdict`)가 같은 바이트로 맞추고 `verdict_sha`·`verdict_raw`·`verdict_read`·`final_sha`·`verdict_adjusted` 를 한 번에 시도 기록에 남긴다. 최종화는 시도 파일이 있으면 그 해시가 `verdict_sha` 와 같은지 보고 맞춘 내용을 `rN.md` 에 원자적으로 쓰고(바꾸지 않았으면 지금처럼 옮긴다), 시도 파일이 없으면 `rN.md` 가 `final_sha`(옛 기록은 `verdict_sha`)와 같아야 한다. 출력에 판정의 출처 `source`(리뷰어 에이전트, hteam 반려의 `source: "hteam"` 과 가른다, Codex 계획 리뷰 r1). 커밋 제목은 맞춘 판정, 본문 첫 줄은 `판정 맞추기: {원래}→{바뀐 것}(…기준)`(추적하지 않는 새 파일 경고가 있으면 빈 줄 뒤에). history 의 `verdict` 사건과 출력에 `verdict_adjusted`. hteam 반려(사전 검사·관문)는 `review-finish` 를 거치지 않으므로 맞추지 않는다.
 - 수정 블록(`compose.work_spec`): "`<리뷰 파일>` 리뷰를 읽고 막는 지적(…)을 모두 고친다. …`## 후속`·`## 기획 누락`·`## 회귀` 는 고치지 않는다(…)." 로 바꾼다(설계 5.5, 옛 문장은 지운다).
 - `review-design.md` 3 번: 예시 줄에 `r1-F1` 을 붙이고 표시한 지적은 등급대로 `## 지적 사항`·`## 후속` 에 두며 `(회귀)` 는 `## 회귀` 절과 다르다는 문장. `AGENTS.section.md` 의 리뷰어 두 줄을 새 형식에 맞춘다(이미 세팅한 프로젝트의 `AGENTS.md` 는 upgrade 가 `manual` 로 알린다, Task 6).
 - 지금 테스트 고치기(설계 15.1): 판정 맞추기 때문에 P1 줄 없는 가짜 REQUEST_CHANGES 리뷰는 APPROVE 로 바뀐다. 수정 요청을 기대하는 가짜 리뷰는 본문에 `- r1-F1 [P1] …` 줄을 넣는다. 수정 블록·기준 4 문구를 보는 테스트도 새 문장으로 바꾼다.
@@ -3577,7 +3599,7 @@ Expected: 문법 검사·`git grep` 출력 없음, 커밋 성공. 구현자는 �
 - Consumes: Task 3 의 `review-prompt.md` 자리(`{{tests}}{{group}}`)·`inputs.tests`, 시도 기록 `inputs.commits`·`result`, `compose.round_requests`(기존)
 - Produces:
   - `review.FINDINGS_RE`·`PRIOR_RE`·`BROAD_P1_RE`·`NONE_LINE_RE`·`STRICT_ID_RE`·`STRICT_GRADE_RE`·`STRICT_PRIOR_RE`·`ADJUST_BASIS`, `review.broad_count(findings, prior) -> int`, `review.strict_count(findings, prior) -> int`, `review.align_verdict(text, verdict) -> (맞춘 내용, 맞춘 판정, 셈 | None)`
-  - 시도 기록 `verdict_raw`·`final_sha`·`verdict_adjusted`, `review-finish` 출력·history 의 `verdict_adjusted`
+  - 시도 기록 `verdict_raw`·`final_sha`·`verdict_adjusted`, `review-finish` 출력·history 의 `verdict_adjusted`, `review-finish` 출력의 `source`(리뷰어 에이전트)
   - `compose.REQUEST_SCOPE`, `compose.round_section(p, tid, rd, rounds, commits, requested) -> str`, `compose.review_prompt(p, cfg, spec, rd, att, rounds=None)`, 템플릿 `review-round.md`(`{{round}}`·`{{prev}}`·`{{prev_review}}`·`{{prev_head}}`·`{{new_commits}}`·`{{request_scope}}`)
 
 - [ ] **Step 1: 실패하는 테스트 작성**
@@ -3647,6 +3669,20 @@ Expected: 문법 검사·`git grep` 출력 없음, 커밋 성공. 구현자는 �
         self.assertIn("P1 이 있으면 REQUEST_CHANGES, 없으면 APPROVE 다.", agents)
         self.assertNotIn("P1 이 하나라도 있으면", agents)
 
+```
+
+**Edit** `herdr-team/tests/test_review.py`
+
+```python
+        code, out = self.hteam("review-finish", "T-003")  # full 실패여도 리뷰어 판정이다
+        self.assertEqual((code, out["verdict"], out["status"]), (0, "APPROVE", "approved"), out)
+        self.assertNotIn("출처: hteam", (self.proj / "docs/reviews/T-003/r1.md").read_text(encoding="utf-8"))
+```
+
+```python
+        code, out = self.hteam("review-finish", "T-003")  # full 실패여도 리뷰어 판정이다
+        self.assertEqual((code, out["verdict"], out["status"], out["source"]), (0, "APPROVE", "approved", "codex"), out)
+        self.assertNotIn("출처: hteam", (self.proj / "docs/reviews/T-003/r1.md").read_text(encoding="utf-8"))
 ```
 
 **Edit** `herdr-team/tests/test_review.py`
@@ -3818,6 +3854,7 @@ class AlignFlowTest(ReviewCase):
     def test_unadjusted_verdict_has_no_note(self):
         code, out = self.finish("REQUEST_CHANGES", P1_REVIEW)
         self.assertEqual((code, out["verdict"], out["verdict_adjusted"]), (0, "REQUEST_CHANGES", None), out)
+        self.assertEqual(out["source"], "codex")  # 리뷰어 판정의 출처(hteam 반려는 source: hteam, 설계 15.2 (1) 8)
         self.assertNotIn("판정 맞추기", (self.proj / "docs/reviews/T-001/r1.md").read_text(encoding="utf-8"))
         self.assertEqual(self.git("log", "-1", "--format=%b").strip(), "")
 
@@ -3945,8 +3982,8 @@ if __name__ == "__main__":
 
 - [ ] **Step 2: 실패 확인**
 
-Run: `bash herdr-team/tests/run.sh -k ReviewRoundTest -k VerdictAlignTest -k AlignFlowTest -k TextTemplateTest -k test_review_prompt_shows_the_round_request -k test_other_roles_have_no_design_section -k ComposeTest -k FixTest -k WhichStatusTest -k test_dependent_in_changes_keeps_the_review_findings -k test_changes_dependent_refixed_twice_keeps_the_review_findings -k test_dependent_fix_waits_for_predecessor_and_keeps_both_requests`
-Expected: `FAILED (failures=15, errors=7)`(37개). ERROR — `VerdictAlignTest` 셋과 `AlignFlowTest` 의 셋(`AttributeError: module 'hteam.review' has no attribute 'align_verdict'`, `KeyError: 'verdict_adjusted'`), `ReviewRoundTest.test_second_round_sees_only_new_commits`. FAIL — `ReviewRoundTest` 의 넷(`## 등급과 판정`·`## 라운드 2 확인 범위` 가 없다), `AlignFlowTest` 의 둘, `TextTemplateTest` 의 둘, 기준 4·수정 블록 문장을 보는 시험(`test_review_prompt_shows_the_round_request`, 두 `test_other_roles_have_no_design_section`, `ComposeTest.test_fix_round_block_and_ask_rule`, `FixTest.test_fix_after_changes_starts_round_two`, `ApprovalFollowupTest` 의 둘). 나머지(`WhichStatusTest`, `FixTest` 의 다른 시험, `test_dependent_fix_waits_for_predecessor_and_keeps_both_requests`)는 지금도 통과한다: 판정 맞추기가 없으면 P1 줄을 더한 가짜 리뷰도 그대로 수정 요청이고, 셋째는 새 문장이 없음을 본다.
+Run: `bash herdr-team/tests/run.sh -k ReviewRoundTest -k VerdictAlignTest -k AlignFlowTest -k TextTemplateTest -k test_review_prompt_shows_the_round_request -k test_other_roles_have_no_design_section -k ComposeTest -k test_tester_gets_full_once_and_group_section -k FixTest -k WhichStatusTest -k test_dependent_in_changes_keeps_the_review_findings -k test_changes_dependent_refixed_twice_keeps_the_review_findings -k test_dependent_fix_waits_for_predecessor_and_keeps_both_requests`
+Expected: `FAILED (failures=15, errors=8)`(38개). ERROR — `VerdictAlignTest` 셋과 `AlignFlowTest` 의 셋(`AttributeError: module 'hteam.review' has no attribute 'align_verdict'`, `KeyError: 'verdict_adjusted'`), `ReviewRoundTest.test_second_round_sees_only_new_commits`, `ReviewGroupTest.test_tester_gets_full_once_and_group_section`(출력에 `source` 가 없어 `KeyError: 'source'`). FAIL — `ReviewRoundTest` 의 넷(`## 등급과 판정`·`## 라운드 2 확인 범위` 가 없다), `AlignFlowTest` 의 둘, `TextTemplateTest` 의 둘, 기준 4·수정 블록 문장을 보는 시험(`test_review_prompt_shows_the_round_request`, 두 `test_other_roles_have_no_design_section`, `ComposeTest.test_fix_round_block_and_ask_rule`, `FixTest.test_fix_after_changes_starts_round_two`, `ApprovalFollowupTest` 의 둘). 나머지(`WhichStatusTest`, `FixTest` 의 다른 시험, `test_dependent_fix_waits_for_predecessor_and_keeps_both_requests`)는 지금도 통과한다: 판정 맞추기가 없으면 P1 줄을 더한 가짜 리뷰도 그대로 수정 요청이고, 셋째는 새 문장이 없음을 본다.
 
 - [ ] **Step 3: 구현**
 
@@ -4389,7 +4426,7 @@ def _evidence(p, att: dict, tid: str, n: int):
         cur["rounds"][-1]["verdict"] = verdict
         state.move(cur, to, "verdict", attempt=k, verdict=verdict, verdict_adjusted=adjusted)
     return {"task": tid, "round": n, "attempt": k, "verdict": verdict, "status": to, "file": final_rel, "commit": sha,
-            "verdict_adjusted": adjusted, "warnings": att.get("warnings") or []}
+            "source": att["agent"], "verdict_adjusted": adjusted, "warnings": att.get("warnings") or []}
 
 ```
 
@@ -4397,7 +4434,7 @@ def _evidence(p, att: dict, tid: str, n: int):
 - [ ] **Step 4: 통과 확인**
 
 Run: Step 2 와 같은 명령. 그다음 전체 모음 `bash herdr-team/tests/run.sh` 를 백그라운드로 하나 돌린다(판정 맞추기는 모든 리뷰어 리뷰에 닿는다).
-Expected: OK(37개). 그다음 전체 모음도 OK 다(계획 작성 때는 판정 맞추기가 바꾸는 지금 테스트를 고친 뒤 Task 6 까지 쌓은 트리의 전체 모음으로 봤다).
+Expected: OK(38개). 그다음 전체 모음도 OK 다(계획 작성 때는 판정 맞추기가 바꾸는 지금 테스트를 고친 뒤 Task 6 까지 쌓은 트리의 전체 모음으로 봤다).
 
 - [ ] **Step 5: 커밋**
 
@@ -4994,7 +5031,7 @@ Expected: 문법 검사·`git grep` 출력 없음, 커밋 성공. 구현자는 �
 
 ### Task 6: `hteam upgrade`, README(묶음 검증·보안·0.2.0 → 0.3.0)와 herdr-team 0.3.0
 
-설계 9.6: orca-team 0.6.0 의 `orch upgrade` 를 옮긴다. 대상은 scaffold `FILES` 가운데 `config.toml` 을 뺀 것(코디네이터 흐름, 디자인·문구 규칙, 직무 문서 다섯, shim)이고 `config.toml`·`project.md`·`tasks/`·`.gitignore` 는 건드리지 않는다(출력에도 `config.toml` 이 없다). 파일마다 git 상태를 먼저 본다(설계 9.6 의 1–4, Codex 설계 리뷰 r1: orca-team 은 "없음" 을 먼저 봐서 커밋하지 않은 삭제를 되살린다): `??` 가 아닌 줄(수정, ` D`, `D `, 스테이징한 변경)이 있으면 `skipped`, 파일이 없으면 `created`, 추적하지 않으면 `skipped`, 바이트가 다르면 같은 폴더 임시 파일 + `os.replace` 로 `updated`. shim 은 `chmod 0755`. 커밋하지 않는다(git 이 백업이다). `CLAUDE.md`·`AGENTS.md` 의 `<!-- herdr-team -->` 절은 바꾸지 않고, 지금 템플릿 절(LF 로 맞춘 전문)이 그대로 들어 있지 않으면 `manual` 에 넣는다(절에 끝 표시가 없다). `diff_stat` 은 바꾸거나 만든 파일만이다. 역할을 확인하지 않고 config.toml 을 읽지 않는다. git 은 새 `gitio.status_codes`·`tracked`·`diff_stat` 로만 부른다.
+설계 9.6: orca-team 0.6.0 의 `orch upgrade` 를 옮긴다. 대상은 scaffold `FILES` 가운데 `config.toml` 을 뺀 것(코디네이터 흐름, 디자인·문구 규칙, 직무 문서 다섯, shim)이고 `config.toml`·`project.md`·`tasks/`·`.gitignore` 는 건드리지 않는다(출력에도 `config.toml` 이 없다). 파일마다 git 상태를 먼저 본다(설계 9.6 의 1–4, Codex 설계 리뷰 r1: orca-team 은 "없음" 을 먼저 봐서 커밋하지 않은 삭제를 되살린다): `??` 가 아닌 줄(수정, ` D`, `D `, 스테이징한 변경)이 있으면 `skipped`, 파일이 없으면 `created`, 추적하지 않으면 `skipped`, 바이트가 다르면 같은 폴더 임시 파일 + `os.replace` 로 `updated`. shim 은 `chmod 0755`. 커밋하지 않는다(git 이 백업이다). `CLAUDE.md`·`AGENTS.md` 의 `<!-- herdr-team -->` 절은 바꾸지 않고, 지금 템플릿 절(LF 로 맞춘 전문)이 그대로 들어 있지 않으면 `manual` 에 넣는다(절에 끝 표시가 없다). `diff_stat` 은 바꾸거나 만든 파일만이다. 역할을 확인하지 않고 config.toml 을 읽지 않는다. git 은 새 `gitio.status_codes`·`tracked`·`diff_stat` 로만 부른다. 대상 자리에 추적하지 않는 끊어진 심볼릭 링크가 있으면 `exists()` 가 거짓이라 `created` 로 링크를 바꿔 쓴다(드문 경우, 알려진 한계로 둔다. Codex 계획 리뷰 r1).
 
 README: "묶음 검증" 절(묶음, `[test]` 쓰는 법, 확정, 관문, 수렴형 리뷰, followups, 한계), "herdr-team 보안 주의" 의 테스트 명령 줄(설계 14장), "이미 세팅한 프로젝트 업그레이드" 의 `#### 0.2.0 → 0.3.0`(설계 9.6 의 여섯 단계)과 0.1.x 절의 "복사한 규칙 파일은 `hteam upgrade` 로 대신할 수 있다(config.toml 은 손으로)". 버전 세 곳을 0.3.0 으로. 설계 15.1 의 컴파일 경고 시험(`lib`·`hooks`·`templates`·`tests` 의 Python 파일과 첫 줄에 python 이 든 가짜 프로그램, `bin/hteam` 을 경고를 오류로 바꿔 `compile`)을 `test_cli.py` 에 둔다.
 
@@ -5489,7 +5526,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 - [ ] **Step 4: 통과 확인**
 
 Run: Step 2 와 같은 명령. 그다음 두 전체 모음을 하나씩 백그라운드로 돌린다: `bash herdr-team/tests/run.sh`, 끝난 뒤 `bash herdr-orch/tests/run.sh`.
-Expected: OK(16개). 전체 모음 herdr-team 882개 OK, herdr-orch 203개 OK.
+Expected: OK(16개). 전체 모음 herdr-team 884개 OK, herdr-orch 203개 OK.
 
 - [ ] **Step 5: 커밋**
 
@@ -5529,12 +5566,12 @@ Expected: 문법 검사·`git grep`·`git diff --stat` 출력 없음, 커밋 성
 - **플러그인을 설치하지 않는다.** 이 저장소의 `herdr-team/bin/hteam` 을 절대 경로로 부른다(horch 는 형제 `herdr-orch/bin/horch` 를 찾는다). `claude plugin …` 을 쓰지 않는다. 이 태스크에는 Claude 세션이 없다(셸 코디네이터와 셸 메인 역할 터미널뿐). `~/.claude/settings.json`·`~/.codex/config.toml` 등 전역 설정을 고치지 않는다.
 - 확정 기록은 시험 폴더 안에만 둔다: 셸 코디네이터와 메인 역할 터미널은 모두 `XDG_STATE_HOME=$E2E/xdg` 를 받는다(사용자 `~/.local/state/herdr-team` 은 생기거나 바뀌지 않아야 한다, Step 13 이 본다).
 - `[test]` 명령은 시험 프로젝트 안의 `python3 scripts/related.py …`(표준 라이브러리 unittest)뿐이다.
-- 전역 파일은 늘지 않고 바뀌지 않아야 성공이다: Step 1 이 `~/.claude/settings.json`, `~/.claude/plugins/*.json` 전체, `~/.codex/config.toml` 의 목록·있음·sha256 과 사본, `~/.local/state/herdr-team` 의 있음을 남기고(읽기만 한다), Step 13 이 견준다. 예외는 `~/.codex/config.toml` 의 (1) 시험 폴더 신뢰 항목뿐이고 따로 판별해 보고한다. 구조가 바뀌었으면 실패로 적고 사용자에게 알린다. 시각·캐시 값만 바뀌었으면 사용자의 다른 세션이 쓴 것일 수 있으므로 보고만 한다. 어느 쪽이든 스냅숏으로 덮어쓰지 않는다.
+- 전역 파일 불변(시험 폴더의 Codex 신뢰 항목만 예외, 지우지 않고 보고): Step 1 이 `~/.claude/settings.json`, `~/.claude/plugins/*.json` 전체, `~/.codex/config.toml` 의 목록·있음·sha256 과 사본, `~/.local/state/herdr-team` 아래 전체(상대 경로·종류·해시, 재귀)를 남기고(읽기만 한다), Step 13 이 견준다. 예외는 Codex 가 폴더 신뢰 창에서 "Trust and continue" 를 고를 때 스스로 `~/.codex/config.toml` 에 쓰는 (1) 시험 폴더 신뢰 항목(`[projects."<시험 경로>"]` 와 `trust_level`) 하나뿐이다(4단계와 같은 예외, 지우지 않고 보고한다). 그 밖의 생성·삭제·수정은 모두 실패로 적고 사용자에게 알린다(사용자의 다른 세션이 쓴 것으로 보이는 시각·캐시 값이어도 실패로 적고 까닭을 함께 보고한다). 어느 쪽이든 스냅숏으로 덮어쓰지 않는다. `CODEX_HOME` 격리나 인증 파일 복사는 하지 않는다.
 - 사용자의 hc core 를 멈추거나 다시 띄우지 않는다(`hc server stop`·`hc server restart`·`hc update` 금지). 새 `HC_SESSION` 으로 hc 를 부르지 않는다. 시험이 만든 터미널·탭·space 만 kill·rm·닫는다. 시험용 `hc run` 은 늘 `--no-notify` 를 붙인다.
 - Codex 폴더 신뢰 창은 "Trust and continue"(이 폴더만)를 고른다. **"Trust all" 류는 절대 고르지 않는다.** 키는 운영자(이 태스크를 하는 에이전트)만 누른다.
 - 기다릴 때 sleep 으로 붙잡지 않는다: 셸 터미널의 출력은 `hc read <터미널> --lines 80` 으로 본다. `hc send` 는 그 명령이 끝나기를 기다리지 않으므로, 다음 줄이 그 명령의 출력 파일(`$E2E/*.json`)을 읽으면 먼저 그 파일이 다 쓰였는지(JSON 으로 읽히는지)를 도구의 감시(Monitor 의 until 루프 등)로 기다린다. 리뷰어는 셸 코디네이터에 넣은 `until-review.py` 의 출력 마지막 줄이 `"done": true` 가 되기를 같은 방법으로 기다린다.
 - 매 단계 뒤 작업 폴더를 저장소 루트로 돌린다(`cd "$REPO_ROOT"`). 시험 산출물은 이 저장소에 커밋하지 않는다.
-- 셸 상태가 단계 사이에 이어지지 않는 도구면 각 단계 앞에 Step 1 의 변수(`REPO_ROOT`, `H`, `E2E`, `S`, `T`)와 Step 3 의 함수(`R`, `ht`)를 다시 정의한다. 셸 코디네이터(`hteam-e5-coord`)와 메인 역할 터미널(`hteam-e5-main`)에 보내는 명령은 보내기 전에 운영자 셸이 `$H`·`$E2E` 를 절대 경로로 풀어 넣는다(`hc send` 의 글은 그 터미널에서 그대로 돈다).
+- 셸 상태가 단계 사이에 이어지지 않는 도구면 각 단계 앞에 Step 1 의 변수(`REPO_ROOT`, `H`, `E2E`, `S`, `T`)와 Step 3 의 함수(`R`, `ht`, `calls`)를 다시 정의한다. 셸 코디네이터(`hteam-e5-coord`)와 메인 역할 터미널(`hteam-e5-main`)에 보내는 명령은 보내기 전에 운영자 셸이 `$H`·`$E2E` 를 절대 경로로 풀어 넣는다(`hc send` 의 글은 그 터미널에서 그대로 돈다).
 
 - [ ] **Step 1: 시험 폴더·space 준비, 전역 파일 스냅숏**
 
@@ -5553,8 +5590,25 @@ for f in files:
         shutil.copyfile(f, os.path.join(out, os.path.relpath(f, home).replace(os.sep, "__")))
     else:
         manifest[f] = None
+def tree(top):
+    """폴더 아래 상대 경로 → 종류·해시(dir, link:<대상>, 파일 sha256). 폴더가 없으면 None."""
+    if not os.path.isdir(top):
+        return None
+    found = {}
+    for folder, dirs, names in os.walk(top):
+        for name in dirs + names:
+            full = os.path.join(folder, name)
+            rel = os.path.relpath(full, top)
+            if os.path.islink(full):
+                found[rel] = "link:" + os.readlink(full)
+            elif os.path.isdir(full):
+                found[rel] = "dir"
+            else:
+                found[rel] = hashlib.sha256(open(full, "rb").read()).hexdigest()
+    return found
+
 state = os.path.join(home, ".local", "state", "herdr-team")
-manifest[state] = sorted(os.listdir(state)) if os.path.isdir(state) else None
+manifest[state] = tree(state)  # 확정 기록 폴더(재귀): 시험의 확정 기록은 $E2E/xdg 에만 있어야 한다
 json.dump(manifest, open(os.path.join(out, "manifest.json"), "w"), indent=1)
 print(len(manifest), "개:", ", ".join(os.path.relpath(f, home) for f in manifest))
 PY
@@ -5563,7 +5617,7 @@ hc ls --all --json > "$E2E/pre/hc-ls.json"
 herdr-app do space.new --name hteam-e2e-p5 --folder "$E2E/calc"
 ```
 
-Expected: `{"space", "tab", "terminal"}`. 값을 `$S`, `$T` 로 적는다. `$E2E/pre/manifest.json`(파일마다 sha256, 없던 파일은 null, `~/.local/state/herdr-team` 은 그 안의 목록 또는 null)과 사본, `hc-ls.json` 이 있다.
+Expected: `{"space", "tab", "terminal"}`. 값을 `$S`, `$T` 로 적는다. `$E2E/pre/manifest.json`(파일마다 sha256, 없던 파일은 null, `~/.local/state/herdr-team` 은 그 아래 상대 경로마다 종류·해시 또는 null)과 사본, `hc-ls.json` 이 있다.
 
 - [ ] **Step 2: (1) 시험 프로젝트와 바탕 커밋**
 
@@ -5644,6 +5698,10 @@ def pick(args):
 
 
 def main(args):
+    calls = os.environ.get("RELATED_CALLS")  # 시험용: 부를 때마다 인자를 한 줄씩 남긴다(관문이 다시 돌았는지 센다)
+    if calls:
+        with open(calls, "a", encoding="utf-8") as fh:
+            fh.write(" ".join(args) + "\n")
     tests = sorted(Path("src").glob("test_*.py")) + sorted(Path("tests").glob("**/test_*.py")) if args == ["--all"] \
         else pick(args)
     if not tests:
@@ -5785,12 +5843,13 @@ while True:
 PY
 chmod +x "$E2E/until-review.py"
 R() { python3 "$E2E/rounds.py" "$REPO_ROOT/herdr-team/lib" "$E2E/calc" "$@"; }
-ht() { XDG_STATE_HOME="$E2E/xdg" "$H" --root "$E2E/calc" "$@"; }   # 운영자 셸: 역할을 보지 않는 test·status·followups
+ht() { XDG_STATE_HOME="$E2E/xdg" RELATED_CALLS="$E2E/related-calls.txt" "$H" --root "$E2E/calc" "$@"; }   # 운영자 셸: 역할을 보지 않는 test·status·followups
+calls() { grep -cx -- "$1" "$E2E/related-calls.txt" || true; }   # related.py 를 그 인자로 부른 횟수(테스트 명령이 실제로 돈 횟수)
 NONCE="e2e5-$(openssl rand -hex 4)"
 python3 -c 'import json,sys,time; json.dump({"pending_launch": {"nonce": sys.argv[2], "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}}, open(sys.argv[1], "w"))' \
   "$E2E/calc/.herdr-team/state/run.json" "$NONCE"
 hc run --bg --json --no-parent --no-notify --name hteam-e5-coord --cwd "$E2E/calc" \
-  --label herdr.space="$S" --label herdr.tab="$T" -- env HTEAM_ROLE=coordinator HTEAM_LAUNCH="$NONCE" XDG_STATE_HOME="$E2E/xdg" zsh
+  --label herdr.space="$S" --label herdr.tab="$T" -- env HTEAM_ROLE=coordinator HTEAM_LAUNCH="$NONCE" XDG_STATE_HOME="$E2E/xdg" RELATED_CALLS="$E2E/related-calls.txt" zsh
 hc run --bg --json --no-parent --no-notify --name hteam-e5-main --cwd "$E2E/calc" \
   --label herdr.space="$S" --label herdr.tab="$T" -- env XDG_STATE_HOME="$E2E/xdg" zsh
 hc send hteam-e5-coord "$H bind > $E2E/bind.json"
@@ -5853,16 +5912,16 @@ if __name__ == "__main__":
 EOF
 git add -- src/calc.py src/test_calc.py && git commit -qm "[T-001] r1 평균 계산" -- src/calc.py src/test_calc.py
 ht test T-001; echo "exit $?"
-ls .herdr-team/state/tests/logs/   # quick-a1·quick-a2 하나씩
+calls "src/calc.py src/test_calc.py"   # 2(1차 실패 뒤 바로 2차)
 cd "$REPO_ROOT"
 hc send hteam-e5-coord "$H review T-001 > $E2E/rv-T-001-r1.json"
 hc send hteam-e5-coord "$REPO_ROOT/herdr-orch/bin/horch --home $E2E/calc/.herdr-team/state/horch worker-list > $E2E/workers-1.json"
 cat "$E2E/rv-T-001-r1.json"; cat "$E2E/calc/docs/reviews/T-001/r1.md"
 git -C "$E2E/calc" log -1 --format=%s
-ls "$E2E/calc/.herdr-team/state/tests/logs/"
+calls "src/calc.py src/test_calc.py"   # 4(관문이 워커의 실패 기록을 다시 쓰지 않고 두 번 더 돌렸다)
 ```
 
-Expected(계획 작성 때 같은 단계를 hc 없이 돌려 본 출력): 커밋 전 `ht test T-001` 은 exit 2 `no_work_commit`. 버그 커밋(`average` 가 평균의 두 배) 뒤 exit 1, `status: failed`, `command` 가 `python3 scripts/related.py src/calc.py src/test_calc.py`, 로그 `T-001-r1-quick-a1-…`·`-quick-a2-…`, tail 에 `FAIL: test_average`·`AssertionError: 4.0 != 2`. `rv-T-001-r1.json` 이 `"status": "changes", "verdict": "REQUEST_CHANGES", "source": "hteam", "tests": {"quick": "failed"}`. `docs/reviews/T-001/r1.md` 가 `# T-001 r1 리뷰 (출처: hteam 테스트 관문)`, `- [P1] hteam 테스트 관문: quick 이 통과하지 못했다.`, `- quick: 실패 (…초, exit 1)`, `- quick 명령: "python3 scripts/related.py src/calc.py src/test_calc.py"`, 출력 끝 펜스, "고친 뒤 `.herdr-team/bin/hteam test T-001` 로 다시 확인한다.", "실패가 이 태스크 탓이 아니면", `VERDICT: REQUEST_CHANGES`. 커밋 제목 `[T-001] review r1: REQUEST_CHANGES`. `workers-1.json` 에 `T-001 r1 리뷰` 제목의 행이 없다(리뷰어를 띄우지 않았다). 관문은 워커 기록(실패)을 재사용하지 않고 quick 을 다시 돌렸다: 로그에 `T-001-r1-quick-a1-`·`-quick-a2-` 가 둘씩이다.
+Expected(계획 작성 때 같은 단계를 hc 없이 돌려 본 출력): 커밋 전 `ht test T-001` 은 exit 2 `no_work_commit`. 버그 커밋(`average` 가 평균의 두 배) 뒤 exit 1, `status: failed`, `command` 가 `python3 scripts/related.py src/calc.py src/test_calc.py`, 로그 `T-001-r1-quick-a1-…`·`-quick-a2-…`, `calls` 2, tail 에 `FAIL: test_average`·`AssertionError: 4.0 != 2`. `rv-T-001-r1.json` 이 `"status": "changes", "verdict": "REQUEST_CHANGES", "source": "hteam", "tests": {"quick": "failed"}`. `docs/reviews/T-001/r1.md` 가 `# T-001 r1 리뷰 (출처: hteam 테스트 관문)`, `- [P1] hteam 테스트 관문: quick 이 통과하지 못했다.`, `- quick: 실패 (…초, exit 1)`, `- quick 명령: "python3 scripts/related.py src/calc.py src/test_calc.py"`, 출력 끝 펜스, "고친 뒤 `.herdr-team/bin/hteam test T-001` 로 다시 확인한다.", "실패가 이 태스크 탓이 아니면", `VERDICT: REQUEST_CHANGES`. 커밋 제목 `[T-001] review r1: REQUEST_CHANGES`. `workers-1.json` 에 `T-001 r1 리뷰` 제목의 행이 없다(리뷰어를 띄우지 않았다). 관문은 워커 기록(실패)을 재사용하지 않고 quick 을 다시 돌렸다: `calls` 가 4 다(같은 초에 돌면 로그 이름이 겹쳐 로그 개수로는 세지 않는다, 설계 5.7 의 한계).
 
 - [ ] **Step 5: (1) 수렴형 리뷰(T-002 r1 → r2)와 T-001 r2**
 
@@ -5904,7 +5963,7 @@ printf '## r1\n- 바꾼 파일: src/fmt.py, src/test_fmt.py\n- 검증: hteam tes
 git add -- docs/tasks/T-002/report.md && git commit -qm "[T-002] r1 보고서" -- docs/tasks/T-002/report.md
 cd "$REPO_ROOT"
 ht test T-002 | python3 -c 'import json,sys; o=json.load(sys.stdin); print(o["status"], o["head"][:10], o["log"])'
-ls "$E2E/calc/.herdr-team/state/tests/logs/" | grep -c '^T-002-'      # 1
+calls "src/fmt.py src/test_fmt.py"   # 1
 hc send hteam-e5-coord "$H review T-002 > $E2E/rv-T-002-r1.json"
 ```
 
@@ -5915,11 +5974,11 @@ hc send hteam-e5-coord "$E2E/until-review.py $H T-002 $E2E > $E2E/wait-T-002-r1.
 hc send hteam-e5-coord "$H review-finish T-002 > $E2E/fin-T-002-r1.json"
 P="$E2E/calc/.herdr-team/state/tasks/T-002/r1-review-a1.md"
 grep -c '^## 등급과 판정$' "$P"; grep -c '^## hteam 테스트 결과$' "$P"; grep -c '전체 테스트를 돌리지 않고' "$P"; grep -c '^## 라운드' "$P"
-ls "$E2E/calc/.herdr-team/state/tests/logs/" | grep -c '^T-002-'      # 그대로 1(관문이 워커 기록을 다시 썼다)
+calls "src/fmt.py src/test_fmt.py"   # 그대로 1(관문이 워커 기록을 다시 썼다)
 cat "$E2E/fin-T-002-r1.json"; cat "$E2E/calc/docs/reviews/T-002/r1.md"
 ```
 
-Expected: `rv-T-002-r1.json` 이 `status: reviewing`·`reviewer: codex`·`tests: {"quick": "passed"}`. grep 수가 `1 1 1 0`(라운드 1 이라 라운드 절이 없다), T-002 로그 수가 1 그대로. 기대 판정(리뷰어 판단이라 다르면 기록한다): `REQUEST_CHANGES`, `## 지적 사항` 에 `r1-F1 [P1]`(음수 괄호, contracts.md 2절), `## 후속` 에 중복 함수 P2. 판정 맞추기가 일어났으면 `fin-T-002-r1.json` 의 `verdict_adjusted`, 리뷰 파일 끝의 `> hteam 판정 맞추기:` 문장, 커밋 본문에 있다(일어나지 않아도 된다).
+Expected: `rv-T-002-r1.json` 이 `status: reviewing`·`reviewer: codex`·`tests: {"quick": "passed"}`. grep 수가 `1 1 1 0`(라운드 1 이라 라운드 절이 없다), `calls "src/fmt.py src/test_fmt.py"` 가 1 그대로. 기대 판정(리뷰어 판단이라 다르면 기록한다): `REQUEST_CHANGES`, `## 지적 사항` 에 `r1-F1 [P1]`(음수 괄호, contracts.md 2절), `## 후속` 에 중복 함수 P2. 판정 맞추기가 일어났으면 `fin-T-002-r1.json` 의 `verdict_adjusted`, 리뷰 파일 끝의 `> hteam 판정 맞추기:` 문장, 커밋 본문에 있다(일어나지 않아도 된다).
 
 T-002 라운드 2(`hteam fix` 로 열지 않는다. 워커를 띄우지 않고 `R next` 가 라운드 2 상태를 쓴다. 가짜 수정 커밋은 P1 만 고치고 새 P2 거리 하나(쓰지 않는 `import math`)를 둔다):
 
@@ -5953,6 +6012,7 @@ hc send hteam-e5-coord "$E2E/until-review.py $H T-002 $E2E > $E2E/wait-T-002-r2.
 hc send hteam-e5-coord "$H review-finish T-002 > $E2E/fin-T-002-r2.json"
 P="$E2E/calc/.herdr-team/state/tasks/T-002/r2-review-a1.md"
 sed -n '/^## 라운드 2 확인 범위/,/^## REVIEW_FILE 형식/p' "$P"
+calls "src/fmt.py src/test_fmt.py"   # 2(r2 워커의 한 번. 관문은 그 통과 기록을 다시 쓴다)
 cat "$E2E/fin-T-002-r2.json"; cat "$E2E/calc/docs/reviews/T-002/r2.md"
 ```
 
@@ -5980,6 +6040,7 @@ hc send hteam-e5-coord "$H review T-001 > $E2E/rv-T-001-r2.json"
 hc send hteam-e5-coord "$E2E/until-review.py $H T-001 $E2E > $E2E/wait-T-001-r2.json"
 hc send hteam-e5-coord "$H review-finish T-001 > $E2E/fin-T-001-r2.json"
 grep -c '^## 라운드' "$E2E/calc/.herdr-team/state/tasks/T-001/r2-review-a1.md"   # 0
+calls "src/calc.py src/test_calc.py"   # 5(r2 워커의 통과 한 번, 관문은 다시 쓴다)
 cat "$E2E/fin-T-001-r2.json"
 ```
 
@@ -6026,17 +6087,17 @@ printf '# calc-test QA\n\n## 전체 테스트\n- hteam test T-003 --full: 실패
 printf '## r1\n- 바꾼 파일: tests/calc-test/test_flow.py, docs/qa/calc-test.md\n' > docs/tasks/T-003/report.md
 git add -- docs/qa/calc-test.md docs/tasks/T-003/report.md && git commit -qm "[T-003] r1 QA 보고서" -- docs/qa/calc-test.md docs/tasks/T-003/report.md
 cd "$REPO_ROOT"
-ls "$E2E/calc/.herdr-team/state/tests/logs/" | grep -c '^T-003-r1-full-'   # 1
+calls "--all"   # 1
 hc send hteam-e5-coord "$H review T-003 > $E2E/rv-T-003.json"
 hc send hteam-e5-coord "$E2E/until-review.py $H T-003 $E2E > $E2E/wait-T-003.json"
 hc send hteam-e5-coord "$H review-finish T-003 > $E2E/fin-T-003.json"
 P="$E2E/calc/.herdr-team/state/tasks/T-003/r1-review-a1.md"
 sed -n '/^## 묶음 리뷰/,/^## REVIEW_FILE 형식/p' "$P"; grep -c '^## hteam 테스트 결과$' "$P"
-ls "$E2E/calc/.herdr-team/state/tests/logs/" | grep -c '^T-003-r1-full-'   # 그대로 1
+calls "--all"   # 그대로 1
 cat "$E2E/rv-T-003.json"; cat "$E2E/fin-T-003.json"; cat "$E2E/calc/docs/reviews/T-003/r1.md"
 ```
 
-Expected(앞 절반은 계획 작성 때 hc 없이 돌려 본 출력): `ht test T-003 --full` 이 exit 1(`test_average_of_nothing_is_zero` 의 `ZeroDivisionError`, `command` 가 `python3 scripts/related.py --all`). `rv-T-003.json` 이 `status: reviewing`·`tests: {"full": "failed"}`(반려 파일이 아니다). full 로그 수가 1 그대로(QA 보고서 커밋은 code_head 를 옮기지 않아 기록을 다시 썼다). 묶음 절에 "이 태스크는 묶음 `calc-test` 의 테스트 태스크다", `- T-001 [developer] 평균 계산 — 작업 커밋 2개, 바꾼 파일: …`, `- T-002 [developer] 결과 줄 형식 — 작업 커밋 3개, 바꾼 파일: …`, `- full: 실패 (…초, exit 1)`, "출력 끝:" 과 펜스가 있고 `## hteam 테스트 결과` 는 없다(grep 0). 기대 판정: 리뷰어 판정(`fin-T-003.json` 의 `source` 는 리뷰어, 리뷰 파일에 "출처: hteam" 없음). 경계 버그가 `## 회귀` 의 `r1-Fk` 항목(원인 T-001)으로 적히고 그것으로 판정이 막히지 않는다. 중복 도우미는 `## 후속` P2.
+Expected(앞 절반은 계획 작성 때 hc 없이 돌려 본 출력): `ht test T-003 --full` 이 exit 1(`test_average_of_nothing_is_zero` 의 `ZeroDivisionError`, `command` 가 `python3 scripts/related.py --all`). `rv-T-003.json` 이 `status: reviewing`·`tests: {"full": "failed"}`(반려 파일이 아니다). `calls "--all"` 이 1 그대로(QA 보고서 커밋은 code_head 를 옮기지 않아 기록을 다시 썼다). 묶음 절에 "이 태스크는 묶음 `calc-test` 의 테스트 태스크다", `- T-001 [developer] 평균 계산 — 작업 커밋 2개, 바꾼 파일: …`, `- T-002 [developer] 결과 줄 형식 — 작업 커밋 3개, 바꾼 파일: …`, `- full: 실패 (…초, exit 1)`, "출력 끝:" 과 펜스가 있고 `## hteam 테스트 결과` 는 없다(grep 0). 기대 판정: 리뷰어 판정(`fin-T-003.json` 의 `source` 가 `codex`. hteam 반려면 `hteam` 이다. 리뷰 파일에 "출처: hteam" 없음). 경계 버그가 `## 회귀` 의 `r1-Fk` 항목(원인 T-001)으로 적히고 그것으로 판정이 막히지 않는다. 중복 도우미는 `## 후속` P2.
 
 - [ ] **Step 7: (1) followups 와 마지막 full**
 
@@ -6050,6 +6111,7 @@ TID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$
 hc send hteam-e5-coord "$H drop $TID > $E2E/drop.json"
 ht followups --rest
 ht test --full; echo "exit $?"
+calls "--all"   # 2(묶음 full 한 번 + 마지막 full)
 python3 -m json.tool "$E2E/calc/.herdr-team/state/tests/final.json" | head -12
 ```
 
@@ -6131,11 +6193,30 @@ import glob, hashlib, json, os, sys
 home, pre = os.path.expanduser("~"), sys.argv[1]
 before = json.load(open(os.path.join(pre, "manifest.json")))
 state = os.path.join(home, ".local", "state", "herdr-team")
+
+
+def tree(top):
+    """폴더 아래 상대 경로 → 종류·해시(dir, link:<대상>, 파일 sha256). 폴더가 없으면 None."""
+    if not os.path.isdir(top):
+        return None
+    found = {}
+    for folder, dirs, names in os.walk(top):
+        for name in dirs + names:
+            full = os.path.join(folder, name)
+            rel = os.path.relpath(full, top)
+            if os.path.islink(full):
+                found[rel] = "link:" + os.readlink(full)
+            elif os.path.isdir(full):
+                found[rel] = "dir"
+            else:
+                found[rel] = hashlib.sha256(open(full, "rb").read()).hexdigest()
+    return found
+
 now = dict.fromkeys(before)
 for f in [os.path.join(home, ".claude", "settings.json"), os.path.join(home, ".codex", "config.toml"),
           *glob.glob(os.path.join(home, ".claude", "plugins", "*.json"))]:
     now[f] = hashlib.sha256(open(f, "rb").read()).hexdigest() if os.path.isfile(f) else None
-now[state] = sorted(os.listdir(state)) if os.path.isdir(state) else None
+now[state] = tree(state)
 
 def changes(a, b, path=""):
     if isinstance(a, dict) and isinstance(b, dict):
@@ -6152,13 +6233,15 @@ for f in sorted(now):
     if a and b and f.endswith(".json"):
         old = json.load(open(os.path.join(pre, os.path.relpath(f, home).replace(os.sep, "__"))))
         print("\n".join(changes(old, json.load(open(f)))))
+    elif isinstance(a, dict) or isinstance(b, dict):  # 확정 기록 폴더: 바뀐 상대 경로마다
+        print("\n".join(changes(a or {}, b or {})))
 print("비교 끝")
 PY
 diff "$E2E/pre/.codex__config.toml" ~/.codex/config.toml || true
 hc ls --all --json
 ```
 
-Expected: 비교 출력이 `비교 끝` 한 줄이거나 `수정 .codex/config.toml` 하나와 `비교 끝` 이다(`~/.local/state/herdr-team` 은 생성·수정이 없어야 한다: 확정 기록은 `$E2E/xdg` 아래에만 있다). Codex 설정의 `diff` 는 (1) 의 시험 폴더 신뢰 항목(`[projects."<시험 경로>"]` 와 `trust_level`)뿐이어야 한다(지우지 않고 보고한다). 그 밖의 차이는 안전 규칙대로 판별한다. 사용자에게 보고할 남은 것을 적는다: Codex 신뢰 항목과 세션 기록, `$E2E` 폴더(확정 기록 `$E2E/xdg` 포함), 그 밖에 찾은 것.
+Expected: 비교 출력이 `비교 끝` 한 줄이거나 `수정 .codex/config.toml` 하나와 `비교 끝` 이다(`~/.local/state/herdr-team` 아래는 생성·삭제·수정이 하나도 없어야 한다: 확정 기록은 `$E2E/xdg` 아래에만 있다). Codex 설정의 `diff` 는 (1) 의 시험 폴더 신뢰 항목(`[projects."<시험 경로>"]` 와 `trust_level`)뿐이어야 한다(지우지 않고 보고한다). 그 밖의 차이는 모두 실패다(안전 규칙). 사용자에게 보고할 남은 것을 적는다: Codex 신뢰 항목과 세션 기록, `$E2E` 폴더(확정 기록 `$E2E/xdg` 포함), 그 밖에 찾은 것.
 
 - [ ] **Step 14: 설계 머리 상태 줄과 15.4 에 결과 기록**
 
@@ -6172,7 +6255,7 @@ Expected: 비교 출력이 `비교 끝` 한 줄이거나 `수정 .codex/config.t
 환경: <hc·codex-cli·Python 버전>. 버리는 시험 프로젝트 둘((1) 계산기, (2) 0.2.0 으로 세팅한 프로젝트)을 만들었다. 플러그인은 설치하지 않았고 이 저장소의 `hteam` 을 셸 코디네이터·메인 역할 터미널에서 불렀다. 확정 기록은 `XDG_STATE_HOME` 으로 시험 폴더 안에 뒀다. 전역 파일(`~/.claude/settings.json`, `~/.claude/plugins/*.json` <개수>개, `~/.codex/config.toml`, `~/.local/state/herdr-team`) 비교: <비교 출력과 판별>.
 
 - (1) 준비: <scaffold, 바탕 커밋, bind, plan check 의 `test: true` 와 어긴 사본의 두 문구, plan apply 의 T-001·T-002·T-003, 확정 전 `test_unapproved`·`test_gate`, `--test-confirm` 질문의 `## 테스트 명령`·`test_digest`, 메인 역할의 `answer` 뒤 `approved` 와 확정 기록 위치>
-- (1) 관문 반려: <커밋 전 `no_work_commit`, 버그 커밋 뒤 `hteam test` 의 failed·로그 둘, `review` 의 `changes`·`source: hteam`·`tests`, 반려 파일 문구, 커밋 제목, 리뷰 Dispatch 없음, 관문이 quick 을 다시 돌림(로그 a1·a2 하나씩 더)>
+- (1) 관문 반려: <커밋 전 `no_work_commit`, 버그 커밋 뒤 `hteam test` 의 failed·로그 둘, `review` 의 `changes`·`source: hteam`·`tests`, 반려 파일 문구, 커밋 제목, 리뷰 Dispatch 없음, 관문이 quick 을 다시 돌림(`related.py` 호출 2 → 4)>
 - (1) 수렴형 리뷰: <T-002 r1 프롬프트(등급과 판정, 테스트 결과, 라운드 절 없음, quick 재사용), Codex 판정과 지적(r1-F1 [P1] 음수, 후속 P2 중복), r2 프롬프트의 라운드 절(새 커밋만, `r1-F1: 해결` 예시), r2 판정(`r1-F1: 해결`, APPROVE, r1 P2 를 다시 지적하지 않음, 새 P2 는 후속), 판정 맞추기가 일어났는지, T-001 r2 의 라운드 절 없음과 판정>
 - (1) 묶음 리뷰: <`hteam test T-003 --full` exit 1, QA 보고서 커밋 뒤 review 가 full 을 다시 돌리지 않음, 프롬프트의 묶음 절(T-001·T-002 줄, full 실패, 출력 끝), Codex 판정과 `## 회귀`(원인 T-001), 판정이 회귀로 막히지 않음>
 - (1) followups: <`hteam followups T-003` 의 tasks·regressions·followups(T-002 r2 와 T-003)·planning_gaps, 빈 항목 없음, 두 번 같은 출력, `task new` 의 developer 거부·tester 통과, `--rest` 빈 목록, `hteam test --full` exit 1 과 final.json>
@@ -6239,11 +6322,11 @@ main 에 병합하지 않는다(컨트롤러가 herdr-team 0.3.0 병합을 한�
 1. 태스크 묶음: 설계 15.3 의 5번(아홉 묶음) 대신 브리프의 일곱 태스크로 나눴다(태스크 순서와 의존 참고). 확정 질문·`answer` 기록·`status` 의 `test_gate` 는 Task 2(확정 흐름을 쓰는 직무 문서·워커 사양 절과 함께), 그룹 절은 Task 3(tester full 관문과 함께), 수정 블록 문장은 Task 4(수렴형 규칙과 함께), `task new` 의 owns 범위는 Task 5(직무별 정리 태스크와 함께)다.
 2. 성공 봉투의 exit 코드: `cli.main` 이 결과의 `_exit` 를 꺼내 exit 코드로 쓴다(`_after` 와 같은 방식). `hteam test` 의 failed·timeout 은 `{"ok": true, …}` 와 exit 1 이다(설계의 오류 코드 목록에 테스트 실패가 없다).
 3. `gitio`: `run(..., env=None)` 은 지금 환경에 더할 변수다. `dirty`·`tracked_changes` 는 늘 `READ_ONLY`(`GIT_OPTIONAL_LOCKS=0`)로 부른다(설계가 이름을 든 두 함수다. 다른 호출자의 결과는 같다). `head_file` 은 `cat-file -e` 가 실패하면 None, 아니면 `show` 의 바이트를 UTF-8 로 푼다. upgrade 용 `status_codes`(XY 두 글자)·`tracked`·`diff_stat`(실패하면 빈 문자열).
-4. testgate 세부: 시간 초과 기록의 `exit` 는 null 이고 `describe` 는 그때 ` ({seconds}초)` 만 붙인다(exit 를 "None" 으로 보이지 않게, 설계 6.1 4a 의 "quick: 시간 초과"). 로그 첫 줄은 `$ ` + `util.show(명령)`(여러 줄 명령도 한 줄, 설계 5.7 의 "첫 줄" 과 6.2 의 "새 줄·절을 만들지 못한다"). 로그 경로는 프로젝트 기준(`.herdr-team/state/tests/logs/…`)으로 남긴다. 테스트 기록 파일은 느슨하게 읽는다(JSON 객체가 아니면 빈 기록: 잃어도 다시 돌린다). `hteam test` 의 검사 순서는 인자 → ID 모양 → HEAD `[test]` → 확정 → 상태다. 확정 기록 위치의 `XDG_STATE_HOME` 이 빈 문자열이면 없는 것으로 본다.
+4. testgate 세부: `describe` 는 명령을 `util.dumps` 로 보인다(UTF-8 이 아닌 파일 이름의 서로게이트도 `\udcXX` 로 보여 프롬프트·반려 파일을 쓸 수 있다, Codex 계획 리뷰 r1). 시간 초과 기록의 `exit` 는 null 이고 `describe` 는 그때 ` ({seconds}초)` 만 붙인다(exit 를 "None" 으로 보이지 않게, 설계 6.1 4a 의 "quick: 시간 초과"). 로그 첫 줄은 `$ ` + `util.show(명령)`(여러 줄 명령도 한 줄, 설계 5.7 의 "첫 줄" 과 6.2 의 "새 줄·절을 만들지 못한다"). 로그 경로는 프로젝트 기준(`.herdr-team/state/tests/logs/…`)으로 남긴다. 테스트 기록 파일은 느슨하게 읽는다(JSON 객체가 아니면 빈 기록: 잃어도 다시 돌린다). `hteam test` 의 검사 순서는 인자 → ID 모양 → HEAD `[test]` → 확정 → 상태다. 확정 기록 위치의 `XDG_STATE_HOME` 이 빈 문자열이면 없는 것으로 본다.
 5. 확정 질문: 붙인 뒤 4000자를 넘으면 `bad_render`(exit 2, 묻는 쪽이 줄인다). outbox 항목에 `test_digest` 와 함께 `test_commands`(`{quick, full}`)를 남긴다: 확정 기록의 `quick`·`full` 을 답할 때 다시 읽지 않고 질문 때의 값으로 쓰려고(기획 확정은 작업 트리, 코디네이터 확정은 HEAD 라 답할 때 어느 쪽인지 다시 고를 수 없다). `answer` 는 이미 답한 ask 항목이면 확정 기록을 남기기 전에 `already_answered` 로 멈춘다(다른 답 뒤 첫 선택지로 다시 불러 확정되지 않게). 출력에 `test_confirmed`, `notify` 출력에 `test_digest`. `--test-confirm` 은 `notify` 의 question 에만, `ask-user` 의 `--json` 에만 받는다(exit 2 `usage`).
 6. 묶음 검사: `[test]` 형식 문제는 필드 오류에 더해져 다른 필드 오류처럼 그래프 검사를 건너뛰게 한다(지금 `validate` 의 구조). 묶음 규칙은 그래프 검사(모르는 의존·순환·owns 겹침·승인 직무 교착)가 통과했을 때만, 디렉터 규칙과 함께 본다. `check` 는 `[test]` 가 있을 때만 적용한 key 를 미리 읽는다(없으면 오류 순서가 지금과 같다). planner 예시는 이 문서의 `login-screen` 에 맞춘 `login-test` 묶음과 `[test]` 다(설계 5.2 의 `todo-test` 는 그 선행 셋이 예시 블록에 없어 묶음 검사를 통과할 수 없다). 시험은 블록 밖 선행(`ui-foundation`)을 빼고 묶음 규칙을 본다.
 7. 리뷰 관문: 관문 반려의 문제 목록은 `["hteam 테스트 관문: quick 이 통과하지 못했다."]`(`review.GATE_PROBLEM`)이다. `--retry` 의 관문 반려는 `_precheck_fail(…, expect={"reviewing"})` 로 `reviewing` 에서 `changes` 로 간다. 출력·history 의 요약은 `testgate.summary`. 기록 뒤 사망 복구(`_recover`)가 `reviewing` 으로 옮길 때도 같은 요약을 남긴다. `compose.verify_rule` 은 관문 없는 직무에서 `testgate.gate_state` 를 프롬프트를 만들 때 본다(시도 기록에 남기지 않는다). 묶음 절의 직무는 선행 상태의 `role`, 제목은 사양 제목이고 상태나 사양을 읽지 못하면 "상태를 읽지 못했다" 한 줄이다. 선행이 없으면 `- 없음`.
-8. 판정 맞추기: `review.align_verdict(text, verdict)` 는 `(맞춘 내용, 맞춘 판정, 셈)` 을 돌려주고 같은 내용에 늘 같은 결과다. 판정 줄을 찾는 방법은 판정 읽기(`_verdict_in`)와 같다(`splitlines(keepends=True)` 의 마지막 `VERDICT:` 줄, 그 줄 끝을 지킨다). 최종화는 판정을 맞췄으면 검증한 시도 파일을 다시 맞춰 `rN.md` 에 원자적으로 쓰고(시도 파일들은 그 뒤 지운다) 맞추지 않았으면 지금처럼 옮긴다. history 의 `verdict` 사건에는 `verdict_adjusted` 를 늘(null 이어도) 남긴다.
+8. 판정 맞추기: `review.align_verdict(text, verdict)` 는 `(맞춘 내용, 맞춘 판정, 셈)` 을 돌려주고 같은 내용에 늘 같은 결과다. 판정 줄을 찾는 방법은 판정 읽기(`_verdict_in`)와 같다(`splitlines(keepends=True)` 의 마지막 `VERDICT:` 줄, 그 줄 끝을 지킨다). 최종화는 판정을 맞췄으면 검증한 시도 파일을 다시 맞춰 `rN.md` 에 원자적으로 쓰고(시도 파일들은 그 뒤 지운다) 맞추지 않았으면 지금처럼 옮긴다. history 의 `verdict` 사건에는 `verdict_adjusted` 를 늘(null 이어도) 남긴다. `review-finish` 의 출력에 판정의 출처 `source`(리뷰어 에이전트 `codex`·`claude`)를 더한다: hteam 반려의 `source: "hteam"` 과 리뷰어 판정을 출력만으로 가른다(설계 15.2 (1) 8 의 "`source` 리뷰어", Codex 계획 리뷰 r1).
 9. 라운드 절: `compose.round_section(p, tid, rd, rounds, commits, requested)`. 요청 줄은 `compose.round_requests` 가 요청을 찾은 라운드에 붙는다(기준 5 와 같은 조건).
 10. 지금 테스트 고치기: 시험 도우미 `act_review` 의 기본 본문을 판정에 맞춘다(REQUEST_CHANGES 면 `- r1-F1 [P1] src/app.py:1 — 틀림. 고친다.`). 수정 요청을 기대하는 가짜 리뷰마다 본문을 고치는 것과 같다(설계 15.1). 수정 블록·기준 4 문구를 본 시험(`test_lifecycle`·`test_approval`·`test_start`·`test_review`)은 새 문장으로 바꾼다.
 11. upgrade: 대상 순서는 scaffold `FILES` 순서, 출력 목록도 그 순서다. 템플릿은 UTF-8 글로 읽어 `util.write_atomic` 으로 쓴다(같은 폴더 임시 파일 + `os.replace`). shim 은 바뀌었든 아니든 있으면 `chmod 0755`. `CLAUDE.md`·`AGENTS.md` 를 UTF-8 로 읽지 못하면 "절이 없다" 와 같게 `manual` 이다.
@@ -6254,4 +6337,18 @@ main 에 병합하지 않는다(컨트롤러가 herdr-team 0.3.0 병합을 한�
 
 - 설계 16장의 5단계 범위 밖 전부(테스트용 별도 worktree, 수정 라운드에서 이전 워커 재사용, 리뷰 effort 자동 조정·위험도에 따른 리뷰 생략, hteam 의 테스트 영향 분석, 테스트 도구 병렬 설정, `[test]` 를 config.toml 에 두기, 테스트 기록의 파일 잠금, `CLAUDE.md`·`AGENTS.md` 절의 자동 교체, 테스트 출력의 비밀값 가리기, 테스트 로그 정리, 리뷰 관문을 finish 잠금 밖에서 돌리기, `hteam status` 에 테스트 기록 보이기).
 - 설계 5.5·5.7·6.3·8.4 의 알려진 한계(같은 작업 폴더의 섞임, quick 의 관련 테스트 판단, 인자 길이·`-` 파일 이름·코드 아닌 파일, 초 단위 로그 이름과 쌓이는 로그, 126·127 우선, 기록 파일 동시 쓰기, 확정은 실수 방지 수준, 확정 기록 동시 갱신, Codex 워커 샌드박스의 `hteam test`, 테스트가 바꾼 추적 파일, SIGKILL 뒤 남는 그룹, Codex tester 의 Bash 안내, CRLF 리뷰 파일, 라운드 2 규칙은 리뷰어 지시, 늦게 발견되는 회귀, 정리·회귀 수정 태스크의 잠금 대기, 원인 태스크 판단, 후속 처리 중 재시작의 중복·건너뛰기, dropped tester 의 묶음, 잘린 최신 리뷰 파일, planner·director·designer 리뷰의 후속). 고치지 않는다.
+- `hteam upgrade` 가 대상 자리의 추적하지 않는 끊어진 심볼릭 링크를 `created` 로 바꿔 쓴다(`exists()` 가 링크를 따라가 거짓이다). 드문 경우라 알려진 한계로 둔다(Codex 계획 리뷰 r1, 기록만).
 - herdr-orch 변경(0.1.2 그대로), `hooks/hooks.json`, config.toml 의 새 키.
+
+## Codex 계획 리뷰 r1 의 처리(`.codex-reviews/team-p5-plan-r1.md`, P1 1·P2 5)
+
+| # | 지적 | 처리 | 고친 곳 |
+|---|---|---|---|
+| 1 | [P1] 실환경이 사용자 `~/.codex/config.toml` 의 시험 폴더 신뢰 항목을 성공으로 허용한다 | 예외로 명시했다(컨트롤러 결정: 4단계와 같은 예외. Codex 가 폴더 신뢰 때 스스로 쓰고 4단계 보고에도 예외로 적었다). 안전 규칙을 "전역 파일 불변(시험 폴더의 Codex 신뢰 항목만 예외, 지우지 않고 보고)" 으로 적고, 그 밖의 생성·삭제·수정은 시각·캐시 값이어도 실패로 둔다. `CODEX_HOME` 격리·인증 파일 복사는 하지 않는다 | Task 7 안전 규칙, Step 13 |
+| 2 | [P2] `describe` 가 명령을 `json.dumps(…, ensure_ascii=False)` 로 보여 UTF-8 이 아닌 파일 이름의 서로게이트가 프롬프트·반려 파일 쓰기에서 `UnicodeEncodeError` 를 낸다 | 고침. `util.dumps` 를 쓴다. 회귀 시험 둘: `describe` 의 줄이 `\\udcff`·`\\xfe` 로 보이고 UTF-8 로 써진다(Task 1 `test_describe_shows_non_utf8_names`), 관문 반려 파일·프롬프트 테스트 절이 써진다(Task 3 `GateTextTest`). 고치기 전 코드에서 `'utf-8' codec can't encode` 로 실패하는 것을 재현했다 | Task 1 `testgate.py`·`test_testgate.py`, Task 3 `test_review.py`, Global Constraints |
+| 3 | [P2] 실환경이 `fin-T-003.json` 의 `source` 를 기대하지만 `review-finish` 는 내지 않는다 | 고침. 리뷰어 판정의 출력에 `source: att["agent"]`(설계의 출처 구분: hteam 반려는 `"hteam"`). `AlignFlowTest.test_unadjusted_verdict_has_no_note`·`ReviewGroupTest.test_tester_gets_full_once_and_group_section` 이 `source: "codex"` 를 본다. 실환경 기대를 `source` 가 `codex` 로 적었다 | Task 4 `review.py`·`test_review.py`, Task 7 Step 6, 기록·필드 |
+| 4 | [P2] 확정 기록 폴더의 불변 검사가 최상위 목록만 본다 | 고침. Step 1·13 이 `~/.local/state/herdr-team` 아래 상대 경로·종류(dir·link)·파일 sha256 을 재귀로 남기고 견준다. 하나라도 다르면 실패 | Task 7 Step 1·13 |
+| 5 | [P2] 관문 재실행을 초 단위 로그 개수로 센다(같은 초면 덮어써 늘지 않는다) | 고침. 시험용 `scripts/related.py` 가 `RELATED_CALLS` 파일에 부를 때마다 인자 한 줄을 덧붙이고(셸 코디네이터·운영자 셸이 같은 파일을 준다), `calls "<인자>"` 로 센다: T-001 은 워커 2 → 관문 뒤 4 → r2 뒤 5, T-002 는 1 그대로 → r2 뒤 2, `--all` 은 1 그대로 → 마지막 full 뒤 2. 계획 작성 때 T-001 부분을 hc 없이 다시 돌려 2 → 4 를 확인했다 | Task 7 Step 2·3·4·5·6·7, 결과 틀 |
+| 6 | [P2] upgrade 가 추적하지 않는 끊어진 심볼릭 링크를 덮어쓴다 | 기록만(컨트롤러 결정: 드문 경우). 알려진 한계로 적었다 | Task 6 설명, "5단계에 넣지 않은 것" |
+
+코드가 바뀐 것은 2·3 이다(Task 1·3·4). 스크래치 구현을 다시 쌓고(6a8cb84 위 e27789e, b68d59a, ce2c8c4, c1653f6, 2903411, acfefd5) 계획 편집을 다시 만든 뒤 6a8cb84 새 복사본에 적용해 바이트 일치를 보고, 여섯 태스크의 Step 2(실패)·Step 4(통과), Task 1·3 뒤 전체 모음(810개·848개), Task 2·5 의 둘레 명령(259개·237개), 마지막 트리의 두 전체 모음(herdr-team 884개, herdr-orch 203개)을 다시 돌렸다. 모두 기대대로다.
