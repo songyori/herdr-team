@@ -141,7 +141,7 @@ class ScaffoldTest(TeamCase):
         shim = str(self.proj / ".herdr-team/bin/hteam")
         env = dict(self.env, HERDR_TEAM_PLUGIN_ROOT=str(ROOT))
         out = subprocess.run([sys.executable, shim, "version"], capture_output=True, text=True, env=env)
-        self.assertEqual(json.loads(out.stdout)["version"], "0.2.0")
+        self.assertEqual(json.loads(out.stdout)["version"], "0.3.0")
         registry = self.tmp / "installed.json"
         registry.write_text(json.dumps({"plugins": {"herdr-team@herdr-team": [{"installPath": str(ROOT)}]}}))
         env = dict(self.env, HTEAM_PLUGINS_JSON=str(registry))
@@ -158,6 +158,101 @@ class ScaffoldTest(TeamCase):
         self.scaffold()
         self.assertEqual(self.hteam("setup-done", as_="main")[0], 0)
         self.assertFalse((self.state_dir / "setup-mode").exists())
+
+
+class UpgradeTest(TeamCase):
+    """hteam upgrade(설계 9.6): 커밋돼 있고 깨끗한 규칙 파일만 템플릿으로 바꾼다."""
+
+    def setUp(self):
+        super().setUp()
+        self.scaffolded()
+
+    def scaffolded(self):
+        desc = self.tmp / "desc.txt"
+        desc.write_text("할 일 앱\n")
+        code, out = self.hteam("scaffold", "--description-file", str(desc), as_="main")
+        self.assertEqual(code, 0, out)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "chore: herdr-team 세팅")
+
+    def upgrade(self):
+        return self.hteam("upgrade", as_=None)
+
+    def edit_commit(self, rel, text):
+        self.commit(rel, text, f"사용자: {rel}")
+
+    def template(self, name):
+        return (ROOT / "templates" / name).read_text(encoding="utf-8")
+
+    def test_same_files_change_nothing(self):
+        code, out = self.upgrade()
+        self.assertEqual((code, out["updated"], out["created"], out["skipped"], out["manual"], out["diff_stat"]),
+                         (0, [], [], [], [], ""), out)
+        self.assertIn("/herdr-team:up", out["next"])
+        self.assertIn("git diff -- .herdr-team", out["next"])
+
+    def test_overwrites_committed_copies_and_skips_the_rest(self):
+        self.edit_commit(".herdr-team/coordinator.md", "옛 코디네이터 사본\n")
+        self.edit_commit(".herdr-team/roles/developer.md", "사용자가 커밋한 수정\n")
+        (self.team / "roles/designer.md").write_text("커밋 안 한 수정\n", encoding="utf-8")
+        self.git("rm", "-q", "--", ".herdr-team/design-rules.md")
+        self.git("commit", "-q", "-m", "디자인 규칙 지움")
+        self.git("rm", "-q", "--cached", "--", ".herdr-team/text-rules.md")
+        self.git("commit", "-q", "-m", "문구 규칙 추적 해제")
+        config = (self.team / "config.toml").read_text(encoding="utf-8") + "# 사용자 메모\n"
+        self.edit_commit(".herdr-team/config.toml", config)
+        (self.team / "bin/hteam").chmod(0o644)
+        self.git("add", "--", ".herdr-team/bin/hteam")
+        self.git("commit", "-q", "-m", "실행 비트 잃음")
+        head = self.head()
+        code, out = self.upgrade()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["updated"], [".herdr-team/coordinator.md", ".herdr-team/roles/developer.md"])
+        self.assertEqual(out["created"], [".herdr-team/design-rules.md"])
+        self.assertEqual(out["skipped"], [
+            {"path": ".herdr-team/text-rules.md", "reason": "git 에 추적되지 않는다. 템플릿과 직접 비교해 바꾼다"},
+            {"path": ".herdr-team/roles/designer.md",
+             "reason": "커밋 안 된 변경이 있다(지운 것 포함). 커밋하거나 되돌린 뒤 다시 한다"}])
+        for rel, name in ((".herdr-team/coordinator.md", "coordinator.md"), (".herdr-team/roles/developer.md",
+                          "roles/developer.md"), (".herdr-team/design-rules.md", "design-rules.md")):
+            self.assertEqual((self.proj / rel).read_text(encoding="utf-8"), self.template(name), rel)
+        self.assertEqual((self.team / "roles/designer.md").read_text(encoding="utf-8"), "커밋 안 한 수정\n")
+        self.assertEqual((self.team / "config.toml").read_text(encoding="utf-8"), config)
+        self.assertNotIn("config.toml", json.dumps(out, ensure_ascii=False))
+        self.assertEqual(self.head(), head)  # 커밋하지 않는다
+        self.assertIn("coordinator.md", out["diff_stat"])
+        self.assertNotIn("designer.md", out["diff_stat"])
+        self.assertEqual((self.team / "bin/hteam").stat().st_mode & 0o777, 0o755)
+        code, again = self.upgrade()
+        self.assertEqual((code, again["updated"], again["created"]), (0, [], []), again)
+
+    def test_uncommitted_deletions_are_not_restored(self):
+        (self.team / "roles/planner.md").unlink()  # 작업 트리 삭제( D)
+        self.git("rm", "-q", "--", ".herdr-team/roles/tester.md")  # 스테이징한 삭제(D )
+        code, out = self.upgrade()
+        self.assertEqual((code, out["created"], [s["path"] for s in out["skipped"]]),
+                         (0, [], [".herdr-team/roles/planner.md", ".herdr-team/roles/tester.md"]), out)
+        self.assertTrue(all("지운 것 포함" in s["reason"] for s in out["skipped"]))
+        self.assertFalse((self.team / "roles/planner.md").exists() or (self.team / "roles/tester.md").exists())
+
+    def test_old_sections_are_manual_and_kept(self):
+        claude = (self.proj / "CLAUDE.md").read_text(encoding="utf-8").replace("### 질문 표시 규칙", "### 옛 질문 규칙")
+        self.edit_commit("CLAUDE.md", claude)
+        self.git("rm", "-q", "--", "AGENTS.md")
+        self.git("commit", "-q", "-m", "AGENTS.md 지움")
+        code, out = self.upgrade()
+        self.assertEqual(out["manual"], [
+            {"path": "CLAUDE.md", "reason": "덧붙인 herdr-team 절이 템플릿과 다르다. templates/CLAUDE.section.md 과 견줘 직접 바꾼다"},
+            {"path": "AGENTS.md", "reason": "herdr-team 절이 없다. scaffold 를 다시 하면 덧붙인다"}])
+        self.assertEqual((self.proj / "CLAUDE.md").read_text(encoding="utf-8"), claude)
+
+
+class SubdirUpgradeTest(UpgradeTest):
+    def setUp(self):
+        TeamCase.setUp(self)
+        self.proj = self.proj / "sub"
+        self.proj.mkdir()
+        self.scaffolded()
 
 
 class UpBindTest(TeamCase):

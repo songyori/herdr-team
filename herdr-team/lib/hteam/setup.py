@@ -17,7 +17,7 @@ from .browser import BROWSER_SERVER
 from .errors import CONFLICT, DENIED, FAIL, TIMEOUT, USAGE, HteamError
 from .horch import Horch
 from .paths import PLUGIN_ROOT, SHIM, TEMPLATES, Project, find_project
-from .util import die_at, env_float, flock, now, write_json
+from .util import die_at, env_float, flock, now, write_atomic, write_json
 
 MARK = "<!-- herdr-team -->"
 COORD_PROMPT = f"`{SHIM} bind` 를 실행하고 `.herdr-team/coordinator.md` 를 따른다."
@@ -34,6 +34,13 @@ FILES = {
     "roles/tester.md": ".herdr-team/roles/tester.md",
     "shim.py": ".herdr-team/bin/hteam",
 }
+# upgrade 가 템플릿으로 바꾸는 복사한 규칙 파일(설계 9.6): config.toml 은 사용자 설정이라 뺀다(출력에도 없다)
+UPGRADE = {src: rel for src, rel in FILES.items() if src != "config.toml"}
+SECTIONS = (("CLAUDE.md", "CLAUDE.section.md"), ("AGENTS.md", "AGENTS.section.md"))  # 덧붙인 절은 바꾸지 않고 알린다
+UPGRADE_NEXT = ("바뀐 파일을 확인하고(git diff -- .herdr-team) 커밋한다. manual 의 절은 템플릿과 견줘 직접 고친다. 코디네이터는 "
+                "시작할 때만 지침을 읽으므로 커밋한 뒤 코디네이터 터미널을 끝낸다(메인 세션 훅이 다시 띄운다. auto_up = false "
+                "면 메인에서 /herdr-team:up). 테스트 관문을 쓰려면 docs/planning/tasks.toml 에 [test] 를 넣고 커밋한다"
+                "(README \"묶음 검증\").")
 # up 이 띄울 때 바꾸는 run.json 키. 띄우기가 확실히 실패하면 이것만 되돌린다(main_terminals 등 다른 키는 그대로 둔다).
 LAUNCH_KEYS = ("pending_launch", "team_space", "team_tab", "launched_at", "coordinator_terminal", "coordinator_argv")
 # up 이 판정한 뒤 이 키가 바뀌었으면 판정이 낡았다(다른 up 이 띄웠거나 코디네이터가 bind 했다): launch_raced.
@@ -235,6 +242,58 @@ def scaffold(root: Path, description: str) -> dict:
         p.setup_mode.write_text(now() + "\n", encoding="utf-8")
     p.plugin_root_file.write_text(str(PLUGIN_ROOT) + "\n", encoding="utf-8")
     return {"root": str(root), "created": created, "skipped": skipped, "setup_mode": setup_mode}
+
+
+def _section_manual(root: Path) -> list[dict]:
+    """CLAUDE.md·AGENTS.md 의 `<!-- herdr-team -->` 절이 지금 템플릿 절(줄 끝을 LF 로 맞춘 전문)을 그대로 담지 않으면 manual.
+    절에 끝 표시가 없어 어디까지가 hteam 의 글인지 모르므로 바꾸지 않는다."""
+    found = []
+    for name, tpl in SECTIONS:
+        try:
+            text = (root / name).read_text(encoding="utf-8").replace("\r\n", "\n")
+        except (OSError, UnicodeDecodeError):
+            text = None
+        section = (TEMPLATES / tpl).read_text(encoding="utf-8").strip("\n")
+        if text is None or MARK not in text:
+            found.append({"path": name, "reason": "herdr-team 절이 없다. scaffold 를 다시 하면 덧붙인다"})
+        elif section not in text:
+            found.append({"path": name, "reason": f"덧붙인 herdr-team 절이 템플릿과 다르다. templates/{tpl} 과 견줘 직접 바꾼다"})
+    return found
+
+
+def upgrade(root: Path) -> dict:
+    """복사한 규칙 파일을 템플릿으로 바꾼다(설계 9.6). 파일마다 git 상태를 먼저 본다: 커밋하지 않은 변경·삭제가 있으면 건너뛰고,
+    없으면(삭제를 커밋했거나 처음부터 없다) 만들고, 추적하지 않으면 건너뛰고, 다르면 덮어쓴다. 커밋하지 않는다(git 이 백업이다).
+    역할을 확인하지 않고 config.toml 을 읽지 않는다."""
+    updated, created, skipped = [], [], []
+    for src, rel in UPGRADE.items():
+        dst = root / rel
+        want = (TEMPLATES / src).read_text(encoding="utf-8")
+        try:
+            codes = gitio.status_codes(root, rel)
+            if any(code != "??" for code in codes):
+                skipped.append({"path": rel, "reason": "커밋 안 된 변경이 있다(지운 것 포함). 커밋하거나 되돌린 뒤 다시 한다"})
+                continue
+            if not dst.exists():
+                write_atomic(dst, want)
+                created.append(rel)
+            elif not gitio.tracked(root, rel):
+                skipped.append({"path": rel, "reason": "git 에 추적되지 않는다. 템플릿과 직접 비교해 바꾼다"})
+                continue
+            elif dst.read_bytes() != want.encode("utf-8"):
+                write_atomic(dst, want)  # 같은 폴더 임시 파일 + os.replace
+                updated.append(rel)
+        except HteamError as exc:
+            skipped.append({"path": rel, "reason": f"git 상태를 읽지 못했다: {exc.message}"})
+            continue
+        if rel.endswith("bin/hteam"):
+            dst.chmod(0o755)
+    try:
+        stat = gitio.diff_stat(root, updated + created)  # 바꾸거나 만든 파일만(건너뛴 파일의 사용자 변경이 섞이지 않게)
+    except HteamError:
+        stat = ""
+    return {"updated": updated, "created": created, "skipped": skipped, "manual": _section_manual(root),
+            "diff_stat": stat, "next": UPGRADE_NEXT}
 
 
 def _ignore_pattern(line: str) -> str:
@@ -492,6 +551,10 @@ def _cmd_bind(args) -> dict:
     return bind(find_project(args.root))
 
 
+def _cmd_upgrade(args) -> dict:
+    return upgrade(find_project(args.root).root)
+
+
 def _cmd_setup_done(args) -> dict:
     p = find_project(args.root)
     p.ensure_state()
@@ -511,3 +574,4 @@ def register(sub) -> None:
     s.set_defaults(func=_cmd_up)
     sub.add_parser("bind").set_defaults(func=_cmd_bind)
     sub.add_parser("setup-done").set_defaults(func=_cmd_setup_done)
+    sub.add_parser("upgrade").set_defaults(func=_cmd_upgrade)

@@ -13,7 +13,7 @@
     {
       "name": "herdr-team",
       "source": "./herdr-team",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "description": "herdr-orch 위의 직무 팀: 코디네이터, 직무 워커, 교차 리뷰, 메인 질문 중계."
     }
   ]

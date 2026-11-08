@@ -187,6 +187,27 @@ def dirty(root, pathspecs: list[str]) -> list[str]:
     return found
 
 
+def status_codes(root, path: str) -> list[str]:
+    """root 기준 경로 path(글자 그대로)의 `git status --porcelain=v1` 항목의 XY 두 글자. 비면 깨끗하다(추적하지 않는 새 파일은
+    `??`). upgrade 가 커밋하지 않은 변경·삭제를 덮어쓰지 않게 본다(설계 9.6)."""
+    out = run(root, *ABSOLUTE, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames", "--",
+              literal(path), raw=True, env=READ_ONLY).stdout
+    return [entry[:2] for entry in _zb(out)]
+
+
+def tracked(root, path: str) -> bool:
+    """path(root 기준, 글자 그대로)가 인덱스에 있나(`git ls-files --error-unmatch`)."""
+    return run(root, "ls-files", "--error-unmatch", "--", literal(path), check=False).returncode == 0
+
+
+def diff_stat(root, paths: list[str]) -> str:
+    """paths 의 `git diff --stat`(앞뒤 공백을 뗀 것). 경로가 없거나 git 이 실패하면 빈 문자열."""
+    if not paths:
+        return ""
+    proc = run(root, "diff", "--stat", "--", *[literal(x) for x in paths], check=False)
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
 def file_mode(root) -> bool:
     """git 이 실행 비트를 보는가(core.fileMode, 없으면 true). false 면 git 처럼 변조 검사도 실행 비트를 보지 않는다."""
     return run(root, "config", "--bool", "core.fileMode", check=False).stdout.strip() != "false"

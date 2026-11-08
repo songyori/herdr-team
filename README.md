@@ -38,6 +38,26 @@ Herdr(herdr-app 창 + herdr-core `hc`) 위에서 멀티 에이전트를 조정�
 - 리뷰 디자인 절(director 직무가 있는 프로젝트의 director·designer·developer 태스크): 기준 1–9. 이 태스크가 만든 문제만 `(새로 생김)`·`(회귀)`·`(기존)` 으로 나눠 지적하고, diff 의 지운 줄을 읽고, 빠진 상태를 찾고, 즉시 차단 항목은 P1, 고칠 방향은 싼 것부터.
 - 자동 검사(경고): diff 의 지운 줄에서 줄어든 접근성·글자 신호와 추가한 줄의 확대 막기·`focus-visible` 없는 포커스 제거(designdiff) 먼저, 바뀐 파일의 이모지·왼쪽 강조 테두리·파랑·보라 그라디언트(내용 검사) 뒤, 합쳐 50건까지. 리뷰어가 볼 경고는 `.herdr-team/bin/hteam lint --task T` 로 미리 본다(`findings` 는 디자인, `text_findings` 는 문구).
 
+### 묶음 검증
+
+- 묶음: 함께 끝내고 함께 검증하는 기능 단위. tester 태스크 하나와 그 `depends_on` 의 developer 태스크들(3–6개 권장)이고, 묶음 이름은 tester 태스크의 key 다. planner 가 `docs/planning/tasks.toml` 에 묶는다. `[test]` 표가 있으면 `hteam plan check` 가 묶음 규칙을 검사한다: tester owns 는 정확히 `["tests/<key>/**", "docs/qa/<key>.md"]`, tester 는 developer 에만 의존, developer 는 tester 에 의존하지 않음, 문서 전용이 아닌 developer 는 정확히 한 묶음.
+- `[test]` 쓰는 법(`docs/planning/tasks.toml` 의 최상위 표, 커밋한 HEAD 의 것만 쓴다):
+
+  ```toml
+  [test]
+  quick = "npx vitest related --run --passWithNoTests {files}"   # 바뀐 파일과 관련된 테스트. {files} 를 정확히 한 번
+  full = "npx vitest run"                                        # 전체 테스트
+  timeout_min = 30      # 선택. 한 번 실행의 상한(분)
+  ok_exit = [0]         # 선택. pytest 는 [0, 5]
+  exclusive = false     # 선택. DB·포트를 같이 써서 동시에 돌면 깨지면 true
+  ```
+
+- 확정: `[test]` 명령은 리뷰 전에 코디네이터 환경에서 자동으로 돈다. 그래서 사용자가 확정한 `[test]` 만 돈다. 기획 확정 질문(또는 코디네이터 질문)에 hteam 이 `## 테스트 명령` 절을 붙이고, 첫 선택지로 답하면 메인이 확정 기록(프로젝트 밖 `${XDG_STATE_HOME:-~/.local/state}/herdr-team/projects/<id>/test-approvals.json`)에 남긴다. 확정하지 않았으면 리뷰는 관문 없이 진행하고 알린다(`hteam status` 의 `test_gate`). `[test]` 를 바꾸면 다시 확정한다.
+- 관문: developer 리뷰는 quick 이 통과하지 못하면 리뷰어를 띄우지 않고 돌려보낸다(라운드를 쓴다). tester 리뷰는 full 을 한 번 돌리고(워커가 같은 코드로 돌린 기록이면 다시 쓴다) 리뷰어가 묶음 전체를 본다. full 실패는 자동 반려하지 않고 리뷰어가 테스트 코드의 잘못(P1)과 제품 회귀(`## 회귀`)로 나눈다. 워커는 같은 명령을 `.herdr-team/bin/hteam test T-xxx [--full]` 로 돌린다(기록 `.herdr-team/state/tests/`, 로그 `.herdr-team/state/tests/logs/`).
+- 수렴형 리뷰: 지적마다 `rN-Fk` 번호와 등급을 붙이고 P1 만 막는다(P2·P3 는 `## 후속`, 사양에 없는 요구는 `## 기획 누락`). 라운드 2 부터 리뷰어는 이전 P1 의 해결과 새 커밋만 본다. hteam 이 `## 지적 사항` 의 P1 줄과 `## 이전 지적 확인` 의 미해결 줄 수로 판정을 맞춘다(바꾸면 리뷰 파일과 커밋 본문에 적는다).
+- followups: 묶음 tester 태스크가 끝나면 코디네이터가 `hteam followups T-xxx`(읽기 전용)로 회귀·후속·기획 누락을 모아 회귀 수정 태스크, 직무별 묶음 정리 태스크, 사용자 질문을 만든다. 모든 태스크가 끝나면 묶음 밖 후속(`--rest`)과 마지막 `hteam test --full` 을 한 뒤 끝을 알린다.
+- 한계: 테스트는 다른 워커가 일하는 같은 작업 폴더에서 돈다(커밋 안 된 다른 파일은 `dirty` 로 가른다). quick 의 관련 테스트는 테스트 도구의 판단에 기댄다. 회귀는 한 묶음 늦게 발견될 수 있다. 테스트 기록은 잠그지 않고 로그는 지우지 않는다. hteam 이 SIGKILL 로 끝나면 테스트 프로세스가 남을 수 있다.
+
 ### 코디네이터 복구
 
 - 자동 부활: 메인 세션 훅(세션 시작, 그리고 매 프롬프트 60초 간격)이 코디네이터 터미널을 확인하고, 확실히 끝났거나(exited) 셸로 바뀌었으면(lost) `hteam up` 을 분리 실행한다. 메인은 답변 첫 줄에 사용자에게 알린다. 꺼진 동안 `hteam tell` 로 넘긴 요청은 Run 메일함에 쌓였다가 새 코디네이터가 처리한다.
@@ -54,17 +74,27 @@ Herdr(herdr-app 창 + herdr-core `hc`) 위에서 멀티 에이전트를 조정�
 - 리뷰어 브라우저: Codex 리뷰어는 격리·헤드리스 `hteam-browser` 로 화면을 렌더한다(사용자 Chrome 의 쿠키·로그인을 쓰지 않는다). 다만 우회를 승인하면 리뷰어가 읽는 워커 코드·웹 페이지의 글이 명령을 실행시킬 수 있다. Claude 리뷰어는 격리되지 않은 사용자 자신의 Chrome DevTools MCP 를 쓰므로 페이지 스크립트가 그 브라우저 프로필에서 돈다. 필요하면 프로젝트 `.mcp.json` 에 `--isolated=true` 정의를 둔다.
 - 레퍼런스 캡처와 이미지는 저장소 밖 캐시 `~/.cache/herdr-team/{refs,images}` 에 둔다.
 - hteam 이 띄우는 codex 에서는 사용자의 `chrome-devtools` MCP 서버만 끈다(`hteam-browser` 와 같은 일을 한다). 사용자의 다른 MCP 서버는 끄지 않는다.
+- 테스트 명령(`[test]` 의 quick·full)은 `/bin/sh -c` 로 도는 임의의 셸 문자열이다. 확정하면 리뷰 관문과 마무리의 `hteam test --full` 이 코디네이터의 권한(승인한 우회 포함, 샌드박스 없음)으로 돌린다. Codex 워커가 쓴 명령이 그렇게 돌면 권한이 넓어진다. 확정은 실수 방지(모르는 새 명령이 리뷰 전에 자동으로 도는 것을 막는다)이고 보안 경계가 아니다(프로젝트 안 상태를 일부러 바꾸는 워커는 막지 못한다). 명령을 읽고 확정하고, 신뢰하지 않는 저장소에서는 확정하지 않는다. 테스트 출력 끝(60줄)은 리뷰 프롬프트와 quick 반려 리뷰 파일(커밋된다)에 들어간다. 비밀값을 출력하는 테스트는 그 값을 저장소에 남긴다.
 - 코디네이터 자동 부활은 사용자가 따로 하지 않아도 메인 세션 훅이 메인 세션의 권한·환경으로 `hteam up` 을 실행하고, 코디네이터는 `[agents.claude].args`(승인한 우회 포함)로 뜬다. 띄우는 것은 이미 승인한 코디네이터와 같은 명령이다. 끄려면 `[coordinator] auto_up = false`.
 
 ### 이미 세팅한 프로젝트 업그레이드
 
 scaffold 는 있는 파일을 덮어쓰지 않는다. 앞 버전에서 세팅한 프로젝트는 새 기능을 손으로 옮겨야 하고, 옮기지 않으면 조용히 빠진다(예: `[roles.director]` 가 없으면 디자인 디렉터 단계와 시스템 보강이 없다).
 
+#### 0.2.0 → 0.3.0
+
+1. 플러그인을 0.3.0 으로 올린다. 리뷰의 수렴형 규칙·판정 맞추기, 워커 사양의 테스트 절, 리뷰 절 템플릿은 이것만으로 적용된다.
+2. 프로젝트 루트에서 `.herdr-team/bin/hteam upgrade`(또는 메인에 부탁한다). 복사한 규칙 파일(`coordinator.md`, `design-rules.md`, `text-rules.md`, 직무 문서, shim)을 템플릿으로 바꾼다. 커밋돼 있고 깨끗한 파일만 덮어쓴다(커밋해 둔 사용자 수정도 덮어쓰지만 git 기록에 남아 있어 그 커밋에서 되살릴 수 있다). `config.toml` 은 건드리지 않는다. 커밋하지 않는다.
+3. `git diff -- .herdr-team` 을 확인하고 커밋한다. `skipped` 는 까닭대로 정리한 뒤 다시 한다.
+4. `manual` 의 `CLAUDE.md`·`AGENTS.md` 의 `<!-- herdr-team -->` 절을 `herdr-team/templates/CLAUDE.section.md`·`AGENTS.section.md` 와 견줘 고친다(절에 끝 표시가 없어 upgrade 가 바꾸지 않는다).
+5. 테스트 관문을 쓰려면 `docs/planning/tasks.toml` 에 `[test]` 를 넣고 커밋한다(직접 쓰거나 메인에 증분 기획을 요청한다). 확정 질문에 답해야 돈다(위 "묶음 검증").
+6. 코디네이터를 다시 띄운다(코디네이터 터미널을 끝내면 메인 세션 훅이 다시 띄운다. `auto_up = false` 면 `/herdr-team:up`).
+
 #### 0.1.x → 0.2.0
 
 1. 플러그인만 올려도 적용되는 것: 리뷰 디자인 절의 새 기준과 diff 자동 검사(director 직무가 있는 프로젝트), 코디네이터 자동 부활(`[coordinator] auto_up` 키가 없으면 켜진다. 끄려면 `auto_up = false`). 옛 `design-rules.md`(§ 제목이 없는 금지 목록)는 리뷰가 §1·즉시 차단 항목만 본다.
 2. 새 파일: 프로젝트 루트에서 `.herdr-team/bin/hteam scaffold --description-file .herdr-team/project.md` 를 다시 하면 `.herdr-team/text-rules.md` 가 생긴다. 이 파일이 있어야 리뷰에 문구 절이 붙는다.
-3. 손으로 합칠 것(워커가 새 규칙으로 쓰게, `herdr-team/templates/` 의 같은 이름 파일과 비교한다. 프로젝트에서 고친 곳은 합친다)
+3. 손으로 합칠 것(워커가 새 규칙으로 쓰게, `herdr-team/templates/` 의 같은 이름 파일과 비교한다. 프로젝트에서 고친 곳은 합친다). 복사한 규칙 파일(`.herdr-team/` 아래 문서와 shim)은 0.3.0 의 `hteam upgrade` 로 대신할 수 있다(`config.toml` 은 여전히 손으로)
    - `.herdr-team/design-rules.md`: 템플릿으로 바꾼다(§0–§7, 즉시 차단 항목, 자동 검사, 출처).
    - `.herdr-team/roles/planner.md`(문구 기준 점검표 항목, `voice.md` 산출물과 형식), `director.md`·`designer.md`·`developer.md`(디자인 규칙 §1–§7·즉시 차단 줄, `### 디자인 점검`, 문구 규칙), `.herdr-team/coordinator.md`(`voice.md`).
    - `CLAUDE.md` 의 herdr-team 절(`<!-- herdr-team -->`): 메인 규칙의 자동 부활 줄과 "위치" 의 `voice.md`·문구 줄.
