@@ -11,10 +11,12 @@
 # 결과: .codex-reviews/<이름>.md(마지막 메시지), .log(전체 출력), .exit(종료 코드).
 # 커밋 리뷰 이름은 commit-<sha 7자>, 브랜치 리뷰는 base-<브랜치>.
 # 표준 출력: 만든 터미널 주소 한 줄. 끝날 때까지 기다리려면 `hc wait <주소> --timeout 3600`.
+# 모델: 기본 gpt-6.1-sol(사용자 전역 Codex 기본 모델보다 빠르고 사용량이 적다). CODEX_REVIEW_MODEL 로 바꾼다.
 set -euo pipefail
 
 root=$(git rev-parse --show-toplevel)
 out="$root/.codex-reviews"
+model=${CODEX_REVIEW_MODEL:-gpt-6.1-sol}
 
 usage() { sed -n '5,8p' "$0" >&2; exit 2; }
 
@@ -36,19 +38,19 @@ case "$mode" in
     [[ $# -eq 3 ]] || usage
     name=$2
     [[ -f "$3" ]] || { echo "프롬프트 파일이 없다: $3" >&2; exit 2; }
-    cmd=(codex exec --sandbox read-only -o "$out/$name.md" "$(cat "$3")")
+    cmd=(codex exec -m "$model" --sandbox read-only -o "$out/$name.md" "$(cat "$3")")
     ;;
   commit)
     [[ $# -eq 2 ]] || usage
     sha=$(git rev-parse --verify "$2^{commit}")
     name="commit-${sha:0:7}"
-    cmd=(codex exec review --commit "$sha" -o "$out/$name.md")
+    cmd=(codex exec review -m "$model" --commit "$sha" -o "$out/$name.md")
     ;;
   base)
     [[ $# -eq 2 ]] || usage
     git rev-parse --verify --quiet "$2" >/dev/null || { echo "브랜치가 없다: $2" >&2; exit 2; }
     name="base-${2//\//-}"
-    cmd=(codex exec review --base "$2" -o "$out/$name.md")
+    cmd=(codex exec review -m "$model" --base "$2" -o "$out/$name.md")
     ;;
   *) usage ;;
 esac
