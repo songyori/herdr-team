@@ -4205,7 +4205,8 @@ Expected: `git grep`·`git diff --stat` 출력 없음, 커밋 성공. 구현자�
 안전 규칙(1–3단계 실환경과 같다, 이 태스크 내내):
 - 시험 프로젝트는 컨트롤러가 준 세션 스크래치패드 아래에 만든다(`<세션 스크래치패드>` 는 실행할 때 주어진다). 이 저장소와 사용자의 다른 프로젝트는 건드리지 않는다.
 - **플러그인을 설치하지 않는다**(Codex 계획 리뷰 r1: 2·3단계에서 플러그인 CLI 가 사용자 `installed_plugins.json` 의 최상위 `enabledPlugins` 키를 떨어뜨렸다). (1) 은 이 저장소의 `herdr-team/bin/hteam` 을 절대 경로로 부른다(horch 는 형제 `herdr-orch/bin/horch` 를 찾는다). (2) 는 메인을 `claude --plugin-dir <저장소>/herdr-team --plugin-dir <저장소>/herdr-orch` 로 띄운다(그 세션에만 불러오고 설치 기록을 쓰지 않는다). `claude plugin marketplace add`·`claude plugin install`·`uninstall` 을 쓰지 않는다. `~/.claude/settings.json`·`~/.codex/config.toml` 등 전역 설정을 고치지 않는다.
-- 전역 파일 `~/.claude/plugins/known_marketplaces.json`·`~/.claude/plugins/installed_plugins.json`·`~/.codex/config.toml` 은 Step 1 의 스냅숏과 Step 10 의 diff 가 비어야 성공이다(예외는 `~/.codex/config.toml` 의 시험 폴더 신뢰 항목뿐이고 보고한다). 비어 있지 않으면 실패로 적고 사용자에게 알린다. 스냅숏으로 덮어쓰지 않는다(그사이 사용자의 다른 세션이 바꿨을 수 있다).
+- 플러그인 자동 갱신을 끈다(Codex 계획 리뷰 r2): Claude Code 는 플러그인을 설치하지 않아도 첫 입력 뒤 최대 10분 안에 auto-update 가 켜진 마켓플레이스를 갱신하고 `~/.claude/plugins/known_marketplaces.json` 의 `lastUpdated` 등을 다시 쓴다. 공식 문서(https://code.claude.com/docs/en/plugins/loading#when-auto-update-runs)는 `DISABLE_UPDATES=1`·`DISABLE_AUTOUPDATER=1`·`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` 가운데 하나가 있으면 "the whole pass is off"(`FORCE_AUTOUPDATE_PLUGINS=1` 이 없을 때)라고 적는다(`claude --help` 에는 이 변수가 없다). 그래서 시험의 Claude 세션은 모두 `DISABLE_AUTOUPDATER=1` 을 받는다: 메인은 실행 명령의 `env` 로, 코디네이터(와 혹시 뜨는 Claude 워커)는 시험 프로젝트 `.claude/settings.local.json` 의 `env` 로(설정의 `env` 는 그 프로젝트의 모든 세션에 적용된다). (1) 에는 Claude 세션이 없다.
+- 전역 파일은 늘지 않고 바뀌지 않아야 성공이다: Step 1 이 `~/.claude/settings.json`, `~/.claude/plugins/*.json` 전체, `~/.codex/config.toml` 의 파일 목록·있음·내용 해시(sha256)와 사본을 남기고(읽기만 한다), Step 10 이 수정·생성·삭제를 견준다. 예외는 `~/.codex/config.toml` 의 (1) 시험 폴더 신뢰 항목뿐이고 따로 판별해 보고한다. 차이가 나오면 파일과 바뀐 키를 적는다. 구조(최상위 키, 마켓플레이스 항목, 플러그인 설치 항목, `enabledPlugins`, `settings.json` 의 키)가 바뀌었으면 실패로 적고 사용자에게 알린다. 시각·캐시 값(`lastUpdated`, `*cache*.json` 의 내용)만 바뀌었으면 사용자의 다른 Claude 세션(운영자 자신 포함)이 쓴 것일 수 있으므로 보고만 한다. 어느 쪽이든 스냅숏으로 덮어쓰지 않는다(그사이 사용자의 다른 세션이 바꿨을 수 있다).
 - `--permission-mode bypassPermissions` 는 (2) 의 시험 프로젝트 `[agents.claude].args`(init 4단계 표로 승인)와 시험용 메인 실행에만 쓴다. `--dangerously-bypass-approvals-and-sandbox` 는 (1) 의 시험 프로젝트 `[agents.codex].args` 에만 쓴다(리뷰어가 화면을 렌더하게, 설계 15.2).
 - 사용자의 hc core 를 멈추거나 다시 띄우지 않는다(`hc server stop`·`hc server restart`·`hc update` 금지). 새 `HC_SESSION` 으로 hc 를 부르지 않는다. 시험이 만든 터미널·탭·space 만 kill·rm·닫는다.
 - 시험용 `hc run` 은 늘 `--no-notify` 를 붙인다.
@@ -4219,14 +4220,27 @@ Expected: `git grep`·`git diff --stat` 출력 없음, 커밋 성공. 구현자�
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel)"; H="$REPO_ROOT/herdr-team/bin/hteam"
 E2E="<세션 스크래치패드>/hteam-e2e-p4"; mkdir -p "$E2E/review" "$E2E/revive" "$E2E/pre"
-cp ~/.claude/plugins/known_marketplaces.json ~/.claude/plugins/installed_plugins.json "$E2E/pre/" 2>/dev/null || true
-cp ~/.codex/config.toml "$E2E/pre/codex-config.toml" 2>/dev/null || true
+python3 - "$E2E/pre" <<'PY'
+import glob, hashlib, json, os, shutil, sys
+home, out = os.path.expanduser("~"), sys.argv[1]
+files = [os.path.join(home, ".claude", "settings.json"), os.path.join(home, ".codex", "config.toml"),
+         *sorted(glob.glob(os.path.join(home, ".claude", "plugins", "*.json")))]
+manifest = {}
+for f in files:
+    if os.path.isfile(f):
+        manifest[f] = hashlib.sha256(open(f, "rb").read()).hexdigest()
+        shutil.copyfile(f, os.path.join(out, os.path.relpath(f, home).replace(os.sep, "__")))
+    else:
+        manifest[f] = None
+json.dump(manifest, open(os.path.join(out, "manifest.json"), "w"), indent=1)
+print(len(manifest), "개:", ", ".join(os.path.relpath(f, home) for f in manifest))
+PY
 hc ls --all --json > "$E2E/pre/hc-ls.json"
 for d in review revive; do (cd "$E2E/$d" && git init -q -b main && echo "# $d" > README.md && git add README.md && git commit -qm init); done
 herdr-app do space.new --name hteam-e2e-p4 --folder "$E2E/review"
 ```
 
-Expected: `{"space", "tab", "terminal"}`. 값을 `$S`, `$T` 로 적는다. 스냅숏 넷이 `$E2E/pre/` 에 있다(복사는 읽기만 한다). 사용자 `installed_plugins.json` 의 최상위 키(`enabledPlugins` 등)를 적어 둔다.
+Expected: `{"space", "tab", "terminal"}`. 값을 `$S`, `$T` 로 적는다. `$E2E/pre/manifest.json`(파일마다 sha256, 없던 파일은 null)과 사본, `hc-ls.json` 이 있다(원본은 읽기만 한다). 출력한 파일 목록과 사용자 `installed_plugins.json` 의 최상위 키(`enabledPlugins` 등)를 적어 둔다.
 
 - [ ] **Step 2: (1) 시험 프로젝트와 바탕 커밋**
 
@@ -4416,15 +4430,15 @@ Expected: 시험이 만든 터미널이 남지 않는다. 사용자의 다른 �
 ```bash
 herdr-app do space.new --name hteam-e2e-p4-revive --folder "$E2E/revive"   # 값을 $S2, $T2 로 적는다
 mkdir -p "$E2E/revive/.claude"
-python3 -c 'import json,sys; json.dump({"env": {"HERDR_TEAM_PLUGIN_ROOT": sys.argv[2]}}, open(sys.argv[1], "w"), indent=2)' \
+python3 -c 'import json,sys; json.dump({"env": {"HERDR_TEAM_PLUGIN_ROOT": sys.argv[2], "DISABLE_AUTOUPDATER": "1"}}, open(sys.argv[1], "w"), indent=2)' \
   "$E2E/revive/.claude/settings.local.json" "$REPO_ROOT/herdr-team"
 hc run --bg --json --no-parent --no-notify --name hteam-e2e4-main --cwd "$E2E/revive" \
   --label herdr.space="$S2" --label herdr.tab="$T2" -- \
-  claude --permission-mode bypassPermissions --plugin-dir "$REPO_ROOT/herdr-team" --plugin-dir "$REPO_ROOT/herdr-orch" \
+  env DISABLE_AUTOUPDATER=1 claude --permission-mode bypassPermissions --plugin-dir "$REPO_ROOT/herdr-team" --plugin-dir "$REPO_ROOT/herdr-orch" \
   "/herdr-team:init 할 일 메모 웹 페이지(정적 HTML·JS). 이번 시험은 코디네이터 자동 부활만 본다."
 ```
 
-- `--plugin-dir` 는 그 세션에만 플러그인(스킬·훅)을 불러오고 설치 기록을 쓰지 않는다(`claude --help`). 플러그인 기록이 없으면 프로젝트 shim(`.herdr-team/bin/hteam`)이 플러그인을 찾지 못하므로(설계 3.4, exit 12 `plugin_missing`) 시험 프로젝트의 `.claude/settings.local.json` 의 `env` 로 `HERDR_TEAM_PLUGIN_ROOT` 를 준다. 이 프로젝트에서 뜨는 Claude 세션(메인, `hteam up` 이 띄우는 코디네이터)이 모두 받는다(hc 가 띄우는 프로그램의 환경에 기대지 않는다). 자동 실행한 `hteam up` 은 훅의 플러그인 루트(`bin/hteam`)를 바로 부르므로 shim 을 거치지 않는다.
+- `--plugin-dir` 는 그 세션에만 플러그인(스킬·훅)을 불러오고 설치 기록을 쓰지 않는다(`claude --help`). 플러그인 기록이 없으면 프로젝트 shim(`.herdr-team/bin/hteam`)이 플러그인을 찾지 못하므로(설계 3.4, exit 12 `plugin_missing`) 시험 프로젝트의 `.claude/settings.local.json` 의 `env` 로 `HERDR_TEAM_PLUGIN_ROOT` 를 준다. 이 프로젝트에서 뜨는 Claude 세션(메인, `hteam up` 이 띄우는 코디네이터)이 모두 받는다(hc 가 띄우는 프로그램의 환경에 기대지 않는다). 자동 실행한 `hteam up` 은 훅의 플러그인 루트(`bin/hteam`)를 바로 부르므로 shim 을 거치지 않는다. 같은 `env` 의 `DISABLE_AUTOUPDATER=1` 이 코디네이터의 플러그인 자동 갱신도 끈다(메인은 실행 명령에서도 받는다, 안전 규칙).
 - init 4단계 표에서 director·designer 를 빼고(화면 디자인을 하지 않는다), `[agents.claude].args` 를 Other 로 `["--permission-mode=bypassPermissions", "--plugin-dir=<REPO_ROOT>/herdr-team", "--plugin-dir=<REPO_ROOT>/herdr-orch"]`(`<REPO_ROOT>` 는 실제 절대 경로)로 승인한다(코디네이터가 사람 없이 돈다. Codex 우회는 승인하지 않는다). `hteam up` 은 이 args 를 코디네이터 argv 에 그대로 붙인다(`setup.up`: `argv += [*cfg.args("claude"), "--", COORD_PROMPT]`. horch 는 Claude 워커에 `--agent-arg` 로 넘긴다). 그래서 코디네이터도 같은 플러그인(훅)을 받는다. init 이 이 줄을 넣지 않았으면 init 뒤 운영자가 `.herdr-team/config.toml` 에 넣는다(그 뒤 띄우는 코디네이터부터 적용된다). 그래도 이 시험은 된다: 이 시험의 코디네이터가 하는 일(`hteam bind`, `hteam wait`, `hteam notify`)은 shim 과 `HERDR_TEAM_PLUGIN_ROOT` 로 되고 플러그인 훅은 실수 방지용이다(설계 9.4).
 - `hc wait hteam-e2e4-main --timeout 600` 과 `hc read hteam-e2e4-main --lines 80` 으로 따라간다.
 
@@ -4453,13 +4467,37 @@ Expected: FAILED 문구, 메인 답변 첫 줄의 알림, 새로 띄우지 않�
 hc ls --all --json          # hteam-e2e4-main, hteam-coord-*, 셸로 바뀐 코디네이터 터미널을 찾는다
 hc kill <각 시험 터미널> --json; hc rm <각 시험 터미널> --json
 herdr-app do space.close --id "$S2" --confirmed true
-cmp "$E2E/pre/installed_plugins.json" ~/.claude/plugins/installed_plugins.json && echo installed_plugins 같음
-cmp "$E2E/pre/known_marketplaces.json" ~/.claude/plugins/known_marketplaces.json && echo known_marketplaces 같음
-diff "$E2E/pre/codex-config.toml" ~/.codex/config.toml || true
+python3 - "$E2E/pre" <<'PY'
+import glob, hashlib, json, os, sys
+home, pre = os.path.expanduser("~"), sys.argv[1]
+before = json.load(open(os.path.join(pre, "manifest.json")))
+now = dict.fromkeys(before)
+for f in [os.path.join(home, ".claude", "settings.json"), os.path.join(home, ".codex", "config.toml"),
+          *glob.glob(os.path.join(home, ".claude", "plugins", "*.json"))]:
+    now[f] = hashlib.sha256(open(f, "rb").read()).hexdigest() if os.path.isfile(f) else None
+
+def changes(a, b, path=""):
+    if isinstance(a, dict) and isinstance(b, dict):
+        for k in sorted(set(a) | set(b)):
+            yield from changes(a.get(k, "<없음>"), b.get(k, "<없음>"), f"{path}/{k}")
+    elif a != b:
+        yield f"  {path or '/'}: {str(a)[:60]} → {str(b)[:60]}"
+
+for f in sorted(now):
+    a, b = before.get(f), now[f]
+    if a == b:
+        continue
+    print("생성" if a is None else "삭제" if b is None else "수정", os.path.relpath(f, home))
+    if a and b and f.endswith(".json"):
+        old = json.load(open(os.path.join(pre, os.path.relpath(f, home).replace(os.sep, "__"))))
+        print("\n".join(changes(old, json.load(open(f)))))
+print("비교 끝")
+PY
+diff "$E2E/pre/.codex__config.toml" ~/.codex/config.toml || true
 hc ls --all --json
 ```
 
-Expected: 시험이 만든 터미널이 남지 않는다. 사용자의 다른 터미널은 그대로다. `installed_plugins 같음`·`known_marketplaces 같음` 이 둘 다 나온다(플러그인을 설치하지 않았으므로 바이트까지 같아야 한다. 최상위 `enabledPlugins` 키도 그대로다). 다르면 실패로 적고 차이를 사용자에게 보고한다(스냅숏으로 덮어쓰지 않는다). Codex 설정 차이는 (1) 의 시험 폴더 신뢰 항목뿐이어야 한다(지우지 않고 보고한다). 사용자에게 보고할 남은 것을 적는다: npx 캐시의 `chrome-devtools-mcp@1.10.1`, Codex 신뢰 항목과 세션 기록, `~/.claude.json` 의 시험 폴더 항목, `~/.claude/projects/` 의 시험 세션 기록, `$E2E` 폴더(시험 프로젝트의 `.claude/settings.local.json` 포함), 그 밖에 찾은 것.
+Expected: 시험이 만든 터미널이 남지 않는다. 사용자의 다른 터미널은 그대로다. 비교 출력이 `비교 끝` 한 줄이거나 `수정 .codex/config.toml` 하나와 `비교 끝` 이다(플러그인을 설치하지 않았고 자동 갱신을 껐으므로 `~/.claude/settings.json`·`~/.claude/plugins/*.json` 은 생성·삭제·수정이 없어야 한다. 최상위 `enabledPlugins` 키도 그대로다). Codex 설정의 `diff` 는 (1) 의 시험 폴더 신뢰 항목(`[projects."<시험 경로>"]` 와 `trust_level`)뿐이어야 한다(지우지 않고 보고한다). 그 밖의 차이는 안전 규칙대로 판별한다: 구조가 바뀌었으면 실패로 적고 사용자에게 알리고, 시각·캐시 값만 바뀌었으면 보고만 한다(어느 쪽이든 스냅숏으로 덮어쓰지 않는다). 사용자에게 보고할 남은 것을 적는다: npx 캐시의 `chrome-devtools-mcp@1.10.1`, Codex 신뢰 항목과 세션 기록, `~/.claude.json` 의 시험 폴더 항목, `~/.claude/projects/` 의 시험 세션 기록, `$E2E` 폴더(시험 프로젝트의 `.claude/settings.local.json` 포함), 그 밖에 찾은 것.
 
 - [ ] **Step 11: 설계 머리 상태 줄과 15.4 에 결과 기록**
 
@@ -4470,7 +4508,7 @@ Expected: 시험이 만든 터미널이 남지 않는다. 사용자의 다른 �
 ```markdown
 #### 4단계 (YYYY-MM-DD)
 
-환경: <hc·Claude Code·codex-cli·Python 버전>. 버리는 시험 프로젝트 둘을 새 space 에 만들었다. 플러그인은 설치하지 않았다: (1) 은 이 저장소의 `hteam` 을 셸 코디네이터에서 불렀고, (2) 는 메인·코디네이터를 `claude --plugin-dir` 로 띄우고 shim 에 `HERDR_TEAM_PLUGIN_ROOT`(시험 프로젝트 `.claude/settings.local.json`)를 줬다. 전역 플러그인 기록은 시작 전과 같았다(<cmp 결과>).
+환경: <hc·Claude Code·codex-cli·Python 버전>. 버리는 시험 프로젝트 둘을 새 space 에 만들었다. 플러그인은 설치하지 않았다: (1) 은 이 저장소의 `hteam` 을 셸 코디네이터에서 불렀고, (2) 는 메인·코디네이터를 `claude --plugin-dir` 로 띄우고 shim 에 `HERDR_TEAM_PLUGIN_ROOT`(시험 프로젝트 `.claude/settings.local.json`)를 줬다. 시험의 Claude 세션은 모두 `DISABLE_AUTOUPDATER=1` 을 받았다. 전역 파일(`~/.claude/settings.json`, `~/.claude/plugins/*.json` <개수>개, `~/.codex/config.toml`) 비교: <비교 출력과 판별>.
 
 - (1) 리뷰만: <scaffold(text-rules.md·developer owns·auto_up), 바탕·가짜 워커 커밋, 셸 코디네이터 bind·review·review-finish 출력>
 - (1) 자동 검사: <lint --task 의 findings(지운 aria-label 은 옛 경로 이름, 포커스 제거, 확대 막기, 기존 이모지, 내용 그대로 옮긴 파일 없음)와 text_findings(분류별)>
@@ -4550,6 +4588,15 @@ main 에 병합하지 않는다(컨트롤러가 herdr-team 0.2.0 병합을 한�
 | 2 | [P2] `compose.text_section` 이 `textlint.targets()` 를 `guarded` 밖에서 부른다(예외가 리뷰를 멈춘다) | 고침. 대상 판정이 예외로 끝나면 문구 절을 붙이고 경고 자리에 `compose.failure` 한 줄을 넣는다. 그 경우 리뷰가 진행되는(`reviewing`, 프롬프트에 한 줄) 시험을 더했다. 디자인 절은 같은 구조가 아니다: 붙는 조건은 직무·설정뿐이고 파일을 읽는 일은 모두 두 검사(designdiff·내용 검사) 안이며 둘 다 `guarded` 다(고칠 것 없음) | Task 1 `compose.py`, `test_review.py` 의 `test_target_check_failure_keeps_the_section_and_the_review_goes_on` |
 | 3 | [P2] 실환경의 `src/todo.css` 를 화면이 불러오지 않는다 | 고침. 가짜 워커 커밋이 `index.html` 에 `todo.css` 링크를 더한다. 시험 화면은 `file://` 로 그려지게 ES 모듈 대신 `<script>` 로 바꿨다. 운영자가 Chrome DevTools MCP 로 Tab 두 번 뒤 삭제 버튼의 `outlineStyle` 이 `none` 인지 본다. Step 2·3·`lint --task` 를 다시 가짜 없이 돌려 기대 출력(4개·6개, `src/index.html:3` 의 확대 막기 발췌 포함)이 같음을 확인했다 | Task 6 Step 2·3·5 |
 | 4 | [P2] 마감 시험(`delay 1.95` 대 마감 2.9, "남은 시간 > 1.5")이 실행 속도에 기댄다 | 고침. `autoup._clock` 을 두고 시험은 가상 시계로 바꾼다. 패치한 단계(ps·hc·sh)가 시계를 정한 만큼 옮겨 남은 시간을 고정하고 시간 제한 값을 정확히 비교한다(`(5, 3, 5, 5)`, `(5, 3, 2, 1.5)`). 띄운 뒤 시간이 모자라는 경우도 실제 분리 실행 대신 가상 시계로 본다. 실제 분리 실행 시험(`SpawnTest`)은 결과(프로세스 종료·pid 파일·로그·`run.json`)만 본다. test_autoup 22개가 16.9초에서 7.4초로 줄었다 | Task 4 `autoup.py`, `test_autoup.py` 의 `Clock`·`BudgetTest` |
+
+## Codex 계획 리뷰 r2 의 처리(`.codex-reviews/team-p4-plan-r2.md`, P0·P1 없음, P2 2. r1 은 3건 닫힘·1건 일부)
+
+| # | 지적 | 처리 | 고친 곳 |
+|---|---|---|---|
+| 1 | [P2] 설치 없이도 Claude Code 의 마켓플레이스 자동 갱신이 `known_marketplaces.json` 의 `lastUpdated` 등을 다시 쓴다 | 고침. 공식 문서(plugins/loading "When auto-update runs")에서 `DISABLE_AUTOUPDATER=1` 이면 자동 갱신 전체가 꺼진다는 것을 읽기만 해서 확인했다(`claude --help` 에는 없다). 메인은 실행 명령의 `env DISABLE_AUTOUPDATER=1`, 코디네이터·워커는 시험 프로젝트 `.claude/settings.local.json` 의 `env` 로 받는다. 그래서 성공 조건은 "변화 없음" 그대로다. 그래도 사용자의 다른 Claude 세션이 같은 파일을 쓸 수 있으므로 차이가 나오면 구조 변화(실패)와 시각·캐시 값 변화(보고만)를 가른다 | Task 6 안전 규칙, Step 7, Step 11 의 결과 틀 |
+| 2 | [P2] 전역 불변 검사에서 `~/.claude/settings.json` 과 `~/.claude/plugins/` 의 다른 JSON 이 빠졌다 | 고침. Step 1 이 `~/.claude/settings.json`, `~/.claude/plugins/*.json` 전체, `~/.codex/config.toml` 의 목록·있음·sha256 과 사본을 남기고(읽기만), Step 10 이 수정·생성·삭제와 JSON 의 바뀐 키를 출력한다. Codex 신뢰 항목은 `diff` 로 따로 판별한다 | Task 6 안전 규칙, Step 1·10 |
+
+r2 의 수정은 Task 6 의 실환경 문장뿐이다. Task 1–5 의 코드 편집은 r1 과 같으므로(구현 트리도 그대로 98413f1) Step 2·4 와 전체 시험은 다시 돌리지 않았다. 계획을 다시 조립한 뒤 편집 적용 검사(`ops=107 files=40 bad=0`)만 다시 돌렸다.
 
 ## 4단계에 넣지 않은 것
 
