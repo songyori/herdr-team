@@ -411,9 +411,13 @@ class TeamCase(unittest.TestCase):
         return self.task_state(tid)["rounds"][-1]["reviews"][-1]
 
     def act_review(self, tid: str, verdict: str | None = "APPROVE", *, outcome: str = "succeeded",
-                   text: str = "## 지적 사항\n- 없음\n", write: bool = True, extra: dict | None = None) -> tuple[int, dict]:
-        """현재 리뷰 시도의 리뷰어가 rN-aK.md 를 쓰고 done 한다."""
+                   text: str | None = None, write: bool = True, extra: dict | None = None) -> tuple[int, dict]:
+        """현재 리뷰 시도의 리뷰어가 rN-aK.md 를 쓰고 done 한다. text 가 없으면 판정에 맞는 본문을 쓴다: REQUEST_CHANGES 는
+        P1 지적 한 줄(판정 맞추기가 P1 없는 수정 요청을 APPROVE 로 바꾼다, 설계 6.3), 그 밖은 `- 없음`."""
         att = self.attempt(tid)
+        if text is None:
+            text = ("## 지적 사항\n- r1-F1 [P1] src/app.py:1 — 틀림. 고친다.\n" if verdict == "REQUEST_CHANGES"
+                    else "## 지적 사항\n- 없음\n")
         action = {"done": {"outcome": outcome, "summary": verdict or "판정 없음", "report_path": att["file"]}}
         if write:
             action["review"] = {"file": att["file"], "text": text, "verdict": verdict}

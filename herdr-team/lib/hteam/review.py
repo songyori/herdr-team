@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import os
+import re
 from typing import Iterator
 
 from . import compose, config, dispatch, gitio, plan, procs, roles, specs, state, testgate
@@ -24,6 +25,15 @@ from .util import die_at, now, show, write_atomic
 
 AUTO_ATTEMPTS = 2  # 라운드당 자동 시도(설계 6.3 6)
 GATE_PROBLEM = "hteam 테스트 관문: quick 이 통과하지 못했다."
+# 판정 맞추기(설계 6.3, orca-team align_verdict). 절은 다음 `## `·`VERDICT:`·끝까지다
+FINDINGS_RE = re.compile(r"^## 지적 사항[ \t]*\n(.*?)(?=^## |^VERDICT:|\Z)", re.M | re.S)
+PRIOR_RE = re.compile(r"^## 이전 지적 확인[ \t]*\n(.*?)(?=^## |^VERDICT:|\Z)", re.M | re.S)
+BROAD_P1_RE = re.compile(r"(?<![A-Za-z0-9])P1(?![A-Za-z0-9])", re.I)
+NONE_LINE_RE = re.compile(r"^\s*(?:[-+*#]+|\d+[.)])?[\s*#]*(?:해당\s*)?없음")
+STRICT_ID_RE = re.compile(r"r\d+-F\d+")
+STRICT_GRADE_RE = re.compile(r"\[(P[123])\]", re.I)
+STRICT_PRIOR_RE = re.compile(r"^\s*(?:[-+]|\d+[.)])?\s*r\d+-F\d+\s*(?:\[P1\]\s*)?[:：]\s*미해결", re.I)
+ADJUST_BASIS = "`## 지적 사항` 의 P1 줄과 `## 이전 지적 확인` 의 미해결 줄 수 기준"
 VERDICTS = ("APPROVE", "REQUEST_CHANGES")
 # 리뷰 시도를 띄우거나 복구할 수 있는 상태: 첫 시도·복구는 working, 자동 재시도·--retry·그 복구는 reviewing
 REVIEW_STATES = frozenset({"working", "reviewing"})
@@ -274,7 +284,7 @@ def _launch_attempt(p, cfg, h, tid: str, k: int) -> dict:
     info = testgate.summary(att["inputs"].get("tests"))  # 출력·history 의 관문 요약(설계 6.1 4a)
     prompt = p.task_dir(tid) / f"r{rd['round']}-review-a{k}.md"
     if not prompt.is_file():
-        write_atomic(prompt, compose.review_prompt(p, cfg, spec, rd, att))
+        write_atomic(prompt, compose.review_prompt(p, cfg, spec, rd, att, st["rounds"]))
     res = dispatch.launch(p, h, tid, pick, agent=att["agent"], model=att["model"], effort=att["effort"],
                           args=cfg.args(att["agent"]), spec_file=prompt, expect=REVIEW_STATES)
     try:
@@ -449,6 +459,51 @@ def _review(p, tid: str, retry: bool) -> dict:
     return res
 
 
+def _clean(line: str) -> str:
+    return line.replace("*", "").replace("`", "")
+
+
+def broad_count(findings: str, prior: str | None) -> int:
+    """넓은 셈(REQUEST_CHANGES → APPROVE 로 내리는 것을 막는 데만): `## 지적 사항` 에서 낱말 P1 이 든 줄과 `## 이전 지적 확인`
+    에서 미해결이 든 줄."""
+    return (sum(1 for line in findings.splitlines() if BROAD_P1_RE.search(line))
+            + sum(1 for line in (prior or "").splitlines() if "미해결" in line))
+
+
+def strict_count(findings: str, prior: str | None) -> int:
+    """엄격한 셈(APPROVE → REQUEST_CHANGES 로 올리는 데만): `*`·백틱을 지운 줄에서 `없음` 줄을 빼고 id(rN-Fk)가 있고 첫
+    등급 표시가 [P1] 인 지적 줄, `rN-Fk[ [P1]]: 미해결` 모양의 이전 지적 줄."""
+    count = 0
+    for line in findings.splitlines():
+        line = _clean(line)
+        grade = STRICT_GRADE_RE.search(line)
+        if not NONE_LINE_RE.match(line) and STRICT_ID_RE.search(line) and grade and grade.group(1).upper() == "P1":
+            count += 1
+    return count + sum(1 for line in (prior or "").splitlines() if STRICT_PRIOR_RE.match(_clean(line)))
+
+
+def align_verdict(text: str, verdict: str) -> tuple[str, str, int | None]:
+    """(맞춘 내용, 맞춘 판정, 바꿨으면 셈 아니면 None). `## 지적 사항` 이 없으면(형식을 따르지 않은 파일) 그대로다. 같은 내용에
+    늘 같은 결과다(복구가 다시 맞춰도 같다). 바꿀 때는 판정 읽기와 같은 마지막 VERDICT 줄 앞에 맞추기 문장과 빈 줄을 끼운다."""
+    found = FINDINGS_RE.search(text)
+    if not found:
+        return text, verdict, None
+    prior = PRIOR_RE.search(text)
+    prior_text = prior.group(1) if prior else None
+    if verdict == "REQUEST_CHANGES" and broad_count(found.group(1), prior_text) == 0:
+        want, count = "APPROVE", 0
+    elif verdict == "APPROVE" and (count := strict_count(found.group(1), prior_text)) > 0:
+        want = "REQUEST_CHANGES"
+    else:
+        return text, verdict, None
+    lines = text.splitlines(keepends=True)
+    i = max(n for n, line in enumerate(lines) if line.strip().startswith("VERDICT:"))
+    end = lines[i][len(lines[i].rstrip("\r\n")):]
+    lines[i] = (f"> hteam 판정 맞추기: 막는 지적(`## 지적 사항` 의 P1 줄, `## 이전 지적 확인` 의 미해결 줄) {count}개라 {want} 로 "
+                f"바꿨다(원래 {verdict}).\n\nVERDICT: {want}{end}")
+    return "".join(lines), want, count
+
+
 def _verdict_in(data: bytes) -> tuple[str | None, str | None]:
     """리뷰 파일 바이트의 마지막 `VERDICT:` 줄. UTF-8 이 아니면 시도 실패다(예외로 태스크를 막지 않는다)."""
     try:
@@ -464,8 +519,10 @@ def _verdict_in(data: bytes) -> tuple[str | None, str | None]:
     return value, None
 
 
-def _read_verdict(p, att: dict) -> tuple[str | None, str | None, str | None]:
-    """(판정, 실패 사유, 판정을 읽은 바로 그 바이트의 SHA-1). 파일을 한 번만 읽어 파싱과 해시가 같은 내용을 본다."""
+def _read_verdict(p, att: dict) -> tuple[str | None, str | None, dict | None]:
+    """(맞춘 판정, 실패 사유, 기록할 값). 파일을 한 번만 읽어 파싱·해시·판정 맞추기(설계 6.3)가 같은 바이트를 본다. 기록할
+    값은 원래 바이트의 SHA-1(verdict_sha), 원래 판정(verdict_raw), 맞춘 판정(verdict_read), 맞춘 내용의 SHA-1(final_sha,
+    바꾸지 않았으면 verdict_sha), verdict_adjusted("APPROVE→REQUEST_CHANGES" 등, 바꾸지 않았으면 None)다."""
     end = att.get("dispatch_end") or {}
     if end.get("abandoned") or not end.get("outcome"):
         return None, "리뷰어가 done 없이 끝났다", None
@@ -479,11 +536,17 @@ def _read_verdict(p, att: dict) -> tuple[str | None, str | None, str | None]:
     except OSError as exc:
         return None, f"리뷰 파일을 읽지 못했다: {att['file']}: {exc.strerror or exc}", None
     verdict, reason = _verdict_in(data)
-    return verdict, reason, (hashlib.sha1(data).hexdigest() if verdict else None)
+    if verdict is None:
+        return None, reason, None
+    text, aligned, _ = align_verdict(data.decode("utf-8"), verdict)
+    sha = hashlib.sha1(data).hexdigest()
+    return aligned, None, {"verdict_read": aligned, "verdict_sha": sha, "verdict_raw": verdict,
+                           "final_sha": hashlib.sha1(text.encode("utf-8")).hexdigest() if aligned != verdict else sha,
+                           "verdict_adjusted": f"{verdict}→{aligned}" if aligned != verdict else None}
 
 
 def read_verdict(p, att: dict) -> tuple[str | None, str | None]:
-    """이 시도의 파일에서 마지막 `VERDICT:` 줄만 본다. done 없이 끝났거나 failed·읽을 수 없으면 시도 실패."""
+    """이 시도의 파일에서 마지막 `VERDICT:` 줄만 본다(판정 맞추기 뒤). done 없이 끝났거나 failed·읽을 수 없으면 시도 실패."""
     verdict, reason, _ = _read_verdict(p, att)
     return verdict, reason
 
@@ -496,12 +559,16 @@ def _sha(path) -> str | None:
 
 
 def _evidence(p, att: dict, tid: str, n: int):
-    """기록한 판정을 쓸 때: 시도 파일이 있으면 그것이, 없으면(이미 옮김) 최종 rN.md 가 기록한 해시와 같아야 한다.
+    """기록한 판정을 쓸 때: 시도 파일이 있으면 그것이 원래 해시(verdict_sha)와, 없으면(이미 최종화) 최종 rN.md 가 맞춘 내용의
+    해시(final_sha, 옛 기록은 verdict_sha)와 같아야 한다.
 
     (판정, 실패 사유, 검증한 경로). 최종화는 검증한 그 파일만 한다."""
     src = p.root / att["file"]
-    path = src if src.exists() else p.root / review_rel(tid, n)
-    if att.get("verdict_sha") and _sha(path) == att["verdict_sha"]:
+    if src.exists():
+        path, want = src, att.get("verdict_sha")
+    else:
+        path, want = p.root / review_rel(tid, n), att.get("final_sha") or att.get("verdict_sha")
+    if want and _sha(path) == want:
         return att["verdict_read"], None, path
     return None, "기록한 판정의 리뷰 파일이 없거나 바뀌었다", None
 
@@ -588,10 +655,10 @@ def _finish(p, tid: str) -> dict:
     die_at("before_verdict")
     verdict, reason = None, None
     if att.get("verdict_read") is None:
-        verdict, reason, sha = _read_verdict(p, att)
-        if verdict is not None:  # 판정과 그 판정을 읽은 바이트의 해시를 먼저 남긴다
+        verdict, reason, record = _read_verdict(p, att)
+        if verdict is not None:  # 판정과 그 판정을 읽은 바이트의 해시(맞춘 판정·내용 해시와 함께)를 먼저 남긴다
             with _finish_write(p, tid, k) as (_, a):
-                a.update(verdict_read=verdict, verdict_sha=sha, warnings=warnings)
+                a.update(**record, warnings=warnings)
             die_at("after_verdict")
             att = attempt_slot(k)(state.require(p, tid))
     if att.get("verdict_read") is not None:
@@ -611,14 +678,19 @@ def _finish(p, tid: str) -> dict:
     final_rel = review_rel(tid, n)
     final = p.root / final_rel
     _require_open(state.require(p, tid), tid, k)  # 옮기고 커밋하기 전에 fix·drop 의 취소가 끼었는지 본다
-    if verified != final:  # 검증한 시도 파일만 최종 파일로 옮긴다
-        os.replace(verified, final)
+    adjusted = att.get("verdict_adjusted")
+    if verified != final:  # 검증한 시도 파일만 최종 파일로 옮긴다(판정을 맞췄으면 같은 바이트로 다시 맞춘 내용을 쓴다)
+        if adjusted:
+            write_atomic(final, align_verdict(verified.read_bytes().decode("utf-8"), att["verdict_raw"])[0])
+        else:
+            os.replace(verified, final)
     die_at("after_move")
     for other in (p.root / "docs" / "reviews" / tid).glob(f"r{n}-a*.md"):
         other.unlink()
     if gitio.dirty(p.root, [gitio.literal(final_rel)]):
-        sha = gitio.commit_paths(p.root, [final_rel], f"[{tid}] review r{n}: {verdict}",
-                                 _warning_body(att.get("warnings") or []))
+        note = f"판정 맞추기: {adjusted}({ADJUST_BASIS})" if adjusted else None
+        body = "\n\n".join(x for x in (note, _warning_body(att.get("warnings") or [])) if x) or None
+        sha = gitio.commit_paths(p.root, [final_rel], f"[{tid}] review r{n}: {verdict}", body)
     else:  # 앞 호출이 커밋한 뒤 상태를 쓰기 전에 죽었다
         sha = gitio.last_commit(p.root, final_rel)
     die_at("after_commit")
@@ -626,9 +698,9 @@ def _finish(p, tid: str) -> dict:
     with _finish_write(p, tid, k) as (cur, a):
         a["result"] = verdict
         cur["rounds"][-1]["verdict"] = verdict
-        state.move(cur, to, "verdict", attempt=k, verdict=verdict)
+        state.move(cur, to, "verdict", attempt=k, verdict=verdict, verdict_adjusted=adjusted)
     return {"task": tid, "round": n, "attempt": k, "verdict": verdict, "status": to, "file": final_rel, "commit": sha,
-            "warnings": att.get("warnings") or []}
+            "source": att["agent"], "verdict_adjusted": adjusted, "warnings": att.get("warnings") or []}
 
 
 def _cmd_review(args) -> dict:

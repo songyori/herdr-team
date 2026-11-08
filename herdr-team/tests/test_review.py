@@ -104,8 +104,9 @@ class ReviewTest(ReviewCase):
         self.act_review("T-001", "REQUEST_CHANGES", text="## 지적 사항\n- [P1] src/app.py:1 — 틀림. 고친다.\n")
         self.assertEqual(self.hteam("review-finish", "T-001")[0], 0)
         first = (self.state_dir / "tasks/T-001/r1-review-a1.md").read_text()
-        self.assertNotIn("이번 라운드", first)  # 요청이 없는 라운드는 그대로다
-        self.assertIn("4. 수정 라운드면 이전 리뷰의 지적을 모두 다뤘는가.\n\n## REVIEW_FILE 형식", first)
+        self.assertNotIn("- 이번 라운드", first)  # 요청이 없는 라운드는 그대로다
+        self.assertNotIn("5. 이번 라운드 요청", first)
+        self.assertIn("4. 수정 라운드면 이전 리뷰의 P1 지적이 모두 반영됐는가.\n\n## 등급과 판정\n", first)
         code, out = self.hteam("fix", "T-001", "--note=버튼 색을 파랑으로")
         self.assertEqual(code, 0, out)
         self.act_work("T-001", {"src/app.py": "print('blue')\n"})
@@ -263,7 +264,7 @@ class DesignSectionTest(ReviewCase):
     def test_other_roles_have_no_design_section(self):
         text = self.prompt("T-001", "tester", {"tests/a.txt": "x\n"})
         self.assertNotIn("## 디자인 기준", text)
-        self.assertIn("4. 수정 라운드면 이전 리뷰의 지적을 모두 다뤘는가.\n\n## REVIEW_FILE 형식", text)
+        self.assertIn("판정을 맞춘다.\n\n## REVIEW_FILE 형식", text)
 
 
 class NoDirectorDesignTest(DesignSectionTest):
@@ -409,11 +410,25 @@ class TextTemplateTest(unittest.TestCase):
                        "`### 문구 점검` 을 요구하면", "이 태스크가 추가한 줄의 의심 위치"):
             self.assertIn(needle, text)
         prompt = (ROOT / "templates/review-prompt.md").read_text(encoding="utf-8")
-        self.assertIn("\n\n{{tests}}{{group}}{{design}}{{text}}## REVIEW_FILE 형식\n", prompt)
+        self.assertIn("\n\n{{tests}}{{round_scope}}{{group}}{{design}}{{text}}## REVIEW_FILE 형식\n", prompt)
         for name, slots in (("review-tests.md", ["test_lines"]),
-                            ("review-group.md", ["group_key", "group_tasks", "full_lines", "full_tail"])):
+                            ("review-group.md", ["group_key", "group_tasks", "full_lines", "full_tail"]),
+                            ("review-round.md", ["round", "prev", "prev_review", "prev_head", "new_commits", "prev", "prev",
+                                                 "prev", "prev", "prev", "request_scope", "prev"])):
             self.assertEqual(re.findall(r"\{\{(\w+)\}\}", (ROOT / "templates" / name).read_text(encoding="utf-8")), slots)
         self.assertIn("1. 사양의 Acceptance 를 실제로 충족하는가. {{verify_rule}}\n", prompt)
+
+    def test_review_design_example_and_agents_reviewer_lines(self):
+        # 설계 6.2: 디자인 지적 표시의 (회귀)는 이 태스크의 지적이고 ## 회귀 절과 다르다. 리뷰어 규칙은 새 형식을 적는다
+        design = (ROOT / "templates/review-design.md").read_text(encoding="utf-8")
+        self.assertIn("`- r1-F1 [P1] src/Dialog.tsx:42 — (회귀) 닫기 아이콘 버튼의 aria-label 을 지웠다. 되살린다.`", design)
+        self.assertIn("이 표시의 `(회귀)` 는 이 태스크의 지적이다. `## 회귀` 절(묶음 리뷰의 full 실패로 드러난 다른 태스크의 제품 "
+                      "회귀)에 넣지 않는다.", design)
+        agents = (ROOT / "templates/AGENTS.section.md").read_text(encoding="utf-8")
+        self.assertIn("번호 `r<라운드>-F<n>`, 등급 `[P1|P2|P3]`, `파일:줄 — 문제. 고칠 방향.`. P1 은 `## 지적 사항`, P2·P3 는 "
+                      "`## 후속` 에 둔다.", agents)
+        self.assertIn("P1 이 있으면 REQUEST_CHANGES, 없으면 APPROVE 다.", agents)
+        self.assertNotIn("P1 이 하나라도 있으면", agents)
 
     def test_no_tilde_ranges_in_templates(self):
         import re
@@ -1642,7 +1657,7 @@ class ReviewGroupTest(GateCase):
         self.assertNotIn("## hteam 테스트 결과", text)
         self.act_review("T-003", "APPROVE")
         code, out = self.hteam("review-finish", "T-003")  # full 실패여도 리뷰어 판정이다
-        self.assertEqual((code, out["verdict"], out["status"]), (0, "APPROVE", "approved"), out)
+        self.assertEqual((code, out["verdict"], out["status"], out["source"]), (0, "APPROVE", "approved", "codex"), out)
         self.assertNotIn("출처: hteam", (self.proj / "docs/reviews/T-003/r1.md").read_text(encoding="utf-8"))
 
     def test_full_record_reuse(self):
@@ -1668,6 +1683,192 @@ class ReviewGroupTest(GateCase):
         self.assertEqual(self.act_work("T-005", {"tests/grp/test_a.py": "a\n"})[0], 0)
         self.assertEqual(self.hteam("review", "T-005")[0], 0)
         self.assertIn("`git show` 로 본다):\n- 없음\n", self.prompt("T-005"))
+
+
+P1_REVIEW = "## 판정 근거\n- 틀림\n## 이전 지적 확인\n- 해당 없음\n## 지적 사항\n- r1-F1 [P1] src/app.py:1 — 틀림. 고친다.\n"
+
+
+class ReviewRoundTest(ReviewCase):
+    """수렴형 리뷰(설계 6.2): 새 REVIEW_FILE 형식, 라운드 2 부터 라운드 절."""
+
+    def prompt(self, n=1, k=1):
+        return (self.state_dir / f"tasks/T-001/r{n}-review-a{k}.md").read_text(encoding="utf-8")
+
+    def second_round(self, note=None, **started):
+        self.reviewing(**started)
+        self.act_review("T-001", "REQUEST_CHANGES", text=P1_REVIEW)
+        self.assertEqual(self.hteam("review-finish", "T-001")[1]["status"], "changes")
+        first = self.attempt("T-001")["inputs"]["commits"]
+        code, out = self.hteam("fix", "T-001", *([f"--note={note}"] if note else []))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.act_work("T-001", {"src/app.py": "print('r2')\n"})[0], 0)
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual(code, 0, out)
+        return first
+
+    def test_first_round_format(self):
+        self.reviewing()
+        text = self.prompt()
+        self.assertNotIn("## 라운드", text)
+        for needle in ("## 등급과 판정\n- P1(막는다): 수용 기준 미충족", "hteam 테스트 실패", "`## 후속` 에 적는다",
+                       "`r1-F1`, `r1-F2` 처럼 번호를 붙인다", "hteam 은 `## 지적 사항` 의 `[P1]` 이 든 줄과 `## 이전 지적 확인` 의 "
+                       "`미해결` 줄 수로 판정을 맞춘다.",
+                       "## 판정 근거\n## 이전 지적 확인\n- r1-F1: 해결 (라운드 1이면 \"해당 없음\")\n## 지적 사항\n"
+                       "- r1-F1 [P1] 파일:줄 — 문제. 고칠 방향. (없으면 \"없음\")\n## 후속\n- r1-F2 [P2|P3]",
+                       "## 기획 누락\n- r1-F3 ", "## 회귀\n- r1-F4 실패한 테스트 — 원인으로 보이는 태스크 ID. 근거.",
+                       "## 직접 확인한 것\n- 실행한 명령과 결과 요약\n\n칭찬과 범위 밖 제안은 쓰지 않는다.\n마지막 줄은"):
+            self.assertIn(needle, text)
+        self.assertNotIn("P1 이 하나라도 있으면", text)
+        self.assertNotIn("\n\n\n", text)
+
+    def test_second_round_sees_only_new_commits(self):
+        first = self.second_round()
+        text = self.prompt(n=2)
+        new = self.attempt("T-001")["inputs"]["commits"][-1]
+        section = text[text.index("## 라운드 2 확인 범위"):text.index("## REVIEW_FILE 형식")]
+        self.assertIn(f"지난 리뷰어 리뷰는 r1(`docs/reviews/T-001/r1.md`)다. 그 리뷰가 본 마지막 커밋은 `{first[-1]['sha'][:10]}` "
+                      f"다. 그 뒤 새 커밋:\n- {new['sha'][:10]} {new['subject']}\n\n이번 라운드는 세 가지만 본다.", section)
+        self.assertNotIn(first[0]["subject"], section)  # 지난 리뷰가 본 커밋의 제목은 새 커밋에 없다
+        self.assertIn("`r1-F1: 해결` 또는 `r1-F1: 미해결 — 근거`", section)
+        self.assertIn("\nr1 의 P2·P3 를 고치지 않은 것은 지적하지 않는다.", section)
+        self.assertNotIn("4. 위 기준 5", section)
+        self.assertNotIn("\n\n\n", text)
+        work = (self.state_dir / "tasks/T-001/r2-work.md").read_text(encoding="utf-8")
+        self.assertIn("`docs/reviews/T-001/r1.md` 리뷰를 읽고 막는 지적(`## 지적 사항` 의 P1, `## 이전 지적 확인` 의 미해결, "
+                      "hteam 사전 검사·테스트 관문 사유)을 모두 고친다. 고치지 않는 항목은 보고서 `## r2` 절에 이유를 적는다. "
+                      "`## 후속`·`## 기획 누락`·`## 회귀` 는 고치지 않는다(코디네이터가 따로 태스크로 만든다).", work)
+
+    def test_request_round_adds_line_four(self):
+        self.second_round(note="버튼 색을 파랑으로")
+        self.assertIn("\n4. 위 기준 5 의 이번 라운드 요청을 반영했는지. 반영하지 않았으면 P1 이다.\nr1 의 P2·P3", self.prompt(n=2))
+
+    def test_claude_reviewer_gets_the_same_round_section(self):
+        self.second_round(front={"worker": "codex"})
+        self.assertEqual(self.attempt("T-001")["agent"], "claude")
+        self.assertIn("## 라운드 2 확인 범위", self.prompt(n=2))
+
+    def test_only_hteam_rejections_before_gives_no_round_section(self):
+        self.started()
+        self.assertEqual(self.act_work("T-001", commit=False)[0], 0)
+        self.assertEqual(self.hteam("review", "T-001")[1]["source"], "hteam")
+        self.git("add", "--", "src/app.py", "docs/tasks/T-001/report.md")
+        self.git("commit", "-q", "-m", "[T-001] r1 늦은 커밋", "--", "src/app.py", "docs/tasks/T-001/report.md")
+        self.assertEqual(self.hteam("fix", "T-001")[0], 0)
+        self.assertEqual(self.act_work("T-001", {"src/app.py": "print('r2')\n"})[0], 0)
+        self.assertEqual(self.hteam("review", "T-001")[0], 0)
+        self.assertNotIn("## 라운드", self.prompt(n=2))
+
+    def test_unknown_previous_head_reviews_everything(self):
+        self.reviewing()
+        self.act_review("T-001", "REQUEST_CHANGES", text=P1_REVIEW)
+        self.hteam("review-finish", "T-001")
+        with state.edit(self.p, "T-001") as st:
+            st["rounds"][0]["reviews"][0]["inputs"]["commits"] = [{"sha": "0" * 40, "subject": "다른 기록"}]
+        self.hteam("fix", "T-001")
+        self.act_work("T-001", {"src/app.py": "print('r2')\n"})
+        self.assertEqual(self.hteam("review", "T-001")[0], 0)
+        text = self.prompt(n=2)
+        self.assertIn("그 리뷰가 본 마지막 커밋은 기록 없음 다. 그 뒤 새 커밋:\n- 지난 리뷰의 커밋 기록이 없다. 위 리뷰 대상 커밋 "
+                      "전체를 본다\n", text)
+
+
+class VerdictAlignTest(unittest.TestCase):
+    """판정 맞추기(설계 6.3, orca-team 사례)."""
+
+    def align(self, findings, verdict, prior=None):
+        from hteam import review
+        text = "# T-001 r1 리뷰\n## 판정 근거\n- 근거\n"
+        if prior is not None:
+            text += "## 이전 지적 확인\n" + prior + "\n"
+        text += "## 지적 사항\n" + findings + "\n## 후속\n- r1-F9 [P2] a.py:1 — 다듬기. [P1] 아님\n\nVERDICT: " + verdict + "\n"
+        return review.align_verdict(text, verdict)
+
+    def test_downgrade_and_upgrade(self):
+        text, verdict, count = self.align("- 없음", "REQUEST_CHANGES")
+        self.assertEqual((verdict, count), ("APPROVE", 0))
+        self.assertTrue(text.endswith("\n> hteam 판정 맞추기: 막는 지적(`## 지적 사항` 의 P1 줄, `## 이전 지적 확인` 의 미해결 줄) "
+                                      "0개라 APPROVE 로 바꿨다(원래 REQUEST_CHANGES).\n\nVERDICT: APPROVE\n"), text)
+        for line in ("- r1-F1 [P1] a.py:1 — 틀림.", "- **r2-F1** [P1] a.py:1", "- [P1] r2-F1 a.py:1", "- `r2-F1` [P1] a",
+                     "+ r2-F1 [P1] a", "1) r2-F1 [p1] a"):
+            self.assertEqual(self.align(line, "APPROVE")[1:], ("REQUEST_CHANGES", 1), line)
+        for prior in ("- r1-F1 [P1]: 미해결 — 그대로", "- **r1-F1**: 미해결", "- r1-F1: **미해결**", "- r1-F1：미해결"):
+            self.assertEqual(self.align("- 없음", "APPROVE", prior)[1:], ("REQUEST_CHANGES", 1), prior)
+
+    def test_kept(self):
+        for line in ("- r1-F1 [P1] a.py:1 — 틀림.", "* [P1] a.py:1 — 틀림.", "- **P1** 틀림", "- (P1) 틀림", "### P1 틀림",
+                     "- [p1] 틀림", "- 없음. r1 의 [P1] 은 해결됐다"):
+            self.assertEqual(self.align(line, "REQUEST_CHANGES")[1:], ("REQUEST_CHANGES", None), line)
+        self.assertEqual(self.align("- 없음", "REQUEST_CHANGES", "- r1-F1: 미해결 — 근거")[1:], ("REQUEST_CHANGES", None))
+        for line in ("- [P12] 다른 것", "- API1 호출", "- P1x 라벨"):  # 넓은 셈이 세지 않는다
+            self.assertEqual(self.align(line, "REQUEST_CHANGES")[1], "APPROVE", line)
+        for line, prior in (("- 없음 (r1-F1 [P1] 은 고쳐졌다)", None), ("1. **해당 없음** (r1-F1 [P1] 은 고쳐졌다)", None),
+                            ("- 없음", "- 미해결 지적 없음"), ("- 없음", "- r1-F1: 해결 (미해결이던 경계를 고쳤다)"),
+                            ("- 없음", "- r1-F2 [P2]: 미해결"), ("- 없음. r1 의 [P1] 은 고쳐졌다", None),
+                            ("- r2-F3 [P2] a.py — r1-F1 [P1] 관련", None)):
+            self.assertEqual(self.align(line, "APPROVE", prior)[1:], ("APPROVE", None), (line, prior))
+
+    def test_files_without_findings_section_or_crlf_are_kept(self):
+        from hteam import review
+        self.assertEqual(review.align_verdict("## 지적\n- 없음\n\nVERDICT: REQUEST_CHANGES\n", "REQUEST_CHANGES")[1:],
+                         ("REQUEST_CHANGES", None))
+        crlf = "## 지적 사항\r\n- 없음\r\n\r\nVERDICT: REQUEST_CHANGES\r\n"
+        self.assertEqual(review.align_verdict(crlf, "REQUEST_CHANGES"), (crlf, "REQUEST_CHANGES", None))
+
+
+class AlignFlowTest(ReviewCase):
+    def finish(self, verdict, text):
+        self.reviewing()
+        self.act_review("T-001", verdict, text=text)
+        return self.hteam("review-finish", "T-001")
+
+    def test_request_changes_without_p1_is_approved(self):
+        code, out = self.finish("REQUEST_CHANGES", "## 지적 사항\n- 없음\n## 후속\n- r1-F1 [P2] src/app.py:1 — 다듬기.\n")
+        self.assertEqual((code, out["verdict"], out["status"], out["verdict_adjusted"]),
+                         (0, "APPROVE", "approved", "REQUEST_CHANGES→APPROVE"), out)
+        text = (self.proj / "docs/reviews/T-001/r1.md").read_text(encoding="utf-8")
+        self.assertTrue(text.endswith("0개라 APPROVE 로 바꿨다(원래 REQUEST_CHANGES).\n\nVERDICT: APPROVE\n"), text)
+        self.assertEqual(self.git("log", "-1", "--format=%s").strip(), "[T-001] review r1: APPROVE")
+        self.assertEqual(self.git("log", "-1", "--format=%b").strip().splitlines()[0],
+                         "판정 맞추기: REQUEST_CHANGES→APPROVE(`## 지적 사항` 의 P1 줄과 `## 이전 지적 확인` 의 미해결 줄 수 기준)")
+        st = self.task_state("T-001")
+        self.assertEqual((st["history"][-1]["verdict"], st["history"][-1]["verdict_adjusted"], st["rounds"][0]["verdict"]),
+                         ("APPROVE", "REQUEST_CHANGES→APPROVE", "APPROVE"))
+        att = st["rounds"][0]["reviews"][0]
+        self.assertEqual((att["verdict_raw"], att["verdict_read"], att["result"]), ("REQUEST_CHANGES", "APPROVE", "APPROVE"))
+        self.assertNotEqual(att["final_sha"], att["verdict_sha"])
+
+    def test_approve_with_p1_is_request_changes(self):
+        code, out = self.finish("APPROVE", P1_REVIEW)
+        self.assertEqual((code, out["verdict"], out["status"], out["verdict_adjusted"]),
+                         (0, "REQUEST_CHANGES", "changes", "APPROVE→REQUEST_CHANGES"), out)
+
+    def test_unadjusted_verdict_has_no_note(self):
+        code, out = self.finish("REQUEST_CHANGES", P1_REVIEW)
+        self.assertEqual((code, out["verdict"], out["verdict_adjusted"]), (0, "REQUEST_CHANGES", None), out)
+        self.assertEqual(out["source"], "codex")  # 리뷰어 판정의 출처(hteam 반려는 source: hteam, 설계 15.2 (1) 8)
+        self.assertNotIn("판정 맞추기", (self.proj / "docs/reviews/T-001/r1.md").read_text(encoding="utf-8"))
+        self.assertEqual(self.git("log", "-1", "--format=%b").strip(), "")
+
+    def test_resume_after_commit_checks_final_sha(self):
+        self.reviewing()
+        self.act_review("T-001", "REQUEST_CHANGES", text="## 지적 사항\n- 없음\n")
+        code, _ = self.hteam("review-finish", "T-001", env={"HTEAM_TEST_DIE_AT": "after_commit"})
+        self.assertEqual(code, 137)
+        self.assertFalse((self.proj / "docs/reviews/T-001/r1-a1.md").exists())
+        code, out = self.hteam("review-finish", "T-001")
+        self.assertEqual((code, out["verdict"], out["status"]), (0, "APPROVE", "approved"), out)
+        self.assertTrue((self.proj / "docs/reviews/T-001/r1.md").read_text(encoding="utf-8").endswith("VERDICT: APPROVE\n"))
+
+    def test_resume_after_move_realigns_from_the_attempt_file(self):
+        self.reviewing()
+        self.act_review("T-001", "REQUEST_CHANGES", text="## 지적 사항\n- 없음\n")
+        code, _ = self.hteam("review-finish", "T-001", env={"HTEAM_TEST_DIE_AT": "after_move"})
+        self.assertEqual(code, 137)
+        self.assertTrue((self.proj / "docs/reviews/T-001/r1-a1.md").exists())  # 맞춘 내용을 썼고 시도 파일은 아직 있다
+        code, out = self.hteam("review-finish", "T-001")
+        self.assertEqual((code, out["verdict"]), (0, "APPROVE"), out)
+        self.assertEqual(len([ln for ln in (self.proj / "docs/reviews/T-001/r1.md").read_text(encoding="utf-8").splitlines()
+                              if ln.startswith("> hteam 판정 맞추기")]), 1)
 
 
 if __name__ == "__main__":

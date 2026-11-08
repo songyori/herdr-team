@@ -933,7 +933,7 @@ class ComposeTest(StartCase):
         spec = specs.load(self.p, "T-001")
         rd = {"round": 2, "note": "표를 고친다", "supplement": "T-009"}
         text = compose.work_spec(self.p, cfg, spec, rd, ["docs/planning/**"])
-        for needle in ("## 수정 라운드 r2", "git log --grep '^\\[T-001\\]'", "`docs/reviews/T-001/r1.md` 의 지적을 모두",
+        for needle in ("## 수정 라운드 r2", "git log --grep '^\\[T-001\\]'", "`docs/reviews/T-001/r1.md` 리뷰를 읽고 막는 지적(`## 지적 사항` 의 P1",
                        "코디네이터 메모: 표를 고친다", "디렉터 보강 태스크 T-009", "ask-user --task T-001 --json -",
                        "ask-user --task T-001 --pending", "- T-000: `docs/tasks/T-000/report.md`"):
             self.assertIn(needle, text)

@@ -748,7 +748,7 @@ class ApprovalFollowupTest(DecisionCase):
         self.commit(prior, "# 리뷰\nREQUEST_CHANGES: 여백이 틀렸다\n", "[T-002] review r1: REQUEST_CHANGES")
         self.assertEqual(self.decide("out-0001", {"T-001": "버튼을 크게"})[0], 0)
         work = self.work("T-002")
-        self.assertIn(f"`{prior}` 의 지적을 모두 다룬다", work)
+        self.assertIn(f"`{prior}` 리뷰를 읽고 막는 지적", work)
         self.assertIn("사용자 요청: 선행 T-001 의 사용자 요청을 반영한다: 버튼을 크게", work)
         self.assertNotIn("이전 리뷰는 승인이었다", work)
 
@@ -844,7 +844,7 @@ class ApprovalFollowupTest(DecisionCase):
         rd = self.task_state("T-002")["rounds"][-1]
         self.assertEqual((rd.get("prior_verdict"), rd.get("prior_review_round")), ("REQUEST_CHANGES", 1))
         work = self.work("T-002")
-        self.assertIn(f"`{prior}` 의 지적을 모두 다룬다", work)
+        self.assertIn(f"`{prior}` 리뷰를 읽고 막는 지적", work)
         self.assertIn("버튼을 크게", work)
         self.assertIn("글꼴을 바꾼다", work)
         self.assertNotIn("이전 리뷰는 승인이었다", work)
@@ -1554,7 +1554,7 @@ class ApprovalFlowTest(DecisionCase):
         first = (self.state_dir / "tasks/T-001/r2-work.md").read_text(encoding="utf-8")
         self.assertIn("사용자가 일괄 승인에서 수정을 요청했다", first)
         self.assertIn("사용자 요청: 버튼을 더 크게", first)
-        self.assertNotIn("의 지적을 모두 다룬다", first)
+        self.assertNotIn("리뷰를 읽고 막는 지적", first)
         second = (self.state_dir / "tasks/T-002/r2-work.md").read_text(encoding="utf-8")
         self.assertIn("글꼴을 바꾼다", second)
         self.assertIn("선행 T-001 의 사용자 요청을 반영한다: 버튼을 더 크게", second)

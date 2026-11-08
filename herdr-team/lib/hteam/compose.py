@@ -94,8 +94,12 @@ def work_spec(p, cfg, spec, rd: dict, owns: list[str]) -> str:
             parts.append(f"사용자가 일괄 승인에서 수정을 요청했다{said}. 아래 사용자 요청을 모두 반영하고, "
                          f"요청마다 어떻게 반영했는지 보고서 `## r{n}` 절에 적는다.")
         if (not rd.get("from_user") or verdict == "REQUEST_CHANGES") and (p.root / prior).is_file():
-            # 사용자 요청 라운드여도 이전 리뷰가 수정 요청이었으면 그 지적은 아직 남아 있다
-            parts.append(f"`{prior}` 의 지적을 모두 다룬다. 지적마다 어떻게 다뤘는지 보고서 `## r{n}` 절에 적는다.")
+            # 사용자 요청 라운드여도 이전 리뷰가 수정 요청이었으면 그 지적은 아직 남아 있다. 막는 지적만 고친다(수렴형 리뷰,
+            # 설계 5.5): P2 까지 고치면 새 diff 가 생겨 다음 라운드가 다시 넓어진다
+            parts.append(f"`{prior}` 리뷰를 읽고 막는 지적(`## 지적 사항` 의 P1, `## 이전 지적 확인` 의 미해결, hteam 사전 "
+                         "검사·테스트 관문 사유)을 모두 고친다. 고치지 않는 항목은 보고서 "
+                         f"`## r{n}` 절에 이유를 적는다. `## 후속`·`## 기획 누락`·`## 회귀` 는 고치지 않는다(코디네이터가 "
+                         "따로 태스크로 만든다).")
         if spec.role in ASK_ROLES:
             parts.append(f"먼저 `{SHIM} ask-user --task {tid} --pending` 과 `--history` 로 이전 질문과 답을 확인한다. "
                          f"답이 없는 질문이 있으면 새로 묻지 않고 `{SHIM} ask-user --task {tid} --wait <id>` 로 그 답을 "
@@ -259,12 +263,44 @@ def group_section(p, spec, tests: dict | None) -> str:
                 full_lines=full_lines, full_tail=full_tail).rstrip() + "\n\n"
 
 
-def review_prompt(p, cfg, spec, rd: dict, att: dict) -> str:
+REQUEST_SCOPE = "4. 위 기준 5 의 이번 라운드 요청을 반영했는지. 반영하지 않았으면 P1 이다.\n"
+
+
+def round_section(p, tid: str, rd: dict, rounds: list[dict], commits: list[dict], requested: bool) -> str:
+    """라운드 절(설계 6.2): 앞 라운드에 리뷰어 리뷰가 있을 때만. 마지막 리뷰어 리뷰 = 지금보다 앞선 라운드 가운데 시도 결과가
+    판정인 시도가 있는 마지막 라운드(prev), 그 리뷰가 본 마지막 커밋 = 그 시도 inputs.commits 의 끝(prev_head). 새 커밋은
+    지금 대상 커밋 가운데 prev_head 뒤의 것이다. requested 면(이번 라운드 요청) 요청 반영 줄을 더한다."""
+    found = None
+    for r in reversed(rounds):
+        if r.get("round", 0) >= rd["round"]:
+            continue
+        done = [a for a in r.get("reviews", []) if a.get("result") in ("APPROVE", "REQUEST_CHANGES")]
+        if done:
+            found = (r["round"], done[-1])
+            break
+    if found is None:  # 라운드 1 이거나 앞 라운드가 모두 hteam 반려(사전 검사·관문)였다: 리뷰어는 전체를 본다
+        return ""
+    prev, att = found
+    seen = (att.get("inputs") or {}).get("commits") or []
+    shas = [c["sha"] for c in commits]
+    head = seen[-1]["sha"] if seen else None
+    if head and head in shas:
+        after = commits[shas.index(head) + 1:]
+        new = "\n".join(f"- {c['sha'][:10]} {c['subject']}" for c in after) or "- 없음(새 커밋이 없다)"
+        shown = f"`{head[:10]}`"
+    else:
+        new, shown = "- 지난 리뷰의 커밋 기록이 없다. 위 리뷰 대상 커밋 전체를 본다", "기록 없음"
+    return fill(_template("review-round.md"), round=str(rd["round"]), prev=str(prev), prev_review=review_rel(tid, prev),
+                prev_head=shown, new_commits=new, request_scope=REQUEST_SCOPE if requested else "").rstrip() + "\n\n"
+
+
+def review_prompt(p, cfg, spec, rd: dict, att: dict, rounds: list[dict] | None = None) -> str:
     """리뷰 프롬프트(설계 6.2). 입력(대상 커밋, 바뀐 파일)은 시도 기록에 저장된 것을 쓴다. 이번 라운드에 요청(사용자
     요청·코디네이터 메모·디렉터 보강, round_requests)이 있으면 그 요청과 그 라운드 작업 사양을 보이고 기준에 한 줄을 더한다
     (없으면 그대로).
     기준 뒤에 테스트 절(tests_section), 묶음 절(group_section), 디자인 절(design_section), 문구 절(text_section) 순서로
-    붙인다. 없는 절은 빈 문자열이다. 관문 결과는 시도 기록 inputs.tests 를 쓴다(관문을 다시 돌리지 않는다)."""
+    붙인다. 없는 절은 빈 문자열이다. 관문 결과는 시도 기록 inputs.tests 를 쓴다(관문을 다시 돌리지 않는다). 라운드 2 부터는
+    테스트 절 다음에 라운드 절(round_section, rounds 는 상태의 라운드 기록)을 붙인다."""
     tid, n = spec.id, rd["round"]
     prior = [review_rel(tid, r) for r in range(1, n) if (p.root / review_rel(tid, r)).is_file()]
     commits = att["inputs"]["commits"]
@@ -284,6 +320,7 @@ def review_prompt(p, cfg, spec, rd: dict, att: dict) -> str:
                 spec_path=f".herdr-team/tasks/{tid}.md", role_doc=f".herdr-team/roles/{spec.role}.md",
                 report=report_rel(tid), prior=", ".join(f"`{x}`" for x in prior) or "없음", request=request,
                 request_rule=request_rule, verify_rule=verify_rule(p, spec.role, tests), tests=tests_section(tests),
+                round_scope=round_section(p, tid, rd, rounds or [], commits, bool(asks)),
                 group=group_section(p, spec, tests),
                 design=design_section(p, cfg, spec, files, shas, att.get("agent") or "codex"),
                 text=text_section(p, files, shas),
