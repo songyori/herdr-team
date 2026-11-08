@@ -61,20 +61,45 @@ def _int(value) -> bool:
 
 
 def _quoted_files(command: str) -> bool:
-    """`{files}` 가 셸 따옴표(작은·큰따옴표) 안에 있는가. hteam 은 파일마다 shlex.quote 로 인용해 넣으므로 이미 따옴표
-    안이면 인용이 깨져 파일 이름이 셸에서 실행된다. 따옴표 밖의 역슬래시는 다음 글자를 가리고, 큰따옴표 안에서도 그렇다."""
-    quote, i = "", 0
+    """`{files}` 가 셸 따옴표 안에 있는가. hteam 은 파일마다 shlex.quote 로 인용해 넣으므로 이미 따옴표 안이면(또는 앞에
+    가려지지 않은 역슬래시가 있으면: 첫 작은따옴표를 가린다) 인용이 깨져 파일 이름이 셸에서 실행된다. `$(...)`·백틱 안은
+    새 인용 문맥이라 맨 위 문맥만 본다. 따옴표 밖 단어 시작의 `#` 는 줄 끝까지 주석이다."""
+    stack = [["top", ""]]  # [종류(top·$(·`), 따옴표(""·'·")]
+    i = 0
     while i < len(command):
+        ctx = stack[-1]
+        kind, quote = ctx
         ch = command[i]
         if command.startswith("{files}", i) and quote:
             return True
-        if ch == "\\" and quote != "'":
+        if quote == "'":
+            if ch == "'":
+                ctx[1] = ""
+        elif ch == "\\":
+            if command.startswith("{files}", i + 1):
+                return True
+            escapable = quote == "" or command[i + 1:i + 2] in ("$", "`", '"', "\\", "\n")
+            i += 2 if escapable else 1
+            continue
+        elif ch == "$" and command.startswith("$(", i):
+            stack.append(["$(", ""])
             i += 2
             continue
-        if quote:
-            quote = "" if ch == quote else quote
-        elif ch in "'\"":
-            quote = ch
+        elif ch == "`":
+            if kind == "`" and not quote:
+                stack.pop()
+            else:
+                stack.append(["`", ""])
+        elif ch == ")" and kind == "$(" and not quote:
+            stack.pop()
+        elif ch == '"':
+            ctx[1] = "" if quote else '"'
+        elif ch == "'" and not quote:
+            ctx[1] = "'"
+        elif ch == "#" and not quote and (i == 0 or command[i - 1] in " \t\n;&|()"):
+            end = command.find("\n", i)
+            i = len(command) if end < 0 else end
+            continue
         i += 1
     return False
 

@@ -40,9 +40,12 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(testgate.config_problems({"quick": "a {files} {files}", "full": "b", "timeout_min": 241})[0],
                          "[test]: quick 은 {files} 를 정확히 한 번 담는다")
         quoted = "[test]: quick 의 {files} 는 따옴표 밖에 둔다(hteam 이 파일마다 인용한다)"
-        for bad in ('fake-test "{files}"', "fake-test '{files}'", 'x "a $(b)" "{files}"', "x 'a' \"p {files} q\""):
+        for bad in ('fake-test "{files}"', "fake-test '{files}'", 'x "a $(b)" "{files}"', "x 'a' \"p {files} q\"",
+                    'x "$(echo "{files}")"', "pytest \\{files}", 'pytest "\\{files}"', "x '$( {files}", "pytest a#b' {files}"):
             self.assertEqual(testgate.config_problems({"quick": bad, "full": "b"}), [quoted], bad)
-        for good in ('fake-test "a b" {files}', "fake-test 'a b' \\' {files}", 'x "{" {files}'):
+        for good in ('fake-test "a b" {files}', "fake-test 'a b' \\' {files}", 'x "{" {files}',
+                     "# project's tests\npytest {files}", 'out="$(pytest {files})"', 'x "`y {files}`"',
+                     "x '$(' {files}", 'x "a\\q" {files}', "x $(y 'z)' ) {files}"):
             self.assertEqual(testgate.config_problems({"quick": good, "full": "b"}), [], good)
         with self.assertRaises(HteamError) as cm:
             testgate.parse_config({"quick": "a"})
