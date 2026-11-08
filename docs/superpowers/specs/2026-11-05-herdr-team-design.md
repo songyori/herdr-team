@@ -1031,6 +1031,7 @@ orca-team 0.6.0 의 `orch upgrade`(`setup.upgrade`)를 옮긴다. scaffold 는 �
 
 - 대상: scaffold 의 `FILES`(9.1) 가운데 `config.toml` 을 뺀 것: `.herdr-team/coordinator.md`, `design-rules.md`, `text-rules.md`, `roles/planner.md`·`director.md`·`designer.md`·`developer.md`·`tester.md`, `bin/hteam`(shim). `config.toml` 은 출력에도 넣지 않는다(새 키가 없고 사용자 설정이다). `project.md`, `tasks/`, `.gitignore` 는 건드리지 않는다.
 - 파일마다 차례로(git 은 프로젝트 루트에서, 프로젝트 기준 경로로 부른다):
+  0. 먼저 두 가지를 본다(Codex 코드 리뷰, git 상태 조회보다 앞). 루트에서 파일까지 경로 조각(`.herdr-team`, `.herdr-team/roles`, 파일 자신) 가운데 하나라도 심볼릭 링크면(끊어진 링크 포함) → `skipped`, 까닭 `경로에 심볼릭 링크가 있다. 템플릿과 직접 비교해 바꾼다`(링크를 따라 프로젝트 밖에 쓰거나 `chmod` 하지 않는다). 파일이 인덱스에서 `assume-unchanged`·`skip-worktree` 숨김 플래그를 가졌으면(`gitio.index_read` 를 한 번 읽어 최상위 기준 경로로 견준다) `git status` 가 작업 트리 변경을 보지 못하므로 → `skipped`, 까닭 `git 숨김 플래그(assume-unchanged·skip-worktree)가 있다. 플래그를 풀고(git update-index --no-assume-unchanged --no-skip-worktree) 다시 한다`. 인덱스를 읽지 못하면 모든 대상을 `git 상태를 읽지 못했다: …` 로 건너뛴다.
   1. `git status --porcelain=v1 -z --untracked-files=all --no-renames -- <파일>` 을 먼저 본다(Codex 설계 리뷰 r1: orca-team 은 "없음" 을 먼저 봐서 커밋하지 않은 삭제도 되살린다). `??` 가 아닌 줄(수정, 작업 트리 삭제 ` D`, 스테이징한 삭제 `D `, 스테이징한 변경)이 하나라도 있으면 → `skipped`, 까닭 `커밋 안 된 변경이 있다(지운 것 포함). 커밋하거나 되돌린 뒤 다시 한다`. git 이 실패하면(저장소가 아님 등) → `skipped`, 까닭 `git 상태를 읽지 못했다: …`.
   2. 파일이 없으면(1 이 비었다: HEAD 에도 없거나 삭제를 커밋했다) 부모 폴더를 만들고 템플릿 바이트를 쓴다 → `created`.
   3. `git ls-files --error-unmatch -- <파일>` 이 실패하면(추적되지 않음. `??` 줄이나 무시된 파일) → `skipped`, 까닭 `git 에 추적되지 않는다. 템플릿과 직접 비교해 바꾼다`.

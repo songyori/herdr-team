@@ -247,6 +247,63 @@ class UpgradeTest(TeamCase):
         self.assertEqual((self.proj / "CLAUDE.md").read_text(encoding="utf-8"), claude)
 
 
+    def test_hidden_index_flags_are_skipped(self):
+        for flag, rel in (("--assume-unchanged", "roles/planner.md"), ("--skip-worktree", "roles/tester.md")):
+            self.git("update-index", flag, "--", f".herdr-team/{rel}")
+            (self.team / rel).write_text("커밋 안 한 수정\n", encoding="utf-8")
+        code, out = self.upgrade()
+        self.assertEqual(code, 0, out)
+        reason = ("git 숨김 플래그(assume-unchanged·skip-worktree)가 있다. 플래그를 풀고"
+                  "(git update-index --no-assume-unchanged --no-skip-worktree) 다시 한다")
+        self.assertEqual(out["skipped"], [{"path": ".herdr-team/roles/planner.md", "reason": reason},
+                                          {"path": ".herdr-team/roles/tester.md", "reason": reason}])
+        for rel in ("roles/planner.md", "roles/tester.md"):
+            self.assertEqual((self.team / rel).read_text(encoding="utf-8"), "커밋 안 한 수정\n")
+
+    def test_symlinked_folder_is_not_followed(self):
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        self.git("rm", "-r", "-q", "--", ".herdr-team/roles")
+        (self.team / "roles").symlink_to(outside)
+        self.git("add", "--", ".herdr-team/roles")
+        self.git("commit", "-q", "-m", "roles 를 링크로")
+        code, out = self.upgrade()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertEqual(out["created"], [])
+        paths = {s["path"]: s["reason"] for s in out["skipped"]}
+        self.assertEqual(paths[".herdr-team/roles/planner.md"], "경로에 심볼릭 링크가 있다. 템플릿과 직접 비교해 바꾼다")
+        self.assertEqual(len(paths), 5)
+
+    def test_tracked_broken_file_link_is_kept(self):
+        link = self.team / "text-rules.md"
+        self.git("rm", "-q", "--", ".herdr-team/text-rules.md")
+        link.symlink_to(self.tmp / "nowhere")
+        self.git("add", "--", ".herdr-team/text-rules.md")
+        self.git("commit", "-q", "-m", "끊어진 링크")
+        code, out = self.upgrade()
+        self.assertEqual(code, 0, out)
+        self.assertTrue(link.is_symlink() and not link.exists())
+        self.assertEqual(out["skipped"], [{"path": ".herdr-team/text-rules.md",
+                                           "reason": "경로에 심볼릭 링크가 있다. 템플릿과 직접 비교해 바꾼다"}])
+
+    def test_shim_link_does_not_chmod_outside(self):
+        target = self.tmp / "outside-file"
+        shim = self.template("shim.py")
+        target.write_text(shim)  # 템플릿과 같은 바이트라 덮어쓰기 없이 chmod 만 남는 경우
+        target.chmod(0o600)
+        self.git("rm", "-q", "--", ".herdr-team/bin/hteam")
+        (self.team / "bin").mkdir(exist_ok=True)
+        (self.team / "bin/hteam").symlink_to(target)
+        self.git("add", "--", ".herdr-team/bin/hteam")
+        self.git("commit", "-q", "-m", "shim 링크")
+        code, out = self.upgrade()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(target.read_text(), shim)
+        self.assertEqual([s["path"] for s in out["skipped"]], [".herdr-team/bin/hteam"])
+
+
 class SubdirUpgradeTest(UpgradeTest):
     def setUp(self):
         TeamCase.setUp(self)

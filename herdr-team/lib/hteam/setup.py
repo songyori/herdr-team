@@ -266,9 +266,24 @@ def upgrade(root: Path) -> dict:
     없으면(삭제를 커밋했거나 처음부터 없다) 만들고, 추적하지 않으면 건너뛰고, 다르면 덮어쓴다. 커밋하지 않는다(git 이 백업이다).
     역할을 확인하지 않고 config.toml 을 읽지 않는다."""
     updated, created, skipped = [], [], []
+    try:  # 숨김 플래그가 붙은 파일은 git status 가 작업 트리 변경을 보지 않는다(경로는 저장소 최상위 기준)
+        hidden, prefix, hidden_error = gitio.index_read(root)[1], gitio.top_prefix(root), None
+    except HteamError as exc:
+        hidden, prefix, hidden_error = set(), "", exc
     for src, rel in UPGRADE.items():
         dst = root / rel
         want = (TEMPLATES / src).read_text(encoding="utf-8")
+        parts = Path(rel).parts
+        if any((root.joinpath(*parts[:i])).is_symlink() for i in range(1, len(parts) + 1)):
+            skipped.append({"path": rel, "reason": "경로에 심볼릭 링크가 있다. 템플릿과 직접 비교해 바꾼다"})
+            continue
+        if hidden_error is not None:
+            skipped.append({"path": rel, "reason": f"git 상태를 읽지 못했다: {hidden_error.message}"})
+            continue
+        if prefix + rel in hidden:
+            skipped.append({"path": rel, "reason": "git 숨김 플래그(assume-unchanged·skip-worktree)가 있다. "
+                            "플래그를 풀고(git update-index --no-assume-unchanged --no-skip-worktree) 다시 한다"})
+            continue
         try:
             codes = gitio.status_codes(root, rel)
             if any(code != "??" for code in codes):
