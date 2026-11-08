@@ -1,7 +1,7 @@
 """워커 사양 조립(설계 5.5)과 리뷰 프롬프트 조립(6.2). horch 프리앰블이 이 사양 앞에 붙는다."""
 from __future__ import annotations
 
-from . import lint, textlint
+from . import designdiff, lint, textlint
 from .errors import USAGE, HteamError
 from .paths import SHIM, TEMPLATES, report_rel, review_rel
 from .util import fill, show
@@ -110,9 +110,11 @@ def findings_list(items: list[str]) -> str:
 
 
 def design_findings(p, files: list[str], shas: list[str]) -> list[str]:
-    """디자인 절의 경고 목록(설계 11.6): 내용 검사(lint, files 는 시도 기록의 바뀐 파일, shas 는 대상 커밋)를 guarded 로
-    감싸 MAX_FINDINGS 까지. `hteam lint --task` 의 findings 도 이것이다."""
-    return lint.cap(guarded(lambda: lint.design_findings(p.root, files)))
+    """디자인 절의 경고 목록(설계 11.6): diff 검사(designdiff, 대상 커밋 shas 의 지운 줄·추가한 줄) 먼저, 내용 검사(lint,
+    files 는 시도 기록의 바뀐 파일) 뒤. 검사마다 guarded 로 따로 감싸고 합쳐서 MAX_FINDINGS 까지. `hteam lint --task` 의
+    findings 도 이것이다."""
+    return lint.cap(guarded(lambda: designdiff.design_diff_lint(p.root, files, shas))
+                    + guarded(lambda: lint.design_findings(p.root, files)))
 
 
 def text_findings(p, files: list[str], shas: list[str]) -> list[str] | None:

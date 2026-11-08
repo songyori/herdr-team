@@ -202,6 +202,17 @@ class LintCommandTest(TeamCase):
         code, out = self.hteam("lint", "--task", "T-001", as_=None)
         self.assertEqual(out["text_findings"], ['src/app.tsx:1: 오탈자 "됬"(a = "저장됬어요";)'], out)
 
+    def test_lint_task_findings_merge_diff_and_content_checks(self):
+        # 디자인 절과 같은 목록이다: diff 검사 먼저, 내용 검사 뒤. 디렉터 직무가 없어도 낸다(설계 11.6)
+        self.commit("src/Btn.tsx", '<button aria-label="닫기"><X/></button>\n', "기존 버튼")
+        self.write_spec("T-001", "developer")
+        state.create(self.p, "T-001", "developer")
+        self.assertEqual(self.hteam("start", "T-001")[0], 0)
+        self.act_work("T-001", {"src/Btn.tsx": "<button><X/></button>\n<span>🚀</span>\n"})
+        code, out = self.hteam("lint", "--task", "T-001", as_=None)
+        self.assertEqual(out["findings"], ["src/Btn.tsx: 지운 줄에서 aria-label 1개가 줄었다(대체가 있는지 확인)",
+                                           "src/Btn.tsx:2: 이모지(🚀)"], out)
+
     def test_scaffold_copies_design_rules(self):
         desc = self.tmp / "desc.txt"
         desc.write_text("앱\n")

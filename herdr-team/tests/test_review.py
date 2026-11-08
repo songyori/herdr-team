@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests.helpers import BASE_CONFIG, ROOT, TeamCase
-from hteam import compose, gitio, state, textlint
+from hteam import compose, designdiff, gitio, lint, state, textlint
 from hteam.paths import Project
 
 
@@ -235,6 +235,29 @@ class DesignSectionTest(ReviewCase):
         self.assertIn("## 디자인 기준", text)
         self.assertIn("이 태스크가 만든 것인지 diff 로 확인한다):\n- 없음\n\n## REVIEW_FILE 형식", text)
 
+    def test_developer_prompt_has_diff_and_content_warnings(self):
+        # 설계 11.6: diff 검사(지운 줄의 신호 감소, 추가한 줄의 확대 막기) 먼저, 내용 검사(이모지) 뒤
+        self.commit("src/Btn.tsx", '<button aria-label="닫기"><X/></button>\n', "기존 버튼")
+        text = self.prompt("T-001", "developer", {
+            "src/Btn.tsx": "<button><X/></button>\n<span>🚀</span>\n",
+            "src/index.html": '<meta name="viewport" content="width=device-width, user-scalable=no">\n'})
+        diff = "- src/Btn.tsx: 지운 줄에서 aria-label 1개가 줄었다(대체가 있는지 확인)"
+        for needle in (diff, '- src/index.html:1: 확대 막기(user-scalable=no">)', "- src/Btn.tsx:2: 이모지(🚀)"):
+            self.assertIn(needle, text)
+        self.assertLess(text.index(diff), text.index("- src/Btn.tsx:2: 이모지(🚀)"))
+
+    def test_merged_warnings_are_capped_and_isolated(self):
+        diff = [f"src/a.tsx:{n}: 확대 막기(x)" for n in range(1, 41)]
+        content = [f"src/b.css:{n}: 이모지(🚀)" for n in range(1, 21)]
+        with mock.patch.object(designdiff, "design_diff_lint", return_value=diff), \
+                mock.patch.object(lint, "design_findings", return_value=content):
+            found = compose.design_findings(self.p, ["src/a.tsx", "src/b.css"], [])
+        self.assertEqual(found, [*diff, *content[:10], "… 외 10건"])
+        with mock.patch.object(designdiff, "design_diff_lint", side_effect=OSError("git 이\n멈췄다")), \
+                mock.patch.object(lint, "design_findings", return_value=content[:2]):
+            found = compose.design_findings(self.p, ["src/b.css"], [])
+        self.assertEqual(found, ["자동 검사 실패: OSError: git 이 멈췄다", *content[:2]])
+
     def test_other_roles_have_no_design_section(self):
         text = self.prompt("T-001", "tester", {"tests/a.txt": "x\n"})
         self.assertNotIn("## 디자인 기준", text)
@@ -262,6 +285,11 @@ class NoDirectorDesignTest(DesignSectionTest):
 
     def test_claude_reviewer_uses_its_own_devtools(self):
         pass  # 디자인 절이 없다(위 시험)
+
+    def test_developer_prompt_has_diff_and_content_warnings(self):
+        text = self.prompt("T-001", "developer", {"src/index.html": '<meta content="user-scalable=no">\n'})
+        self.assertNotIn("## 디자인 기준", text)
+        self.assertNotIn("확대 막기", text)
 
 
 class TextSectionTest(ReviewCase):
