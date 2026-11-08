@@ -16,6 +16,7 @@ import time
 import traceback
 from pathlib import Path
 
+HOOK_START = time.monotonic()  # 자동 부활의 4초 규칙과 마감은 훅이 시작한 때부터 잰다(설계 9.5)
 LIB = Path(__file__).resolve().parents[1] / "lib"
 # hteam 모듈. _load() 가 herdr-team 프로젝트에서만 채운다
 herdr = outbox = roles = HteamError = PLUGIN_ROOT = SHIM = Project = None
@@ -334,13 +335,32 @@ def guard(p, payload: dict):
     return None
 
 
+def auto_up(p, force: bool) -> str | None:
+    """코디네이터 자동 부활 확인(설계 9.5). 메인 세션에서만 부른다. Herdr 터미널 밖($HC_TERMINAL_ID 없음)이면 하지 않는다
+    (up 이 exit 5 다). autoup 은 이 두 훅에서만 늦게 가져온다(guard 훅은 도구 호출마다 돈다). 예외는 막지 않고 라벨
+    auto-up 으로 hook-errors.log 에 남긴다."""
+    if not os.environ.get("HC_TERMINAL_ID", "").strip():
+        return None
+    try:
+        from hteam import autoup
+        return autoup.check(p, force=force, started=HOOK_START)
+    except Exception:  # noqa: BLE001
+        log_error(p.root, "auto-up\n" + traceback.format_exc())
+        return None
+
+
 def session_start(p, payload: dict):
     p.ensure_state()
     write_atomic(p.plugin_root_file, str(PLUGIN_ROOT) + "\n")
     if role_of(p, payload, fresh=True) != "main":
         return None
+    notice = auto_up(p, force=True)
     lines = ["herdr-team 프로젝트다. 너는 메인이다(사용자와 대화하는 세션). 첫 지시가 코디네이터나 워커 지시면 이 안내를 무시한다.",
-             f"- 먼저 `/herdr-team:up` 을 실행한다. 산출물 작업은 `{SHIM} tell \"<요청>\"` 으로 코디네이터에게 넘긴다."]
+             f"- {notice}" if notice else
+             "- 코디네이터는 훅이 확인하고 꺼져 있으면 자동으로 다시 띄운다(config.toml [coordinator] auto_up). watch 가 꺼져 "
+             f"있으면 Bash `run_in_background: true` 로 `{SHIM} watch` 를 띄운다. 코디네이터 상태가 의심되면 "
+             "`/herdr-team:up` 을 실행한다.",
+             f"- 산출물 작업은 `{SHIM} tell \"<요청>\"` 으로 코디네이터에게 넘긴다."]
     if not os.environ.get("HC_TERMINAL_ID", "").strip():
         lines.append("- 이 세션은 Herdr 터미널이 아니다($HC_TERMINAL_ID 없음). tell·watch·answer 는 Herdr 터미널의 메인 "
                      "세션에서만 된다. 사용자에게 Herdr 안에서 다시 열라고 알린다.")
@@ -351,8 +371,13 @@ def session_start(p, payload: dict):
 
 
 def role_mark(p, payload: dict):
-    role_of(p, payload)  # 아직 캐시가 없으면 이번 프롬프트에서 다시 판별한다
-    return None
+    """아직 캐시가 없으면 이번 프롬프트에서 다시 판별한다. 메인이면 매 프롬프트 자동 부활을 확인한다(60초 간격)."""
+    if role_of(p, payload) != "main":
+        return None
+    notice = auto_up(p, force=False)
+    if not notice:
+        return None
+    return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": notice}}
 
 
 def stop(p, payload: dict):

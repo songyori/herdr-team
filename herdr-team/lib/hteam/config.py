@@ -56,7 +56,10 @@ def validate(raw: dict) -> list[str]:
     if dworker not in AGENTS:
         errors.append(f"defaults.worker 는 claude·codex 중 하나다: {dworker!r}")
     _names(defaults, "defaults", MODEL_KEYS, errors)
-    _names(_table(raw, "coordinator", errors), "coordinator", ("model", "effort"), errors)
+    coordinator = _table(raw, "coordinator", errors)
+    _names(coordinator, "coordinator", ("model", "effort"), errors)
+    if not isinstance(coordinator.get("auto_up", True), bool):
+        errors.append("coordinator.auto_up 은 true·false 다")
     _names(_table(raw, "image", errors), "image", ("codex_model", "codex_effort"), errors)
     roles = _table(raw, "roles", errors)
     if not roles:
@@ -119,6 +122,11 @@ class Config:
 
     def args(self, agent: str) -> list[str]:
         return list(self.agent_args.get(agent, []))
+
+    @property
+    def auto_up(self) -> bool:
+        """메인 세션 훅이 확실히 죽은 코디네이터를 다시 띄우나(설계 9.5). 키가 없으면 True."""
+        return self.coordinator.get("auto_up", True)
 
     def image_choice(self) -> tuple[str | None, str | None]:
         """`hteam image` 의 Codex 모델·effort. [image] 에 없으면 [defaults] 의 codex_*(설계 4.1)."""

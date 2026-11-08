@@ -11,11 +11,11 @@ import subprocess
 _PS_ENV_OVERRIDE = {"TZ": "UTC", "LC_ALL": "C"}
 
 
-def _ps_state(pid: int) -> tuple[str, str] | None | bool:
-    """(stat, lstart) 를 돌려준다. 행이 없으면 None, ps 를 못 돌렸으면 False."""
+def _ps_state(pid: int, timeout: float = 5) -> tuple[str, str] | None | bool:
+    """(stat, lstart) 를 돌려준다. 행이 없으면 None, ps 를 못 돌렸으면(시간 제한 timeout 초 포함) False."""
     try:
         proc = subprocess.run(["ps", "-o", "stat=", "-o", "lstart=", "-p", str(pid)],
-                              capture_output=True, text=True, timeout=5,
+                              capture_output=True, text=True, timeout=timeout,
                               env={**os.environ, **_PS_ENV_OVERRIDE})
     except (OSError, subprocess.TimeoutExpired):
         return False
@@ -26,14 +26,14 @@ def _ps_state(pid: int) -> tuple[str, str] | None | bool:
     return parts[0], (parts[1].strip() if len(parts) > 1 else "")
 
 
-def start_time(pid: int) -> str | None:
-    state = _ps_state(pid)
+def start_time(pid: int, timeout: float = 5) -> str | None:
+    state = _ps_state(pid, timeout)
     if not state:
         return None
     return state[1] or None
 
 
-def alive(pid: int | None, started: str | None) -> bool:
+def alive(pid: int | None, started: str | None, timeout: float = 5) -> bool:
     if not pid:
         return False
     try:
@@ -42,7 +42,7 @@ def alive(pid: int | None, started: str | None) -> bool:
         return False
     except PermissionError:
         pass
-    state = _ps_state(pid)
+    state = _ps_state(pid, timeout)
     if state is False:
         return True
     if state is None:
@@ -60,6 +60,6 @@ def me() -> dict:
     return {"pid": pid, "started": start_time(pid) or ""}
 
 
-def record_alive(rec: dict | None) -> bool:
-    """{pid, started} 기록이 가리키는 프로세스가 살아 있나. 기록이 없으면 False."""
-    return bool(rec) and alive(rec.get("pid"), rec.get("started"))
+def record_alive(rec: dict | None, timeout: float = 5) -> bool:
+    """{pid, started} 기록이 가리키는 프로세스가 살아 있나. 기록이 없으면 False. timeout 은 ps 의 시간 제한(초)."""
+    return bool(rec) and alive(rec.get("pid"), rec.get("started"), timeout)

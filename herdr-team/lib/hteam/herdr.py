@@ -18,6 +18,8 @@ def _hc(args: list[str], tail: list[str] | None = None, timeout: float = 30) -> 
                          data={"kind": "exec_failed"}) from None
     except subprocess.TimeoutExpired:
         raise HteamError("hc_timeout", f"hc {args[0]} 가 {timeout:g}초 안에 끝나지 않았다", FAIL) from None
+    except UnicodeDecodeError:  # 출력이 UTF-8 이 아니다(ValueError). 읽을 수 없는 출력과 같이 다룬다
+        raise HteamError("hc_failed", f"hc {args[0]} 출력이 UTF-8 이 아니다", FAIL, data={"kind": "bad_output"}) from None
     if proc.returncode != 0:
         kind = f"exit_{proc.returncode}"
         for line in reversed((proc.stderr or proc.stdout or "").strip().split("\n")):
@@ -65,12 +67,13 @@ def verdict(info: dict | None, expected_argv: list[str] | None) -> str:
     return "live"
 
 
-def probe(terminal: str | None, argv: list[str] | None) -> str:
-    """live·exited·lost·unverifiable. hc get 실패(not_found·시간 초과·hc 없음 포함)는 horch 와 같이 모름이다."""
+def probe(terminal: str | None, argv: list[str] | None, timeout: float = 10) -> str:
+    """live·exited·lost·unverifiable. hc get 실패(not_found·시간 초과·hc 없음·출력 해석 실패 포함)는 horch 와 같이
+    모름이다. timeout 은 hc get 의 시간 제한(초. 자동 부활은 3초, 설계 9.5)."""
     if not terminal:
         return "unverifiable"
     try:
-        info = get(terminal)
+        info = get(terminal, timeout=timeout)
     except HteamError:
         return "unverifiable"
     return verdict(info, argv)

@@ -1,8 +1,9 @@
 ---
 name: up
 description: >
-  herdr-team 프로젝트에서 메인 세션을 다시 열었을 때 코디네이터와 watch 를 되살리고 열린 질문을 다시 묻는다.
-  트리거: "/herdr-team:up", SessionStart 안내.
+  herdr-team 프로젝트의 수동 복구(코디네이터·watch 를 되살리고 열린 질문을 다시 묻는다). 코디네이터는 보통 메인 세션 훅이
+  자동으로 살린다(config.toml [coordinator] auto_up). 자동 부활이 꺼져 있거나 훅이 안내했을 때, 메인을 다시 열어 열린
+  질문을 다시 물을 때 쓴다. 트리거: "/herdr-team:up", 훅 안내.
 ---
 
 # /herdr-team:up

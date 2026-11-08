@@ -1,9 +1,14 @@
 """설정 검사(설계 4.2)와 모델·에이전트 결정(4.1)."""
 import os
+import stat
+import tempfile
+import time
 import unittest
+from pathlib import Path as FsPath
+from unittest import mock
 
 from tests.helpers import BASE_CONFIG, TeamCase
-from hteam import config
+from hteam import config, herdr, procs
 from hteam.errors import HteamError
 from hteam.paths import Project
 
@@ -115,11 +120,64 @@ class ConfigTest(TeamCase):
         code, out = self.hteam("plan", "check", as_=None)
         self.assertEqual((code, out["error"]["code"]), (2, "bad_config"), out)
 
+    def test_coordinator_auto_up(self):
+        # 설계 4.1·4.2: 키가 없으면 켜진다(0.1.x 프로젝트도). 있으면 불리언이다
+        self.assertIs(self.load(BASE_CONFIG).auto_up, True)
+        off = BASE_CONFIG.replace('effort = "xhigh"\n', 'effort = "xhigh"\nauto_up = false\n', 1)
+        self.assertIs(self.load(off).auto_up, False)
+        bad = BASE_CONFIG.replace('effort = "xhigh"\n', 'effort = "xhigh"\nauto_up = "yes"\n', 1)
+        self.assertIn("coordinator.auto_up 은 true·false 다", self.errors(bad))
+
     def test_image_choice(self):
         cfg = self.load(FULL)
         self.assertEqual(cfg.image_choice(), ("img-model", "high"))
         cfg = self.load(BASE_CONFIG)
         self.assertEqual(cfg.image_choice(), ("gpt-6.1-sol", "high"))
+
+
+class ProbeTimeoutTest(TeamCase):
+    """자동 부활이 쓰는 시간 제한(설계 9.5): herdr.probe 의 timeout, hc 출력이 UTF-8 이 아닐 때, procs 의 timeout."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.dict(os.environ, self.env, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.add_terminal("t100", argv=["claude"])
+
+    def test_probe_timeout(self):
+        self.assertEqual(herdr.probe("t100", ["claude"], timeout=3), "live")
+        with self._hc_locked() as st:
+            st["delay"] = {"get": 4}
+        start = time.monotonic()
+        self.assertEqual(herdr.probe("t100", ["claude"], timeout=1), "unverifiable")
+        self.assertLess(time.monotonic() - start, 3)
+
+    def test_non_utf8_hc_output_is_unverifiable(self):
+        fake = FsPath(tempfile.mkdtemp(prefix="hteam-hc-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(fake, True))
+        script = fake / "hc"
+        script.write_bytes(b"#!/bin/sh\nprintf '{\"state\": \"live\", \"x\": \"\\377\"}\\n'\n")
+        script.chmod(script.stat().st_mode | stat.S_IXUSR)
+        with mock.patch.dict(os.environ, {"PATH": f"{fake}{os.pathsep}{os.environ['PATH']}"}):
+            self.assertEqual(herdr.probe("t100", None), "unverifiable")
+            with self.assertRaises(HteamError) as ctx:
+                herdr.get("t100")
+        self.assertEqual((ctx.exception.code, ctx.exception.data), ("hc_failed", {"kind": "bad_output"}))
+
+    def test_procs_timeout_is_passed_to_ps(self):
+        seen = []
+        real = procs.subprocess.run
+
+        def run(argv, *args, **kw):
+            seen.append(kw.get("timeout"))
+            return real(argv, *args, **kw)
+        me = procs.me()
+        with mock.patch.object(procs.subprocess, "run", side_effect=run):
+            self.assertTrue(procs.record_alive(me, timeout=1.5))
+            self.assertIsNotNone(procs.start_time(os.getpid(), timeout=2.5))
+            self.assertTrue(procs.alive(os.getpid(), me["started"]))
+        self.assertEqual(seen, [1.5, 2.5, 5])
 
 
 class ResolveTest(TeamCase):

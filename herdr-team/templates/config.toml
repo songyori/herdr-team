@@ -5,6 +5,8 @@ user_approval_roles = ["designer"]  # 리뷰 승인 뒤 사용자 일괄 승인(
 [coordinator]
 model = "opus"
 effort = "xhigh"
+# auto_up: 메인 세션 훅이 코디네이터가 확실히 죽은 것을 보면 자동으로 다시 띄운다(기본 true). false 면 안내만 한다.
+auto_up = true
 
 [review]
 max_rounds = 3

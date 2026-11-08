@@ -16,7 +16,7 @@
 - `.herdr-team/bin/hteam watch` 를 늘 Bash `run_in_background: true` 로 하나 띄워 둔다. 끝나면(메시지 도착) 출력의 `messages` 를 처리하고 바로 다시 띄운다. `status: orphaned` 면 `/herdr-team:up` 을 한다.
   - `progress`: 한두 줄로 전한다. `done`: 결과와 리뷰 판정을 요약해 전한다.
   - `ask`(기획자 질문), `question`(코디네이터 질문), `approval`(일괄 승인): 아래 "질문 표시 규칙"대로 묻고 답을 `.herdr-team/bin/hteam answer <id> "<답>"` 으로 돌려준다. `-` 로 시작하는 답은 `hteam answer <id> -- "<답>"`.
-- 세션을 다시 열었으면 `/herdr-team:up` 을 먼저 실행한다.
+- 코디네이터는 훅이 확인하고 꺼져 있으면 자동으로 다시 띄운다(config.toml [coordinator] auto_up). 훅 안내가 없는데 코디네이터 상태가 의심되면 `/herdr-team:up` 을 실행한다. 메인을 다시 열었는데 답하지 않은 질문이 있으면 `/herdr-team:up` 이 다시 묻는다.
 
 ### 질문 표시 규칙
 - `render.context` 가 있으면 그 내용을 먼저 답변 글(텍스트)로 그대로 보여 준다. 요약하거나 설명을 덧붙이지 않는다. 생각·도구 설명 줄(화면에 짧은 진행 설명으로 보이는 줄 포함)은 원문이 아니라 요약으로 보이고 훅도 보인 것으로 세지 않는다(보여 주지 않고 물으면 훅이 보일 때까지 그 질문을 거부한다. 같은 질문은 세 번까지).

@@ -477,6 +477,23 @@ class TemplateContractTest(unittest.TestCase):
                        "변조 검사가 잡지 못한다", "`codex_browser`", "다른 MCP 서버도 승인 없이 쓸 수 있다"):
             self.assertIn(needle, init)
 
+    def test_auto_up_in_templates(self):
+        # 설계 4.1·9.3·9.5: 템플릿 설정의 auto_up, 메인 규칙의 자동 부활 줄, up 스킬은 수동 복구
+        import tomllib
+        text = (ROOT / "templates/config.toml").read_text(encoding="utf-8")
+        self.assertIs(tomllib.loads(text)["coordinator"]["auto_up"], True)
+        self.assertIn("# auto_up: 메인 세션 훅이 코디네이터가 확실히 죽은 것을 보면 자동으로 다시 띄운다(기본 true). "
+                      "false 면 안내만 한다.\nauto_up = true\n", text)
+        main = (ROOT / "templates/CLAUDE.section.md").read_text(encoding="utf-8")
+        self.assertIn("- 코디네이터는 훅이 확인하고 꺼져 있으면 자동으로 다시 띄운다(config.toml [coordinator] auto_up). 훅 안내가 "
+                      "없는데 코디네이터 상태가 의심되면 `/herdr-team:up` 을 실행한다. 메인을 다시 열었는데 답하지 않은 질문이 "
+                      "있으면 `/herdr-team:up` 이 다시 묻는다.\n", main)
+        self.assertNotIn("먼저 실행한다", main)
+        head = (ROOT / "skills/up/SKILL.md").read_text(encoding="utf-8").split("---")[1]
+        for needle in ("수동 복구", "메인 세션 훅이", "[coordinator] auto_up", "자동 부활이 꺼져 있거나 훅이 안내했을 때",
+                       "열린\n  질문을 다시 물을 때"):
+            self.assertIn(needle, head)
+
     def test_cleanup_rules_in_docs(self):
         coord = (ROOT / "templates/coordinator.md").read_text(encoding="utf-8")
         self.assertIn("`start-ready` 의 `started` 행에도 `next`·`hint` 가 붙을 수 있다", coord)

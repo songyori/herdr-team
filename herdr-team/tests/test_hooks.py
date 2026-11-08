@@ -385,6 +385,93 @@ class StopTest(HookCase):
         self.assertIn("guard", (self.state_dir / "hook-errors.log").read_text())
 
 
+class AutoUpHookTest(HookCase):
+    """메인 세션 훅의 코디네이터 자동 부활(설계 9.4·9.5)."""
+
+    def record(self):
+        path = self.state_dir / "auto-up.json"
+        return json.loads(path.read_text()) if path.exists() else None
+
+    def context(self, out):
+        return out["hookSpecificOutput"]["additionalContext"] if out else None
+
+    def wait_spawned(self):
+        from hteam import procs
+        rec = json.loads((self.state_dir / "auto-up.pid").read_text())
+        deadline = time.monotonic() + 30
+        while procs.record_alive(rec) or "launched" not in (self.state_dir / "auto-up.log").read_text():
+            self.assertLess(time.monotonic(), deadline, "자동 실행한 hteam up 이 끝나지 않았다")
+            time.sleep(0.05)
+
+    def test_prompt_revives_a_dead_coordinator(self):
+        from hteam import autoup
+        self.update_terminal(COORD, state="finished")
+        out = self.hook("role-mark", terminal=MAIN)
+        self.assertEqual(out["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
+        self.assertEqual(self.context(out), autoup.REVIVED)
+        self.wait_spawned()
+        run = json.loads((self.state_dir / "run.json").read_text())
+        self.assertNotEqual(run["coordinator_terminal"], COORD)
+        self.assertIn('"launched"', (self.state_dir / "auto-up.log").read_text())
+
+    def test_interval_skips_prompts_but_not_session_start(self):
+        from hteam import autoup
+        self.assertIsNone(self.hook("role-mark", terminal=MAIN))  # 살아 있다: 확인 기록만 남는다
+        self.assertIn("checked_at", self.record())
+        self.update_terminal(COORD, state="finished")
+        self.assertIsNone(self.hook("role-mark", terminal=MAIN))  # 60초 안
+        self.assertFalse((self.state_dir / "auto-up.pid").exists())
+        ctx = self.context(self.hook("session-start", terminal=MAIN))
+        self.assertIn(f"\n- {autoup.REVIVED}\n", ctx)
+        self.assertNotIn("자동으로 다시 띄운다(config.toml", ctx)  # 기본 줄 대신 문구
+        self.wait_spawned()
+
+    def test_other_sessions_setup_mode_and_outside_herdr_are_skipped(self):
+        self.update_terminal(COORD, state="finished")
+        self.assertIsNone(self.hook("role-mark", {"session_id": "c"}, coordinator=True))
+        self.assertIsNone(self.hook("role-mark", {"session_id": "w"}, terminal=self.worker()))
+        self.assertIsNone(self.hook("role-mark", {"session_id": "o"}))  # $HC_TERMINAL_ID 없는 메인
+        (self.state_dir / "setup-mode").write_text("x")
+        self.assertIsNone(self.hook("role-mark", {"session_id": "m"}, terminal=MAIN))
+        self.assertIsNone(self.record())
+        self.assertFalse((self.state_dir / "auto-up.pid").exists())
+
+    def test_auto_up_false_only_informs(self):
+        from hteam import autoup
+        config = (self.team / "config.toml").read_text().replace('effort = "xhigh"\n', 'effort = "xhigh"\nauto_up = false\n', 1)
+        (self.team / "config.toml").write_text(config)
+        self.update_terminal(COORD, state="finished")
+        self.assertEqual(self.context(self.hook("role-mark", terminal=MAIN)), autoup.DISABLED)
+        self.assertFalse((self.state_dir / "auto-up.pid").exists())
+
+    def test_late_hook_skips_without_writing_and_next_prompt_checks(self):
+        import os
+        from unittest import mock
+        from hteam import autoup
+        hook = load_hook()
+        hook._load()
+        with mock.patch.dict(os.environ, {**self.env, "HC_TERMINAL_ID": MAIN}, clear=True):
+            hook.HOOK_START = time.monotonic() - 5  # 역할 판별이 오래 걸렸다
+            self.update_terminal(COORD, state="finished")
+            self.assertIsNone(hook.auto_up(self.p, force=False))
+            self.assertIsNone(self.record())
+            hook.HOOK_START = time.monotonic()
+            self.assertEqual(hook.auto_up(self.p, force=False), autoup.REVIVED)
+        self.wait_spawned()
+
+    def test_errors_do_not_block_and_session_start_has_the_default_line(self):
+        (self.state_dir / "auto-up.json").mkdir()  # 쓰기가 실패한다
+        ctx = self.context(self.hook("session-start", terminal=MAIN))
+        self.assertIn("- 코디네이터는 훅이 확인하고 꺼져 있으면 자동으로 다시 띄운다(config.toml [coordinator] auto_up). "
+                      "watch 가 꺼져 있으면 Bash `run_in_background: true` 로 `.herdr-team/bin/hteam watch` 를 띄운다. "
+                      "코디네이터 상태가 의심되면 `/herdr-team:up` 을 실행한다.\n"
+                      "- 산출물 작업은 `.herdr-team/bin/hteam tell \"<요청>\"` 으로 코디네이터에게 넘긴다.", ctx)
+        self.assertNotIn("먼저 `/herdr-team:up`", ctx)
+        log = self.hook_log()
+        self.assertIn("session-start\nauto-up\n", log)
+        self.assertIn("Traceback", log)
+
+
 class PathGuardTest(HookCase):
     def test_coordinator_outside_project_and_traversal(self):
         sibling = self.tmp / "sibling"

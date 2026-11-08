@@ -43,6 +43,9 @@ class Project:
         self.context_denied = self.state / "context-denied.json"
         self.design_review = self.state / "design-review.json"
         self.text_rules = self.team / "text-rules.md"
+        self.auto_up = self.state / "auto-up.json"
+        self.auto_up_pid = self.state / "auto-up.pid"
+        self.auto_up_log = self.state / "auto-up.log"
 
     def ensure_state(self) -> None:
         for folder in (self.state, self.task_states, self.answers, self.sessions):
