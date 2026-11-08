@@ -27,6 +27,7 @@ COMMAND_MODULES: tuple[str, ...] = (
     "coord",
     "setup",
     "testgate",
+    "followups",
 )
 
 

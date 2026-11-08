@@ -287,6 +287,15 @@ class TaskNewTest(TeamCase):
         code, out = self.hteam("task", "new", "--role", "developer", "--title", "x")
         self.assertEqual((code, out["error"]["code"]), (2, "bad_config"))
 
+    def test_task_new_owns_stay_within_the_role(self):
+        # 설계 8.4: 묶음 정리 태스크는 직무별로 만든다. tester 파일은 developer owns 밖이다
+        owns = "tests/calc-test/**,docs/qa/calc-test.md"
+        code, out = self.hteam("task", "new", "--role", "developer", "--title", "묶음 정리: calc-test", "--owns", owns)
+        self.assertEqual((code, out["error"]["code"]), (2, "owns_too_wide"), out)
+        self.assertFalse((self.proj / ".herdr-team/tasks/T-001.md").exists())
+        code, out = self.hteam("task", "new", "--role", "tester", "--title", "묶음 정리: calc-test", "--owns", owns)
+        self.assertEqual((code, out["id"]), (0, "T-001"), out)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -397,6 +397,26 @@ class TemplateContractTest(unittest.TestCase):
             self.assertIn(sentence, coord)
         self.assertEqual(coord_mod.H("status")[0], ".herdr-team/bin/hteam")  # 문서의 next 규칙이 코드와 같다
 
+    def test_batch_rules_in_coordinator_and_main(self):
+        # 설계 8.4: 묶음 후속·마무리, 관문 반려·[test] 오류·확정, 직무별 정리 태스크, 메인의 done·upgrade·위치
+        coord = (ROOT / "templates/coordinator.md").read_text(encoding="utf-8")
+        for needle in ("## 묶음 후속", "## 마무리", "`hteam followups T-xxx`", "`hteam followups --rest`", "`hteam test --full`",
+                       "`출처: T-xxx followups`", "`출처: rest followups`", "`출처: final followups`",
+                       "`test_unrunnable`·`bad_test_config`·`plan_unreadable`", "`uncommitted_owned`", "`test_lock_timeout`",
+                       "같은 테스트 실패로 hteam 반려가 두 라운드 이어지면", "`hteam review T` 는 늘 Bash `run_in_background: true` 로",
+                       "커밋된 `docs/planning/tasks.toml` 에 `[test]` 가 있으면", "`tests_skipped: \"unapproved\"`",
+                       "`hteam notify --type question --json - --test-confirm`", "`bad_test_approvals`", "`test_unapproved`",
+                       "`hteam task new --role <그 직무> --title \"묶음 정리: <묶음 key>\" --owns", "tester 정리 태스크로 만든다",
+                       "`<실패했던 테스트 하나를 직접 돌리는 정확한 명령>`", "\"`hteam test T-yyy` 가 통과한다\"",
+                       "묶음 테스트(tester) 태스크였으면", "- developer: 구현. tester: 묶음 통합 테스트(묶음마다 하나), QA 보고서.",
+                       "5. 모든 태스크가 `done` 또는 `dropped` 면 아래 \"마무리\" 를 한다."):
+            self.assertIn(needle, coord)
+        main = (ROOT / "templates/CLAUDE.section.md").read_text(encoding="utf-8")
+        for needle in ("`done`: 결과, 태스크별 리뷰 판정과 라운드 수, 마지막 전체 테스트(full) 결과를 요약해 전한다.",
+                       "`.herdr-team/bin/hteam upgrade` 를 실행해 바꾼 것·건너뛴 것·`manual` 을 보여 주고",
+                       "테스트 명령 `docs/planning/tasks.toml` 의 `[test]`, QA 보고서 `docs/qa/`."):
+            self.assertIn(needle, main)
+
     def test_skill_recovery_contract(self):
         init = (ROOT / "skills/init/SKILL.md").read_text(encoding="utf-8")
         up = (ROOT / "skills/up/SKILL.md").read_text(encoding="utf-8")

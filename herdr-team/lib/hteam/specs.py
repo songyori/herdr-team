@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 from . import config, roles, state
 from .errors import CONFLICT, USAGE, HteamError
-from .globs import owns_problem
+from .globs import owns_problem, within
 from .paths import find_project
 from .util import read_json
 
@@ -193,6 +193,10 @@ def new(p, cfg, role: str, title: str, owns: list[str] | None = None, depends: l
         why = owns_problem(glob)
         if why:
             raise _bad(f"owns {glob!r}: {why}")
+    wide = [o for o in owns or [] if not any(within(o, r) for r in cfg.owns(role))]
+    if wide:  # start 의 checked_owns 와 같은 규칙. 묶음 정리 태스크는 직무별로 만든다(설계 8.4)
+        raise HteamError("owns_too_wide", f"owns 가 직무 {role} 의 owns({', '.join(cfg.owns(role))}) 를 넘거나 판단할 수 "
+                         f"없다: {', '.join(wide)}", USAGE, "직무 owns 안의 하위 경로로 좁힌다. 다른 직무의 파일이면 그 직무로 만든다")
     for dep in depends or []:
         if not ID_RE.fullmatch(dep):
             raise HteamError("bad_task_id", f"depends_on 의 {dep!r} 는 태스크 ID 가 아니다", USAGE)
