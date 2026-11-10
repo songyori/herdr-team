@@ -118,40 +118,50 @@ def keys(terminal: str, keys: list[str], timeout: float = 10) -> dict:
 
 
 class EventStream:
-    """hc events 구독. read 가 마감까지 다음 JSON 객체 줄을 준다. 호출자가 늘 close 한다."""
+    """hc events 구독. read 가 마감까지 다음 사건을 평평한 dict 로 준다(hc 의 줄 꼴은 이 모듈만 안다).
 
-    def __init__(self, proc: subprocess.Popen):
+    사건: {"type", "terminal"} 에 종류마다 더한다. snapshot(구독 첫 줄과 missed 뒤 다시 온 스냅숏의 이 터미널):
+    status·turn·title, status: status, turn: turn·status(그 turn 이 끝난 뒤 상태), title: title. status 는 hc get 과 같은 꼴
+    ({"app", "state"} 또는 낱말)이라 liveness.status_word 로 읽는다. heartbeat·missed·그 밖의 종류와 JSON 객체가 아닌 줄은
+    건너뛴다. 호출자가 늘 close 한다."""
+
+    def __init__(self, proc: subprocess.Popen, terminal: str | None = None):
         self._proc = proc
+        self._terminal = terminal
         self._fd = proc.stdout.fileno()
         self._buf = b""
         self.closed = False  # EOF 를 봤거나 닫았다
 
-    def _next_line(self) -> dict | None:
+    def _event(self, line: bytes) -> dict | None:
+        try:
+            value = json.loads(line.decode("utf-8", "replace"))
+        except ValueError:
+            return None
+        return _flat(value, self._terminal) if isinstance(value, dict) else None
+
+    def _next_event(self) -> dict | None:
         while b"\n" in self._buf:
             line, self._buf = self._buf.split(b"\n", 1)
-            value = _line_value(line)
-            if value is not None:
-                return value
+            event = self._event(line)
+            if event is not None:
+                return event
         return None
 
     def read(self, timeout: float) -> dict | None:
-        """마감(초)까지 다음 JSON 객체 줄. 없거나 EOF 면 None. JSON 객체가 아닌 줄은 건너뛴다."""
+        """마감(초)까지 다음 사건. 없거나 EOF 면 None. 0 이면 기다리지 않고 이미 온 것만 본다(버퍼와 파이프)."""
         deadline = time.monotonic() + max(0.0, timeout)
         while True:
-            value = self._next_line()
-            if value is not None or self.closed:
-                return value
-            left = deadline - time.monotonic()
-            if left <= 0:
-                return None
-            ready, _, _ = select.select([self._fd], [], [], left)
+            event = self._next_event()
+            if event is not None or self.closed:
+                return event
+            ready, _, _ = select.select([self._fd], [], [], max(0.0, deadline - time.monotonic()))
             if not ready:
                 return None
             chunk = os.read(self._fd, 65536)
             if not chunk:
                 self.closed = True  # 줄바꿈 없이 끝난 마지막 줄도 본다
                 tail, self._buf = self._buf, b""
-                return _line_value(tail) if tail else None
+                return self._event(tail) if tail else None
             self._buf += chunk
 
     def close(self) -> None:
@@ -169,12 +179,28 @@ class EventStream:
             proc.stdout.close()
 
 
-def _line_value(line: bytes) -> dict | None:
-    try:
-        value = json.loads(line.decode("utf-8", "replace"))
-    except ValueError:
+def _flat(value: dict, terminal: str | None) -> dict | None:
+    """hc events 의 한 줄 → 평평한 사건(EventStream 참고). 첫 줄은 스냅숏 {"channel", "seq", "terminals": [get 꼴]},
+    그 뒤는 JSON-RPC 알림 {"jsonrpc", "method": "event", "params": {"type", "terminal", "seq", "data"}}다."""
+    if isinstance(value.get("terminals"), list):
+        for item in value["terminals"]:
+            if isinstance(item, dict) and (terminal is None or item.get("address") == terminal):
+                return {"type": "snapshot", "terminal": item.get("address"), "status": item.get("status"),
+                        "turn": item.get("turn"), "title": item.get("title")}
         return None
-    return value if isinstance(value, dict) else None
+    params = value.get("params") if value.get("method") == "event" else None
+    data = params.get("data") if isinstance(params, dict) else None
+    if not isinstance(data, dict):
+        return None
+    kind = params.get("type")
+    base = {"type": kind, "terminal": params.get("terminal")}
+    if kind == "turn":
+        return {**base, "turn": data.get("turn"), "status": data.get("state")}
+    if kind == "status":
+        return {**base, "status": data.get("status")}
+    if kind == "title":
+        return {**base, "title": data.get("title")}
+    return None
 
 
 def events(terminal: str) -> EventStream:
@@ -187,7 +213,7 @@ def events(terminal: str) -> EventStream:
                          "herdr-core 를 설치하고 PATH 에 hc 를 둔다") from exc
     except OSError as exc:
         raise HcFailure("exec_failed", str(exc)) from exc
-    return EventStream(proc)
+    return EventStream(proc, terminal)
 
 
 def kill(terminal: str, timeout: float = 30) -> dict:

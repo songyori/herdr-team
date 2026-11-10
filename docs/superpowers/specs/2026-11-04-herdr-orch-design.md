@@ -581,6 +581,7 @@ herdr-team 0.4.0 의 고정 에이전트(같은 세션이 여러 태스크를 �
   2. 라벨 `horch.run` 이 호출자 Run 이고 `horch.persistent=1` 이어야 한다(아니면 exit 3 `not_persistent_terminal`).
   3. 그 터미널에 `launching`·`active` Dispatch 가 있으면 `--abandon` 이 있어야 한다(아니면 exit 3 `terminal_busy`, data `dispatch`).
   4. `hc kill`(live 일 때) → `hc rm`(kind `live` 일 때만 잠깐 다시) → 한 트랜잭션에서 진행 중 Dispatch 를 `abandoned`, 그 터미널의 `settled`·`retained`·`abandoned` Dispatch 를 모두 `released` 로 쓴다. kill·rm 이 실패하면 상태를 바꾸지 않고 exit 1. 다시 부르면 이어 한다.
+  - 터미널 예약(Codex 커밋 리뷰 c6d82d2): 3 의 진행 중 Dispatch 검사는 13.8 의 3 과 같은 터미널 예약(`meta` 의 `reset:<t>`, 값 끝에 종류 `close`)을 쓰는 `BEGIN IMMEDIATE` 트랜잭션 안에서 하고, 그 예약을 kill 전에 잡아 끝날 때까지(성공·실패 모두) 쥔 뒤 자기 값일 때만 지운다. 그동안 `worker-start --terminal`·`terminal-reset` 은 exit 3 `terminal_busy` 이고, 살아 있는 다른 예약이 있으면 닫기도 exit 3 `terminal_busy` 다. 검사와 kill 사이에 새 Dispatch 가 들어와 `--abandon` 없이 닫히는 일을 막는다. `not_found`(1)는 hc 를 부르지 않으므로 예약 없이 기록만 정리한다.
   5. 결과 `{terminal, closed: true, abandoned: <dispatch 또는 null>, released: [<id>…]}`.
 - 고정 Dispatch 의 `--terminal` 실패(`launch_failed`)는 터미널을 만들지 않았으므로 5장의 거부 터미널 정리 대상이 아니다. 정리는 hc 이름과 라벨 `horch.dispatch` 가 모두 그 `launch_failed` Dispatch 인 `finished` 터미널만 지운다. 고정 터미널의 이름은 첫 Dispatch ID 이고 라벨은 Dispatch 가 `active` 가 된 뒤에만 바뀌므로 걸리지 않는다. 첫 Dispatch 가 `launch_failed` 인 고정 터미널(가드가 거부했다)은 지금처럼 정리한다.
 
@@ -623,10 +624,10 @@ herdr-team 0.4.0 의 고정 에이전트(같은 세션이 여러 태스크를 �
 
 1. 13.4 의 2 와 같은 확인을 한다(`terminal_gone`·`not_persistent_terminal`·`terminal_busy`·`terminal_not_ready`). 에이전트는 그 터미널의 마지막 고정 Dispatch 의 `agent` 다.
 2. `--name` 은 Codex 에만 쓴다. `^[a-z][a-z0-9-]{0,31}$` 가 아니면 exit 2 `usage`. Claude 에 주면 무시하고 `warnings` 에 `name_ignored`(Claude 는 띄울 때 준 `--name` 제목이 `/clear` 뒤에도 남는다, X6).
-3. 리셋 예약: `BEGIN IMMEDIATE` 트랜잭션에서 그 터미널에 `launching`·`active` Dispatch 가 없고 살아 있는 다른 리셋 예약이 없는지 다시 본 뒤 `meta` 에 `reset:<t> = <pid>|<시작 시각>|<at>` 을 쓴다(걸리면 exit 3 `terminal_busy`). 예약이 있고 그 프로세스가 살아 있는 동안 `worker-start --terminal`(13.4 의 3 이 같은 트랜잭션 꼴로 본다)·다른 `terminal-reset` 은 exit 3 `terminal_busy` 다. 끝나면(성공·실패 모두) 값이 자기 pid·시작 시각일 때만 지운다(조건부 쓰기). 죽은 프로세스의 예약은 없는 것으로 본다.
+3. 리셋 예약: `BEGIN IMMEDIATE` 트랜잭션에서 그 터미널에 `launching`·`active` Dispatch 가 없고 살아 있는 다른 예약이 없는지 다시 본 뒤 `meta` 에 `reset:<t> = <pid>|<시작 시각>|<at>|reset` 을 쓴다(걸리면 exit 3 `terminal_busy`). 같은 key 를 `terminal-close` 도 종류 `close` 로 쓴다(13.5 의 4). 예약이 있고 그 프로세스가 살아 있는 동안 `worker-start --terminal`(13.4 의 3 이 같은 트랜잭션 꼴로 본다)·다른 `terminal-reset`·`terminal-close` 는 exit 3 `terminal_busy` 다. 종류가 없는 옛 값은 `reset` 으로 본다. 끝나면(성공·실패 모두) 값이 자기 pid·시작 시각일 때만 지운다(조건부 쓰기). 죽은 프로세스의 예약은 없는 것으로 본다.
 4. `events(t)` 구독을 먼저 붙이고 `turn_before`(지금 turn)를 읽는다. 구독을 띄우지 못하면 아래 5 의 대체 신호만 쓴다.
 5. `keys(t, ["/", "c", "l", "e", "a", "r", "enter"])`. Codex 에 `--name` 이 있으면 `enter` 앞에 빈칸과 이름 글자를 하나씩 넣는다(X3b C1 에서 `/clear p6x-next` 가 이름을 붙였다. 빈칸의 키 이름은 hc 의 키 표를 따른다). 감싼 send 나 `/new` 는 쓰지 않는다. keys 가 실패하면 exit 1 `hc_failed`.
-6. 기다림: 구독 줄 가운데 turn 이 `turn_before` 보다 큰 첫 줄(그 줄의 상태가 `idle`)을 마감까지 기다린다. 대체 신호로 0.2초마다 `hc get` 을 보고 turn > `turn_before` 이고 상태 `idle` 이면 끝난 것으로 본다(둘 중 먼저 온 것). Claude 는 0.1–0.3초, Codex 는 1.5–1.8초였다(X2, X3b).
+6. 기다림: 구독의 turn 사건 가운데 turn 이 `turn_before` 보다 크고 상태가 `idle`·`done` 인 첫 사건을 마감까지 기다린다. 대체 신호로 0.2초마다 `hc get` 을 보고 turn > `turn_before` 이고 상태 `idle`·`done` 이면 끝난 것으로 본다(둘 중 먼저 온 것). Claude 는 0.1–0.3초, Codex 는 1.5–1.8초였다(X2, X3b). 실제 `hc events --json` 은 첫 줄이 스냅숏 `{channel, seq, terminals}` 이고 그 뒤는 JSON-RPC 알림 `{"method": "event", "params": {type, terminal, seq, data}}` 다(turn 의 data `{state, turn}`, state 는 그 turn 이 끝난 뒤 상태로 Codex 는 `done` 일 수 있다. 2026-11-10 확인). 줄 해석은 `hcio` 가 하고(turn 사건에 상태가 없으면 마지막 status 사건의 상태), heartbeat·missed·그 밖의 종류는 건너뛴다. 마감이 지나 시간 초과로 정하기 전에 이미 온 사건을 기다리지 않고 한 번 더 다 읽는다(느린 폴링 `hc get` 이 마감을 넘기는 동안 온 신호, Codex 커밋 리뷰 c6d82d2).
 7. 성공: `{terminal, agent, turn, status, title, seconds, signal: "event"|"poll"}`(exit 0). 호출자는 이 `turn` 이 다음 `--terminal` 의 기준이 된다는 것을 안다(비우기 자체가 turn 을 하나 올린다, X2·X3b).
 8. 마감까지 신호가 없으면 exit 4 `reset_timeout`(data `{turn_before, last: {status, turn, title}}`). horch 는 더 하지 않는다. 비웠는지 알 수 없으므로 호출자가 터미널을 닫고 새로 띄운다(herdr-team 5.9).
 
@@ -652,7 +653,7 @@ herdr-team 0.4.0 의 고정 에이전트(같은 세션이 여러 태스크를 �
 |---|---|---|
 | `terminal_gone` | 3 | 고정 터미널이 없거나 끝났거나 다른 프로그램이다 |
 | `not_persistent_terminal` | 3 | 이 Run 의 고정 터미널이 아니다 |
-| `terminal_busy` | 3 | 진행 중 Dispatch 나 리셋이 있다 |
+| `terminal_busy` | 3 | 진행 중 Dispatch 나 리셋·닫기가 있다 |
 | `terminal_not_ready` | 3 | 상태가 `idle`·`done` 이 아니다(보내지 않았다) |
 | `reset_timeout` | 4 | 비우기 신호가 마감까지 오지 않았다 |
 | `no_owner_space` | 2 | `--tab` 인데 소유 space 가 없다 |

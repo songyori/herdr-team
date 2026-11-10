@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import sys
 import unittest
 from unittest import mock
 
@@ -206,14 +207,17 @@ class HcioKeysEventsTest(HorchCase):
         self.assertEqual(cm.exception.kind, "not_found")
 
     def test_events_stream_and_close(self):
+        # 가짜 hc events 는 실제 꼴(스냅숏 한 줄 + JSON-RPC 알림)을 내고, EventStream 이 평평한 사건으로 바꾼다
         self.add_terminal("t3", status="done", turn=2)
         stream = hcio.events("t3")
         try:
             first = stream.read(5)
-            self.assertEqual((first["terminal"], first["status"], first["turn"]), ("t3", "done", 2))
+            self.assertEqual((first["type"], first["terminal"], liveness.status_word(first), first["turn"]),
+                             ("snapshot", "t3", "done", 2))
             self.update_terminal("t3", status="idle", turn=3)
-            nxt = stream.read(5)
-            self.assertEqual((nxt["status"], nxt["turn"]), ("idle", 3))
+            got = [stream.read(5), stream.read(5)]
+            self.assertEqual([(e["type"], e["terminal"], liveness.status_word(e), e.get("turn")) for e in got],
+                             [("status", "t3", "idle", None), ("turn", "t3", "idle", 3)])
             self.assertIsNone(stream.read(0.2))  # 바뀐 것이 없으면 마감까지 None
         finally:
             stream.close()
@@ -248,10 +252,46 @@ class HcioKeysEventsTest(HorchCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         res = json.loads(proc.stdout.strip().splitlines()[-1])
         self.assertEqual(res["id"], 7)
-        tab = res["result"]["spaces"][0]["tabs"][0]
-        self.assertEqual((res["result"]["spaces"][0]["id"], tab["id"], tab["root"]["type"]), ("spA", "tbA", "row"))
-        self.assertEqual([c["terminal"] for c in tab["root"]["children"]], ["t2", "t1"])
-        self.assertEqual(tab["root"]["children"][0]["pane"], "pt2")
+        # 실제 꼴: result 는 {"value": 문서, "version"}, 자식은 {"type": "block", "id": <pane>, "content": {"terminal"}}
+        space = res["result"]["value"]["spaces"][0]
+        tab = space["tabs"][0]
+        self.assertEqual((space["id"], tab["id"], tab["root"]["type"]), ("spA", "tbA", "row"))
+        self.assertIn("version", res["result"])
+        self.assertEqual([c["content"]["terminal"] for c in tab["root"]["children"]], ["t2", "t1"])
+        self.assertEqual((tab["root"]["children"][0]["type"], tab["root"]["children"][0]["id"]), ("block", "pt2"))
+
+    def test_event_lines_real_shape(self):
+        """실제 hc events --json 줄(2026-11-10 확인한 꼴)을 평평한 사건으로 바꾸고 나머지는 건너뛴다."""
+        def note(kind, data, term="t12w"):
+            return {"jsonrpc": "2.0", "method": "event", "params": {"type": kind, "terminal": term, "seq": 5, "data": data}}
+        lines = [
+            {"channel": None, "seq": 1, "terminals": [
+                {"address": "t9", "status": {"app": "codex", "state": "working"}, "turn": 7, "title": "x"},
+                {"address": "t12w", "status": {"app": "codex", "state": "done"}, "turn": 1, "title": "⠙ codexproj"}]},
+            note("heartbeat", {}),
+            note("status", {"records": {}, "reported": True, "status": {"app": "codex", "state": "idle"}}),
+            "not json",
+            [1, 2],
+            note("labels", {"labels": {"a": "b"}}),
+            note("turn", {"state": "done", "turn": 2}),
+            note("title", {"title": "test-a1 | proj"}),
+            {"jsonrpc": "2.0", "method": "missed", "params": {"terminal": "t12w"}},
+        ]
+        text = "\n".join(x if isinstance(x, str) else json.dumps(x) for x in lines)  # 마지막 줄은 줄바꿈 없이 끝난다
+        proc = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdout.write(sys.argv[1])", text],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE)
+        stream = hcio.EventStream(proc, "t12w")
+        try:
+            got = []
+            while not stream.closed:
+                event = stream.read(5)
+                if event is not None:
+                    got.append(event)
+        finally:
+            stream.close()
+        self.assertEqual([(e["type"], e["terminal"], liveness.status_word(e), e.get("turn"), e.get("title")) for e in got],
+                         [("snapshot", "t12w", "done", 1, "⠙ codexproj"), ("status", "t12w", "idle", None, None),
+                          ("turn", "t12w", "done", 2, None), ("title", "t12w", None, None, "test-a1 | proj")])
 
 
 if __name__ == "__main__":

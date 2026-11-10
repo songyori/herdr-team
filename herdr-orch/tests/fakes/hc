@@ -5,9 +5,11 @@ state.json 의 "delay": {명령: 초} 가 있으면 그 명령은 처리 전에 
 
 0.2.0(herdr-orch 설계 13.7): "on_send": {주소: accept|drop|working|mismatch}, "on_clear": {주소: turn|none|event}(기본 turn:
 `/clear` 키를 받으면 turn+1·idle. event: 상태는 그대로 두고, keys 를 받을 때 이미 붙어 있던 events 구독에만 0.3초 뒤
-turn+1·idle 줄을 준다. keys 는 그 구독이 붙기를 3초까지 기다리고 기록에 subscribed 를 남긴다), "keys": [{terminal, keys}]
-기록, "layout": {탭: [주소…]}(connect 의 doc 순서), "doc"(있으면 connect doc.get 결과 그대로). events 는 0.05초마다
-상태를 보고 바뀐 줄을 낸다(FAKE_HC_EVENTS_MAX 초 뒤 끝). 구독은 "subscribers": {주소: [pid…]} 에 이름을 올린다."""
+turn+1·idle 의 turn 알림(이름이 있으면 title 알림도)을 준다. keys 는 그 구독이 붙기를 3초까지 기다리고 기록에 subscribed 를
+남긴다), "keys": [{terminal, keys}] 기록, "layout": {탭: [주소…]}(connect 의 doc 순서), "doc"(있으면 connect doc.get 결과의
+value 그대로). events 는 실제 hc 꼴이다: 처음 스냅숏 한 줄 {"channel", "seq", "terminals": [get 꼴]}, 그 뒤 0.05초마다
+상태를 보고 바뀐 것마다 JSON-RPC 알림 한 줄 {"jsonrpc", "method": "event", "params": {"type": status|turn|title, "terminal",
+"seq", "data"}}(FAKE_HC_EVENTS_MAX 초 뒤 끝). 구독은 "subscribers": {주소: [pid…]} 에 이름을 올린다."""
 import fcntl
 import json
 import os
@@ -48,7 +50,8 @@ def ls_item(t):
 
 
 def doc_of(st):
-    """core 문서 herdr-app 흉내: 라벨 herdr.space·herdr.tab 이 있는 live 터미널을 탭 root row 의 pane 으로(순서는 layout)."""
+    """core 문서 herdr-app 의 value 흉내(실제 꼴): 라벨 herdr.space·herdr.tab 이 있는 live 터미널을 탭 root row 의 block
+    {"type": "block", "id": "p<주소>", "content": {"terminal": <주소>}} 으로(순서는 layout)."""
     spaces = {}
     for t in st["terminals"].values():
         labels = t.get("labels") or {}
@@ -62,10 +65,15 @@ def doc_of(st):
         for tb, addrs in tabs.items():
             first = [a for a in layout.get(tb, []) if a in addrs]
             order = first + [a for a in addrs if a not in first]
-            items.append({"id": tb, "root": {"type": "row", "children": [
-                {"type": "pane", "pane": f"p{a}", "terminal": a} for a in order]}})
-        result.append({"id": sp, "tabs": items})
+            items.append({"id": tb, "name": tb, "root": {"type": "row", "id": f"r{tb}", "children": [
+                {"type": "block", "id": f"p{a}", "content": {"terminal": a}} for a in order]}})
+        result.append({"id": sp, "name": sp, "folder": "/", "tabs": items})
     return {"spaces": result}
+
+
+def notice(kind, address, seq, data):
+    """실제 hc events 의 사건 알림 한 줄."""
+    return {"jsonrpc": "2.0", "method": "event", "params": {"type": kind, "terminal": address, "seq": seq, "data": data}}
 
 
 def handle(st, argv, lines=()):
@@ -183,10 +191,12 @@ def handle(st, argv, lines=()):
                 subs = live_subscribers(st, t["address"])
                 rec["subscribed"] = bool(subs)
                 if subs:
-                    line = {"terminal": t["address"], "status": "idle", "turn": t.get("turn", 0) + 1,
-                            "title": title or t.get("title", "")}
-                    st.setdefault("pending_events", {}).setdefault(t["address"], []).append(
-                        {"to": subs, "at": time.time() + 0.3, "line": line})
+                    lines = [notice("turn", t["address"], 0, {"state": "idle", "turn": t.get("turn", 0) + 1})]
+                    if title:
+                        lines.append(notice("title", t["address"], 0, {"title": title}))
+                    for line in lines:
+                        st.setdefault("pending_events", {}).setdefault(t["address"], []).append(
+                            {"to": list(subs), "at": time.time() + 0.3, "line": line})
         out({"status": None, "turn": 0})  # 실제 hc keys --json 의 결과 꼴
         return 0
     if cmd == "connect":
@@ -196,7 +206,8 @@ def handle(st, argv, lines=()):
                 continue
             req = json.loads(line)
             if req.get("method") == "doc.get" and (req.get("params") or {}).get("name") == "herdr-app":
-                print(json.dumps({"jsonrpc": "2.0", "id": req.get("id"), "result": st.get("doc") or doc_of(st)}))
+                print(json.dumps({"jsonrpc": "2.0", "id": req.get("id"),
+                                  "result": {"value": st.get("doc") or doc_of(st), "version": 1}}))
             else:
                 print(json.dumps({"jsonrpc": "2.0", "id": req.get("id"),
                                   "error": {"code": -32601, "message": "method not found"}}))
@@ -259,11 +270,13 @@ def wait_subscriber(args):
 
 
 def events(args):
-    """hc events --json --terminal T 흉내: 처음 한 줄, 그 뒤 상태·turn·제목이 바뀔 때마다 한 줄. 잠금은 볼 때만 잡는다.
-    처음 볼 때 "subscribers" 에 자기 pid 를 올리고, on_clear: event 가 이 구독에 남긴 줄(pending_events)은 때가 되면 낸다."""
+    """hc events --json --terminal T 흉내(실제 꼴): 처음 스냅숏 한 줄, 그 뒤 상태·turn·제목이 바뀔 때마다 그 종류의 알림 한 줄
+    (status → turn → title 차례). 잠금은 볼 때만 잡는다. 처음 볼 때 "subscribers" 에 자기 pid 를 올리고, on_clear: event 가
+    이 구독에 남긴 알림(pending_events)은 때가 되면 낸다."""
     term = opt(args, "--terminal")
     end = time.monotonic() + float(os.environ.get("FAKE_HC_EVENTS_MAX", "30"))
     last = None
+    seq = 0
     me = os.getpid()
     joined = False
     while True:
@@ -289,13 +302,32 @@ def events(args):
                     changed = True
             if changed:
                 path.write_text(json.dumps(st))
+        addr = t["address"]
+        cur = {"status": t.get("status"), "turn": t.get("turn", 0), "title": t.get("title", "")}
+        out_lines = []
+        if last is None:
+            seq += 1
+            out_lines.append({"channel": None, "seq": seq,
+                              "terminals": [{"title": "", **{k: v for k, v in t.items() if k != "flags"}}]})
+        else:
+            if cur["status"] != last["status"]:
+                seq += 1
+                out_lines.append(notice("status", addr, seq, {"records": {}, "reported": cur["status"] is not None,
+                                                              "status": cur["status"]}))
+            if cur["turn"] != last["turn"]:
+                seq += 1
+                out_lines.append(notice("turn", addr, seq, {"state": (cur["status"] or {}).get("state"),
+                                                            "turn": cur["turn"]}))
+            if cur["title"] != last["title"]:
+                seq += 1
+                out_lines.append(notice("title", addr, seq, {"title": cur["title"]}))
         for line in due:
+            seq += 1
+            line["params"]["seq"] = seq
+            out_lines.append(line)
+        for line in out_lines:
             print(json.dumps(line), flush=True)
-        snap = {"terminal": t["address"], "status": (t.get("status") or {}).get("state"), "turn": t.get("turn", 0),
-                "title": t.get("title", "")}
-        if snap != last:
-            print(json.dumps(snap), flush=True)
-            last = snap
+        last = cur
         if time.monotonic() >= end:
             return 0
         time.sleep(0.05)

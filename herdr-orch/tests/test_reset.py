@@ -5,6 +5,7 @@ import time
 import unittest
 
 from tests.test_persist import PersistCase
+from horch import procs
 
 CLEAR = ["/", "c", "l", "e", "a", "r"]
 
@@ -88,6 +89,42 @@ class TerminalCloseTest(PersistCase):
         self.clear_hc_fail("rm")
         code, res = self.o("terminal-close", "--terminal", term)  # 이미 끝난 터미널: kill 없이 rm 만
         self.assertEqual((code, res["closed"], res["released"]), (0, True, [d1]))
+
+    def test_close_holds_reservation_against_put_and_reset(self):
+        """닫기는 kill 전에 터미널 예약(종류 close)을 잡아 끝날 때까지 쥔다. 그동안 --terminal 넣기·terminal-reset 은
+        terminal_busy 이고, 닫기가 끝나면 예약은 지워진다(Codex 커밋 리뷰 c6d82d2)."""
+        d1, term = self.first()
+        self.delay_hc("kill", 3.0)
+        bg = self.horch_bg("terminal-close", "--terminal", term, terminal="t100")
+        self.addCleanup(lambda: bg.poll() is None and bg.kill())
+        deadline = time.monotonic() + 10
+        while (row := self.db().execute("SELECT value FROM meta WHERE key=?", (f"reset:{term}",)).fetchone()) is None:
+            self.assertLess(time.monotonic(), deadline, "닫기 예약이 생기지 않았다")
+            time.sleep(0.05)
+        self.assertTrue(row["value"].endswith("|close"), row["value"])
+        dispatches = self.count("dispatches")
+        code, res = self.put(term)
+        self.assertEqual((code, res["error"]["code"], res["dispatch"]), (3, "terminal_busy", None), res)
+        self.assertIn("terminal-close", res["error"]["message"])
+        code, res = self.o("terminal-reset", "--terminal", term)
+        self.assertEqual((code, res["error"]["code"]), (3, "terminal_busy"), res)
+        self.assertEqual(self.count("dispatches"), dispatches)
+        self.assertIsNone(bg.poll())  # 두 거부를 본 동안 닫기는 아직 kill 을 기다린다
+        code, res = self.finish(bg)
+        self.assertEqual((code, res["closed"], res["abandoned"], res["released"]), (0, True, None, [d1]), res)
+        self.assertIsNone(self.db().execute("SELECT 1 FROM meta WHERE key=?", (f"reset:{term}",)).fetchone())
+
+    def test_close_refused_while_other_reservation_lives(self):
+        _, term = self.first()
+        pid, started = procs.me()  # 이 시험 프로세스는 살아 있다(리셋 중인 것으로 본다)
+        self.reserve(term, pid, started)
+        calls = len(self.hc_calls())
+        code, res = self.o("terminal-close", "--terminal", term, "--abandon")
+        self.assertEqual((code, res["error"]["code"], res["dispatch"]), (3, "terminal_busy", None), res)
+        self.assertIn("terminal-reset", res["error"]["message"])
+        self.assertEqual([c for c in self.hc_calls()[calls:] if c[0] in ("kill", "rm")], [])
+        self.assertEqual(self.hc_state()["terminals"][term]["state"], "live")
+        self.assertIsNotNone(self.db().execute("SELECT 1 FROM meta WHERE key=?", (f"reset:{term}",)).fetchone())
 
     def test_hc_failure_and_owner(self):
         _, term = self.first()
@@ -173,6 +210,33 @@ class TerminalResetTest(PersistCase):
         self.assertEqual(self.hc_state()["keys"][-1]["subscribed"], True)
         self.assertEqual(self.hc_state()["terminals"][term]["turn"], 3)  # 폴링으로는 알 수 없었다
         self.assertIsNone(self.reservation_row(term))
+
+    def test_slow_poll_still_sees_arrived_event(self):
+        """느린 폴링 hc get 이 마감을 넘겨도, 그 사이 이미 온 turn 사건을 시간 초과 전에 읽어 성공한다
+        (Codex 커밋 리뷰 c6d82d2 의 재현: on_clear event, get 지연 0.7초, --timeout-ms 500)."""
+        _, term = self.first()
+        with self._hc_locked() as st:
+            st["on_clear"] = {term: "event"}
+            st.setdefault("delay", {})["get"] = 0.7
+        code, out = self.o("terminal-reset", "--terminal", term, "--timeout-ms", "500")
+        self.assertEqual(code, 0, out)
+        self.assertEqual((out["signal"], out["turn"], out["status"]), ("event", 4, "idle"))
+        self.assertIsNone(self.reservation_row(term))
+
+    def test_done_after_clear_counts(self):
+        """비운 뒤 상태가 done 이어도(Codex) turn 이 오르면 비운 것으로 본다. 결과의 status 는 본 상태다."""
+        _, term = self.first(agent="codex")
+        with self._hc_locked() as st:
+            st["on_clear"] = {term: "none"}
+        bg = self.horch_bg("terminal-reset", "--terminal", term, "--timeout-ms", "20000", terminal="t100")
+        self.addCleanup(lambda: bg.poll() is None and bg.kill())
+        deadline = time.monotonic() + 10
+        while not self.keys_to(term):
+            self.assertLess(time.monotonic(), deadline, "keys 가 오지 않았다")
+            time.sleep(0.05)
+        self.update_terminal(term, status="done", turn=4)
+        code, res = self.finish(bg)
+        self.assertEqual((code, res["turn"], res["status"]), (0, 4, "done"), res)
 
     def test_keys_failure_is_hc_failed(self):
         _, term = self.first()
