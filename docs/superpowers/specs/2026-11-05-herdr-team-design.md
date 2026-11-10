@@ -411,7 +411,7 @@ full = "npx vitest run"
 
 상태 파일 필드: `id`, `status`, `round`, `base`(첫 라운드 시작 때 HEAD), `rounds`(라운드별 `{round_base, work: {title, horch_task, dispatch, cleaned}, reviews: [{attempt, title, horch_task, dispatch, file, result, cleaned, tamper}], verdict}`), `launcher`(`{pid, started, key}`), `history`(전이와 시각), `note`. `title` 은 horch Task 제목이자 실행 키다: 작업 `T-xxx rN 작업`, 리뷰 `T-xxx rN 리뷰 aK`.
 
-6단계 필드: 라운드 기록의 `agent`(맡은 고정 에이전트 이름 또는 `temp`)·`model_ignored`·`start_turn`·`delivery`(같은 터미널에 넣었을 때), 태스크의 `queued_fix`(고정 에이전트 대기열의 수정 요청, 5.9.5), `unknown_starts`(입력 유실 재투입 수, 5.9.8), `decide`·`decide_round`(열린 decide, 8.10), `liveness_unknown_since`·`liveness_escalated`(8.7), `blocked_decide`(확인 창 decide, 8.6), `launch_failed_asked`·`dropped_deps_asked`(8.7), `drive_fix`(관제 fix 이어 하기)·`review_failure_asked`(실패·변조 decide 를 올린 시도)(8.7, Codex 계획 리뷰 r1), 작업 실행 기록의 `resend`(재투입 이어 붙이기, 5.9.8), `plan_applied`(planner, 8.9). 이 필드는 관제만 쓴다.
+6단계 필드: 라운드 기록의 `crew`(맡은 고정 에이전트 이름 또는 `temp`. 라운드 기록의 `agent` 는 작업 에이전트 claude·codex 다)·`model_ignored`·`start_turn`·`delivery`(같은 터미널에 넣었을 때), 태스크의 `queued_fix`(고정 에이전트 대기열의 수정 요청, 5.9.5)·`start_cli`(기다리게 둔 start 의 옵션, 5.4), `unknown_starts`(입력 유실 재투입 수, 5.9.8), `decide`·`decide_round`(열린 decide, 8.10), `liveness_unknown_since`·`liveness_escalated`(8.7), `blocked_decide`(확인 창 decide, 8.6), `launch_failed_asked`·`dropped_deps_asked`(8.7), `drive_fix`(관제 fix 이어 하기)·`review_failure_asked`(실패·변조 decide 를 올린 시도)(8.7, Codex 계획 리뷰 r1), 작업 실행 기록의 `resend`(재투입 이어 붙이기, 5.9.8), `plan_applied`(planner, 8.9). 이 필드는 관제만 쓴다.
 
 전이는 상태 파일마다 flock 으로 잠그고 이전 상태를 확인한 뒤 원자적으로 쓴다(임시 파일 + `os.replace`). 상태를 바꾸는 명령은 관제와 그 자식 프로세스만 부른다. 메인의 명령은 요청 큐를 거쳐 관제가 실행한다(7.1, 8.3). 0.3.0 까지는 코디네이터가 불렀다.
 
@@ -431,7 +431,7 @@ full = "npx vitest run"
 
 `hteam start-ready`: (6단계) 지금 라운드에 열린 decide(8.10, 답 파일 없음)가 있는 태스크는 후보에서 빼고, 시작 예약(프로젝트 잠금 안)에서도 다시 봐 그 사이 decide 가 올라왔으면 띄우지 않는다. 관제의 자동 `start-ready` 와 메인 큐의 `start-ready` 가 같다. 일시 거부(`transient`, 5.9.3)로 남은 `launch_failed` 는 decide 를 올리지 않으므로 그대로 다시 넣는다. 메인이 큐로 보낸 `start T`·`fix T` 는 그 태스크를 이름으로 고른 복구라 열린 decide 와 상관없이 실행하고, 그 decide 는 메인이 `answer` 로 닫는다(7.7). `tasks.toml` 순서(없으면 ID 순)로 `pending`·`launch_failed` 태스크마다 사양 → 의존 → 잠금 → 동시 수 상한(`working` 수 < `max_parallel`)을 차례로 보고 통과한 것을 `start` 한다. 결과에 시작한 태스크와 남은 태스크의 대기 사유(`spec`·`deps`·`lock`·`limit`). `deps` 는 끝나지 않은 선행과 그 상태를 적는다. 선행이 `dropped` 면 그 태스크는 영영 시작하지 못한다(버린 태스크는 다시 시작하지 않는다, 6.4). 아직 띄우지 않은 선행(`pending`, 띄운 적 없는 queued 라운드)을 거쳐 닿는 간접 선행이 `dropped` 여도 같다(이미 띄운 선행 너머는 보지 않는다): 대기 사유에 `dropped` 와 hint(간접이면 그 선행을 `depends_on` 에 둔 사양)를, `status` 는 `start-ready` 대신 hint 를 주어 메인에 알리게 한다. 사용자가 그 태스크를 `drop` 할지 사양의 `depends_on` 을 고칠지 정한다. 하나가 실패해도 나머지는 계속하고, 하나라도 실패하면 exit 1. `max_parallel` 은 `start-ready` 만 본다(`start`·`fix` 는 보지 않는다). 관제가 부른다: 큐 요청을 처리한 틱, 재확인(60초)마다, accept·fix·drop·승인 결정 뒤(8.5). 메인의 `start-ready` 는 요청 큐를 거친다.
 
-6단계: `start` 는 1–2 를 통과한 뒤 배정(5.9.4)을 본다. 고정 에이전트에 넣거나(5.9.3), 임시 워커로 띄우거나(지금 그대로, 관제 탭 pane), 기다리게 한다. 처음 시작하는 태스크(`pending`)가 지금 시작할 수 없으면(의존이 끝나지 않음, 잠금이 겹침, 에이전트를 기다림) 0.4.0 부터 exit 3 대신 `pending` 으로 두고 exit 0 `{"id", "status": "waiting", "reason": "deps"|"lock"|"agent", "message"}` 를 돌려준다(메인이 시작한 태스크를 관제가 `start-ready` 로 나중에 띄운다, orca 0.7.0). 같은 라운드 복구(`launch_failed`)는 지금처럼 exit 3 이다. 5 의 horch 호출은 배정에 따라 다르다: 임시 워커는 지금 그대로, 고정 에이전트의 첫 태스크는 `--keep-open --tab <에이전트 탭>`, 살아 있는 고정 에이전트는 `--terminal <작업 터미널>`(모델·effort·인자 없음). 실행 키·시작 장벽·복구 규칙은 셋 모두 같다.
+6단계: `start` 는 1–2 를 통과한 뒤 배정(5.9.4)을 본다. 고정 에이전트에 넣거나(5.9.3), 임시 워커로 띄우거나(지금 그대로, 관제 탭 pane), 기다리게 한다. 처음 시작하는 태스크(`pending`)가 지금 시작할 수 없으면(의존이 끝나지 않음, 잠금이 겹침, 에이전트를 기다림) 0.4.0 부터 exit 3 대신 `pending` 으로 두고 exit 0 `{"id", "status": "waiting", "reason": "deps"|"lock"|"agent", "message"}` 를 돌려준다(메인이 시작한 태스크를 관제가 `start-ready` 로 나중에 띄운다, orca 0.7.0). 그때 받은 `--worker`·`--model`·`--effort` 는 상태의 `start_cli` 에 남기고 `start-ready` 가 그 태스크를 띄울 때 쓴다. 옵션 없이 다시 온 `start` 도 그 값을 쓰고, 옵션을 명시하면 그 값이 새 기준이다. 새 라운드를 쓸 때 지운다(Codex 브랜치 리뷰 p6r1). 같은 라운드 복구(`launch_failed`)는 지금처럼 exit 3 이다. 5 의 horch 호출은 배정에 따라 다르다: 임시 워커는 지금 그대로, 고정 에이전트의 첫 태스크는 `--keep-open --tab <에이전트 탭>`, 살아 있는 고정 에이전트는 `--terminal <작업 터미널>`(모델·effort·인자 없음). 실행 키·시작 장벽·복구 규칙은 셋 모두 같다.
 
 ### 5.5 워커 사양 조립
 
@@ -638,7 +638,7 @@ orca-team 0.7.0 의 고정 에이전트(`lib/orch/agents.py`)를 Herdr 위에서
 | `launched_at`, `last_reset_at` | 시각(로컬 오프셋 ISO 8601, 초) |
 | `layout_error`, `layout_retried` | 배치 실패 기록(5.9.2) |
 
-태스크 상태(5.3)의 라운드 기록에 `agent`(고정 에이전트 이름 또는 `temp`)를 남긴다.
+태스크 상태(5.3)의 라운드 기록에 `crew`(고정 에이전트 이름 또는 `temp`)를 남긴다.
 
 #### 5.9.2 처음 띄우기, 탭, pane, 제목
 
@@ -1060,7 +1060,7 @@ orca-team 0.7.0 `queue.py` 를 옮긴다(`lib/hteam/queue.py`). 메인은 horch 
 
 - 2초마다 outbox 를 본다. 커서 뒤 새 항목이 있으면 출력하고 커서를 옮긴 뒤 끝난다(출력한 뒤에야 옮기므로 적어도 한 번 전달된다). Claude Code 의 완료 알림이 메인을 깨운다.
 - 관제가 꺼져 있으면(8.2 의 판정이 꺼짐) `{status: "orphaned"}` 로 끝난다. 멈춤(hung)이면 끝내지 않는다. 0.3.0 은 코디네이터 터미널이 끝났는지로 봤다.
-- 메인은 처리한 뒤 다시 띄운다. Stop 훅이 이를 강제한다(9.4).
+- 메인은 처리한 뒤 다시 띄운다. 관제가 꺼지지 않았으면 Stop 훅이 이를 강제한다(9.4).
 
 ### 7.4 질문 형식 (`render`)과 답
 
@@ -1195,7 +1195,7 @@ orca-team 0.7.0 `queue.py` 를 옮긴다(`lib/hteam/queue.py`). 메인은 horch 
 6. 로그 `관제 시작(<터미널>): created|rebound` → 시작 재확인(8.7) → 루프(8.5).
 7. 무엇이든 관제를 끝내면 로그 `관제 종료: <타입>: <메시지>` 를 남기고 pid 파일을 지운다. SIGTERM·SIGHUP(탭 닫힘)은 exit 143·129 다. 의존 프로그램 없음(horch·hc, exit 12)은 그대로 올라가 관제가 끝난다.
 
-heartbeat: `state/drive/heartbeat` 에 지금 시각(로컬 오프셋 ISO 8601, 초 단위)을 원자적으로 쓴다. 쓰는 때: 틱 시작, 자식 처리 뒤, 큐 요청마다, 재확인의 태스크마다, 오래 걸리는 단계 사이(`start-ready` 의 띄우기마다, 결정 적용의 단계마다, 리셋 단계마다, Run 연결 재시도 앞뒤). 고정 간격은 없다. 한 틱은 보통 메일 대기 10초와 처리 시간이다.
+heartbeat: `state/drive/heartbeat` 에 지금 시각(로컬 오프셋 ISO 8601, 초 단위)을 원자적으로 쓴다. 쓰는 때: 틱 시작, 자식 처리 뒤, 큐 요청마다, 재확인의 태스크마다, Run 연결 앞과 재시도 앞뒤. `start-ready` 의 띄우기 사이, 결정 적용의 단계 사이, 리셋 단계 사이에는 쓰지 않는다(13장 한계). 고정 간격은 없다. 한 틱은 보통 메일 대기 10초와 처리 시간이다.
 
 생존 판정 `drive_alive`: pid 파일의 `{pid, started}` 가 살아 있는 같은 프로세스이고 heartbeat 가 0 이상 120초 미만 전이다. pid 만 살아 있으면 멈춤(hung)이다. 판정은 파일과 `ps` 만 본다(hc·horch 를 부르지 않는다). 파일 없음·해석 실패·오프셋 없는 시각·미래 시각은 살아 있지 않다. 쓰는 곳: 요청 큐(7.1), `hteam up`(9.3), 자동 부활(9.5), `status`, `watch`(7.3), Stop 훅(9.4). orca 는 pid 첫 토큰만 봤다. hteam 은 시작 시각까지 본다(0.3.0 의 `auto-up.pid` 와 같은 꼴).
 
@@ -1464,7 +1464,7 @@ accept 뒤(`accepted`, 관제 판정 경로와 큐 accept 모두):
 ### 8.8 자식 프로세스
 
 - `hteam review T`(관문 테스트가 수 분 걸릴 수 있다)와 마무리 `hteam test --full` 은 자식 프로세스로 돌려 루프가 멈추지 않게 한다: `[sys.executable, <플러그인>/bin/hteam, --root <루트>, …]`, 환경 그대로(자식도 관제로 판별된다, 8.2). stdout·stderr 는 파일(`state/drive/jobs/<키>.out`·`.err`)로 받는다. orca 는 파이프로 받아 자식이 많이 쓰면 막힐 수 있었다.
-- 키는 `review:<T>`(태스크마다 하나)와 `final`. 틱마다 끝난 자식을 거둬 결과를 처리한다(8.6, 8.4). 처리 전에 목록에서 먼저 뺀다(처리 실패가 같은 결과를 다시 읽지 않게).
+- 키는 `review:<T>`(태스크마다 하나)와 `final`. 틱마다 끝난 자식을 거둬 결과를 처리한다(8.6, 8.4). 처리 전에 목록에서 먼저 뺀다(처리 실패가 같은 결과를 다시 읽지 않게). 리뷰 자식은 띄울 때의 태스크 라운드를 함께 기록하고, 거둘 때 지금 라운드가 다르면 결과를 적용하지 않고 로그(`<T> 지난 라운드의 리뷰 결과 무시: r<N>`)만 남긴다. 자식이 끝난 뒤 거두기 전에 같은 틱의 큐 `fix` 가 새 라운드를 열 수 있다(틱 순서상 큐가 거두기보다 앞이다). 그 결과를 새 라운드에 적용하면 새 워커를 죽이고 다음 라운드를 연다(Codex 브랜치 리뷰 p6r1).
 - 리뷰 자식을 띄우기 전에 그 태스크의 finish 잠금을 비차단으로 잡아 본다. 잡히면 놓고 띄운다(리뷰가 다시 잡는다). 잡지 못하면 다른 리뷰 실행자(죽은 관제가 남긴 자식 등)가 돌고 있으므로 띄우지 않고 다음 재확인에 다시 본다. 그 실행자가 끝나며 쓴 상태(`changes`·`reviewing`)를 재확인이 처리한다.
 - 리뷰 자식이 도는 동안 관제는 그 태스크 상태에 decide 표시를 쓰지 않는다. 그동안 올린 decide 의 표시는 자식이 끝난 뒤 적는다(orca d4e285d `pending_marks`). hteam 잠금 순서(프로젝트 → finish → 태스크)는 그대로이고 리뷰는 finish 잠금을 쥔다(6.1).
 - `review-finish` 는 관제 안에서 바로 부른다(테스트를 돌리지 않는다. 자동 재시도는 리뷰어를 띄우고 바로 돌아온다).
@@ -1588,9 +1588,9 @@ Python 3.11 이상, git(없으면 `git init` 과 빈 커밋을 권함), `horch` 
 | SessionStart | `state/plugin-root` 기록. 메인이면 "너는 메인이다" 와 열린 질문 수(decide 포함)를 넣는다. Herdr 터미널 밖(`$HC_TERMINAL_ID` 없음)이면 watch·answer·큐 명령이 되지 않으니 Herdr 안에서 다시 열라는 안내도 넣는다. 메인이면 자동 부활 확인(9.5, 간격과 관계없이)을 하고 그 결과 문구나 기본 줄을 넣는다 |
 | UserPromptSubmit(`role-mark`) | 역할 캐시가 없으면 다시 판별한다. 고정 에이전트 터미널이면 늘 다시 판별한다(6단계). 그 뒤 매 프롬프트, 역할이 메인이면 자동 부활 확인(9.5, 60초 간격). 결과 문구가 있으면 `additionalContext` 로 넣는다 |
 | PreToolUse (Edit·Write·MultiEdit·NotebookEdit) | 경로는 `..`·심볼릭 링크를 실제 경로로 푼 뒤 본다. 누구나 `state/` 를 고칠 수 없다. 메인은 `setup-mode` 가 아니면 제품 파일(`.herdr-team/`·`.claude/`·`docs/superpowers/`·`CLAUDE.md`·`AGENTS.md`·`.gitignore` 밖의 프로젝트 파일)을 고칠 수 없다. 메인은 태스크 사양(`.herdr-team/tasks/`)을 쓴다. 프로젝트 밖은 메인에게 제품 파일이 아니다. 풀 수 없는 경로는 메인에게 거부한다 |
-| PreToolUse (AskUserQuestion) | planner·director 워커 → `hteam ask-user` 안내. 다른 워커·리뷰어 → `horch ask` 안내("프리앰블의 ask 명령으로 묻는다(메인이 답한다)"). 메인 → outbox 질문의 `context` 를 먼저 보여 주지 않았으면 보일 때까지 거부한다(메인의 답변 글 끝부분에 정규화한 `context` 앞 80자가 있어야 보인 것이다). 같은 질문은 세 번까지만 거부하고 그 뒤는 통과시킨다(2단계 실환경에서 메인이 `context` 를 생각 줄에만 남긴 일이 5건 중 2건 있었다) |
+| PreToolUse (AskUserQuestion) | planner·director 워커 → `hteam ask-user` 안내. 다른 워커 → `horch ask` 안내("프리앰블의 ask 명령으로 묻는다(메인이 답한다)"). 리뷰어 → 묻지 않고 리뷰 파일에 적으라고 거부("리뷰어는 묻지 않는다. 판단할 수 없는 것은 리뷰 파일에 적고 판정을 마친다"). 메인 → outbox 질문의 `context` 를 먼저 보여 주지 않았으면 보일 때까지 거부한다(메인의 답변 글 끝부분에 정규화한 `context` 앞 80자가 있어야 보인 것이다). 같은 질문은 세 번까지만 거부하고 그 뒤는 통과시킨다(2단계 실환경에서 메인이 `context` 를 생각 줄에만 남긴 일이 5건 중 2건 있었다) |
 | PreToolUse (Bash) | 메인이 `horch` 를 직접 부르면 거부(같은 일을 하는 `hteam` 큐 명령을 안내). 6단계: 메인의 `hteam drive` 도 거부(`hteam drive 는 관제 탭에서만 돈다. 메인 터미널이 관제가 되면 horch 깨우기 글이 사용자 입력란에 들어온다. 관제를 띄우려면 /herdr-team:up 을 쓴다`). `hteam` 판별은 0.3.0 의 `HORCH_RE` 와 같은 경계 규칙으로 하고, 앞 옵션(`--root …`)을 건너뛴 하위 명령이 정확히 `drive` 일 때만 막는다(따옴표·절대 경로 포함, `hteam drive-x` 는 통과) |
-| Stop | 메인이고 `run.json` 에 `run_id` 가 있는데 watch 가 없으면 턴을 끝내지 못하게 하고 watch 를 다시 띄우라고 한다. Herdr 터미널 밖의 메인, `setup-mode`, `stop_hook_active` 는 막지 않는다 |
+| Stop | 메인이고 `run.json` 에 `run_id` 가 있고 관제가 꺼짐(8.2 의 alive·hung·starting 이 모두 아님)이 아닌데 watch 가 없으면 턴을 끝내지 못하게 하고 watch 를 다시 띄우라고 한다. 관제가 꺼졌으면 watch 가 곧바로 `orphaned` 로 끝나므로 막지 않는다(막으면 watch → orphaned → up 실패 → Stop 이 사용자 입력 없이 되풀이된다. 꺼진 관제는 다음 프롬프트의 자동 부활 확인이 알린다, 9.5. 최종 리뷰 I1). Herdr 터미널 밖의 메인, `setup-mode`, `stop_hook_active` 는 막지 않는다 |
 
 Codex 워커·리뷰어에는 Claude 훅이 걸리지 않는다. 그쪽은 `AGENTS.md` 의 규칙(owns 밖 커밋 금지, 리뷰어는 리뷰 파일만)과 리뷰 사전 검사·변조 검사로 막는다. Bash 로 하는 파일 수정(`sed -i` 등)은 훅이 막지 못한다(리뷰가 잡는다). Codex 고정 에이전트(6단계)도 같다.
 
@@ -2021,6 +2021,19 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
 - 한 묶음의 후속 태스크 여럿을 만들다 첫 태스크를 만든 뒤 예외나 관제 재시작이 나면, 다음 묶음 처리는 `출처: <T> followups` 태스크가 이미 있다고 보고 나머지(다른 직무의 정리 태스크, 기획 누락 decide)를 건너뛴 채 묶음을 끝낸다(8.9, Codex 커밋 리뷰 f7a2216, 기록만).
 - 보강 기록(`supplement.json`)을 쓴 뒤 UI 기반 처리를 마치기 전에 관제가 죽거나 그 처리가 실패하면 다시 돌지 않는다. 보강 의존 추가·토큰 갱신 태스크가 빠지고 `start-ready` 가 옛 토큰으로 UI 기반·화면 구현 태스크를 시작할 수 있다(11장, Codex 커밋 리뷰 f7a2216, 기록만).
 - 바뀐 파일 경로에 UTF-8 이 아닌 바이트가 있으면 done 본문을 outbox 에 쓰지 못해 완료 보고와 `reported` 가 남지 않는다(8.4 의 7, Codex 커밋 리뷰 f7a2216, 기록만).
+- 끝나지 않은 일괄 승인 결정(11.4)이 고치는 태스크나 그 의존 태스크가 그 사이 `approved` 가 되면, 관제의 accept(review-finish 판정 경로와 재확인)가 `decision_pending` 을 받는다. 관제는 그것을 "관제 절차 실패" escalation 으로 올린다. 결정 이어 하기가 그 태스크를 새 라운드로 열면 그 decide 는 지난 것이 되지만, 메인은 쓸데없는 decide 를 하나 닫아야 한다(8.5, 8.7, 최종 리뷰, 기록만).
+- 재확인의 `no_status` 확인은 열린 decide 나 리뷰 자식이 있는 태스크를 빼고 본다. 그동안 그 Dispatch 의 알림 기록(`attention.json`)이 지워진다. 그래서 메인이 `no_status` decide 를 닫은 뒤에도 워커가 여전히 상태를 보고하지 않으면, 다음 재확인이 같은 Dispatch 로 decide 를 다시 올린다(8.7, 8.10, 최종 리뷰, 기록만).
+- 관제는 heartbeat 를 틱 시작, 자식 처리 뒤, 큐 요청마다, 재확인의 태스크마다, Run 연결 앞과 재시도 앞뒤에만 쓴다. `start-ready` 의 띄우기 사이, 결정 적용의 단계 사이, 리셋 단계 사이에는 쓰지 않는다. hc·horch 가 느려 한 단계가 120초를 넘기면 그동안 메인 큐 명령이 `drive_hung` 으로 거부되고 훅이 HUNG 을 알린다(8.2. 8.2 의 heartbeat 목록도 이에 맞춘다. 최종 리뷰, 기록만).
+- 고정 에이전트에 넣기가 일시 거부(`transient`)된 뒤 같은 라운드 복구가 다른 오류로 실패해도 일시 거부 표시가 남는다. start-ready 는 그 태스크를 `agent` 대기로 보고 계속 다시 넣고, 재확인은 launch_failed decide 를 올리지 않는다(5.9.3, 8.7, 최종 리뷰, 기록만).
+- 고정 에이전트 태스크의 리뷰 관문이 도는 동안(상태 `working`) 메인이 fix 를 낼 수 있다. 에이전트가 다른 태스크로 바쁘면 그 fix 는 대기열(`queued_fix`)에 들어간다. 리뷰가 승인되면 accept 가 그 대기 수정을 지워 메인 지시가 사라진다. 임시 워커 태스크는 `review_busy` 뒤 `bad_state` 로 알린다(5.9.5, 5.9.6, 최종 리뷰, 기록만).
+- 관제가 고정 에이전트 태스크를 `working` 으로 쓴 뒤 crew entry 를 쓰기 전에 죽으면 그 세션은 `crew.json` 에 없다. 재확인도 상태와 Dispatch 기록으로 그 배정을 되살리지 않는다. 처음 띄운 세션이면 다음 태스크가 같은 에이전트 탭에 새 세션을 띄우고(`[overflow] enabled = false` 여도 같은 에이전트에 두 번째 고정 세션이 생긴다), 앞 세션은 정리되지 않는다(사람이 닫는다)(5.9.2 의 3, 최종 리뷰, Codex 브랜치 리뷰 p6r1, 기록만).
+- `horch worker-start --terminal` 이 `not_persistent_terminal` 로 거부하면(Run 을 새로 만들었을 때) 관제는 터미널을 잊지 않는다. 그 에이전트의 태스크마다 launch_failed decide 가 오르고, 사용자가 작업 pane 을 닫을 때까지 이어진다(5.9.3, 최종 리뷰, 기록만).
+- `drop --force` 가 hc 실패로 일하는 세션을 닫지도 Dispatch 를 버리지도 못하면, 그 터미널은 잊지만 태스크는 `worker_active` 로 dropped 가 되지 않는다. hc 가 돌아온 뒤 다시 한다(5.9.6, 최종 리뷰, 기록만).
+- 인수인계 Dispatch 의 `not_started`·question·escalation 은 로그만 남긴다. 입력이 사라졌거나 인수인계 워커가 물으면 30분(`RESET_STUCK_S`) 뒤 "인수인계가 끝나지 않았다" decide 로만 드러난다(5.9.7, 8.6, Task 8 리뷰, 기록만).
+- 설정에서 지운 고정 에이전트의 태스크를 임시 워커로 고칠 때, 옛 세션 상태가 `error` 이거나 상태 보고가 없으면 거부하지 않는다. 옛 세션이 살아나면 두 워커가 같은 파일을 고칠 수 있다(5.9.4, Task 7 리뷰, 기록만).
+- 고정 에이전트 작업 터미널의 UserPromptSubmit 은 역할 캐시를 지운 뒤 다시 판별한다. 그때 `horch status` 가 실패하면 그 프롬프트 동안 역할이 모름이라 워커의 AskUserQuestion 거부가 꺼진다. 다음 프롬프트에서 다시 판별한다(9.4, 최종 리뷰, 기록만).
+- `state/crew.json` 을 읽지 못하는 동안, 역할 캐시가 없는 메인 세션(세션 시작 직후 포함)은 역할이 모름이다. 그래서 메인 가드(제품 파일 편집·`horch`·`hteam drive` 거부, `render.context` 확인)와 메인 안내가 꺼진다(9.4, 최종 리뷰, 기록만).
+- 관제는 `hc run` 으로 떠 부른 쪽 환경을 물려받지 않는다. argv 로는 `HTEAM_ROLE`·`HTEAM_LAUNCH` 만 넘긴다. 그래서 메인에서 `HERDR_ORCH_BIN`·`HERDR_TEAM_PLUGIN_ROOT` 로 고른 horch·플러그인은 관제에 가지 않는다. 관제는 형제 경로와 설치 기록으로 다시 찾는다(9.3, 최종 리뷰, 기록만).
 - 관제 안의 `fix --supplement`(보강이 끝난 뒤 화면 고치기, 메인 큐의 fix)가 보강 후행 태스크의 대기 라운드를 만드는 안쪽 fix 는 finish 잠금을 비차단으로 잡지 않는다(8.5 의 비차단은 바깥 fix 까지만). 그 후행 태스크의 리뷰 관문이 finish 잠금을 쥐고 있으면 관문이 끝날 때까지 관제 틱이 멈춘다(Codex 계획 리뷰 r2, 기록만).
 - 리뷰 보기 pane 의 크기는 실환경에서 확인한다(6.5 의 9).
 
