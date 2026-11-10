@@ -1,7 +1,7 @@
 # herdr-orch 설계
 
 - 날짜: 2026-11-04
-- 상태: 초안(사용자 검토 전)
+- 상태: 0.1.x(1–12장)는 구현·실환경 확인을 마치고 병합했다(0.1.2). 0.2.0(13장, 고정 터미널)은 설계 단계다(2026-11-10, herdr-team 6단계와 한 주기).
 - 범위: herdr-team 저장소의 첫 플러그인 `herdr-orch`
 
 ## 1. 목적
@@ -27,7 +27,7 @@ Orca 와 orca-team 코드에 의존하지 않는다. 개념만 참고한다.
 - **Run**: 감독 단위이자 코디네이터 메일함. 소유 터미널이 하나 있거나 없다.
 - **소유자**: Run 에 묶인 터미널(코디네이터). 터미널 하나는 Run 하나에만, Run 하나는 터미널 하나에만 묶인다.
 - **Task**: 할 일 하나. spec 본문을 갖는다.
-- **Dispatch**: Task 를 수행하는 워커 실행 1회. 워커 터미널 하나와 짝이다.
+- **Dispatch**: Task 를 수행하는 워커 실행 1회. 워커 터미널 하나와 짝이다. 0.2.0 부터 고정 터미널 하나가 Dispatch 여러 개를 차례로 맡을 수 있다(13장).
 - **Message**: 메일함(`run:<id>` 또는 `dispatch:<id>`)에 쌓이는 기록.
 - **Delivery**: 메일함에서 한 번에 넘겨주는 메시지 묶음(최대 50건). ack 전까지 같은 묶음을 다시 준다.
 - **호출자**: `horch` 를 실행한 hc 터미널. `$HC_TERMINAL_ID` 로 정한다.
@@ -52,7 +52,7 @@ herdr-orch/
     auth.py       호출자 확인(소유자·워커·외부)
     runs.py       run-create, run-use, status
     guard.py      launch-guard: 워커 터미널에서 에이전트보다 먼저 돌며 등록 후 exec
-    hcio.py       hc 를 부르는 유일한 모듈: run, get, ls, read, send, kill, rm, server status
+    hcio.py       hc 를 부르는 유일한 모듈: run, get, ls, read, send, kill, rm, server status. 0.2.0: keys, label, events(13.7)
     herdr.py      herdr-app 을 부르는 유일한 모듈: status
     agents.py     Claude·Codex 실행 명령 생성
     preamble.py   워커 프리앰블 생성
@@ -105,6 +105,7 @@ observations(dispatch_id, kind, key, created_at, PK(dispatch_id, kind, key))
 - `launch_argv` 는 `hc run` 의 `--` 뒤 argv(가드 명령, JSON)다. 생존 판정이 hc 의 `argv` 와 비교한다.
 - `launcher_pid`·`launcher_started` 는 실행자의 pid 와 프로세스 시작 시각이다. pid 와 시작 시각이 모두 같은 프로세스가 살아 있어야 "살아 있다"고 본다(pid 재사용 방지). `waiters` 도 같은 규칙이다.
 - 소유자 터미널은 `bindings` 로만 정한다.
+- 0.2.0 의 열(`persistent`, `terminal_argv`, `start_turn`, `delivery`, `seen_at`)과 인덱스 `dispatch_one_per_terminal` 은 13.3.
 
 ### 상태 전이
 
@@ -221,6 +222,8 @@ Dispatch:
 | `skill` | 없음 | 사용법 텍스트 |
 
 `send --to dispatch:D` 는 D 가 소유자의 Run 에 속하고 `active` 일 때만 받는다(아니면 exit 3).
+
+0.2.0 의 옵션과 명령(`--keep-open`, `--terminal`, `--tab`, `--hidden`, `--keep-terminal`, `terminal-close`, `terminal-reset`)과 새 오류 code 는 13.4–13.9.
 
 ### 같은 호출을 다시 하면
 
@@ -388,7 +391,7 @@ Dispatch:
 - **워커가 시작 확인 창에서 멈춤**: Claude 폴더 신뢰, Codex hook 검토 창 동안에는 에이전트가 상태를 보고하지 않는다(`status` 가 null, 사전 검증 S1·S2). 그래서 `blocked` 로 보이지 않는다. `worker-list` 는 판정이 `live` 인데 상태 보고가 없는 `active` 워커를 `attention: "no_status"`, `next: worker-show --lines 40` 으로 보인다. 띄운 직후 첫 보고 전에도 잠깐 그렇다. horch 는 키를 누르지 않는다. 1분 넘게 이어지면 코디네이터가 화면을 보고 사용자에게 알린다.
 - **워커가 error**: `observed error`. 코디네이터가 `worker-show --lines 80` 으로 화면을 읽고, 이어갈 수 있으면 `send --to dispatch:D` 로 지시한다(9장 깨우기가 error 인 워커에 입력을 보낸다). 이어갈 수 없으면 `worker-abandon --kill` 뒤 `worker-start --task` 로 다시 띄운다.
 - **`worker-abandon`**: 판정이 `exited`·`lost` 면 `abandoned`. `live` 면 `--kill` 이 있어야 하고 `hc kill` 뒤 `abandoned`. `unverifiable` 은 거부(exit 1). 복구 셸(`lost`)은 남아 있으므로 `worker-release` 로 정리한다.
-- **`worker-release`**: `settled`·`retained`·`abandoned` 를 받는다. 다음 순서로 하고, 각 단계는 이미 된 상태를 성공으로 본다.
+- **`worker-release`**: `settled`·`retained`·`abandoned` 를 받는다(고정 Dispatch 는 터미널을 남긴다, 13.5). 다음 순서로 하고, 각 단계는 이미 된 상태를 성공으로 본다.
   0. `hc get` 의 라벨 `horch.dispatch` 가 이 Dispatch 가 아니면(주소가 다른 터미널을 가리킴) 아무것도 지우지 않고 exit 1(`terminal_mismatch`).
   1. 판정이 `live`·`lost` 면 `hc kill`. 이미 `finished` 거나 hc 가 not_found 를 주면 넘어간다.
   2. `hc rm`. not_found 면 넘어간다. kind `live`(kill 직후 아직 살아 있음)일 때만 잠깐 다시 시도한다.
@@ -396,7 +399,7 @@ Dispatch:
   hc 호출이 다른 이유로 실패하면 상태를 바꾸지 않고 exit 1. 다시 실행하면 이어서 한다. 프로그램이 끝나면 Herdr 가 pane 을 닫는다.
 - **코디네이터가 죽음**: 새 터미널에서 `run-use --id R`(6장 넘겨받기). ack 안 된 Delivery 는 새 소유자에게 다시 간다.
 - **동시 쓰기**: WAL, `busy_timeout` 5초, 쓰기는 `BEGIN IMMEDIATE`. 저장소를 열 때는 스키마를 만들거나 올려야 할 때만 쓰기 잠금을 잡는다. 잠금을 쥔 채 외부 프로그램을 부르는 곳(run-use 판정)은 호출 시간을 3초로 자른다.
-- **스키마**: `meta.schema_version` 으로 마이그레이션한다. 현재 2(1→2: `dispatches.agent_args` 열과 `(task_id, attempt)` 인덱스 추가). 모르는 더 높은 버전이면 exit 1.
+- **스키마**: `meta.schema_version` 으로 마이그레이션한다. 현재 2(1→2: `dispatches.agent_args` 열과 `(task_id, attempt)` 인덱스 추가). 모르는 더 높은 버전이면 exit 1. 0.2.0 은 3(13.3).
 
 ### doctor 점검
 
@@ -481,6 +484,195 @@ hc 0.1.18, Claude Code 2.1.318(코디네이터 Opus, 워커 haiku), codex-cli 0.
 
 `CLAUDE.md` 규칙대로 설계·계획·태스크 커밋·브랜치 전체를 Codex 가 검토한다.
 
-## 13. 범위 밖
+## 13. 0.2.0: 고정 터미널 (2026-11-10)
 
-gate, 태스크 의존성(DAG), 그룹 주소(`@all` 등), 중첩 워커, 원격 머신(`--on`), heartbeat, 같은 터미널 재사용, Codex·Claude 외 에이전트, 메시지 종류별 대기 필터, `pane.split` 대체 배치, 코디네이터 실행(herdr-team 이 한다), 팀 보드 Herdr 모드.
+herdr-team 0.4.0 의 고정 에이전트(같은 세션이 여러 태스크를 이어 맡는다)를 위해 더한다. 0.1.x 동작은 그대로다: 고정 터미널을 쓰지 않는 Dispatch 는 지금처럼 새 터미널에서 돌고, `worker-release` 가 그 터미널을 끄고 지운다. 이 장은 herdr-team 6단계 설계(`2026-11-05-herdr-team-design.md` 5.9)와 같은 주기에 구현한다.
+
+근거는 실제 세션 실험 X1–X6·X3b(2026-11-10, hc 0.1.19, Claude Code 2.1.322, codex-cli 0.167.0)다. 이 장에서 "X1" 처럼 적은 것은 그 실험이다.
+
+### 13.1 실험이 정한 사실
+
+| 사실 | 실험 | 이 장의 규칙 |
+|---|---|---|
+| done 으로 끝난 Claude 세션에 여러 줄 프리앰블을 `hc send` 로 넣으면 제출되고 앞 맥락을 기억한다 | X1 | 같은 터미널에 다시 넣을 수 있다(13.4) |
+| 같은 Dispatch 로 `done` 을 다시 부르면 `done_conflict`(exit 3)다 | X1 | 다시 넣을 때마다 새 Dispatch 를 만든다 |
+| 아무도 보지 않는 Claude·Codex 는 턴이 끝나면 입력이 올 때까지 `done` 에 머문다. `--if idle` 은 `status_mismatch` 로 거부된다 | X1, X3b | 상태가 `done` 이면 조건 없이 보낸다 |
+| 셸 터미널(상태를 보고하지 않는다)이나 `HC_TERMINAL_ID` 가 없는 호출에서 보낸 글은 `<hc from=…>` 로 감싸지 않는다. 상태를 보고하는 에이전트 터미널에서 보낼 때만 감싼다 | X1 | 다시 넣는 글은 `HC_TERMINAL_ID` 를 뺀 환경으로 보낸다 |
+| 감싼 `/clear` 는 실행되지 않는다. Codex 는 감싼 `/new` 에 비운 척까지 한다 | X2, X3 | 슬래시 명령은 늘 `hc keys` 로 친다 |
+| 입력이 사라져도 send 결과는 `started:true` 이고 turn 이 오를 수 있다 | X3 | 들어갔는지는 `started` 가 아니라 turn 과 Dispatch 활동으로 본다(13.6) |
+| Claude `/clear`: keys 로 0.25초, 0.1–0.3초 안에 `idle`·turn+1. 바로 넣은 입력도 처리된다 | X2 | `terminal-reset`(13.8) |
+| Codex `/clear`: 메뉴 없이 새 대화. 13번 모두 입력 유실 없음. 명령 뒤 첫 turn 사건(`idle`, turn+1)이 1.5–1.8초 뒤 온다. `/clear <이름>` 은 새 대화 이름과 제목을 정한다 | X3b | `terminal-reset --name` |
+| Codex `/new` 는 git 저장소에서 작업 트리 메뉴를 띄우고, 그동안 넣은 글이 메뉴 선택에 먹혀 사라진다 | X3 | `/new` 는 쓰지 않는다 |
+| `hc read --lines N`(N>0)은 스크롤 입력을 보내 Codex 를 `done` 에서 `idle` 로 바꾼다. `--lines 0` 은 바꾸지 않는다 | X3b | horch 는 판정에 화면을 읽지 않는다. 호출자의 상태 확인은 `worker-show --lines 0` |
+| 라벨로 붙인 터미널은 그 탭 줄의 오른쪽 끝에 붙는다 | X4 | `--tab` 으로 에이전트 탭에 붙인다. 좌우 정리는 호출자가 한다(herdr-team 5.9) |
+| `release` 는 지금 0.8초 만에 고정 터미널을 끄고 지운다 | X1 | 고정 Dispatch 의 release 는 터미널을 남긴다(13.5) |
+
+### 13.2 용어
+
+- **고정 터미널**: `worker-start --keep-open` 으로 띄운 워커 터미널. 그 Dispatch 가 끝나도 터미널을 남기고, 다음 Dispatch 를 같은 터미널에 넣는다. 라벨 `horch.persistent=1` 이 붙는다.
+- **고정 Dispatch**: 고정 터미널에서 도는 Dispatch(`--keep-open` 의 첫 Dispatch 와 `--terminal` 로 넣은 Dispatch). `persistent = 1`.
+- 3장의 "Dispatch: 워커 터미널 하나와 짝이다" 는 0.2.0 부터 "고정 터미널 하나가 Dispatch 여러 개를 차례로 맡을 수 있다. 한 터미널에 진행 중(`launching`·`active`) Dispatch 는 하나다" 로 읽는다.
+
+### 13.3 데이터 모델(스키마 v3)
+
+`dispatches` 에 열을 더한다.
+
+| 열 | 뜻 |
+|---|---|
+| `persistent INTEGER NOT NULL DEFAULT 0` | 고정 Dispatch 면 1 |
+| `terminal_argv TEXT` | 그 터미널의 hc `argv`(JSON). 생존 판정이 이것과 견준다. `--keep-open` 은 `launch_argv` 를 그대로, `--terminal` 은 그 터미널의 앞 고정 Dispatch 값을 옮긴다 |
+| `start_turn INTEGER` | 입력을 보내기 직전에 읽은 그 터미널의 turn. 새 터미널(`hc run`)은 NULL(0 으로 본다) |
+| `delivery TEXT` | 보내기 기록(JSON, 13.4 의 6) |
+| `seen_at TEXT` | 이 Dispatch 로 워커 명령(`check --dispatch`·`ask`·`escalate`·`done`·`send`)이 처음 신원 확인을 통과한 시각 |
+
+- 새 부분 유일 인덱스 `dispatch_one_per_terminal ON dispatches(terminal) WHERE state IN ('launching','active') AND terminal IS NOT NULL`: 한 터미널에 진행 중 Dispatch 는 하나다. 지금의 `dispatch_terminal` 인덱스(유일 아님)는 그대로 둔다.
+- 마이그레이션은 누적으로 고친다: `if v < 2: …` 다음 `if v < 3: …`. v2 → v3 은 다섯 열을 `ALTER TABLE ADD COLUMN` 하고 인덱스를 만든 뒤 `schema_version` 을 3 으로 쓴다. v2 의 행은 모두 `persistent = 0` 이다. v2 에서는 Dispatch 하나가 터미널 하나와 짝이라 인덱스를 만들 때 겹치는 행이 없다. 10장 "스키마" 줄의 "현재 2" 는 "현재 3" 이 된다.
+- `launch_argv` 는 `hc run` 으로 띄운 Dispatch 에만 있다. `--terminal` Dispatch 는 NULL 이다.
+
+### 13.4 `worker-start --keep-open` 과 `--terminal`
+
+옵션:
+
+| 옵션 | 뜻 | 같이 쓸 수 없는 것(exit 2 `usage`) |
+|---|---|---|
+| `--keep-open` | 새 터미널을 고정 터미널로 띄운다. 결과에 `terminal` | `--terminal` |
+| `--terminal <주소>` | 이 Run 의 살아 있는 고정 터미널에 새 Dispatch 를 넣는다 | `--keep-open`, `--agent`, `--model`, `--effort`, `--agent-arg`, `--cwd`, `--tab`, `--hidden` |
+| `--tab <탭 id>` | 소유자의 space 에서 이 탭에 붙인다(라벨 `herdr.space=<owner_space>`, `herdr.tab=<id>`). Herdr 가 모르는 id 면 새 탭이 생긴다. 사용자 초점은 바뀌지 않는다(X4) | `--hidden`, `--terminal` |
+| `--hidden` | herdr 라벨 없이 띄운다. 화면에 나오지 않는다(크기 200×120, X4) | `--tab`, `--terminal` |
+
+- `--agent` 는 `--terminal` 이 없을 때만 필수다. `--terminal` 은 그 터미널의 에이전트·모델·effort·인자·cwd 를 앞 고정 Dispatch 에서 옮겨 기록한다(떠 있는 세션을 그대로 쓰므로 바꿀 수 없다).
+- `--tab` 인데 소유자 Run 에 `owner_space` 가 없으면 exit 2 `no_owner_space`. `--tab` 값은 `[A-Za-z0-9_-]` 1–64자(아니면 exit 2 `usage`).
+- 결과의 `placement`: `pane`(소유 탭 또는 `--tab`), `hidden`, `none`(소유 탭 없음, 지금 그대로), `same_terminal`(`--terminal`).
+- `--keep-open` 의 나머지는 8장 절차 그대로다. 다른 점: `persistent = 1`, `terminal_argv = launch_argv`, 라벨에 `horch.persistent=1` 을 더한다. 프리앰블은 지금처럼 에이전트 argv 의 마지막 인자다.
+
+`--terminal <t>` 절차:
+
+1. 호출자가 소유자인지 확인한다(아니면 exit 5 `not_owner`). `--task` 가 있으면 5장 재시도 규칙을 그대로 쓴다.
+2. 터미널 확인(트랜잭션 밖). `hc get <t>`(5초) 실패는 exit 1 `hc_failed`(아무것도 만들지 않는다). 다음이면 exit 3 이고 아무것도 만들지 않는다.
+
+   | 조건 | code | data |
+   |---|---|---|
+   | `not_found`, `finished`, `stopped_by_restart`, argv 가 `terminal_argv` 와 다름 | `terminal_gone` | `verdict` |
+   | 라벨 `horch.run` 이 호출자 Run 이 아니거나 `horch.persistent` 가 없음, 또는 DB 에 그 터미널의 고정 Dispatch 가 없음 | `not_persistent_terminal` | |
+   | 그 터미널에 `launching`·`active` Dispatch 가 있음, 또는 `terminal-reset` 이 진행 중(13.8) | `terminal_busy` | `dispatch` |
+   | 상태가 `idle`·`done` 이 아님(`working`, `blocked`, `error`, 보고 없음) | `terminal_not_ready` | `status`, `turn` |
+
+3. `BEGIN IMMEDIATE` 트랜잭션에서 소유자를 다시 확인하고 Task(또는 `--task`)와 Dispatch(`launching`, `persistent = 1`, `terminal = <t>`, `terminal_argv`, 옮긴 에이전트 값, `launcher_pid`·`launcher_started`)를 만든다. `dispatch_one_per_terminal` 에 걸리면 exit 3 `terminal_busy`.
+4. `spec.md`·`preamble.md` 를 쓴다(8장). 프리앰블 첫 항목 뒤에 한 줄을 더한다: "이 세션은 앞 태스크를 이어 받았을 수 있다. 앞 대화의 Task·Dispatch ID 는 쓰지 않는다. 이 프리앰블의 ID 만 쓴다." 0.2.0 은 모든 Dispatch 의 프리앰블 4항 "코디네이터 메시지" 를 "소유자 메시지" 로 바꾼다.
+5. `hc get <t>` 로 상태와 turn 을 다시 읽는다. 2 의 조건에 걸리면 Dispatch 를 `launch_failed` 로 두고 그 code 로 끝난다. 아니면 그 turn 을 `start_turn` 으로, `delivery = {"sending": true}` 를 먼저 기록한다(조건부 쓰기, `launching` 일 때만).
+6. 프리앰블 글 전체를 보낸다: `HC_TERMINAL_ID` 를 뺀 환경으로 `hc send <t> <글> --json`(상태가 `idle` 이면 `--if idle` 을 붙이고, `done` 이면 붙이지 않는다). 결과를 `delivery` 에 쓴다: `{via: "send", if: "idle"|null, status_before, turn_before, started, status, turn, at}`.
+   - `status_mismatch`(그 사이 `working`·`blocked` 가 됐다. hc 는 아무것도 치지 않는다): Dispatch 를 `launch_failed` 로 두고 exit 3 `terminal_not_ready`.
+   - 그 밖의 hc 실패(시간 초과, 응답 유실): 들어갔을 수 있다(hc 도움말: "send 가 실패해도 들어갔을 수 있다"). `active` 로 두고 `delivery` 에 `{uncertain: true, error}` 를 쓰고 `warnings` 에 `delivery_uncertain` 을 넣는다. 들어가지 않았으면 13.6 의 `not_started` 가 알린다.
+7. `active` 로 바꾼다(조건부 쓰기). 라벨을 `hc label <t> horch.dispatch=<새 id>` 로 바꾼다. 실패하면 `warnings` 에 `label_failed` 를 넣고 계속한다(고정 터미널의 정리는 이 라벨에 기대지 않는다, 13.5).
+8. 결과 `{task, dispatch, terminal, state: "active", placement: "same_terminal", start_turn, delivery, warnings}`.
+
+실행자가 죽었을 때(5장 launching 조정에 더한다): 고정 Dispatch 가 `launching` 이고 실행자가 죽었으면, `delivery` 에 `sending` 이 없으면 지금처럼 `launch_failed` 다. 있으면(보냈을 수 있다) `hc get` 을 보고 turn 이 `start_turn` 보다 크거나 상태가 `working` 이면 `active`, 아니면 `launch_failed` 다. hc 를 확인할 수 없으면 `launching` 으로 둔다(다음 조정이 다시 본다).
+
+### 13.5 release, abandon, terminal-close
+
+- `worker-release --dispatch D [--keep-terminal]`: 고정 Dispatch 는 터미널을 끄지도 지우지도 않는다(`--keep-terminal` 을 주든 안 주든). hc 를 부르지 않으므로 `terminal_mismatch` 도 없다. `released`·`closed_at` 만 쓴다. 고정이 아닌 Dispatch 에 `--keep-terminal` 을 주면 exit 2 `usage`(그 터미널을 닫을 길이 없어진다). 고정이 아닌 Dispatch 는 지금 그대로다.
+- `worker-abandon --dispatch D [--keep-terminal] [--kill]`: 고정 Dispatch 이고 판정이 `live` 면 `--keep-terminal` 이 있어야 한다. 그러면 터미널은 두고 `abandoned` 만 쓴다(세션은 그대로 살아 있다). 없으면 exit 3 `worker_alive`(hint `--keep-terminal` 또는 `terminal-close --abandon`). 고정 Dispatch 에 `--kill` 을 주면 exit 2 `usage`(고정 터미널은 `terminal-close` 로 닫는다). `exited`·`lost` 는 지금처럼 플래그 없이 `abandoned` 다.
+- 새 명령 `terminal-close --terminal <t> [--abandon]`(소유자):
+  1. `hc get <t>`. `not_found` 면 이미 닫힌 것이다: 그 터미널의 끝나지 않은 고정 Dispatch 를 아래 4 처럼 정리하고 `{terminal, closed: false, reason: "not_found"}`(exit 0). 그 밖의 hc 실패는 exit 1 `hc_failed`.
+  2. 라벨 `horch.run` 이 호출자 Run 이고 `horch.persistent=1` 이어야 한다(아니면 exit 3 `not_persistent_terminal`).
+  3. 그 터미널에 `launching`·`active` Dispatch 가 있으면 `--abandon` 이 있어야 한다(아니면 exit 3 `terminal_busy`, data `dispatch`).
+  4. `hc kill`(live 일 때) → `hc rm`(kind `live` 일 때만 잠깐 다시) → 한 트랜잭션에서 진행 중 Dispatch 를 `abandoned`, 그 터미널의 `settled`·`retained`·`abandoned` Dispatch 를 모두 `released` 로 쓴다. kill·rm 이 실패하면 상태를 바꾸지 않고 exit 1. 다시 부르면 이어 한다.
+  5. 결과 `{terminal, closed: true, abandoned: <dispatch 또는 null>, released: [<id>…]}`.
+- 고정 Dispatch 의 `--terminal` 실패(`launch_failed`)는 터미널을 만들지 않았으므로 5장의 거부 터미널 정리 대상이 아니다. 정리는 hc 이름과 라벨 `horch.dispatch` 가 모두 그 `launch_failed` Dispatch 인 `finished` 터미널만 지운다. 고정 터미널의 이름은 첫 Dispatch ID 이고 라벨은 Dispatch 가 `active` 가 된 뒤에만 바뀌므로 걸리지 않는다. 첫 Dispatch 가 `launch_failed` 인 고정 터미널(가드가 거부했다)은 지금처럼 정리한다.
+
+### 13.6 생존·idle·전달 판정
+
+| 곳 | 지금(0.1.x) | 0.2.0 |
+|---|---|---|
+| `liveness.verdict` 의 기대 argv | Dispatch 의 `launch_argv` | `terminal_argv` 가 있으면 그것, 없으면 `launch_argv` |
+| `idle_turn` | 상태 `idle`·`done` 이고 turn ≥ 1 | 상태 `idle`·`done` 이고 turn > `start_turn`(NULL 은 0) |
+| `worker-release` | 라벨 확인 → kill → rm | 고정 Dispatch 는 hc 를 부르지 않는다 |
+| `worker-abandon` | live 면 `--kill` 필요 | 고정 Dispatch 는 13.5 |
+| `_describe`·`attention` | Dispatch 마다 터미널을 본다 | 같다. 고정 Dispatch 의 `settled`·`abandoned` 는 `next` 가 `worker-release`(상태만 바꾼다) |
+| 보낸이(`send --to run:`) | 터미널의 진행 중 Dispatch, 없으면 `external:` | 같다. 고정 터미널이 Dispatch 사이에 보낸 글은 `external:<t>`(X1) |
+| `status` 의 `dispatch` | 터미널의 진행 중 Dispatch | 같다(인덱스로 하나다) |
+
+새 관찰 `not_started`(고정 Dispatch 중 `--terminal` 로 넣은 것만, 9장 observed 표에 더한다):
+
+- 조건: `active` 이고, 보낸 뒤(`delivery.at`, 없으면 `created_at`) 60초(`NOT_STARTED_S`)가 지났고, hc 상태가 `idle`·`done` 이고, turn == `start_turn` 이고, `seen_at` 이 비었고, 이 Dispatch 가 보낸 메시지가 없다. 상태가 `working` 이면 일하는 중으로 본다(관찰 없음). 상태 보고가 없으면 `no_status` attention 으로 남긴다.
+- key 는 `start_turn`. body 는 다른 observed 와 같은 꼴에 `start_turn`·`turn`·`delivery` 를 더한다.
+- horch 는 다시 보내지 않는다. 다시 넣을지는 호출자가 정한다(`worker-abandon --keep-terminal` 뒤 `--terminal` 로 새 Dispatch).
+- `seen_at` 은 워커 명령의 신원 확인을 통과할 때 비어 있으면 그 시각을 쓴다(한 번의 조건부 쓰기).
+
+### 13.7 hcio
+
+`hcio` 에 더하는 것(hc 를 부르는 곳은 여전히 이 모듈뿐이다).
+
+| 함수 | hc 명령 | 시간 |
+|---|---|---|
+| `send(t, text, if_status=None, untagged=False, timeout=30)` | `hc send T <글> [--if S] --json`. `untagged` 면 환경에서 `HC_TERMINAL_ID` 를 뺀다 | 30초 |
+| `keys(t, keys, timeout=10)` | `hc keys T <키…> --json`. 이름 있는 키와 글자(`/ c l e a r enter`) | 10초 |
+| `label(t, pairs, timeout=10)` | `hc label T k=v …` | 10초 |
+| `events(t)` | `hc events --json --terminal T` 를 띄우고 줄마다 사실 변화(JSON)를 준다. 호출자가 마감을 정하고 끝나면 프로세스를 끝낸다 | 호출자 |
+| `kill(t, timeout=30)` | 지금 함수에 시간 인자를 더한다 | 30초 |
+
+가짜 hc(`tests/fakes/hc`)에 `keys`·`label`·`events` 를 더한다. `send` 는 `--if`·`started`·`status`·`turn`·감싸기 여부(받은 환경에 `HC_TERMINAL_ID` 가 있었는지)를 기록한다. 시나리오로 `/clear` 를 받으면 turn 을 올리고 `idle` 로 바꾸는 것, turn 사건을 늦게 주거나 주지 않는 것, 보낸 글을 버리는 것(입력 유실)을 흉내 낸다.
+
+### 13.8 `terminal-reset`
+
+`terminal-reset --terminal <t> [--name <이름>] [--timeout-ms N]`(소유자, 기본 10000): 고정 터미널의 세션을 제자리에서 비운다. 프로세스·터미널 주소·pane·제목은 그대로다.
+
+1. 13.4 의 2 와 같은 확인을 한다(`terminal_gone`·`not_persistent_terminal`·`terminal_busy`·`terminal_not_ready`). 에이전트는 그 터미널의 마지막 고정 Dispatch 의 `agent` 다.
+2. `--name` 은 Codex 에만 쓴다. `^[a-z][a-z0-9-]{0,31}$` 가 아니면 exit 2 `usage`. Claude 에 주면 무시하고 `warnings` 에 `name_ignored`(Claude 는 띄울 때 준 `--name` 제목이 `/clear` 뒤에도 남는다, X6).
+3. `meta` 에 `reset:<t> = <pid>|<시작 시각>|<at>` 을 쓴다. 이 표시가 있고 그 프로세스가 살아 있는 동안 `worker-start --terminal`·다른 `terminal-reset` 은 exit 3 `terminal_busy` 다. 끝나면(성공·실패 모두) 지운다.
+4. `events(t)` 구독을 먼저 붙이고 `turn_before`(지금 turn)를 읽는다. 구독을 띄우지 못하면 아래 5 의 대체 신호만 쓴다.
+5. `keys(t, ["/", "c", "l", "e", "a", "r", "enter"])`. Codex 에 `--name` 이 있으면 `enter` 앞에 빈칸과 이름 글자를 하나씩 넣는다(X3b C1 에서 `/clear p6x-next` 가 이름을 붙였다. 빈칸의 키 이름은 hc 의 키 표를 따른다). 감싼 send 나 `/new` 는 쓰지 않는다. keys 가 실패하면 exit 1 `hc_failed`.
+6. 기다림: 구독 줄 가운데 turn 이 `turn_before` 보다 큰 첫 줄(그 줄의 상태가 `idle`)을 마감까지 기다린다. 대체 신호로 0.2초마다 `hc get` 을 보고 turn > `turn_before` 이고 상태 `idle` 이면 끝난 것으로 본다(둘 중 먼저 온 것). Claude 는 0.1–0.3초, Codex 는 1.5–1.8초였다(X2, X3b).
+7. 성공: `{terminal, agent, turn, status, title, seconds, signal: "event"|"poll"}`(exit 0). 호출자는 이 `turn` 이 다음 `--terminal` 의 기준이 된다는 것을 안다(비우기 자체가 turn 을 하나 올린다, X2·X3b).
+8. 마감까지 신호가 없으면 exit 4 `reset_timeout`(data `{turn_before, last: {status, turn, title}}`). horch 는 더 하지 않는다. 비웠는지 알 수 없으므로 호출자가 터미널을 닫고 새로 띄운다(herdr-team 5.9).
+
+### 13.9 명령·오류 정리
+
+7장 명령 표에 더하는 것:
+
+| 명령 | 인자 | 결과 |
+|---|---|---|
+| `worker-start` | 13.4 의 `--keep-open`, `--terminal`, `--tab`, `--hidden` | `{task, dispatch, terminal, state, placement, …}` |
+| `worker-release` | `--keep-terminal` | `{dispatch}` |
+| `worker-abandon` | `--keep-terminal` | `{dispatch, verdict}` |
+| `terminal-close` | `--terminal`, `--abandon` | `{terminal, closed, abandoned, released}` |
+| `terminal-reset` | `--terminal`, `--name`, `--timeout-ms` | `{terminal, agent, turn, status, title, seconds, signal}` |
+
+6장 권한 표: `terminal-close`·`terminal-reset` 은 그 Run 의 소유자다. `worker-list`·`worker-show` 행에 `persistent`, `start_turn`, `delivery`, `seen_at` 을 더한다(`worker-list --state` 의 선택지는 그대로 7개).
+
+새 오류 code:
+
+| code | exit | 때 |
+|---|---|---|
+| `terminal_gone` | 3 | 고정 터미널이 없거나 끝났거나 다른 프로그램이다 |
+| `not_persistent_terminal` | 3 | 이 Run 의 고정 터미널이 아니다 |
+| `terminal_busy` | 3 | 진행 중 Dispatch 나 리셋이 있다 |
+| `terminal_not_ready` | 3 | 상태가 `idle`·`done` 이 아니다(보내지 않았다) |
+| `reset_timeout` | 4 | 비우기 신호가 마감까지 오지 않았다 |
+| `no_owner_space` | 2 | `--tab` 인데 소유 space 가 없다 |
+
+exit 코드 표(7장)는 그대로다(새 값 없음).
+
+### 13.10 테스트
+
+- 스키마: v2 DB 를 열면 v3 으로 올라가고 기존 행은 `persistent = 0`, 인덱스가 같은 터미널의 두 번째 진행 중 Dispatch 를 막는다.
+- `--keep-open`: 라벨 `horch.persistent=1`, `terminal_argv = launch_argv`, `--tab`·`--hidden` 라벨과 `placement`.
+- `--terminal`: 옵션 충돌(exit 2), 2 의 거부 표 전부, `idle` 이면 `--if idle`·`done` 이면 조건 없음(가짜 hc 가 받은 인자), 감싸지 않음(환경에 `HC_TERMINAL_ID` 없음), `start_turn` 이 보내기 직전 turn, `status_mismatch` 면 `launch_failed`, 응답 유실이면 `active` 와 `delivery_uncertain`, 라벨 갱신, 프리앰블의 이어 받기 줄.
+- 실행자 사망: 보내기 전(`launch_failed`), 보낸 뒤 turn 이 오름(`active`), 보낸 뒤 turn 그대로(`launch_failed`).
+- 판정: 고정 Dispatch 의 생존을 `terminal_argv` 로, `idle_turn` 이 `start_turn` 기준(다시 넣자마자 거짓 idle 이 나오지 않음), `not_started` 의 조건(60초, turn 그대로, `seen_at` 없음, 메시지 없음)과 `working` 이면 관찰 없음.
+- release·abandon·terminal-close: 고정 Dispatch 의 release 가 hc 를 부르지 않음, abandon 의 `--keep-terminal`·`--kill` 규칙, terminal-close 의 `--abandon`·`not_found`·kill 실패 재시도.
+- terminal-reset: keys 인자(`/clear`, Codex 이름), turn 사건 대기, 대체 신호(`hc get` 폴링), 마감 exit 4, 진행 중 표시가 `--terminal` 을 막음, 진행 중 Dispatch·`working` 이면 거부.
+- 0.1.x 테스트는 그대로 통과한다(고정이 아닌 Dispatch 의 release 가 kill·rm).
+- 버전 세 곳(`paths.VERSION`, `herdr-orch/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` 의 herdr-orch 항목)이 0.2.0 으로 같다. herdr-team 의 `HORCH_MIN` 은 0.2.0 이 된다.
+- 실환경은 herdr-team 6단계 실환경 확인(그 설계 15.2)에서 함께 본다. 사용자 hc core 는 멈추거나 다시 띄우지 않는다.
+
+### 13.11 한계
+
+- hc core 재시작 뒤 고정 터미널과 진행 중 Dispatch 가 이어지는지는 확인하지 않았다(실험 X7 을 하지 않았다). 10장 판정대로 복구 셸로 바뀐 터미널은 `lost` 이고 `--terminal` 은 `terminal_gone` 이다.
+- 입력 유실은 60초 뒤 `not_started` 로만 안다. 그 사이 워커는 아무것도 하지 않는다.
+- `terminal-reset` 은 비우기를 turn 신호로만 확인한다. 화면이나 대화 기록을 읽지 않는다. 신호가 왔는데 비우지 못한 경우(바뀐 CLI 화면 등)는 잡지 못한다.
+- 감싸지 않은 send 는 사람이 친 글처럼 들어간다. hc 의 보낸 쪽 추적(`<hc from>`)을 쓰지 않는다.
+
+## 14. 범위 밖
+
+gate, 태스크 의존성(DAG), 그룹 주소(`@all` 등), 중첩 워커, 원격 머신(`--on`), heartbeat, Codex·Claude 외 에이전트, 메시지 종류별 대기 필터, `pane.split` 대체 배치, 소유자 실행(herdr-team 이 관제를 띄운다), 팀 보드 Herdr 모드. 0.2.0 에서 "같은 터미널 재사용" 은 고정 터미널로 범위 안이 됐다(13장). 0.2.0 도 범위 밖: hc core 재시작 뒤 고정 터미널 복구 확인(실험 X7 을 하지 않았다), 입력 유실의 자동 재전송(호출자가 정한다), 비우기의 화면 확인.
