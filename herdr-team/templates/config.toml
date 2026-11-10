@@ -1,22 +1,25 @@
 # herdr-team 설정(설계 4장). 이 파일이 있으면 herdr-team 프로젝트다.
-max_parallel = 4          # start-ready 가 동시에 둘 working 태스크 수
+# auto_up: [drive] 표에 둔다. 메인 세션 훅이 관제(hteam drive)가 확실히 죽은 것을 보면 자동으로 다시 띄운다(기본 true). false 면 안내만 한다.
+# crew: 고정 에이전트. roles 의 직무 태스크를 한 세션이 이어 맡는다. 한 직무는 한 에이전트에만 둔다. agent 가 태스크의 작업 에이전트와 다르면 그 태스크는 임시 워커로 돈다.
+# overflow: 고정 에이전트가 바쁠 때 준비된 독립 태스크를 임시 워커로 돌린다(기본 true).
+max_parallel = 4          # start-ready 가 동시에 둘 working 태스크 수(고정 에이전트 태스크와 임시 워커 태스크를 합쳐 센다)
 user_approval_roles = ["designer"]  # 리뷰 승인 뒤 사용자 일괄 승인(hteam design-review)을 기다릴 직무
 
-[coordinator]
-model = "opus"
-effort = "xhigh"
-# auto_up: 메인 세션 훅이 코디네이터가 확실히 죽은 것을 보면 자동으로 다시 띄운다(기본 true). false 면 안내만 한다.
+[drive]
 auto_up = true
 
 [review]
 max_rounds = 3
+
+[overflow]
+enabled = true
 
 [defaults]
 worker = "claude"         # 작업 워커. 리뷰는 늘 반대쪽 에이전트다
 claude_model = "sonnet"
 claude_effort = "xhigh"
 codex_model = "gpt-6.1-sol"
-codex_effort = "high"
+codex_effort = "xhigh"    # Claude 작업 직무에서는 리뷰어(Codex) effort 다. worker = "codex" 직무에서는 작업 워커 effort 다
 
 # 띄울 때마다 horch --agent-arg 로 넘기는 인자. 권한 모드는 여기서 정한다(init 이 위험을 설명하고 승인받는다).
 [agents.claude]
@@ -29,6 +32,29 @@ args = []
 args = ["--disable=hooks",
         "-c", 'mcp_servers.hteam-browser={command="npx",args=["-y","chrome-devtools-mcp@1.10.1","--headless=true","--isolated=true"],startup_timeout_sec=60}']
 
+# 고정 에이전트(설계 5.9). 한 직무는 한 에이전트에만 둔다. model·effort 는 처음 띄울 때만 쓴다(같은 세션에 넣는 태스크는
+# 모델을 바꾸지 못한다). agent 를 codex 로 두려면 그 직무 표에도 worker = "codex" 를 둔다. director·designer 는 claude 만 된다.
+[crew.production]
+title = "생산"
+roles = ["planner", "designer", "developer"]
+agent = "claude"
+model = "opus"
+effort = "xhigh"
+
+[crew.research]
+title = "조사"
+roles = ["director"]
+agent = "claude"
+model = "opus"
+effort = "xhigh"
+
+[crew.test]
+title = "테스트"
+roles = ["tester"]
+agent = "claude"
+model = "sonnet"
+effort = "xhigh"
+
 [image]
 codex_model = "gpt-6.1-sol"
 codex_effort = "medium"
@@ -38,7 +64,7 @@ title = "기획"
 claude_model = "opus"
 claude_effort = "xhigh"
 codex_model = "gpt-6.1-sol"
-codex_effort = "high"
+codex_effort = "xhigh"
 owns = ["docs/planning/**"]
 
 # 디자인 디렉터: 레퍼런스·톤 시안·디자인 시스템을 사용자와 정한다(설계 11.1). claude 만 된다. 승인 직무가 아니다.
@@ -48,16 +74,16 @@ title = "디자인 디렉터"
 claude_model = "opus"
 claude_effort = "xhigh"
 codex_model = "gpt-6.1-sol"
-codex_effort = "high"
+codex_effort = "xhigh"
 owns = ["docs/design/**", "assets/**"]
 
 # 화면 디자인. claude 만 된다(설계 4.2). 승인 직무라 리뷰 승인 뒤 사용자 일괄 승인을 기다린다.
 [roles.designer]
 title = "디자인"
-claude_model = "sonnet"
+claude_model = "sonnet"   # 임시 워커로 돌 때만 쓴다. 생산 에이전트에서는 그 에이전트 모델(6단계)
 claude_effort = "xhigh"
 codex_model = "gpt-6.1-sol"
-codex_effort = "medium"
+codex_effort = "xhigh"
 owns = ["docs/design/**", "assets/**"]
 
 [roles.developer]
@@ -74,5 +100,5 @@ title = "테스트"
 claude_model = "sonnet"
 claude_effort = "xhigh"
 codex_model = "gpt-6.1-sol"
-codex_effort = "high"
+codex_effort = "xhigh"
 owns = ["tests/**", "docs/qa/**"]

@@ -157,9 +157,14 @@ def doctor(root: Path) -> dict:
     checks.append(_check("chrome_devtools_mcp", _chrome_mcp(root), "디렉터 레퍼런스 캡처에 쓴다(없으면 링크만 남긴다)",
                          "warning"))
     checks.append(_codex_browser(root))
+    warnings: list[str] = []  # 설정 경고(설계 4.2). 설정을 읽지 못하는 것은 doctor 의 점검이 아니다
+    try:
+        warnings = config.crew_warnings(config.load(Project(root)))
+    except HteamError:
+        pass
     if not all(c["ok"] for c in checks if c["level"] == "error"):
-        raise HteamError("unhealthy", "필수 점검이 실패했다", FAIL, data={"checks": checks})
-    return {"healthy": True, "checks": checks}
+        raise HteamError("unhealthy", "필수 점검이 실패했다", FAIL, data={"checks": checks, "warnings": warnings})
+    return {"healthy": True, "checks": checks, "warnings": warnings}
 
 
 def _read_existing(path: Path) -> str | None:
@@ -437,11 +442,7 @@ def up(p, wait_run: float | None, force: bool = False) -> dict:
 
         die_at("up_before_pending")
         _run_update(p, pending)
-        argv = ["env", "HTEAM_ROLE=coordinator", f"HTEAM_LAUNCH={nonce}", "claude"]
-        for flag, value in (("--model", cfg.coordinator.get("model")), ("--effort", cfg.coordinator.get("effort"))):
-            if value:
-                argv += [flag, value]
-        argv += [*cfg.args("claude"), "--", COORD_PROMPT]
+        argv = ["env", "HTEAM_ROLE=coordinator", f"HTEAM_LAUNCH={nonce}", "claude", *cfg.args("claude"), "--", COORD_PROMPT]
         die_at("up_before_hc_run")
         recovered = bound_seen = False
         try:

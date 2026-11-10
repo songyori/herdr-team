@@ -12,6 +12,11 @@ AGENTS = ("claude", "codex")
 CLAUDE_ONLY = ("director", "designer")  # Claude Design 을 쓰는 직무(설계 4.2, 11장)
 ROLE_RE = re.compile(r"[a-z][a-z0-9-]*")
 MODEL_KEYS = tuple(f"{a}_{k}" for a in AGENTS for k in ("model", "effort"))  # [defaults]·[roles.*] 의 모델·effort
+CREW_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")  # 탭 id·인수인계 파일 이름·Codex 대화 이름에 쓴다(설계 4.1)
+CREW_KEYS = ("title", "roles", "agent", "model", "effort")
+OLD_CONFIG_MESSAGE = ("config.toml 에 [coordinator] 가 있다. 0.4.0 은 코디네이터 대신 관제(hteam drive)를 쓴다. "
+                      "[coordinator] 를 지우고 템플릿의 [drive]·[overflow]·[crew.*] 를 옮긴다. 또는 config.toml 을 지운 뒤 "
+                      "다시 세팅한다(/herdr-team:init. 있는 파일은 덮어쓰지 않으므로 config.toml 만 새로 생긴다)")
 # Codex 의 샌드박스·승인 우회 플래그(herdr-orch agents._BYPASS 와 같은 목록. horch 는 이것이 있으면 -s·-a 를 뺀다)
 CODEX_BYPASS = ("--dangerously-bypass-approvals-and-sandbox", "--yolo", "--full-auto", "--approve-for-me")
 
@@ -44,6 +49,55 @@ def _names(table: dict, where: str, keys, errors: list[str]) -> None:
                if k in table and not (isinstance(table[k], str) and table[k].strip())]
 
 
+def _nonempty(value) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _crew(raw: dict, roles: dict, defaults: dict, dworker, errors: list[str]) -> None:
+    """[crew.<이름>] 검사(설계 4.2 6단계). 해당하는 것을 모두 모은다."""
+    crew = raw.get("crew", {})
+    if not isinstance(crew, dict):
+        errors.append("crew 는 표여야 한다")
+        return
+    owner: dict[str, str] = {}  # 직무 → 그 직무를 먼저 가진 고정 에이전트(설정 순서)
+    for name, entry in crew.items():
+        where = f"crew.{name}"
+        if not CREW_NAME_RE.fullmatch(name):
+            errors.append(f"{where}: 이름은 소문자로 시작하는 소문자·숫자·- 1–32자다")
+        if not isinstance(entry, dict):
+            errors.append(f"{where} 는 표여야 한다")
+            continue
+        if "title" in entry and not _nonempty(entry["title"]):
+            errors.append(f"{where}.title 은 비지 않은 문자열이다")
+        members = entry.get("roles")
+        if not _str_list(members, nonempty=True):
+            errors.append(f"{where}.roles 는 비지 않은 직무 이름 목록이다")
+            members = []
+        else:
+            unknown = [r for r in members if r not in roles]
+            if unknown:
+                errors.append(f"{where}.roles 에 정의되지 않은 직무가 있다: {', '.join(unknown)}")
+            for r in members:
+                if r not in roles:
+                    continue
+                first = owner.setdefault(r, name)
+                if first != name:
+                    errors.append(f"직무 {r} 가 crew.{first} 와 {where} 에 함께 있다")
+        agent = entry.get("agent", dworker)
+        if agent not in AGENTS:
+            errors.append(f"{where}.agent 는 claude·codex 다")
+        else:
+            if agent == "codex":
+                errors += [f'{where}: {r} 는 claude 만 된다(agent = "codex")' for r in members if r in CLAUDE_ONLY]
+            for kind in ("model", "effort"):
+                if kind not in entry and not _nonempty(defaults.get(f"{agent}_{kind}")):
+                    errors.append(f"{where}.{kind} 을 정하지 못했다([{where}].{kind} 또는 [defaults].{agent}_{kind})")
+        extra = sorted(set(entry) - set(CREW_KEYS))
+        if extra:
+            errors.append(f"{where}: 모르는 키 {', '.join(extra)}")
+        _names(entry, where, ("model", "effort"), errors)
+
+
 def validate(raw: dict) -> list[str]:
     """설계 4.2 검사. 모델·effort 값은 비지 않은 문자열인지만 본다(어떤 값인지는 에이전트가 판단)."""
     errors: list[str] = []
@@ -56,10 +110,12 @@ def validate(raw: dict) -> list[str]:
     if dworker not in AGENTS:
         errors.append(f"defaults.worker 는 claude·codex 중 하나다: {dworker!r}")
     _names(defaults, "defaults", MODEL_KEYS, errors)
-    coordinator = _table(raw, "coordinator", errors)
-    _names(coordinator, "coordinator", ("model", "effort"), errors)
-    if not isinstance(coordinator.get("auto_up", True), bool):
-        errors.append("coordinator.auto_up 은 true·false 다")
+    if "coordinator" in raw:  # 0.3.0 설정이다. 이전 명령은 없다(설계 4.2 6단계)
+        errors.append(OLD_CONFIG_MESSAGE)
+    if not isinstance(_table(raw, "drive", errors).get("auto_up", True), bool):
+        errors.append("drive.auto_up 은 true·false 다")
+    if not isinstance(_table(raw, "overflow", errors).get("enabled", True), bool):
+        errors.append("overflow.enabled 은 true·false 다")
     _names(_table(raw, "image", errors), "image", ("codex_model", "codex_effort"), errors)
     roles = _table(raw, "roles", errors)
     if not roles:
@@ -90,7 +146,19 @@ def validate(raw: dict) -> list[str]:
             errors.append(f"agents.{name}: 지원하지 않는 에이전트다(claude·codex)")
         elif not isinstance(agent, dict) or not _str_list(agent.get("args", []), nonempty=False):
             errors.append(f"agents.{name}.args 는 문자열 목록이다")
+    _crew(raw, roles, defaults, dworker, errors)
     return errors
+
+
+@dataclass(frozen=True)
+class Crew:
+    """고정 에이전트(설계 5.9). model·effort 는 처음 띄울 때만 쓴다."""
+    name: str
+    title: str
+    roles: tuple[str, ...]
+    agent: str
+    model: str
+    effort: str
 
 
 @dataclass
@@ -99,11 +167,13 @@ class Config:
     max_parallel: int
     max_rounds: int
     user_approval_roles: list[str]
-    coordinator: dict
     defaults: dict
     agent_args: dict[str, list[str]]
     image: dict
     roles: dict[str, dict]
+    crew: dict[str, Crew]  # 설정 순서
+    overflow: bool
+    drive: dict
 
     def role(self, name: str) -> dict:
         if name not in self.roles:
@@ -123,10 +193,14 @@ class Config:
     def args(self, agent: str) -> list[str]:
         return list(self.agent_args.get(agent, []))
 
+    def crew_of(self, role: str) -> Crew | None:
+        """그 직무를 roles 에 가진 고정 에이전트. 없으면 그 직무 태스크는 임시 워커로 돈다."""
+        return next((c for c in self.crew.values() if role in c.roles), None)
+
     @property
     def auto_up(self) -> bool:
-        """메인 세션 훅이 확실히 죽은 코디네이터를 다시 띄우나(설계 9.5). 키가 없으면 True."""
-        return self.coordinator.get("auto_up", True)
+        """메인 세션 훅이 확실히 죽은 관제를 다시 띄우나(설계 9.5). 키가 없으면 True."""
+        return self.drive.get("auto_up", True)
 
     def image_choice(self) -> tuple[str | None, str | None]:
         """`hteam image` 의 Codex 모델·effort. [image] 에 없으면 [defaults] 의 codex_*(설계 4.1)."""
@@ -135,18 +209,39 @@ class Config:
 
 
 def build(raw: dict) -> Config:
+    """검사를 통과한 설정만 받는다."""
     agents = raw.get("agents", {})
+    defaults = {"worker": "claude", **raw.get("defaults", {})}
+    crew = {}
+    for name, entry in raw.get("crew", {}).items():
+        agent = entry.get("agent", defaults["worker"])
+        crew[name] = Crew(name, entry.get("title") or name, tuple(entry["roles"]), agent,
+                          entry.get("model") or defaults[f"{agent}_model"],
+                          entry.get("effort") or defaults[f"{agent}_effort"])
     return Config(
         raw=raw,
         max_parallel=raw.get("max_parallel", 4),
         max_rounds=raw.get("review", {}).get("max_rounds", 3),
         user_approval_roles=list(raw.get("user_approval_roles", [])),
-        coordinator={"model": "opus", "effort": "xhigh", **raw.get("coordinator", {})},
-        defaults={"worker": "claude", **raw.get("defaults", {})},
+        defaults=defaults,
         agent_args={name: list(agents.get(name, {}).get("args", [])) for name in AGENTS},
         image=dict(raw.get("image", {})),
         roles=dict(raw.get("roles", {})),
+        crew=crew,
+        overflow=raw.get("overflow", {}).get("enabled", True),
+        drive=dict(raw.get("drive", {})),
     )
+
+
+def crew_warnings(cfg: Config) -> list[str]:
+    """경고(오류 아님, 설계 4.2): 고정 에이전트의 agent 가 그 roles 의 어느 직무의 작업 에이전트와도 같지 않다."""
+    out = []
+    for c in cfg.crew.values():
+        workers = {cfg.roles[r].get("worker") or cfg.defaults.get("worker") or "claude" for r in c.roles}
+        if c.agent not in workers:
+            out.append(f"crew.{c.name}: 어느 직무의 작업 에이전트도 {c.agent} 가 아니다. 이 에이전트는 태스크를 받지 않는다"
+                       "(태스크 front matter 의 worker 로만 받는다)")
+    return out
 
 
 def load(p) -> Config:
@@ -191,3 +286,14 @@ def resolve(cfg: Config, role: str, front: dict | None = None, cli: dict | None 
     reviewer = other(worker)
     return Choice(worker, pick(worker, "model", True), pick(worker, "effort", True),
                   reviewer, pick(reviewer, "model", False), pick(reviewer, "effort", False))
+
+
+def crew_choice(cfg: Config, crew: Crew, role: str, front: dict | None,
+                cli: dict | None) -> tuple[Choice, bool]:
+    """고정 에이전트 태스크(설계 4.1 6단계): 작업 모델·effort 는 [crew.<이름>] > [defaults](build 가 채웠다).
+    CLI --model·--effort 와 front matter 의 <agent>_model·<agent>_effort 는 쓰지 않고 둘째 값(model_ignored)만 True 로
+    알린다. 리뷰어(반대쪽 에이전트)와 그 모델·effort 는 resolve 와 같은 직무 규칙이다(CLI 는 리뷰어에 쓰지 않는다)."""
+    front, cli = front or {}, cli or {}
+    rule = resolve(cfg, role, front, {"worker": crew.agent})
+    ignored = any(cli.get(kind) or front.get(f"{crew.agent}_{kind}") for kind in ("model", "effort"))
+    return Choice(crew.agent, crew.model, crew.effort, rule.reviewer, rule.review_model, rule.review_effort), bool(ignored)

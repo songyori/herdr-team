@@ -438,7 +438,7 @@ class AutoUpHookTest(HookCase):
 
     def test_auto_up_false_only_informs(self):
         from hteam import autoup
-        config = (self.team / "config.toml").read_text().replace('effort = "xhigh"\n', 'effort = "xhigh"\nauto_up = false\n', 1)
+        config = (self.team / "config.toml").read_text() + "\n[drive]\nauto_up = false\n"
         (self.team / "config.toml").write_text(config)
         self.update_terminal(COORD, state="finished")
         self.assertEqual(self.context(self.hook("role-mark", terminal=MAIN)), autoup.DISABLED)

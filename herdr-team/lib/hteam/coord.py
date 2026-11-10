@@ -638,6 +638,8 @@ def status(p) -> dict:
                       "next": nxt, "hint": hint})
     questions = [_question(q) for q in outbox.open_questions(p, warnings)]
     warnings += [f"{tid} 상태 파일을 읽지 못해 목록에서 뺐다" for tid in state.unreadable_ids(p)]
+    if cfg is not None:
+        warnings += config.crew_warnings(cfg)  # 설정 경고(오류 아님, 설계 4.2)
     run, run_error = {}, None
     try:
         run = outbox._run(p)

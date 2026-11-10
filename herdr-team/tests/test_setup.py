@@ -654,9 +654,9 @@ class TemplateContractTest(unittest.TestCase):
         # 설계 4.1·9.3·9.5: 템플릿 설정의 auto_up, 메인 규칙의 자동 부활 줄, up 스킬은 수동 복구
         import tomllib
         text = (ROOT / "templates/config.toml").read_text(encoding="utf-8")
-        self.assertIs(tomllib.loads(text)["coordinator"]["auto_up"], True)
-        self.assertIn("# auto_up: 메인 세션 훅이 코디네이터가 확실히 죽은 것을 보면 자동으로 다시 띄운다(기본 true). "
-                      "false 면 안내만 한다.\nauto_up = true\n", text)
+        self.assertIs(tomllib.loads(text)["drive"]["auto_up"], True)
+        self.assertIn("# auto_up: [drive] 표에 둔다. 메인 세션 훅이 관제(hteam drive)가 확실히 죽은 것을 보면 자동으로 다시 "
+                      "띄운다(기본 true). false 면 안내만 한다.\n", text)
         main = (ROOT / "templates/CLAUDE.section.md").read_text(encoding="utf-8")
         self.assertIn("- 코디네이터는 훅이 확인하고 꺼져 있으면 자동으로 다시 띄운다(config.toml [coordinator] auto_up). 훅 안내가 "
                       "없는데 코디네이터 상태가 의심되면 `/herdr-team:up` 을 실행한다. 메인을 다시 열었는데 답하지 않은 질문이 "

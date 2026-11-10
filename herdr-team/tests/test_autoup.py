@@ -90,8 +90,7 @@ class DecideTest(AutoUpCase):
         self.assertEqual(decide(self.p, far), (None, UNKNOWN))
 
     def test_auto_up_false_only_informs(self):
-        self.commit(".herdr-team/config.toml", BASE_CONFIG.replace('effort = "xhigh"\n', 'effort = "xhigh"\nauto_up = false\n', 1),
-                    "chore: 자동 부활 끔")
+        self.commit(".herdr-team/config.toml", BASE_CONFIG + "\n[drive]\nauto_up = false\n", "chore: 자동 부활 끔")
         self.dead()
         self.assertEqual(decide(self.p, time.monotonic() + 12), (None, DISABLED))
 

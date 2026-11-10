@@ -32,10 +32,6 @@ MAIN = "t1"  # 메인 터미널
 BASE_CONFIG = """max_parallel = 4
 user_approval_roles = []
 
-[coordinator]
-model = "opus"
-effort = "xhigh"
-
 [review]
 max_rounds = 3
 
@@ -63,6 +59,23 @@ owns = ["src/**"]
 [roles.tester]
 title = "테스트"
 owns = ["tests/**", "docs/qa/**"]
+"""
+
+# 고정 에이전트 둘(설계 5.9): 생산(planner·developer, Claude opus)과 테스트(tester, Claude sonnet). BASE_CONFIG 에 덧붙인다
+CREW_CONFIG = BASE_CONFIG + """
+[crew.production]
+title = "생산"
+roles = ["planner", "developer"]
+agent = "claude"
+model = "opus"
+effort = "xhigh"
+
+[crew.test]
+title = "테스트"
+roles = ["tester"]
+agent = "claude"
+model = "sonnet"
+effort = "xhigh"
 """
 
 VALID_BODY = """## Target
