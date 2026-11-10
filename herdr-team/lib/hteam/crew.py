@@ -296,6 +296,20 @@ def work_done(p, tid: str, did: str) -> str | None:
 
 
 # --- 수정 대기열(5.9.5) ---
+def merged(old: dict | None, note: str | None, supplement: str | None,
+           force_round: bool) -> tuple[str | None, str | None, bool]:
+    """대기 수정(queued_fix)과 새 fix 요청의 병합(5.9.5): note 는 앞 지시 뒤에 새 지시를 줄마다 잇고(같은 줄은 한 번),
+    supplement 는 새 값(없으면 앞 값), force_round 는 OR. old 가 없으면 새 요청 그대로."""
+    if not old:
+        return note, supplement, bool(force_round)
+    lines = old["note"].split("\n") if old.get("note") else []
+    for line in (note or "").split("\n"):
+        if line and line not in lines:
+            lines.append(line)
+    return ("\n".join(lines) or None, supplement if supplement is not None else old.get("supplement"),
+            bool(old.get("force_round")) or bool(force_round))
+
+
 def enqueue(p, tid: str, name: str, *, note: str | None, supplement: str | None, force_round: bool,
             request: str | None) -> dict:
     """태스크의 queued_fix(기준 기록)를 먼저 쓰고 그다음 에이전트 queue 끝에 넣는다(이미 있으면 끝으로 옮긴다). 두 번째 fix 는
@@ -303,14 +317,9 @@ def enqueue(p, tid: str, name: str, *, note: str | None, supplement: str | None,
     request 는 처음 값이다. 같은 쓰기에서 관제 fix 이어 하기 표시(drive_fix)를 지운다(줄을 섰으면 이어 할 것이 없다)."""
     with state.edit(p, tid) as st:
         old = st.get("queued_fix") or None
-        lines = (old or {}).get("note", "").split("\n") if (old or {}).get("note") else []
-        for line in (note or "").split("\n"):
-            if line and line not in lines:
-                lines.append(line)
-        st["queued_fix"] = {"note": "\n".join(lines) or None,
-                            "supplement": supplement if supplement is not None else (old or {}).get("supplement"),
-                            "force_round": bool((old or {}).get("force_round")) or bool(force_round),
-                            "at": now(), "request": old.get("request") if old else request}
+        note, supplement, force_round = merged(old, note, supplement, force_round)
+        st["queued_fix"] = {"note": note, "supplement": supplement, "force_round": force_round, "at": now(),
+                            "request": old.get("request") if old else request}
         st.pop("drive_fix", None)
     with edit(p) as data:
         queue = entry_of(data, name)["queue"]

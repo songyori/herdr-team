@@ -373,8 +373,8 @@ def start_command(p, tid: str, cli: dict, *, request: str | None = None) -> dict
     보고(끝나지 않았으면 기다린다), 잠금·에이전트 거부를 exit 0 waiting 으로 바꾼다. 같은 라운드 복구는 그 오류 그대로다."""
     cfg = config.load(p)
     spec = specs.check(p, cfg, tid)
-    st = state.load(p, tid)
-    first = st is None or st["status"] == "pending"
+    st = state.load(p, tid) or state.create(p, tid, spec.role)  # 기다리게 둬도 start-ready 가 볼 상태가 있어야 한다
+    first = st["status"] == "pending"
     if first and not deps_met(p, cfg, spec):
         return _waiting(tid, "deps", f"선행이 끝나지 않았다({_unmet_text(unmet_deps(p, cfg, spec), spec)})")
     try:
@@ -614,6 +614,15 @@ def _round_targets(h, st: dict, *, kill: bool, rows: list[dict] | None = None) -
             if row["state"] == "active" and not kill:
                 raise HteamError("worker_active", f"Dispatch {did}({slot['title']}) 가 아직 active 다", CONFLICT,
                                  "워커를 끝내고 버리려면 --force", data={"dispatch": did})
+            if row["state"] == "active" and row.get("persistent") and (
+                    row.get("verdict") == "unverifiable" or
+                    (row.get("verdict") == "live" and row.get("status") in ("working", "blocked"))):
+                # 고정 Dispatch 는 --keep-terminal 로만 버리므로 세션이 계속 일한다. 일하는 중이거나 확인할 수 없으면 정리하지
+                # 않는다(설정에서 지운 고정 에이전트 태스크를 임시 워커로 고칠 때 두 워커가 같은 파일을 고치지 않게)
+                said = row.get("status") if row.get("verdict") == "live" else "상태 확인 불가"
+                raise HteamError("worker_active", f"Dispatch {did}({slot['title']}) 가 아직 active 다(고정 에이전트 세션 "
+                                 f"{said})", CONFLICT, "세션이 쉬거나 끝난 뒤 다시 한다. 사용자에게 그 에이전트 탭을 확인해 "
+                                 "달라고 한다", data={"dispatch": did})
             if row["state"] in dispatch.CLEANABLE:
                 targets.setdefault(slot["title"], []).append(did)
     return targets
@@ -779,8 +788,9 @@ def _crew_fix(p, h, tid: str, member, st: dict, *, force: bool, from_queue: bool
         return None, False
     word = crew.word(info)
     if word in crew.READY:
-        if held:
+        if held:  # 떼고 바로 넣는다(5.9.5): 버린 Dispatch 에서는 worker_done 이 오지 않으므로 맡은 태스크도 비운다
             _keep_abandon(h, did)
+            crew.free(p, tid)
         return {"kind": "crew", "crew": member, "mode": "insert", "terminal": e["terminal"], "entry": e}, False
     if held:
         raise HteamError("worker_active", f"{tid}: 고정 에이전트가 아직 이 태스크를 하고 있을 수 있다({word or '보고 없음'}). "
@@ -812,6 +822,9 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
     cfg = config.load(p)
     spec = specs.check(p, cfg, tid)
     choice = config.resolve(cfg, spec.role, spec.front, cli)
+    # 대기열의 수정(queued_fix)이 있으면 그 지시를 잇는다(새 라운드 쓰기가 표시를 지운다, 5.9.5)
+    note, supplement, force_round = crew.merged((state.load(p, tid) or {}).get("queued_fix"), note, supplement,
+                                                force_round)
     followers: list[dict] = []
     defer = False
     if supplement is not None:

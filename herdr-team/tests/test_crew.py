@@ -962,3 +962,71 @@ class StatusCrewTest(CrewCase):
         self.set_config("이건 toml 이 아니다 [")
         code, out = self.hteam("status", as_="main")
         self.assertEqual((code, out["crew"]), (0, []), out)
+
+
+class ReviewFixTest(CrewCase):
+    """Task 7 리뷰 고치기(태스크 리뷰 Important 1, Codex 커밋 리뷰 c690922 의 P1 둘·P2 둘)."""
+
+    def test_own_task_insert_refused_then_start_ready_reinserts(self):
+        """자기 태스크의 수정을 같은 세션에 넣다가 일시 거부되면 다음 start-ready 가 같은 세션에 다시 넣는다(설계 5.9.3 의 3,
+        5.9.5). 뗀 태스크를 에이전트가 맡은 채로 남아 복구가 그 에이전트를 영영 기다리지 않는다."""
+        out = self.started("T-001")
+        t = out["terminal"]
+        self.ready(t, status="idle")  # done 없이 턴을 마쳤다(맡은 태스크는 그대로 T-001)
+        with self._hc_locked() as st:
+            st["on_send"] = {t: "mismatch"}
+        code, res = self.hteam("fix", "T-001", "--note=이어서")
+        self.assertEqual((code, res["error"]["code"], res["horch"]["error"]["code"]),
+                         (1, "launch_failed", "terminal_not_ready"), res)
+        with self._hc_locked() as st:
+            st["on_send"] = {}
+        code, res = self.hteam("start-ready")
+        self.assertEqual((code, [s["task"] for s in res["started"]]), (0, ["T-001"]), res)
+        self.assertEqual((self.task_state("T-001")["status"], self.task_state("T-001")["round"]), ("working", 2))
+        self.assertEqual(self.dispatch_row(self.work_dispatch("T-001"))["terminal"], t)
+        self.assertEqual(self.entry()["task"], "T-001")
+
+    def test_removed_crew_working_session_blocks_temp_fix(self):
+        """일하는 고정 세션의 [crew.*] 를 지운 뒤 fix 해도 그 세션이 일하는 동안 임시 워커를 띄우지 않는다(두 워커가 같은
+        파일을 고치지 않게). 쉬면 지금처럼 임시 워커로 고친다."""
+        out = self.started("T-001")
+        t = out["terminal"]
+        self.ready(t, status="working")
+        self.set_config(BASE_CONFIG)
+        code, res = self.hteam("fix", "T-001", "--note=x")
+        self.assertEqual((code, res["error"]["code"]), (3, "worker_active"), res)
+        self.assertEqual(self.task_state("T-001")["round"], 1)
+        self.assertEqual(self.dispatch_row(out["dispatch"])["state"], "active")
+        self.assertEqual(len([c for c in self.hc_calls() if c[:1] == ["run"]]), 1)
+        self.ready(t, status="idle")
+        code, res = self.hteam("fix", "T-001", "--note=x")
+        self.assertEqual((code, res["round"]), (0, 2), res)
+        self.assertNotEqual(res["terminal"], t)
+        self.assertEqual(self.rnd("T-001")["crew"], "temp")
+        self.assertEqual(self.dispatch_row(out["dispatch"])["state"], "released")
+
+    def test_immediate_fix_merges_queued_fix(self):
+        """대기열에 든 수정이 있는 태스크에 에이전트가 빈 뒤 fix 가 바로 돌면 앞 대기 지시를 잇는다(설계 5.9.5 의 병합 규칙)."""
+        t = self.first("T-001")
+        self.started("T-002")
+        self.assertEqual(self.hteam("fix", "T-001", "--note=첫째", "--force-round")[1]["status"], "queued")
+        self.work("T-002")
+        self.free("T-002")
+        self.ready(t, turn=2)
+        code, res = self.hteam("fix", "T-001", "--note=둘째")
+        self.assertEqual((code, res["round"], res["terminal"]), (0, 2, t), res)
+        st = self.task_state("T-001")
+        self.assertEqual(st["rounds"][-1]["note"], "첫째\n둘째")
+        self.assertTrue([e for e in st["history"] if e.get("event") == "fix"][-1]["force_round"])
+        self.assertNotIn("queued_fix", st)
+        self.assertEqual(self.entry()["queue"], [])
+
+    def test_spec_only_task_waiting_on_deps_gets_pending_state(self):
+        """상태 파일이 없는 태스크도 기다리게 둘 때 pending 상태를 만든다(start-ready 가 나중에 그 태스크를 본다, 설계 5.4)."""
+        self.task("T-001")
+        self.write_spec("T-002", owns="src/t-002/**", depends="T-001")
+        code, out = self.hteam("start", "T-002")
+        self.assertEqual((code, out["status"], out["reason"]), (0, "waiting", "deps"), out)
+        self.assertEqual(self.task_state("T-002")["status"], "pending")
+        code, out = self.hteam("start-ready")
+        self.assertIn(("T-002", "deps"), [(w["task"], w["reason"]) for w in out["waiting"]], out)
