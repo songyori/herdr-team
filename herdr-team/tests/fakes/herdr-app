@@ -16,7 +16,9 @@
 - do pane.swap '<JSON {pane, target}>': layout 에서 두 pane 의 자리를 바꾼다. {"ok": true}.
 - do pane.close '<JSON {pane}>': 그 터미널을 finished 로 두고 layout 에서 뺀다. {"ok": true}.
 - 상태 "fail" 의 "herdr-app <명령>"(예 "herdr-app pane.split") 이 있으면 {"error": "<kind>"} 와 exit 1.
-- 모르는 pane 이면 {"error": "unknown pane"} 와 exit 1. 그 밖의 명령은 exit 2.
+- 모르는 pane 이면 {"error": "no pane \"<id>\""} 와 exit 1(실제 꼴, 2026-11-11). 그 밖의 명령은 exit 2.
+- 실제와 다른 점(2026-11-11 실환경): 실제는 프로그램이 끝난 split pane 이 저절로 닫히고(터미널은 finished 로 남는다)
+  결과 JSON 을 여러 줄로 쓴다. 가짜는 pane.close 를 받을 때까지 layout 에 남기고 한 줄로 쓴다(해석은 같다).
 """
 import fcntl
 import json
@@ -99,7 +101,7 @@ def handle(st, argv):
     if name == "pane.split":
         base = pane_term(st, args.get("pane"))
         if base is None:
-            return out({"error": "unknown pane"}, 1)
+            return out({"error": f'no pane "{args.get("pane")}"'}, 1)
         labels = {k: v for k, v in (base.get("labels") or {}).items() if k in ("herdr.space", "herdr.tab")}
         addr = f"t{st['next']}"
         st["next"] += 1
@@ -115,7 +117,7 @@ def handle(st, argv):
     if name == "pane.swap":
         a, b = pane_term(st, args.get("pane")), pane_term(st, args.get("target"))
         if a is None or b is None:
-            return out({"error": "unknown pane"}, 1)
+            return out({"error": f'no pane "{args.get("pane") if a is None else args.get("target")}"'}, 1)
         tab = a["labels"]["herdr.tab"]
         order = row(st, tab)
         i, j = order.index(a["address"]), order.index(b["address"])
@@ -125,7 +127,7 @@ def handle(st, argv):
     if name == "pane.close":
         t = pane_term(st, args.get("pane"))
         if t is None:
-            return out({"error": "unknown pane"}, 1)
+            return out({"error": f'no pane "{args.get("pane")}"'}, 1)
         t["state"], t["exit_code"] = "finished", 0
         tab = (t.get("labels") or {}).get("herdr.tab")
         if tab in layout:
