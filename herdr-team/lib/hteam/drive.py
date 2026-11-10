@@ -125,6 +125,9 @@ class Drive:
         self.last_reconcile: float | None = None  # monotonic. 처음은 None(첫 틱이 재확인한다)
         self.failing = False  # 메일 확인이 실패 중이다(틱 사이를 IDLE_FAIL_S 로 늘린다)
         self._ack: int | None = None  # 다음 check 에 줄 지난 delivery
+        self._open: int | None = None  # 지금 처리 중인 delivery(미룬 메시지가 있으면 ack 하지 않아 다시 온다)
+        self._done: set = set()  # _open 묶음에서 이미 처리한 메시지 id
+        self._held: dict = {}  # 미룬 메시지 id → 처음 미룬 시각(monotonic)
         self._raised: set[tuple[str, str]] = set()  # 올린 격리 실패(키, 문구). 이 프로세스 안의 기억
         self._failed: set[tuple[str | None, str]] = set()  # 올린 관제 절차 실패(태스크, 문구). 이 프로세스 안의 기억
         self._horch: Horch | None = None
@@ -132,6 +135,8 @@ class Drive:
         self.jobs: dict[str, dict] = {}
         self.rows: list[dict] = []  # 마지막 워커 목록(재확인). locate 가 기록 전 Dispatch 를 제목으로 찾을 때 쓴다
         self.retry_reviews: set[str] = set()  # 관문 잠금 대기 초과로 미룬 리뷰(8.7 의 4)
+        self._retry_args: dict[str, list[str]] = {}  # 미룬 리뷰의 원래 자식 인자(큐 review --retry 의 --retry·--round·--request)
+        self._job_args: dict[str, list[str]] = {}  # 결과를 처리 중인 리뷰 자식의 인자
         self.pending_marks: dict[str, tuple[str, int]] = {}  # 리뷰 자식이 도는 태스크의 미룬 decide 표시(out id, 라운드)
 
     def horch(self) -> Horch:
@@ -224,7 +229,10 @@ class Drive:
 
     # --- 틱 단계(8.5) ---
     def check_mail(self) -> None:
-        """`horch check --wait` 한 번. 처리한 묶음은 다음 check 의 --ack 로 확인한다(처리가 실패해도)."""
+        """`horch check --wait` 한 번. 처리한 묶음은 다음 check 의 --ack 로 확인한다(처리가 실패해도).
+
+        handle 이 미룬 메시지(아직 상태에 기록되지 않은 진행 중 Dispatch, 8.6)가 있으면 그 묶음을 ack 하지 않는다. horch 는
+        ack 안 된 묶음을 다시 주므로 다음 틱에 그 메시지만 다시 처리한다(이미 처리한 메시지는 건너뛴다)."""
         ms = int(env_float("HTEAM_DRIVE_WAIT_MS", WAIT_MS))
         args = ["check", "--wait", "--timeout-ms", str(ms)]
         if self._ack is not None:
@@ -235,9 +243,19 @@ class Drive:
             self.failing = True  # ack 는 그대로 둔다(다음에 같은 ack 를 준다)
             raise
         self.failing = False
-        self._ack = data.get("delivery")
+        delivery = data.get("delivery")
+        if delivery != self._open:  # 새 묶음
+            self._open, self._done = delivery, set()
+        held = False
         for m in data.get("messages") or []:
-            self.isolated(f"msg:{m.get('id')}", lambda m=m: self.handle(m), lambda exc, m=m: self._message_failure(m, exc))
+            if m.get("id") in self._done:
+                continue
+            if self.isolated(f"msg:{m.get('id')}", lambda m=m: self.handle(m),
+                             lambda exc, m=m: self._message_failure(m, exc)) is True:
+                held = True
+                continue
+            self._done.add(m.get("id"))
+        self._ack = None if held else delivery
 
     @staticmethod
     def _message_failure(m: dict, exc: Exception):
@@ -249,21 +267,35 @@ class Drive:
         return said
 
     # --- 메시지(8.6) ---
-    def handle(self, message: dict) -> None:
+    def handle(self, message: dict) -> bool | None:
         """메시지 처리(설계 8.6 표). status 는 ack 만 한다(로그도 없다). 인수인계 Dispatch 는 handoff_message 가 맡는다.
-        Dispatch 로 태스크·라운드·종류를 찾고(coord.locate), 모르거나 끝났거나 지난 Dispatch 면 로그만 남긴다."""
+        Dispatch 로 태스크·라운드·종류를 찾고(coord.locate), 모르거나 끝났거나 지난 Dispatch 면 로그만 남긴다.
+
+        못 찾으면 워커 목록을 한 번 새로 받아 다시 찾는다. 상태 파일에는 아직 없고 새 목록에 이 Run 의 진행 중(launching·
+        active) 워커로 있으면(리뷰 자식·start 가 띄운 직후 기록 전) True 를 돌려 미룬다(check_mail 이 ack 하지 않는다). 처음
+        미룬 뒤 RECONCILE_S 가 지나면 버린다."""
         kind = message.get("type")
         if kind == "status":
-            return
+            return None
         if self.handoff_message(message):
-            return
+            return None
         from . import coord  # coord 가 이 모듈을 쓴다
         body = coord._body(message)
         did = message.get("dispatch") or body.get("dispatch")
+        mid = message.get("id")
         loc = coord.locate(self.p, did, self.rows)
+        if did and (loc is None or (mid in self._held and not loc["recorded"])):
+            loc = coord.locate(self.p, did, self.write_workers())
+            row = dispatch.row_by_id(self.rows, did)
+            if loc is not None and not loc["recorded"] and row is not None and row.get("state") in ("launching", "active"):
+                first = self._held.setdefault(mid, time.monotonic())
+                if time.monotonic() - first < RECONCILE_S:
+                    return True
+                loc = None  # 상한을 넘겼다: 지금처럼 버린다
+        self._held.pop(mid, None)
         if loc is None:
             self.log(f"모르는 Dispatch 의 {kind} 무시: {did or '-'}")
-            return
+            return None
         tid = loc["task"]
         if loc["status"] in state.CLOSED:
             self.log(f"{tid} 이미 끝난 태스크({loc['status']})의 {kind} 무시: {did}")
@@ -363,8 +395,8 @@ class Drive:
             self.fix_task(tid, GONE_NOTE.format(tid=tid))
 
     def _lift(self, tid: str, did: str) -> None:
-        """확인 창 표시 풀기(8.6): blocked_decide 가 이 Dispatch 일 때만. 그 decide 의 라운드 표시도 지워 리뷰로 간다. 그 decide
-        에 답이 없으면 progress 를 한 번 쓴다."""
+        """확인 창 표시 풀기(8.6): blocked_decide 가 이 Dispatch 일 때만. 그 decide 의 라운드 표시(상태와 미룬 표시
+        pending_marks)도 지워 리뷰로 간다. 그 decide 에 답이 없으면 progress 를 한 번 쓴다."""
         if ((state.load(self.p, tid) or {}).get("blocked_decide") or {}).get("dispatch") != did:
             return
         oid = None
@@ -376,6 +408,8 @@ class Drive:
                 if oid and st.get("decide") == oid:
                     st.pop("decide", None)
                     st.pop("decide_round", None)
+        if oid and (self.pending_marks.get(tid) or (None,))[0] == oid:
+            del self.pending_marks[tid]  # 리뷰 자식이 도는 동안 미룬 같은 decide 의 표시도 쓰지 않는다
         if oid and outbox.answer_of(self.p, oid) is None:
             self.progress(LIFTED_TEXT.format(tid=tid, oid=oid))
 
@@ -501,7 +535,9 @@ class Drive:
         elif code == 2 and ecode == "uncommitted_owned":
             self.fix_task(tid, UNCOMMITTED_NOTE)
         elif code == 4 and ecode == "test_lock_timeout":
-            self.retry_reviews.add(tid)  # 다음 재확인이 다시 띄운다
+            self.retry_reviews.add(tid)  # 다음 재확인이 같은 인자로 다시 띄운다
+            if self._job_args.get(tid):
+                self._retry_args[tid] = self._job_args[tid]
         elif code == 1 and ecode == "bad_test_approvals":
             self.decide("escalation", tid, message[:300])
         elif code == CONFLICT:
@@ -643,13 +679,14 @@ class Drive:
         self.jobs[key] = {"proc": proc, "args": list(args), "out": out, "err": err}
         return True
 
-    def start_review(self, tid: str) -> bool:
+    def start_review(self, tid: str, args: list[str] | None = None) -> bool:
         """리뷰 자식(8.8). 그 자식이 있거나 다른 리뷰 실행자(죽은 관제가 남긴 자식 등)가 finish 잠금을 쥐었으면 띄우지 않는다
-        (다음 재확인이 다시 본다). 잡히면 놓고 띄운다(리뷰가 다시 잡는다)."""
+        (다음 재확인이 다시 본다). 잡히면 놓고 띄운다(리뷰가 다시 잡는다). args 는 자식 인자(기본 `review T`. 미룬 큐
+        review --retry 는 원래 인자)."""
         key = f"review:{tid}"
         if key in self.jobs or state.finish_busy(self.p, tid):
             return False
-        self.spawn(key, ["review", tid])
+        self.spawn(key, args or ["review", tid])
         self.log(f"{tid} 리뷰 시작")
         return True
 
@@ -663,18 +700,24 @@ class Drive:
             out, err = _read(job.get("out")), _read(job.get("err"))
             if key.startswith("review:"):
                 tid = key.split(":", 1)[1]
-                self.isolated(f"job:{key}", lambda tid=tid, code=code, out=out: self._review_done(tid, code, out))
+                self.isolated(f"job:{key}", lambda tid=tid, code=code, out=out, args=job.get("args"):
+                              self._review_done(tid, code, out, args))
             elif key == "final":
                 self.isolated(f"job:{key}",
                               lambda code=code, out=out, err=err: self.final_done(code, _last_json(out) or {}, err))
 
-    def _review_done(self, tid: str, code: int, out: str) -> None:
-        """리뷰 자식이 끝났다: 도는 동안 올린 decide 의 표시를 먼저 쓰고(그 뒤 결과 처리가 쓰는 새 표시가 이긴다) 결과를 처리한다."""
+    def _review_done(self, tid: str, code: int, out: str, args: list[str] | None = None) -> None:
+        """리뷰 자식이 끝났다: 도는 동안 올린 decide 의 표시를 먼저 쓰고(그 뒤 결과 처리가 쓰는 새 표시가 이긴다) 결과를 처리한다.
+        args(그 자식의 인자)는 잠금 대기 초과로 다시 띄울 때 쓴다."""
         mark = self.pending_marks.pop(tid, None)
         if mark:
             with state.edit(self.p, tid) as st:
                 st["decide"], st["decide_round"] = mark
-        self.on_review_result(tid, code, _last_json(out))
+        self._job_args[tid] = list(args or [])
+        try:
+            self.on_review_result(tid, code, _last_json(out))
+        finally:
+            self._job_args.pop(tid, None)
 
     def reset_step(self) -> None:
         """고정 에이전트마다 리셋 단계(설계 5.9.7, 에이전트마다 reset:<이름> 격리). Task 8 이 채운다."""
@@ -697,8 +740,9 @@ class Drive:
         self.crew_check()
         self.handoff_check()
         for tid in sorted(self.retry_reviews):
-            if self.start_review(tid):
+            if self.start_review(tid, self._retry_args.get(tid)):
                 self.retry_reviews.discard(tid)
+                self._retry_args.pop(tid, None)
         states = state.all_states(self.p)
         quiet = [s for s in states if not outbox.open_decide(self.p, s) and not self.running(f"review:{s['id']}")]
         for item in coord.attention(self.p, rows, NO_STATUS_GRACE_S, states=quiet):

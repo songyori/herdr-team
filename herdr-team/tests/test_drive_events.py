@@ -762,6 +762,24 @@ class ReviewRetryChildTest(EventCase):
         code, out = self.hteam("review", "T-001", "--retry", "--request", "q-000009", as_="main")
         self.assertEqual((code, out["error"]["code"]), (2, "usage"), out)
 
+    def test_lock_timeout_retry_keeps_retry_args(self):
+        """큐 review --retry 자식이 관문 잠금 대기 초과(exit 4)로 끝나면 재확인이 같은 인자로 다시 띄운다(인자 없이 띄우면
+        reviewing 의 실패 시도에 bad_state 로 끝난다. Codex 커밋 리뷰 75a6612)."""
+        self.failed_review()
+        args = ["review", "T-001", "--retry", "--round", "1", "--request", "q-000001"]
+        out, err = self.tmp / "timeout.out", self.tmp / "timeout.err"
+        line = json.dumps({"ok": False, "error": {"code": "test_lock_timeout", "message": "대기 초과", "hint": ""}})
+        with open(out, "w", encoding="utf-8") as fo, open(err, "w", encoding="utf-8") as fe:
+            proc = subprocess.Popen([sys.executable, "-c", f"print({line!r}); raise SystemExit(4)"], stdout=fo, stderr=fe)
+        self.d.jobs["review:T-001"] = {"proc": proc, "args": args, "out": out, "err": err}  # 그 자식이 도는 중이었다
+        self.wait_jobs()
+        self.assertEqual(self.d.retry_reviews, {"T-001"})
+        self.d.reconcile()
+        self.assertEqual(self.d.jobs["review:T-001"]["args"], args)
+        self.wait_jobs()
+        att = self.attempt("T-001")
+        self.assertEqual((att["attempt"], att.get("result")), (3, None))
+
 
 class AcceptAfterTest(EventCase):
     """accept 뒤(설계 8.6): 직무·결과별 다음 자리, release 실패 progress, 끝에 start-ready."""
@@ -1143,6 +1161,89 @@ class DecideMarkTest(EventCase):
         self.wait_jobs()
         st = self.task_state("T-001")
         self.assertEqual((st["status"], st["decide"], st["decide_round"]), ("reviewing", oid, 1))
+
+    def test_lift_drops_deferred_mark(self):
+        """리뷰 자식이 도는 동안 올린 확인 창 decide 를 worker_done 이 풀면 미룬 표시도 지운다. 자식을 거둘 때 풀린 decide 가
+        다시 써져 재확인이 그 태스크를 건드리지 않는 일이 없다(Codex 커밋 리뷰 75a6612)."""
+        self.start()
+        did, term = self.work_dispatch("T-001"), self.work_terminal()
+        self.act_work("T-001")
+        gate = self.tmp / "pause"
+        with mock.patch.dict("os.environ", {"HTEAM_TEST_PAUSE_AT": "after_attempt", "HTEAM_TEST_PAUSE_FILE": str(gate)}):
+            self.d.handle(self.done_msg(did))
+        deadline = time.monotonic() + 30
+        while not gate.with_name("pause.reached").exists():
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.05)
+        with self._hc_locked() as hc:
+            hc["terminals"][term]["status"] = {"app": "claude-code", "state": "blocked", "kind": "permission",
+                                               "msg": "허용할까?"}
+        self.d.handle(self.observed(did, "blocked", key="1", status="blocked", mid=2))
+        (e,) = self.decides()
+        self.assertEqual(self.d.pending_marks, {"T-001": (e["id"], 1)})
+        self.d.handle(self.done_msg(did, mid=3))  # 사람이 넘겼고 작업자가 이어 가 done 했다
+        self.assertEqual(self.d.pending_marks, {})
+        gate.touch()
+        self.wait_jobs()
+        st = self.task_state("T-001")
+        self.assertEqual((st["status"], st.get("decide"), st.get("blocked_decide")), ("reviewing", None, None))
+
+
+class UnrecordedDispatchTest(EventCase):
+    """상태 파일에 아직 기록되지 않은 Dispatch 의 메시지(설계 8.6 "모르는 Dispatch", Codex 커밋 리뷰 75a6612): 워커 목록을
+    새로 받아 이 Run 의 진행 중 워커면 ack 하지 않고 미뤘다가 상태가 기록된 다음 틱에 처리한다."""
+
+    def acked(self, mid: int) -> bool:
+        conn = sqlite3.connect(self.horch_home / "orch.db")
+        try:
+            row = conn.execute("SELECT d.acked_at FROM messages m JOIN deliveries d ON d.id = m.delivery_id WHERE m.id=?",
+                               (mid,)).fetchone()
+        finally:
+            conn.close()
+        return bool(row and row[0])
+
+    def reviewer(self) -> tuple[str, str]:
+        conn = sqlite3.connect(self.horch_home / "orch.db")
+        try:
+            row = conn.execute("SELECT d.id, d.terminal FROM dispatches d JOIN tasks t ON t.id = d.task_id WHERE t.title=?",
+                               ("T-001 r1 리뷰 a1",)).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(row)
+        return row[0], row[1]
+
+    def test_question_from_unrecorded_reviewer_waits_for_state(self):
+        self.start()
+        self.act_work("T-001")
+        gate = self.tmp / "pause"
+        with mock.patch.dict("os.environ", {"HTEAM_DRIVE_WAIT_MS": "200"}):
+            with mock.patch.dict("os.environ", {"HTEAM_TEST_PAUSE_AT": "after_launch",
+                                                "HTEAM_TEST_PAUSE_FILE": str(gate)}):
+                self.d.check_mail()  # 작업 worker_done → 리뷰 자식. 리뷰어를 띄운 뒤 상태에 기록하기 전에 멈춘다
+            self.assertIn("review:T-001", self.d.jobs)
+            deadline = time.monotonic() + 30
+            while not gate.with_name("pause.reached").exists():
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.05)
+            self.assertIsNone(self.attempt("T-001")["dispatch"])
+            did, term = self.reviewer()
+            code, asked = self.horch("ask", "--dispatch", did, "--question", "어느 쪽인가", "--timeout-ms", "100",
+                                     terminal=term)
+            self.assertEqual(code, 4, asked)
+            self.d.check_mail()
+            self.d.check_mail()  # 미룬 묶음이 다시 온다
+            self.assertEqual(self.decides(), [])
+            self.assertFalse(self.acked(asked["question"]))
+            self.assertEqual(self.logged(f"모르는 Dispatch 의 question 무시: {did}"), 0)
+            gate.touch()
+            self.wait_jobs()
+            self.assertEqual(self.attempt("T-001")["dispatch"], did)
+            self.d.check_mail()  # 상태가 기록됐다: 이번에는 처리한다
+            (e,) = self.decides()
+            self.assertEqual((e["kind"], e["question"], e["message_id"]), ("worker_question", "어느 쪽인가", asked["question"]))
+            self.d.check_mail()  # 이번에는 ack 한다. 같은 질문을 다시 올리지 않는다
+            self.assertTrue(self.acked(asked["question"]))
+            self.assertEqual(len(self.decides()), 1)
 
 
 class StartReadyDecideTest(EventCase):

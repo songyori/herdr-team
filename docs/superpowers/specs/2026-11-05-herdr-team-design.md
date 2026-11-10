@@ -1365,7 +1365,7 @@ Herdr 신호로 바꾼 곳: orca 의 `ACTIVE_OUTPUT_SECONDS`(마지막 출력 30
 
 ### 8.6 이벤트 처리
 
-관제는 메시지의 Dispatch 로 태스크·라운드·종류(작업·리뷰·인수인계)를 찾는다(0.3.0 `hteam which` 의 `locate` 를 안에서 쓴다). 인수인계 Dispatch 는 `crew.json` 의 `resetting.dispatch` 로 찾는다. 태스크를 못 찾으면 로그만 남긴다. 지난 라운드·시도의 메시지면 로그 `<T> 지난 디스패치의 <type> 무시: <dispatch>`, 태스크가 `done`·`dropped` 면 로그 `<T> 이미 끝난 태스크(<상태>)의 <type> 무시: <dispatch>`.
+관제는 메시지의 Dispatch 로 태스크·라운드·종류(작업·리뷰·인수인계)를 찾는다(0.3.0 `hteam which` 의 `locate` 를 안에서 쓴다). 인수인계 Dispatch 는 `crew.json` 의 `resetting.dispatch` 로 찾는다. 태스크를 못 찾으면 워커 목록(`horch worker-list`)을 한 번 새로 받아 다시 찾는다. 상태 파일에는 아직 없지만 새 목록에 이 Run 의 진행 중(launching·active) 워커로 있으면(리뷰 자식·`start` 가 띄운 직후 상태를 기록하기 전) 그 메시지가 든 묶음을 ack 하지 않고 다음 틱에 그 메시지만 다시 처리한다. 처음 미룬 뒤 `RECONCILE_S` 가 지나면 버린다(미루는 동안 horch 는 새 묶음을 주지 않는다, Codex 커밋 리뷰 75a6612). 그래도 못 찾으면 로그 `모르는 Dispatch 의 <type> 무시: <dispatch>` 만 남긴다. 지난 라운드·시도의 메시지면 로그 `<T> 지난 디스패치의 <type> 무시: <dispatch>`, 태스크가 `done`·`dropped` 면 로그 `<T> 이미 끝난 태스크(<상태>)의 <type> 무시: <dispatch>`.
 
 | 메시지 | 조건 | 관제가 자동으로 | 메인에 올림 |
 |---|---|---|---|
@@ -2012,6 +2012,8 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
 - `fix --supplement` 가 앞 라운드를 쓴 뒤 보강 후행 태스크의 대기 라운드를 다 만들기 전에 관제가 죽으면, 복구는 요청 ID 기록만 보고 요청을 끝난 것으로 본다. 남은 후행 태스크는 옛 라운드에 남아 `approval_stale` 로 막힌다(7.1, 11.4, Codex 커밋 리뷰 abd8c9b, 기록만).
 - 큐 `review --retry` 가 새 시도를 쓴 뒤 history 기록 전에 관제가 죽으면, 다시 실행한 요청은 `no_failed_review` 로 끝난다(메인이 받는 결과가 틀린다). 남은 열린 시도는 재확인의 `reviewing` 복구(8.7, 6.1 의 0)가 잇는다(Codex 커밋 리뷰 abd8c9b, 기록만).
 - 요청 파일이 JSON 객체가 아니면(메인은 원자적으로 쓰므로 손으로 고친 경우) 관제의 큐 단계가 그 파일에서 멈추고 격리가 escalation 을 한 번 올린다. 그 뒤 요청도 그 파일을 치울 때까지 실행되지 않는다(7.1, 8.5, Codex 커밋 리뷰 abd8c9b, 기록만).
+- 관제가 첫 observed idle 에 done 요청을 보내고 `idle_nudged` 를 쓴 뒤 다음 `check --ack` 전에 다시 시작하면, horch 가 같은 묶음을 다시 주고 관제는 그 idle 을 두 번째 idle 로 본다. 작업이면 쓸데없는 escalation 을 올리고, 리뷰어면 `worker-abandon --kill` 뒤 review-finish 로 그 시도를 실패시킨다(8.6, Codex 커밋 리뷰 75a6612, 기록만).
+- `review-finish` 가 `changes` 를 쓴 직후 관제가 다시 시작하면 재확인의 `changes` 복구(8.7)는 마지막 시도의 경고(리뷰 중 소유 경로에 생긴 추적 안 된 파일)를 넘기지 않는다. 새 수정 라운드에 커밋·삭제 지시가 빠져 사전 검사가 다시 반려할 수 있다(8.6, Codex 커밋 리뷰 75a6612, 기록만).
 - 관제 안의 `fix --supplement`(보강이 끝난 뒤 화면 고치기, 메인 큐의 fix)가 보강 후행 태스크의 대기 라운드를 만드는 안쪽 fix 는 finish 잠금을 비차단으로 잡지 않는다(8.5 의 비차단은 바깥 fix 까지만). 그 후행 태스크의 리뷰 관문이 finish 잠금을 쥐고 있으면 관문이 끝날 때까지 관제 틱이 멈춘다(Codex 계획 리뷰 r2, 기록만).
 - 리뷰 보기 pane 의 크기는 실환경에서 확인한다(6.5 의 9).
 
