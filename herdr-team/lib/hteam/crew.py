@@ -607,7 +607,7 @@ def _resume_start(d, cfg, name: str, e: dict) -> None:
 
 def _reset_done(d, name: str, text: str, **fields) -> None:
     _set(d.p, name, resetting=None, reset_pending=False, since_reset=0, reset_tasks=[], last_reset_at=local_now(),
-         reset_failures=0, close_failures=0, **fields)
+         reset_failures=0, close_failures=0, reset_busy_since=None, reset_unknown_since=None, **fields)
     d.log(f"{name} 리셋: {text}")
 
 
@@ -629,6 +629,18 @@ def _clear(d, name: str) -> None:
         if code == 0 and data.get("ok"):
             return _reset_done(d, name, f"reset(turn {data.get('turn')}, {data.get('seconds')}초)")
         reason = (data.get("error") or {}).get("code") or f"exit_{code}"
+        w = data.get("status")
+        if reason == "terminal_not_ready" and w in ("working", "blocked"):
+            # 에이전트는 done 명령을 턴 안에서 부른다(6단계 실환경): 아무것도 치지 않았으니 세션을 닫지 않고 2 의 바쁨처럼
+            # 미룬다. clear 단계로 남아 다음 틱에 다시 하고, RESET_BUSY_S 가 지나면 아래 닫기로 간다
+            since = e["reset_busy_since"]
+            if not since:
+                _set(p, name, reset_busy_since=local_now(), reset_unknown_since=None)
+                d.log(f"{name} 리셋 미룸: 작업 세션이 일하는 중({w})")
+                return None
+            age = local_age(since)
+            if age is None or age < drive.RESET_BUSY_S:
+                return None
         _set(p, name, resetting={**res, "clear_error": reason})
     code, data = _call(d, "terminal-close", "--terminal", terminal)  # 진행 중 Dispatch 가 없으니 --abandon 없이
     if code == 0 and data.get("ok"):

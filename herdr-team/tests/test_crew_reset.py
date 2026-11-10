@@ -148,6 +148,49 @@ class ResetFlowTest(ResetCase):
         self.assertEqual(keys, ["/", "c", "l", "e", "a", "r", "space", "t", "e", "s", "t", "enter"])  # /clear test
         self.assertIsNone(self.entry("test")["resetting"])
 
+    def test_done_mid_turn_waits_then_clears_in_place(self):
+        """실제 에이전트는 done 명령을 턴 안에서 부른다: worker_done 이 올 때 작업 세션은 아직 working 이다(6단계 실환경).
+        terminal-reset 이 terminal_not_ready 로 아무것도 치지 않았으면 세션을 닫지 않고 clear 단계로 남아 다음 틱에 다시 한다."""
+        self.mark()
+        self.step()
+        did = self.handoff_did()
+        self.write_handoff()
+        turn = self.terminals()[self.t]["turn"]
+        self.ready(self.t, status="working", turn=turn)  # done 을 부른 턴이 아직 끝나지 않았다
+        self.handle("worker_done", did, self.done_body(did))
+        e = self.entry()
+        self.assertEqual((e["terminal"], (e["resetting"] or {}).get("step"), (e["resetting"] or {}).get("clear_error")),
+                         (self.t, "clear", None))
+        self.assertIn(self.t, self.terminals())  # 닫지 않았다
+        self.assertEqual(self.keys(), [])
+        self.step(2)  # 아직 일하는 중: 다시 미루고 로그는 한 줄
+        lines = [x for x in self.log_lines() if "production 리셋 미룸: 작업 세션이 일하는 중(working)" in x]
+        self.assertEqual(len(lines), 1, self.log_lines())
+        self.assertRegex(self.entry()["reset_busy_since"], r"[+-]\d\d:\d\d$")
+        self.ready(self.t, status="done", turn=turn)  # 턴이 끝났다
+        self.step()
+        e = self.entry()
+        self.assertEqual(self.keys()[-1], ["/", "c", "l", "e", "a", "r", "enter"])
+        self.assertEqual((e["resetting"], e["reset_pending"], e["terminal"], e["reset_busy_since"]),
+                         (None, False, self.t, None))  # 같은 터미널 주소(제자리 비우기)
+        self.assertTrue(any(f"production 리셋: reset(turn {turn + 1}, " in x for x in self.log_lines()), self.log_lines())
+
+    def test_done_mid_turn_busy_too_long_goes_to_new_terminal(self):
+        self.mark()
+        self.step()
+        did = self.handoff_did()
+        self.write_handoff()
+        self.ready(self.t, status="working", turn=self.terminals()[self.t]["turn"])
+        self.handle("worker_done", did, self.done_body(did))
+        self.set_entry(reset_busy_since=ago(31 * 60 + 5))
+        self.step()
+        e = self.entry()
+        self.assertEqual((e["terminal"], e["resetting"], e["reset_pending"], e["reset_busy_since"]),
+                         (None, None, False, None))
+        self.assertNotIn(self.t, self.terminals())  # terminal-close 가 끄고 지웠다
+        self.assertTrue(any("production 리셋: new_terminal(terminal_not_ready)" in x for x in self.log_lines()),
+                        self.log_lines())
+
     def test_reset_timeout_goes_to_new_terminal(self):
         self.on_clear("none")  # /clear 뒤 turn 사건이 오지 않는다
         self.mark()
