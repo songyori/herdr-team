@@ -223,20 +223,34 @@ class TerminalResetTest(PersistCase):
         self.assertEqual((out["signal"], out["turn"], out["status"]), ("event", 4, "idle"))
         self.assertIsNone(self.reservation_row(term))
 
-    def test_done_after_clear_counts(self):
-        """비운 뒤 상태가 done 이어도(Codex) turn 이 오르면 비운 것으로 본다. 결과의 status 는 본 상태다."""
-        _, term = self.first(agent="codex")
+    def reset_then(self, term, *, status, turn, timeout_ms):
+        """on_clear none 으로 리셋을 띄우고 keys 가 온 뒤(turn_before 를 읽은 뒤) 터미널을 status·turn 으로 바꾼다.
+        가짜 events 는 그 변화를 turn 알림(data.state = status)으로, hc get 은 같은 값으로 준다."""
         with self._hc_locked() as st:
             st["on_clear"] = {term: "none"}
-        bg = self.horch_bg("terminal-reset", "--terminal", term, "--timeout-ms", "20000", terminal="t100")
+        bg = self.horch_bg("terminal-reset", "--terminal", term, "--timeout-ms", str(timeout_ms), terminal="t100")
         self.addCleanup(lambda: bg.poll() is None and bg.kill())
         deadline = time.monotonic() + 10
         while not self.keys_to(term):
             self.assertLess(time.monotonic(), deadline, "keys 가 오지 않았다")
             time.sleep(0.05)
-        self.update_terminal(term, status="done", turn=4)
-        code, res = self.finish(bg)
-        self.assertEqual((code, res["turn"], res["status"]), (0, 4, "done"), res)
+        self.update_terminal(term, status=status, turn=turn)
+        return self.finish(bg)
+
+    def test_idle_after_clear_counts_for_codex(self):
+        """Codex 도 /clear 뒤 idle·turn+1 이면 비운 것이다(X3b)."""
+        _, term = self.first(agent="codex")
+        code, res = self.reset_then(term, status="idle", turn=4, timeout_ms=20000)
+        self.assertEqual((code, res["turn"], res["status"]), (0, 4, "idle"), res)
+
+    def test_done_turn_is_not_cleared(self):
+        """turn 이 올라도 done 이면 비운 것으로 보지 않는다. 보통 턴은 done 으로 끝나고, 보통 글로 처리된 /clear
+        (X3 의 감싼 /clear)도 그렇다. 사건·폴링 모두 받지 않고 마감까지 기다려 reset_timeout 이다."""
+        _, term = self.first(agent="codex")
+        code, res = self.reset_then(term, status="done", turn=4, timeout_ms=1500)
+        self.assertEqual((code, res["error"]["code"]), (4, "reset_timeout"), res)
+        self.assertEqual((res["turn_before"], res["last"]["status"], res["last"]["turn"]), (3, "done", 4))
+        self.assertIsNone(self.reservation_row(term))
 
     def test_keys_failure_is_hc_failed(self):
         _, term = self.first()

@@ -297,8 +297,9 @@ def _seen(info: dict) -> dict:
 
 
 def _cleared(status, turn, turn_before: int) -> bool:
-    """비웠다는 신호: turn 이 오르고 idle·done 이다(설계 13.8 의 6. Codex 는 /clear 뒤 done 일 수 있다)."""
-    return status in READY and isinstance(turn, int) and turn > turn_before
+    """비웠다는 신호: turn 이 오르고 idle 이다(설계 13.8 의 6). /clear 뒤에는 Claude·Codex 모두 idle 이고 보통 턴은 done 으로
+    끝난다. done 을 받으면 보통 글로 처리된 /clear 를 비운 것으로 본다(X2·X3b)."""
+    return status == "idle" and isinstance(turn, int) and turn > turn_before
 
 
 def reset(store, run_id: str, terminal: str, name: str | None, timeout_ms: int) -> dict:
