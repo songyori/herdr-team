@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import json
 import re
 from typing import Iterator
@@ -45,14 +46,38 @@ def check_id(tid: str) -> None:
         raise HteamError("bad_task_id", f"태스크 ID 는 T- 와 숫자 3자리 이상이다: {tid!r}", USAGE)
 
 
+def _review_busy(tid: str) -> HteamError:
+    return HteamError("review_busy", f"{tid} 의 리뷰 관문이 도는 중이다(finish 잠금). 관제는 기다리지 않고 나중에 다시 한다",
+                      CONFLICT, "큐 요청이면 관제가 다음 틱에 다시 한다")
+
+
 @contextlib.contextmanager
-def finish_lock(p, tid: str) -> Iterator[None]:
+def finish_lock(p, tid: str, nowait: bool = False) -> Iterator[None]:
     """태스크마다 review·review-finish 와 fix·drop 의 취소·정리를 한 번에 하나로(설계 6.3·6.4). 태스크 잠금보다 먼저,
-    프로젝트 잠금보다 뒤에 잡는다."""
+    프로젝트 잠금보다 뒤에 잡는다. nowait 면 기다리지 않는다: 못 잡으면 아무것도 하지 않고 exit 3 review_busy(관제, 설계 8.5)."""
     check_id(tid)
     p.ensure_state()
-    with flock(p.task_states / f"{tid}.finish.lock"):
-        yield
+    path = p.task_states / f"{tid}.finish.lock"
+    if not nowait:
+        with flock(path):
+            yield
+        return
+    with open(path, "a+") as fh:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise _review_busy(tid) from None
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def finish_probe(p, tid: str) -> None:
+    """finish 잠금을 비차단으로 잡았다 바로 놓는다(못 잡으면 review_busy). 잠금 순서상 finish 잠금을 쥔 채 프로젝트 잠금을
+    잡지 않는 accept 가 관제 안에서 쓴다(설계 8.5)."""
+    with finish_lock(p, tid, nowait=True):
+        pass
 
 
 def _read_state(path, tid: str) -> dict | None:

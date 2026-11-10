@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from . import config, roles, state
+from . import config, outbox, roles, state
 from .errors import CONFLICT, USAGE, HteamError
 from .globs import owns_problem, within
 from .paths import find_project
@@ -220,8 +220,10 @@ def _split(value: str | None) -> list[str] | None:
 
 
 def _cmd_task_new(args) -> dict:
+    """메인·관제가 한다(큐 명령이 아니다, 설계 7.1·8.3). 관제 밖이면 메인 터미널이어야 한다."""
     p = find_project(args.root)
-    roles.require_drive(p)
+    if not roles.drive_env(p):
+        outbox.require_main(p)
     return new(p, config.load(p), args.role, args.title, _split(args.owns), _split(args.depends_on))
 
 

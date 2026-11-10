@@ -1,16 +1,20 @@
-"""작업 라운드(설계 5.4·6.4): start, start-ready, fix, accept, drop."""
+"""작업 라운드(설계 5.4·6.4): start, start-ready, fix, accept, drop, scope(7.1).
+
+CLI 는 큐 명령이다(설계 7.1): 관제(와 그 자식)에서 부르면 바로 하고, 메인에서 부르면 요청 큐로 관제에 넘긴다(queue.route).
+큐 요청이 바꾼 history 사건에는 request(요청 id)를 남긴다(다시 뜬 관제의 재실행 막기). 관제 안의 fix·drop 은 finish 잠금을
+기다리지 않고 accept 는 먼저 탐침한다(nowait, 설계 8.5)."""
 from __future__ import annotations
 
 import contextlib
 import os
 from typing import Iterator
 
-from . import compose, config, dispatch, gitio, plan, procs, roles, specs, state
+from . import compose, config, dispatch, gitio, plan, procs, queue, roles, specs, state
 from .errors import CONFLICT, FAIL, USAGE, HteamError
 from .globs import any_overlap, within
-from .horch import Horch
+from .horch import Horch, failure
 from .paths import SHIM, find_project
-from .util import die_at, write_atomic
+from .util import die_at, now, write_atomic
 
 
 def work_slot(st: dict) -> dict:
@@ -165,7 +169,12 @@ def occupied(p, tid: str, cap: Capacity) -> list[str]:
             (s["status"] == "working" or (s["status"] == "launch_failed" and _may_run(s, cap, rows)))]
 
 
-def _prepare_start(p, cfg, spec, choice, cli: dict, cap: Capacity | None = None) -> None:
+def _req(request: str | None) -> dict:
+    """큐 요청이 바꾼 history 사건에 넣을 필드(설계 7.1 재실행 막기)."""
+    return {"request": request} if request else {}
+
+
+def _prepare_start(p, cfg, spec, choice, cli: dict, cap: Capacity | None = None, request: str | None = None) -> None:
     tid = spec.id
     with state.project_lock(p):
         state.create(p, tid, spec.role)  # 사양만 있고 상태가 없으면 pending 으로 만든다
@@ -215,7 +224,7 @@ def _prepare_start(p, cfg, spec, choice, cli: dict, cap: Capacity | None = None)
                 text = stored.read_text(encoding="utf-8") if stored.is_file() else \
                     compose.work_spec(p, cfg, spec, rd, owns)
             st["owns"] = owns
-            _begin(p, st, rd, text, "start")
+            _begin(p, st, rd, text, "start", **_req(request))
 
 
 def run_work(p, cfg, h, tid: str) -> dict:
@@ -266,13 +275,13 @@ def _adopted_next(cfg, tid: str, rnd: int, res: dict) -> tuple[list[str] | None,
     return nxt, "이어 붙인 작업 워커가 이미 실패로 끝났다" + (f". {why}" if why else "")
 
 
-def start(p, tid: str, cli: dict, cfg=None, h=None, cap: Capacity | None = None) -> dict:
-    """cap 은 start-ready 만 준다(max_parallel 은 start-ready 만 본다, 설계 5.4)."""
+def start(p, tid: str, cli: dict, cfg=None, h=None, cap: Capacity | None = None, request: str | None = None) -> dict:
+    """cap 은 start-ready 만 준다(max_parallel 은 start-ready 만 본다, 설계 5.4). request 는 큐 요청 id(start 사건에 남긴다)."""
     cfg = cfg or config.load(p)
     spec = specs.check(p, cfg, tid)
     choice = config.resolve(cfg, spec.role, spec.front, cli)
     h = h or Horch(p.horch_home)
-    _prepare_start(p, cfg, spec, choice, cli, cap)
+    _prepare_start(p, cfg, spec, choice, cli, cap, request)
     return run_work(p, cfg, h, tid)
 
 
@@ -519,7 +528,7 @@ def _launcher_alive(st: dict) -> bool:
     return launcher.get("pid") != os.getpid() and procs.record_alive(launcher)
 
 
-def _close_round(p, h, tid: str, *, kill: bool, check=None, seen: dict | None = None) -> list[dict]:
+def _close_round(p, h, tid: str, *, kill: bool, check=None, seen: dict | None = None, nowait: bool = False) -> list[dict]:
     """fix·drop 이 공유하는 순서 규칙(설계 6.4):
     1) 바꾸기 전에 거부할 것을 확인한다(대상 미리 고르기: launching, kill 없는 active. check).
     2) 끝나지 않은 실행 키·리뷰 시도의 취소를 먼저 저장한다(이후 start·review 가 그 기록으로 Dispatch 를 띄우지 않는다).
@@ -531,9 +540,10 @@ def _close_round(p, h, tid: str, *, kill: bool, check=None, seen: dict | None = 
 
     check(st) 는 취소를 저장하는 태스크 잠금 안에서 먼저 부른다(거부하면 아무것도 바꾸지 않는다). seen 에 취소 때 본
     상태·라운드를 채운다. review·review-finish 와 겹치지 않게 finish 잠금 안에서 한다. 잠금 순서(프로젝트 → finish →
-    태스크)를 지키려고 프로젝트 잠금은 쥐지 않는다."""
+    태스크)를 지키려고 프로젝트 잠금은 쥐지 않는다. nowait(관제 안)면 finish 잠금을 기다리지 않는다: 리뷰 관문이 돌면
+    아무것도 바꾸지 않고 exit 3 review_busy(설계 8.5)."""
     seen = {} if seen is None else seen
-    with state.finish_lock(p, tid):
+    with state.finish_lock(p, tid, nowait=nowait):
         before = state.require(p, tid)
         _round_targets(h, before, kill=kill)
         die_at("before_cancel")
@@ -574,7 +584,8 @@ def _closing(p, tid: str, seen: dict) -> Iterator[dict]:
 
 def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: bool, cli: dict,
         expect_round: int | None = None, queue: bool = False, from_user: bool = False,
-        extra_from: tuple[str, ...] = (), follower: bool = False) -> dict:
+        extra_from: tuple[str, ...] = (), follower: bool = False, request: str | None = None,
+        nowait: bool = False) -> dict:
     """새 라운드(설계 6.4). 입력(사양·owns·잠금)을 먼저 검사하고, 이전 라운드들의 작업·리뷰 Dispatch 를 모두 정리한
     뒤에만 새 라운드를 쓰고 띄운다(이전 워커와 새 워커가 같은 폴더에서 함께 일하지 않게). 일하는 중인 워커는
     abandon --kill 뒤 release.
@@ -584,7 +595,10 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
     --supplement 는 사용자 요청이 아니다). 다만 일반 fix 가 아직 사용자에게 다시 보이지 않은 사용자 요청 라운드(워커 실패
     등)를 닫으면 그 요청을 --note 와 합쳐 잇고 사용자 요청 라운드로 둔다(요청을 잃지 않는다). 보강 라운드(--supplement)가
     다시 승인되지 못한 채 닫히면 --supplement 없는 fix 도 그 보강 ID 를 잇는다(awaiting_user 에서 연 fix 는 잇지 않는다). extra_from 은 FIX_FROM 밖에서 더 받을 상태다(결정이 고치는 의존 태스크는
-    리뷰 중·승인됨이어도 다시 만든다)."""
+    리뷰 중·승인됨이어도 다시 만든다).
+
+    request 는 큐 요청 id(fix 사건에 남긴다). nowait(관제 안)면 라운드를 닫는 finish 잠금을 기다리지 않는다(_close_round).
+    보강 후행 태스크의 대기 라운드(_queue_followers)에는 잇지 않는다(알려진 한계, 설계 13장)."""
     cfg = config.load(p)
     spec = specs.check(p, cfg, tid)
     choice = config.resolve(cfg, spec.role, spec.front, cli)
@@ -624,7 +638,7 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
     if not queue or follower:  # 끝나지 않은 결정이 고치는 태스크면 워커를 죽이거나 라운드를 닫기 전에 거부한다(_closing 에서 다시 본다)
         _start_gate(p, cfg, spec, check_deps=False)
     seen: dict = {}
-    _close_round(p, h, tid, kill=True, check=allowed, seen=seen)
+    _close_round(p, h, tid, kill=True, check=allowed, seen=seen, nowait=nowait)
     with _closing(p, tid, seen) as st:
         _check_locks(p, cfg, spec, owns)
         if not queue or follower:  # 결정 밖의 fix 는 끝나지 않은 결정이 고치는 태스크를 띄우지 않는다(결정 자신의 fix 는 queue 다)
@@ -658,7 +672,7 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
         st["round"] = rd["round"]
         st["owns"] = owns
         st["note"] = note
-        _begin(p, st, rd, text, "fix", previous=old, force_round=force_round)
+        _begin(p, st, rd, text, "fix", previous=old, force_round=force_round, **_req(request))
     fixed, skipped = _queue_followers(p, followers, supplement, tid) if followers else ([], [])
     if queue or defer:  # 띄우지 않는다. start-ready 의 의존 검사가 선행이 다시 승인된 뒤에 띄운다(설계 11.4)
         return {"task": tid, "round": rd["round"], "status": "launch_failed", "queued": True, "followers": fixed,
@@ -794,7 +808,7 @@ def _start_gate(p, cfg, spec, check_deps: bool) -> None:
     held = approval.held_by_decision(p, spec.id)
     if held:
         raise HteamError("decision_pending", f"{spec.id} 는 끝나지 않은 일괄 승인 결정 {held} 이 고치는 태스크이거나 그 "
-                         "의존 태스크다", CONFLICT, f"`{SHIM} design-review --decide {held}` 로 결정을 마저 한 뒤 start-ready",
+                         "의존 태스크다", CONFLICT, f"관제가 재확인마다 결정 {held} 을 기록대로 마저 한다. 그 뒤 start-ready",
                          data={"pending": held})
     if check_deps and not deps_met(p, cfg, spec):
         raise HteamError("deps_unmet", f"{spec.id} 의 선행이 아직 끝나지 않았다: "
@@ -833,18 +847,24 @@ def _held_for_accept(p, tid: str, decision: str | None) -> None:
     held = approval.held_by_decision(p, tid)
     if held and held != decision:
         raise HteamError("decision_pending", f"{tid} 는 끝나지 않은 일괄 승인 결정 {held} 이 고치는 태스크이거나 그 "
-                         "의존 태스크다", CONFLICT, f"`{SHIM} design-review --decide {held}` 로 결정을 마저 한다",
+                         "의존 태스크다", CONFLICT, f"관제가 재확인마다 결정 {held} 을 기록대로 마저 한다",
                          data={"pending": held})
 
 
-def accept(p, tid: str, expect_round: int | None = None, decision: str | None = None) -> dict:
+def accept(p, tid: str, expect_round: int | None = None, decision: str | None = None, request: str | None = None,
+           nowait: bool = False) -> dict:
     """approved → done(승인 직무면 awaiting_user), awaiting_user → done(설계 6.4). 작업 Dispatch 를 release 한다
     (같은 horch Task 의 이전 시도도).
 
     태스크의 작업·리뷰 Dispatch 가 하나라도 launching·active 면(review 는 retain 실패를 견디므로 approved 에도 작업
     워커가 살아 있을 수 있다) 아무것도 바꾸지 않고 exit 3 이다. 닫으면 owns 잠금이 풀리고 fix·drop 도 task_closed 라
     그 워커를 정리할 길이 없다. worker-list 를 묻지 못하면 확인할 수 없으므로 역시 바꾸지 않는다. 끝난 Dispatch 의
-    release 실패는 Dispatch 마다 경고로 남기고 cleaned 는 쓰지 않는다. 전이는 한다."""
+    release 실패는 Dispatch 마다 경고로 남기고 cleaned 는 쓰지 않는다. 전이는 한다.
+
+    nowait(관제 안)면 무엇보다 먼저 finish 잠금을 탐침한다(리뷰 관문이 돌면 아무것도 바꾸지 않고 review_busy, 설계 8.5).
+    잠금 순서상 finish 잠금을 쥔 채 프로젝트 잠금을 잡지 않으므로 탐침만 한다. request 는 accept 사건에 남긴다."""
+    if nowait:
+        state.finish_probe(p, tid)
     cfg = config.load(p)
     st = state.require(p, tid)
     _expect_round(tid, st, expect_round)  # 상태보다 먼저: 다른 라운드로 옮겨 갔으면 그 항목은 이미 처리된 것이다
@@ -883,7 +903,7 @@ def accept(p, tid: str, expect_round: int | None = None, decision: str | None = 
             if cur["round"] != st["round"]:  # 멈춘 사이 다음 라운드가 같은 상태에 닿았다. 본 적 없는 라운드를 닫지 않는다
                 raise _changed(tid, st, cur)
             work_slot(cur)["cleaned"] = cleaned
-            state.move(cur, to, "accept")
+            state.move(cur, to, "accept", **_req(request))
     out = {"task": tid, "status": to, "warnings": warnings}
     if to == "awaiting_user":  # 승인 직무: 다른 승인 태스크와 묶어 사용자에게 묻는다(설계 11.4)
         out["next"] = [SHIM, "design-review"]
@@ -892,54 +912,135 @@ def accept(p, tid: str, expect_round: int | None = None, decision: str | None = 
     return out
 
 
-def drop(p, tid: str, force: bool) -> dict:
+def drop(p, tid: str, force: bool, expect_round: int | None = None, request: str | None = None,
+         nowait: bool = False) -> dict:
     """dropped 로(설계 6.4). 끝나지 않은 실행 키와 리뷰 시도는 canceled. active 는 --force 로만 abandon --kill 뒤
     release. 모든 대상의 정리를 확인한 뒤, 취소 때 본 상태·라운드 그대로일 때만 dropped 를 쓴다(pending 이면 그 사이
-    start 가 라운드를 쓰지 않았을 때만)."""
+    start 가 라운드를 쓰지 않았을 때만). expect_round 는 큐 요청이 본 라운드(바뀌었으면 round_changed, 설계 7.1),
+    nowait(관제 안)면 finish 잠금을 기다리지 않는다(설계 8.5). request 는 drop 사건에 남긴다."""
     h = Horch(p.horch_home)
     st = state.require(p, tid)
+    _expect_round(tid, st, expect_round)  # 상태보다 먼저: 다른 라운드로 옮겨 갔으면 그 요청은 이미 처리된 것이다
     if st["status"] in state.CLOSED:
         raise state.closed_error(st)
     seen: dict = {}
-    released = _close_round(p, h, tid, kill=force, seen=seen)
+    released = _close_round(p, h, tid, kill=force, check=lambda cur: _expect_round(tid, cur, expect_round), seen=seen,
+                            nowait=nowait)
     with _closing(p, tid, seen) as cur:
-        state.move(cur, "dropped", "drop", force=force)
+        state.move(cur, "dropped", "drop", force=force, **_req(request))
     return {"task": tid, "status": "dropped", "released": released}
+
+
+def _check_body(body: str) -> None:
+    if not body or not body.strip():
+        raise HteamError("usage", "범위 내용이 비었다", USAGE)
+
+
+def _not_working(tid: str, status: str) -> HteamError:
+    return HteamError("not_working", f"{tid}: 일하는 중(working)인 태스크에만 범위를 더한다(status={status}). 시작 전이면 "
+                      "사양을 고쳐 커밋한다", CONFLICT, data={"status": status})
+
+
+def scope(p, tid: str, body: str, *, expect_round: int | None = None, request: str | None = None,
+          target: str | None = None, remember=None) -> dict:
+    """일하는 중인 태스크의 작업 Dispatch 에 범위를 더한다(설계 7.1 `hteam scope`). `horch send --subject 추가 범위` 를
+    요청 id 를 key 로 한 번만 보낸 뒤 history 에 scope 사건을 남긴다(상태 전이가 아니다).
+
+    target 이 있으면(같은 요청을 다시 실행) 지금 상태를 보기 전에 그 Dispatch 로 같은 key 를 보낸다: horch 는 key 를 먼저
+    찾으므로 이미 간 전송이면 Dispatch 상태와 상관없이 duplicate 다. 없으면 라운드(expect_round)·working·작업 Dispatch 를
+    보고 remember(Dispatch) 로 요청 파일에 먼저 남긴 뒤 보낸다."""
+    _check_body(body)
+    h = Horch(p.horch_home)
+
+    def send(did: str) -> None:
+        args = ["send", "--to", f"dispatch:{did}", "--subject", "추가 범위"]
+        if request:
+            args += ["--key", request]
+        code, data = h.call(*args, f"--body={body}")
+        if code == 0 and data.get("ok"):
+            return
+        if (data.get("error") or {}).get("code") == "dispatch_not_active":
+            raise _not_working(tid, state.require(p, tid)["status"])
+        raise failure(code, data, tuple(args))
+
+    if target:
+        send(target)
+    else:
+        st = state.require(p, tid)
+        _expect_round(tid, st, expect_round)
+        did = (state.current_round(st) or {}).get("work", {}).get("dispatch")
+        if st["status"] != "working" or not did:
+            raise _not_working(tid, st["status"])
+        if remember is not None:
+            remember(did)
+        send(did)
+    die_at("scope_sent")
+    with state.edit(p, tid) as st:
+        if not (request and any(isinstance(e, dict) and e.get("event") == "scope" and e.get("request") == request
+                                for e in st["history"])):
+            st["history"].append({"at": now(), "event": "scope", "round": st["round"], "body": body, "request": request})
+    return {"id": tid, "sent": True}
 
 
 def _cli(args) -> dict:
     return {k: getattr(args, k) for k in ("model", "effort", "worker") if getattr(args, k, None)}
 
 
+def _round(p, tid: str, given: int | None = None):
+    """큐 요청의 expect_round(설계 7.1): --round N 이 있으면 N, 없으면 메인이 본 상태 파일의 라운드."""
+    return lambda: given if given is not None else state.require(p, tid)["round"]
+
+
 def _cmd_start(args) -> dict:
     p = find_project(args.root)
-    roles.require_drive(p)
-    return start(p, args.task, _cli(args))
+    cli = _cli(args)
+    return queue.route(p, "start", {"task": args.task, **cli}, lambda req: start(p, args.task, cli),
+                       check=lambda: specs.check(p, config.load(p), args.task))
 
 
 def _cmd_start_ready(args) -> dict:
     p = find_project(args.root)
-    roles.require_drive(p)
-    return start_ready(p)
+    return queue.route(p, "start-ready", {}, lambda req: start_ready(p), check=lambda: config.load(p))
 
 
 def _cmd_fix(args) -> dict:
     p = find_project(args.root)
-    roles.require_drive(p)
-    return fix(p, args.task, note=args.note, supplement=args.supplement, force_round=args.force_round, cli=_cli(args),
-               expect_round=args.expect_round)
+    cli = _cli(args)
+
+    def check() -> None:
+        specs.check(p, config.load(p), args.task)
+        state.require(p, args.task)
+
+    given = {"note": args.note, "supplement": args.supplement, "force_round": args.force_round or None}
+    return queue.route(p, "fix", {"task": args.task, **{k: v for k, v in given.items() if v is not None}, **cli},
+                       lambda req: fix(p, args.task, note=args.note, supplement=args.supplement,
+                                       force_round=args.force_round, cli=cli, expect_round=args.expect_round,
+                                       nowait=True),
+                       check=check, expect_round=_round(p, args.task, args.expect_round))
 
 
 def _cmd_accept(args) -> dict:
     p = find_project(args.root)
-    roles.require_drive(p)
-    return accept(p, args.task, args.expect_round)
+    return queue.route(p, "accept", {"task": args.task}, lambda req: accept(p, args.task, args.expect_round, nowait=True),
+                       check=lambda: state.require(p, args.task), expect_round=_round(p, args.task, args.expect_round))
 
 
 def _cmd_drop(args) -> dict:
     p = find_project(args.root)
-    roles.require_drive(p)
-    return drop(p, args.task, args.force)
+    return queue.route(p, "drop", {"task": args.task, **({"force": True} if args.force else {})},
+                       lambda req: drop(p, args.task, args.force, nowait=True),
+                       check=lambda: state.require(p, args.task), expect_round=_round(p, args.task))
+
+
+def _cmd_scope(args) -> dict:
+    p = find_project(args.root)
+
+    def check() -> None:
+        _check_body(args.body)
+        state.require(p, args.task)
+
+    return queue.route(p, "scope", {"task": args.task, "body": args.body}, lambda req: scope(p, args.task, args.body),
+                       check=check, expect_round=_round(p, args.task))
 
 
 def _overrides(s) -> None:
@@ -970,3 +1071,7 @@ def register(sub) -> None:
     s.add_argument("task")
     s.add_argument("--force", action="store_true")
     s.set_defaults(func=_cmd_drop)
+    s = sub.add_parser("scope")
+    s.add_argument("task")
+    s.add_argument("body", help="더할 범위(일하는 중인 태스크만, 설계 7.1)")
+    s.set_defaults(func=_cmd_scope)

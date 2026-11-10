@@ -609,8 +609,9 @@ class PrecheckRaceTest(LifeCase):
 
 class ReviewRoundTest(LifeCase):
     def test_old_review_cannot_judge_new_round(self):
-        """r1 의 review 가 사전 검사 중이다. review 는 호출 내내 finish 잠금을 쥐므로 fix 는 취소·새 라운드를 쓰지 못하고
-        기다린다. 그래서 r1 의 판정은 r1 에만 쓰이고, 그 뒤 fix 가 r2 를 띄운다(r2 는 판정 없이 working)."""
+        """r1 의 review 가 사전 검사 중이다. review 는 호출 내내 finish 잠금을 쥔다. 관제 안의 fix 는 그 잠금을 기다리지 않고
+        아무것도 바꾸지 않은 채 review_busy 로 돌아온다(설계 8.5). 그래서 r1 의 판정은 r1 에만 쓰이고, 리뷰가 끝난 뒤의 fix
+        가 r2 를 띄운다(r2 는 판정 없이 working)."""
         self.write_spec("T-001")
         state.create(self.p, "T-001", "developer")
         self.hteam("start", "T-001")
@@ -619,11 +620,12 @@ class ReviewRoundTest(LifeCase):
         self.assertTrue(wait())
         self.assertTrue(self.held("finish"))
         self.assertFalse(self.held("project"))
-        fix = self.hteam_bg("fix", "T-001", "--note", "다시")
+        code, out = self.hteam("fix", "T-001", "--note", "다시")
+        self.assertEqual((code, out["error"]["code"]), (3, "review_busy"), out)
         go()
         code, out = self.finish(rev)
         self.assertEqual((code, out["status"], out["round"]), (0, "changes", 1), out)
-        code, out = self.finish(fix)
+        code, out = self.hteam("fix", "T-001", "--note", "다시")
         self.assertEqual((code, out["round"], out["status"]), (0, 2, "working"), out)
         st = self.task_state("T-001")
         self.assertEqual((st["status"], st["rounds"][0]["verdict"], st["rounds"][1]["verdict"]),
@@ -699,15 +701,16 @@ class FinishLockTest(LifeCase):
         fin, go, wait = self.paused("before_verdict", "review-finish", "T-001")
         self.assertTrue(wait())
         self.assertEqual((self.held("finish"), self.held("project"), self.held("task")), (True, False, False))
-        drop = self.hteam_bg("drop", "T-001", "--force")  # finish 잠금을 기다린다
+        code, res = self.hteam("drop", "T-001", "--force")  # 관제는 finish 잠금을 기다리지 않는다(설계 8.5)
+        self.assertEqual((code, res["error"]["code"]), (3, "review_busy"), res)
         self.write_spec("T-002", "tester")
         state.create(self.p, "T-002", "tester")
-        code, out = self.hteam("start", "T-002")  # 기다리는 drop 은 프로젝트 잠금을 쥐지 않는다
+        code, out = self.hteam("start", "T-002")  # 미뤄진 drop 은 아무 잠금도 쥐지 않는다
         self.assertEqual(code, 0, out)
         go()
         code, res = self.finish(fin)
         self.assertEqual((code, res["status"]), (0, "approved"), res)  # drop 이 판정 전에 취소하지 않았다
-        code, res = self.finish(drop)
+        code, res = self.hteam("drop", "T-001", "--force")
         self.assertEqual((code, res["status"]), (0, "dropped"), res)
         self.assertEqual(self.dispatch_row(work)["state"], "released")
 

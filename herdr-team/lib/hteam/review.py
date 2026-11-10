@@ -16,7 +16,7 @@ import os
 import re
 from typing import Iterator
 
-from . import compose, config, dispatch, gitio, plan, procs, roles, specs, state, testgate
+from . import compose, config, dispatch, gitio, plan, procs, queue, roles, specs, state, tasks, testgate
 from .errors import CONFLICT, FAIL, HteamError
 from .globs import covers_tree, matches_any
 from .horch import Horch
@@ -134,7 +134,7 @@ def _gate_text(tid: str, n: int, tests: dict) -> str:
 
 
 def _precheck_fail(p, tid: str, n: int, problems: list[str], tests: dict | None = None,
-                   expect: frozenset = frozenset({"working"})) -> dict:
+                   expect: frozenset = frozenset({"working"}), request: str | None = None) -> dict:
     """리뷰어 없이 hteam 이 REQUEST_CHANGES 를 쓴다: 사전 검사(설계 6.1 4)와 테스트 관문(4a, tests 가 있다. --retry 가 다시
     돌린 관문이면 expect 는 reviewing). 라운드를 하나 쓴다."""
     rel = review_rel(tid, n)
@@ -157,7 +157,7 @@ def _precheck_fail(p, tid: str, n: int, problems: list[str], tests: dict | None 
         rd.update(verdict="REQUEST_CHANGES", review_source="hteam", prechecks=problems)
         if tests is not None:
             rd["tests"] = tests
-        state.move(st, "changes", "precheck", **info)
+        state.move(st, "changes", "precheck", **info, **({"request": request} if request else {}))
     return {"task": tid, "round": n, "status": "changes", "verdict": "REQUEST_CHANGES", "source": "hteam",
             "problems": problems, "commit": sha, **info}
 
@@ -266,7 +266,7 @@ def _gitlink_move(*entries) -> bool:
     return bool(entries) and all(isinstance(e, str) and e.startswith("160000:") for e in entries)
 
 
-def _launch_attempt(p, cfg, h, tid: str, k: int) -> dict:
+def _launch_attempt(p, cfg, h, tid: str, k: int, request: str | None = None) -> dict:
     """프롬프트를 (없으면) 만들고 시작 장벽으로 리뷰어를 띄운 뒤 reviewing 으로 간다(설계 6.1 6–8).
 
     기록을 쓸 때마다 dispatch.owned 로 이전 상태(REVIEW_STATES)·취소·실행자를 다시 확인한다."""
@@ -292,7 +292,8 @@ def _launch_attempt(p, cfg, h, tid: str, k: int) -> dict:
         with dispatch.owned(p, tid, pick, REVIEW_STATES) as cur:
             if res["mode"] == "adopt":  # 실제로 도는 리뷰어에 맞춘다
                 pick(cur).update(agent=res["agent"], model=res["model"], effort=res["effort"])
-            state.move(cur, "reviewing", "review", attempt=k, dispatch=res["dispatch"], **info)
+            state.move(cur, "reviewing", "review", attempt=k, dispatch=res["dispatch"], **info,
+                       **({"request": request} if request else {}))
     except HteamError as exc:
         dispatch.left_running(exc, res, h)
         raise
@@ -327,7 +328,8 @@ def _finish_write(p, tid: str, k: int) -> Iterator[tuple[dict, dict]]:
 
 
 def _new_attempt(p, cfg, h, tid: str, *, commits: list[dict], files: list[str], extra: bool,
-                 failed: tuple[int, str, list[str]] | None = None, tests: dict | None = None) -> dict:
+                 failed: tuple[int, str, list[str]] | None = None, tests: dict | None = None,
+                 request: str | None = None) -> dict:
     """새 시도: 기준점·결과 경로·실행 키·입력(대상 커밋, 바뀐 파일, 관문 결과 tests)을 시도 기록에 먼저 쓴다. 남은 결과 파일은
     지운다(설계 6.1 6). 프롬프트·복구·자동 재시도는 이 입력을 다시 쓴다(관문을 다시 돌리지 않는다).
 
@@ -357,7 +359,7 @@ def _new_attempt(p, cfg, h, tid: str, *, commits: list[dict], files: list[str], 
     if failed is not None:
         die_at("after_fail")
     die_at("after_attempt")
-    return _launch_attempt(p, cfg, h, tid, k)
+    return _launch_attempt(p, cfg, h, tid, k, request)
 
 
 def _recover(p, cfg, h, st: dict, att: dict) -> dict:
@@ -402,18 +404,23 @@ def _recover(p, cfg, h, st: dict, att: dict) -> dict:
     return _launch_attempt(p, cfg, h, tid, k)
 
 
-def review(p, tid: str, retry: bool = False) -> dict:
+def review(p, tid: str, retry: bool = False, expect_round: int | None = None, request: str | None = None) -> dict:
     """처음 읽은 라운드로 판정·시도·상태를 쓰므로 호출 내내 finish 잠금을 쥔다(설계 6.4). 라운드를 닫는 fix·drop 의
     취소·정리도 같은 잠금 안에서 하므로, 이 호출이 도는 동안 새 라운드가 생기지 않는다(옛 review 가 새 라운드에
     판정을 쓰지 않는다). 잠금 순서는 finish → 태스크다. review-finish 의 자동 재시도는 이 함수를 거치지 않는다.
-    테스트 관문(설계 6.1 4a)도 이 잠금 안에서 돈다(그동안 같은 태스크의 fix·drop·review-finish 는 기다린다)."""
+    테스트 관문(설계 6.1 4a)도 이 잠금 안에서 돈다(그동안 같은 태스크의 fix·drop·review-finish 는 기다린다. 관제 안의
+    fix·drop·review-finish 는 기다리지 않고 review_busy 다, 설계 8.5).
+
+    expect_round·request 는 큐 `review --retry`(설계 7.1): 라운드가 바뀌었으면 round_changed, 새 시도의 history 사건에
+    요청 id 를 남긴다."""
     with state.finish_lock(p, tid):
-        return _review(p, tid, retry)
+        return _review(p, tid, retry, expect_round, request)
 
 
-def _review(p, tid: str, retry: bool) -> dict:
+def _review(p, tid: str, retry: bool, expect_round: int | None = None, request: str | None = None) -> dict:
     cfg = config.load(p)
     st = state.require(p, tid)
+    tasks._expect_round(tid, st, expect_round)  # 상태보다 먼저: 다른 라운드로 옮겨 갔으면 그 요청은 이미 처리된 것이다
     if st["status"] in state.CLOSED:
         raise state.closed_error(st)  # 무엇보다 먼저, 복구도 하지 않는다
     spec = specs.load(p, tid)
@@ -433,8 +440,10 @@ def _review(p, tid: str, retry: bool) -> dict:
         # 사전 검사는 하지 않는다. 관문은 입력(code_head·식별값·확정 여부)이 바뀌었을 때만 다시 돌린다(설계 6.1)
         tests = testgate.retry_results(p, st, spec.role, commits, (last.get("inputs") or {}).get("tests"))
         if testgate.failed_quick(tests):
-            return _precheck_fail(p, tid, rd["round"], [GATE_PROBLEM], tests, expect=frozenset({"reviewing"}))
-        return _new_attempt(p, cfg, h, tid, commits=commits, files=changed_files(p, commits), extra=True, tests=tests)
+            return _precheck_fail(p, tid, rd["round"], [GATE_PROBLEM], tests, expect=frozenset({"reviewing"}),
+                                  request=request)
+        return _new_attempt(p, cfg, h, tid, commits=commits, files=changed_files(p, commits), extra=True, tests=tests,
+                            request=request)
     if st["status"] != "working":
         raise HteamError("bad_state", f"{tid} 는 {st['status']} 다(review 는 working 에서)", CONFLICT,
                          data={"status": st["status"]})
@@ -614,11 +623,11 @@ def _warning_body(warnings: list[str]) -> str | None:
     return "\n\n".join(parts) or None
 
 
-def review_finish(p, tid: str) -> dict:
+def review_finish(p, tid: str, nowait: bool = False) -> dict:
     """같은 태스크의 review-finish 는 한 번에 하나만 돈다. 겹치면 옛 시도 정보를 쥔 호출이 이미 옮긴 파일을 못 찾아
     재시도를 띄우는 사이 다른 호출이 승인으로 옮긴다. 잠금은 태스크 잠금보다 먼저 잡는다(fix·drop 의 취소·정리도 같은
-    잠금을 잡으므로 이 호출이 끝난 뒤에 취소한다)."""
-    with state.finish_lock(p, tid):
+    잠금을 잡으므로 이 호출이 끝난 뒤에 취소한다). nowait(관제 안)면 기다리지 않고 review_busy(설계 8.5)."""
+    with state.finish_lock(p, tid, nowait=nowait):
         return _finish(p, tid)
 
 
@@ -704,15 +713,20 @@ def _finish(p, tid: str) -> dict:
 
 
 def _cmd_review(args) -> dict:
+    """`review T` 는 관제만, `review T --retry` 는 큐 명령이다(설계 7.1, 8.3)."""
     p = find_project(args.root)
-    roles.require_drive(p)
-    return review(p, args.task, args.retry)
+    if not args.retry:
+        roles.require_drive(p)
+        return review(p, args.task)
+    return queue.route(p, "review", {"task": args.task, "retry": True}, lambda req: review(p, args.task, retry=True),
+                       check=lambda: state.require(p, args.task),
+                       expect_round=lambda: state.require(p, args.task)["round"])
 
 
 def _cmd_review_finish(args) -> dict:
     p = find_project(args.root)
     roles.require_drive(p)
-    return review_finish(p, args.task)
+    return review_finish(p, args.task, nowait=True)
 
 
 def register(sub) -> None:

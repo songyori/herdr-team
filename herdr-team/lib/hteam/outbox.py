@@ -1,5 +1,6 @@
-"""메인과 코디네이터의 연결(설계 7장): tell, notify(outbox), watch, render 검사, answer, applied, reask.
+"""메인과 관제의 연결(설계 7장): outbox(관제 → 메인), watch, render 검사, answer, reask.
 
+0.4.0 에서 tell·notify·applied 를 없앴다. 메인 → 관제는 요청 큐(queue.py)이고, 관제는 같은 append 를 안에서 부른다.
 이 명령들은 설정을 읽지 않는다(설계 4.2). 설정이 깨져도 동작한다.
 
 outbox(`state/outbox.jsonl`)는 LF 로 끝나는 JSON 줄이다. 줄은 LF 로만 나눈다(본문의 U+2028 등은 경계가 아니다).
@@ -11,22 +12,19 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-import re
-import sys
 import time
 import unicodedata
 
-from . import herdr, procs, roles, state, testgate
+from . import herdr, procs, state, testgate
 from .errors import CONFLICT, DENIED, FAIL, USAGE, HteamError
 from .horch import Horch
-from .paths import SHIM, find_project
+from .paths import find_project
 from .util import bad_side_file, die_at, env_float, flock, now, read_json, read_json_strict, write_atomic, write_json
 
-TYPES = ("progress", "question", "approval", "done")
+TYPES = ("progress", "ask", "question", "approval", "decide", "result", "done")  # 설계 7.2
 RENDER_KEYS = {"header", "question", "context", "options", "multiSelect"}
 OPTION_KEYS = {"label", "description"}
 DESCRIPTION_MAX = 300  # 질문 줄과 같은 상한. 선택지 설명으로 context(4000자) 상한을 돌아가지 못하게 한다
-_REPLY_SUBJECT = re.compile(r"\s*reply\b", re.IGNORECASE)
 PARENT_DEPTH = 10  # require_main 이 따라가는 hc parent 단계 상한
 
 
@@ -210,7 +208,7 @@ def answer_of(p, oid: str) -> dict | None:
 
 def answer_strict(p, oid: str) -> dict | None:
     """answer_of 와 같으나 답 파일이 있는데 읽지 못하거나 JSON 객체가 아니면 bad_side_file 이다(손상을 "답 없음" 으로
-    보지 않는다). 일괄 승인 결정과 status 의 안내가 쓴다. answer_of 의 다른 호출자(wait 주석·ask·answer)는 그대로다."""
+    보지 않는다). 일괄 승인 결정과 status 의 안내가 쓴다. answer_of 의 다른 호출자(ask·answer)는 그대로다."""
     path, none = p.answers / f"{oid}.json", object()
     data = read_json_strict(path, none)
     if data is none:
@@ -220,28 +218,16 @@ def answer_strict(p, oid: str) -> dict | None:
     return data
 
 
-def _unsent(entry: dict, ans: dict | None) -> bool:
-    """question·approval 의 답을 남겼지만 코디네이터에게 보냈다는 기록(sent_at)이 없다."""
-    return entry.get("type") in ("question", "approval") and bool(ans) and not ans.get("sent_at")
-
-
 def view(p, entry: dict) -> dict:
-    ans = answer_of(p, entry["id"])
-    out = {**entry, "answered": ans is not None}
-    if _unsent(entry, ans):
-        out.update(unsent=True, answer=ans.get("answer"),
-                   hint=f"답을 남겼지만 코디네이터에게 보내지 못했다. `{SHIM} answer {entry['id']} \"<같은 답>\"` 으로 "
-                        "같은 답을 다시 보낸다")
-    return out
+    return {**entry, "answered": answer_of(p, entry["id"]) is not None}
 
 
 def _open(p, items: list[tuple[int, dict]], warnings: list[str]) -> list[tuple[int, dict]]:
     found = []
     for n, e in items:
-        if e["type"] not in ("ask", "question", "approval"):
+        if e["type"] not in ("ask", "question", "approval", "decide"):
             continue
-        ans = answer_of(p, e["id"])
-        if ans and not _unsent(e, ans):
+        if answer_of(p, e["id"]):  # 답 파일이 있으면 닫힌 것이다(설계 7.4·7.6)
             continue
         if e["type"] == "ask":
             try:
@@ -256,7 +242,7 @@ def _open(p, items: list[tuple[int, dict]], warnings: list[str]) -> list[tuple[i
 
 
 def open_questions(p, warnings: list | None = None) -> list[dict]:
-    """답이 없는 ask(묻는 태스크가 아직 working)와 답이 없거나 보내지 못한 question·approval(설계 7.6).
+    """답이 없는 ask(묻는 태스크가 아직 working)와 답 파일이 없는 question·approval·decide(설계 7.6).
 
     warnings 를 주면 읽지 못한 outbox 줄과 상태 파일 경고를 덧붙인다."""
     _, items, bad = _scan(p)
@@ -287,13 +273,6 @@ def _run(p) -> dict:
     return run
 
 
-def _run_id(p) -> str:
-    run_id = _run(p).get("run_id")
-    if not run_id:
-        raise HteamError("no_run", "코디네이터 Run 이 아직 없다", CONFLICT, "hteam up 으로 코디네이터를 띄운다")
-    return run_id
-
-
 def _terminal() -> str:
     term = os.environ.get("HC_TERMINAL_ID", "").strip()
     if not term:
@@ -302,7 +281,7 @@ def _terminal() -> str:
 
 
 def require_main(p) -> str:
-    """메인 터미널에서 불렀는지 확인한다(tell·answer·watch·reask 가 무엇이든 쓰기 전에 부른다). 실수 방지용이다(설계 8.3).
+    """메인 터미널에서 불렀는지 확인한다(answer·watch·reask·큐 명령이 무엇이든 쓰기 전에 부른다). 실수 방지용이다(설계 8.3).
 
     관제(HTEAM_ROLE·run.json 의 터미널·horch Run 소유자·hc 라벨 hteam.role)와 워커·리뷰어는 메인이 아니다. horch status 는
     launching·active Dispatch 만 알려 주므로, 끝난 Dispatch 의 터미널은 horch 가 워커 터미널을 띄울 때 붙이는 hc 라벨
@@ -358,64 +337,11 @@ def _hc_info(node: str, term: str) -> dict:
                          "다시 시도한다") from None
 
 
-def note_main(p) -> str:
-    """메인 터미널을 run.json 의 main_terminals 에 남긴다. wait 가 `[main]` 글의 발신자를 이것으로 확인한다.
-
-    목록은 줄이지 않는다: 지운 터미널의 아직 처리하지 않은 메시지가 메인이 아닌 것으로 보이면 안 된다(Run 동안 몇 개뿐이다).
-    run.json 을 읽지 못하면 덮어쓰지 않고 bad_run_file 이다."""
-    term = _terminal()
-    p.ensure_state()
-    with flock(p.state / "run.lock"):
-        run = _run(p)
-        mains = list(run.get("main_terminals") or [])
-        if term not in mains:
-            run["main_terminals"] = mains + [term]
-            write_json(p.run_file, run)
-    return term
-
-
-def _send(p, run_id: str, subject: str, body: str) -> dict:
-    """Run 메일함에 보낸다. 값은 `--옵션=값` 한 인자로 넘긴다(`-` 로 시작하는 글이 horch 옵션으로 읽히지 않게)."""
-    return Horch(p.horch_home).ok("send", f"--to=run:{run_id}", f"--subject={subject}", f"--body={body}")
-
-
-def tell(p, text: str) -> dict:
-    """메인 → 코디네이터(설계 7.1). 메인은 Run 소유자가 아니므로 외부 발신자다."""
-    require_main(p)
-    run_id = _run_id(p)
-    note_main(p)
-    first = (text.strip().splitlines() or [""])[0][:60]
-    if _REPLY_SUBJECT.match(first):
-        first = f"지시: {first}"  # 답 제목(`[main] reply <out-id>`)으로 읽히지 않게
-    out = _send(p, run_id, f"[main] {first}", text)
-    return {"message": out["message"], "wake": out.get("wake")}
-
-
-def notify(p, kind: str, body: str | None, json_text: str | None, confirm: bool = False) -> dict:
-    if confirm and kind != "question":
-        raise HteamError("usage", "--test-confirm 은 --type question 에만 쓴다", USAGE)
-    if kind in ("question", "approval"):
-        if json_text is None:
-            raise HteamError("usage", f"--type {kind} 는 --json - 로 질문(render)을 준다", USAGE)
-        fields = {"type": kind, "render": read_render(json_text, "질문" if kind == "question" else "승인"),
-                  "from": "coordinator"}
-        if confirm:  # 커밋된 HEAD 의 [test] 를 확정할 질문(설계 5.7)
-            fields.update(test_confirm(fields["render"], testgate.require_config(p)))
-    else:
-        if not body:
-            raise HteamError("usage", f"--type {kind} 는 --body 가 필요하다", USAGE)
-        fields = {"type": kind, "body": body, "from": "coordinator"}
-    entry = append(p, fields)
-    out = {"id": entry["id"], "type": kind}
-    if confirm:
-        out["test_digest"] = entry["test_digest"]
-    return out
-
-
 def _orphaned(p) -> bool:
-    run = _run(p)  # 읽지 못하면 bad_run_file(watch 가 그 오류로 끝난다)
-    term = run.get("drive_terminal")
-    return bool(term) and herdr.probe(term, run.get("drive_argv")) in ("exited", "lost")
+    """관제가 꺼졌다(설계 7.3): 살아 있지도, 멈추지도(hung), 띄우는 중이지도 않다. pid·heartbeat 로 본다(hc 를 부르지 않는다)."""
+    from . import drive  # drive 가 이 모듈을 쓴다
+    v = drive.view(p, _run(p))  # run.json 을 읽지 못하면 bad_run_file(watch 가 그 오류로 끝난다)
+    return not (v["alive"] or v["hung"] or v["starting"])
 
 
 def _lock_watch(p):
@@ -439,7 +365,7 @@ def _unlock_watch(p, fh) -> None:
 
 
 def watch(p) -> dict:
-    """2초마다 outbox 를 본다. 새 줄이 있으면 출력하고 끝난다. 코디네이터 터미널이 끝났으면 orphaned.
+    """2초마다 outbox 를 본다. 새 줄이 있으면 출력하고 끝난다. 관제가 꺼졌으면 orphaned(멈춤이면 끝내지 않는다).
 
     커서는 출력한 뒤(_after)에 옮긴다(적어도 한 번 전달). 단일 실행 잠금은 커서를 옮길 때까지 쥔다: 그 사이에 다른 watch 가
     떠서 같은 항목을 다시 주지 않게 한다. watch.pid 는 생사 확인(watch_alive)용 기록일 뿐이다."""
@@ -483,12 +409,13 @@ def watch_alive(p) -> bool:
     return procs.record_alive(read_json(p.watch_pid, None))
 
 
-def _link_answer(p, oid: str, text: str) -> bool:
-    """답 파일을 원자적으로 만든다(os.link). 이미 있으면 False."""
+def _link_answer(p, oid: str, text: str, decision: dict | None = None) -> bool:
+    """답 파일을 원자적으로 만든다(os.link). 이미 있으면 False. decision 은 일괄 승인의 결정(design-decide, 설계 7.4)."""
     p.ensure_state()
     path = p.answers / f"{oid}.json"
     tmp = p.answers / f".{oid}.{os.getpid()}.tmp"
-    tmp.write_text(json.dumps({"id": oid, "answer": text, "at": now()}, ensure_ascii=False), encoding="utf-8")
+    record = {"id": oid, "answer": text, **({"decision": decision} if decision is not None else {}), "at": now()}
+    tmp.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
     try:
         os.link(tmp, path)
         return True
@@ -518,17 +445,56 @@ def _record_confirm(p, entry: dict, text: str) -> bool:
     return True
 
 
+def _reply_failed(entry: dict, exc: HteamError) -> HteamError:
+    tid = entry.get("task") or "T-xxx"
+    why = f"{exc.code}: {exc.message}"[:300]
+    return HteamError("reply_failed", f"워커에게 답을 보내지 못했다({why}). 워커가 끝났으면 답을 지시로 넣어 hteam fix {tid} "
+                      f'--note "<답>", 아직 일하는 중이면 hteam scope {tid} "<답>" 로 전한다. 이 decide 는 닫았다', CONFLICT)
+
+
+def _answer_decide(p, entry: dict, text: str) -> dict:
+    """decide 는 답 파일로 닫는다(설계 7.4, 8.10). 워커 질문이면 답 파일을 쓰기 전에 요청 큐 reply 로 워커에게 보낸다:
+    관제가 꺼졌거나 멈췄으면 그 오류(답 파일 없음, 다시 답할 수 있다), 회신이 거부되면 닫고 reply_failed, 90초 안에 끝나지
+    않으면 닫고 queued."""
+    oid = entry["id"]
+    if answer_of(p, oid) is not None:
+        raise HteamError("already_answered", f"{oid} 에는 이미 답했다", CONFLICT)
+    if entry.get("kind") != "worker_question" and entry.get("message_id") is None:
+        if not _link_answer(p, oid, text):
+            raise HteamError("already_answered", f"{oid} 에는 이미 답했다", CONFLICT)
+        return {"id": oid, "type": "decide", "closed": True, "replied": False}
+    from . import queue  # queue 가 이 모듈을 쓴다
+    try:
+        res = queue.submit(p, "reply", {"message_id": entry.get("message_id"), "body": text, "task": entry.get("task")})
+    except HteamError as exc:
+        if exc.code in queue.SUBMIT_ERRORS:
+            raise
+        _link_answer(p, oid, text)
+        raise _reply_failed(entry, exc) from None
+    _link_answer(p, oid, text)
+    if res.get("status") == "queued":
+        return {"id": oid, "type": "decide", "closed": True, "replied": None, "status": "queued",
+                "request": res["request"]}
+    return {"id": oid, "type": "decide", "closed": True, "replied": True, "reply": res.get("message")}
+
+
 def answer(p, oid: str, text: str) -> dict:
     """메인의 답(설계 7.4). 메인 확인을 어떤 쓰기보다 먼저 한다.
 
-    question·approval 은 답 파일을 먼저 남기고 보낸 뒤 sent_at 을 적는다. 보내지 못하면 sent_at 이 없어 열린 질문에
-    unsent 로 남는다. 같은 답으로 다시 실행하면 다시 보낸다(적어도 한 번). 테스트 명령 확정 질문은 답을 쓰기 전에 확정
-    기록을 남긴다(_record_confirm, 기록 뒤 죽어 다시 부르면 같은 값을 다시 더한다)."""
+    ask 는 답 파일(두 번째 답은 exit 3). question 은 답 파일만 쓴다(Run 에 보내지 않는다. 같은 답이면 다시 성공). 테스트
+    명령 확정 질문은 답을 쓰기 전에 확정 기록을 남긴다(_record_confirm, 기록 뒤 죽어 다시 부르면 같은 값을 다시 더한다).
+    decide 는 _answer_decide. 일괄 승인(approval)은 design-decide 로 닫는다. 그 밖의 종류는 답하지 않는다."""
     require_main(p)
     entry = _entry(p, oid)
-    if entry["type"] not in ("ask", "question", "approval"):
-        raise HteamError("not_a_question", f"{oid} 는 {entry['type']} 라 답할 수 없다", USAGE)
-    if entry["type"] == "ask":
+    kind = entry["type"]
+    if kind == "approval":
+        raise HteamError("use_design_decide", f"{oid} 은 일괄 승인 질문이다. 태스크별 결정을 "
+                         f"`hteam design-decide {oid} --json -` 으로 넘긴다", USAGE)
+    if kind not in ("ask", "question", "decide"):
+        raise HteamError("not_answerable", f"{oid} 은 {kind} 항목이라 답하지 않는다", USAGE)
+    if kind == "decide":
+        return _answer_decide(p, entry, text)
+    if kind == "ask":
         if answer_of(p, oid) is not None:  # 이미 답한 질문에 확정 기록을 남기지 않는다
             raise HteamError("already_answered", f"{oid} 에는 이미 답했다", CONFLICT)
         confirmed = _record_confirm(p, entry, text)
@@ -538,15 +504,10 @@ def answer(p, oid: str, text: str) -> dict:
     previous = answer_of(p, oid)
     if previous is not None and previous.get("answer") != text:
         raise HteamError("already_answered", f"{oid} 에는 이미 다른 답을 했다", CONFLICT)
-    run_id = _run_id(p)
-    note_main(p)
     confirmed = _record_confirm(p, entry, text)
     if not _link_answer(p, oid, text) and (answer_of(p, oid) or {}).get("answer") != text:
         raise HteamError("already_answered", f"{oid} 에는 이미 다른 답을 했다", CONFLICT)
-    out = _send(p, run_id, f"[main] reply {oid}", text)  # 다시 실행하면 같은 답을 다시 보낸다(적어도 한 번)
-    write_json(p.answers / f"{oid}.json", {**(answer_of(p, oid) or {"id": oid, "answer": text}), "sent_at": now(),
-                                          "message": out["message"]})
-    return {"id": oid, "type": entry["type"], "sent": True, "message": out["message"], "test_confirmed": confirmed}
+    return {"id": oid, "type": "question", "test_confirmed": confirmed}
 
 
 def applied_ids(p) -> dict:
@@ -581,31 +542,14 @@ def reask(p) -> dict:
     return out
 
 
-def _cmd_tell(args) -> dict:
-    return tell(find_project(args.root), args.text)
-
-
-def _cmd_notify(args) -> dict:
-    p = find_project(args.root)
-    roles.require_drive(p)
-    text = sys.stdin.read() if args.json == "-" else args.json
-    return notify(p, args.type, args.body, text, args.test_confirm)
-
-
 def _cmd_watch(args) -> dict:
     p = find_project(args.root)
-    require_main(p)  # 코디네이터가 wait 와 헷갈려 부르면 잠금·커서를 건드리기 전에 거부한다
+    require_main(p)  # 관제·워커가 부르면 잠금·커서를 건드리기 전에 거부한다
     return watch(p)
 
 
 def _cmd_answer(args) -> dict:
     return answer(find_project(args.root), args.id, args.text)
-
-
-def _cmd_applied(args) -> dict:
-    p = find_project(args.root)
-    roles.require_drive(p)
-    return mark_applied(p, args.id)
 
 
 def _cmd_reask(args) -> dict:
@@ -615,22 +559,9 @@ def _cmd_reask(args) -> dict:
 
 
 def register(sub) -> None:
-    s = sub.add_parser("tell")
-    s.add_argument("text")
-    s.set_defaults(func=_cmd_tell)
-    s = sub.add_parser("notify")
-    s.add_argument("--type", required=True, choices=TYPES)
-    body = s.add_mutually_exclusive_group(required=True)
-    body.add_argument("--body")
-    body.add_argument("--json", help="'-' 면 표준 입력")
-    s.add_argument("--test-confirm", action="store_true", help="커밋된 [test] 의 확정 질문(question 만)")
-    s.set_defaults(func=_cmd_notify)
     sub.add_parser("watch").set_defaults(func=_cmd_watch)
     s = sub.add_parser("answer")
     s.add_argument("id")
     s.add_argument("text")
     s.set_defaults(func=_cmd_answer)
-    s = sub.add_parser("applied")
-    s.add_argument("id")
-    s.set_defaults(func=_cmd_applied)
     sub.add_parser("reask").set_defaults(func=_cmd_reask)

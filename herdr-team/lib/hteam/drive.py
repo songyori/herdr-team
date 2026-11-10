@@ -1,9 +1,9 @@
 """관제 `hteam drive`(설계 8장, 6단계): 관제 탭의 셸 터미널에서 도는 프로그램이 horch Run 을 갖고 정해진 절차를 돌린다.
 판단이 필요한 일은 outbox decide 로 메인에 올린다(8.10).
 
-이 모듈은 뼈대다(Task 4): 시작 순서(8.2 의 1–7: 실행 거부, drive.pid 단일 인스턴스, Run 연결, 탭 이름, 시작 재확인),
-heartbeat 와 생존 판정(liveness·view), 틱 순서와 단계마다 격리(8.5), decide 쓰기(8.10), drive.log(8.11). 틱 단계의 몸통
-(메시지 처리 8.6, 요청 큐 7.1, 자식 8.8, 리셋 5.9.7, 보기 6.5, 재확인 8.7)은 뒤 단계가 채운다.
+시작 순서(8.2 의 1–7: 실행 거부, drive.pid 단일 인스턴스, Run 연결, 탭 이름, 시작 재확인), heartbeat 와 생존 판정
+(liveness·view), 틱 순서와 단계마다 격리(8.5), decide 쓰기(8.10), drive.log(8.11), 요청 큐(7.1, queue.run_pending)와
+그 틱의 start-ready. 나머지 틱 단계의 몸통(메시지 처리 8.6, 자식 8.8, 리셋 5.9.7, 보기 6.5, 재확인 8.7)은 뒤 단계가 채운다.
 """
 from __future__ import annotations
 
@@ -106,6 +106,7 @@ class Drive:
         self.failing = False  # 메일 확인이 실패 중이다(틱 사이를 IDLE_FAIL_S 로 늘린다)
         self._ack: int | None = None  # 다음 check 에 줄 지난 delivery
         self._raised: set[tuple[str, str]] = set()  # 올린 격리 실패(키, 문구). 이 프로세스 안의 기억
+        self._failed: set[tuple[str | None, str]] = set()  # 올린 관제 절차 실패(태스크, 문구). 이 프로세스 안의 기억
         self._horch: Horch | None = None
 
     def horch(self) -> Horch:
@@ -212,12 +213,53 @@ class Drive:
     def handle(self, message: dict) -> None:
         """메시지 처리(설계 8.6). Task 6 이 채운다."""
 
-    def run_queue(self) -> list:
-        """요청 큐 실행(설계 7.1). 실행한 요청 목록. Task 5 가 채운다."""
-        return []
+    def procedure_failed(self, task: str | None, exc: HteamError, *, note: str | None = None) -> str | None:
+        """관제가 정한 절차(accept·fix·start 등)가 hteam 오류로 거부됐다(설계 8.5): decide escalation
+        `관제 절차 실패: <code>: <message>[ (아직 전하지 못한 지시: <note>)]` 를 (태스크, 글)마다 이 프로세스 안에서 한 번 올린다.
+        올렸으면 out id, 이미 올렸으면 None."""
+        text = f"관제 절차 실패: {exc.code}: {exc.message}" + (f" (아직 전하지 못한 지시: {note})" if note else "")
+        if (task, text) in self._failed:
+            return None
+        oid = self.decide("escalation", task, text)
+        self._failed.add((task, text))
+        return oid
 
-    def start_ready(self) -> None:
-        """요청을 실행한 틱의 start-ready(설계 8.5 의 4). Task 5 가 채운다."""
+    def run_queue(self) -> list:
+        """요청 큐 실행(설계 7.1, 틱 3). 이번에 실행(또는 기록으로 복구)한 요청 id(번호순)."""
+        from . import queue  # queue 가 이 모듈을 쓴다
+        return queue.run_pending(self.p, self)
+
+    def start_ready(self) -> dict | None:
+        """요청을 실행한 틱의 start-ready(설계 8.5 의 4). 띄우지 못한 태스크는 launch_failed 면 넘기고(재확인의 launch_failed
+        decide 가 한 번 올린다, 8.7) 아니면 관제 절차 실패로 올린다. 그 밖의 오류는 올린다(격리가 받는다)."""
+        from . import tasks  # tasks 가 queue 를 거쳐 이 모듈을 쓴다
+        try:
+            return tasks.start_ready(self.p)
+        except HteamError as exc:
+            if exc.code != "start_failed":
+                raise
+            for item in exc.data.get("failed") or []:
+                tid = item.get("task")
+                try:
+                    st = state.load(self.p, tid)
+                except HteamError:
+                    st = None
+                if st is not None and st.get("status") == "launch_failed":
+                    continue
+                err = item.get("error") or {}
+                self.procedure_failed(tid, HteamError(err.get("code") or "failed", err.get("message") or "",
+                                                      hint=err.get("hint") or ""))
+            return exc.data
+
+    def spawn_review(self, tid: str, *, retry: bool, expect_round: int | None = None,
+                     request: str | None = None) -> dict:
+        """관제가 리뷰를 돌린다(설계 8.8). 지금은 바로 부른다. Task 6 이 자식 프로세스로 바꾼다."""
+        from . import review  # review 가 queue 를 거쳐 이 모듈을 쓴다
+        return review.review(self.p, tid, retry=retry, expect_round=expect_round, request=request)
+
+    def confirm_test(self, force: bool = False, request: str | None = None) -> dict:
+        """`[test]` 확정 질문 올리기(설계 8.4, test-confirm 7.1). Task 10 이 채운다."""
+        return {"asked": None}
 
     def reap_jobs(self) -> None:
         """끝난 자식 처리(설계 8.8, 자식마다 job:<키> 격리). Task 6 이 채운다."""

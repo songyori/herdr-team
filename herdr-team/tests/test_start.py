@@ -97,8 +97,8 @@ class StartTest(StartCase):
         self.assertEqual((code, out["error"]["code"]), (3, "task_closed"))
         code, out = self.hteam("start", "T-009")
         self.assertEqual((code, out["error"]["code"]), (2, "unknown_task"))
-        code, out = self.hteam("start", "T-002", as_="main")
-        self.assertEqual(code, 5)
+        code, out = self.hteam("start", "T-002", as_="main", env={"HTEAM_QUEUE_WAIT_S": "0.3"})
+        self.assertEqual((code, out.get("status")), (0, "queued"), out)  # 메인은 요청 큐로 관제에 넘긴다(설계 7.1)
 
     def test_owns_lock_and_single_planner(self):
         self.make_task("T-001")

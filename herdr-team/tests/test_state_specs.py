@@ -281,8 +281,8 @@ class TaskNewTest(TeamCase):
     def test_task_new_errors(self):
         code, out = self.hteam("task", "new", "--role", "nope", "--title", "x")
         self.assertEqual((code, out["error"]["code"]), (2, "unknown_role"))
-        code, out = self.hteam("task", "new", "--role", "developer", "--title", "x", as_="main")
-        self.assertEqual((code, out["error"]["code"]), (5, "drive_only"))
+        code, out = self.hteam("task", "new", "--role", "developer", "--title", "x", as_=None)  # Herdr 밖·워커는 아니다
+        self.assertEqual((code, out["error"]["code"]), (5, "no_terminal"))
         (self.proj / ".herdr-team" / "config.toml").write_text("max_parallel = 0\n")
         code, out = self.hteam("task", "new", "--role", "developer", "--title", "x")
         self.assertEqual((code, out["error"]["code"]), (2, "bad_config"))

@@ -97,7 +97,7 @@ class DesignReviewTest(ApprovalCase):
         self.assertEqual((out["id"], out["batch"], out["resumed"]), ("out-0001", "dr-0001", False))
         self.assertEqual(out["tasks"], [{"task": "T-001", "round": 1}, {"task": "T-002", "round": 1}])
         [entry] = self.outbox_items()
-        self.assertEqual((entry["type"], entry["from"], entry["batch"]), ("approval", "coordinator", "dr-0001"))
+        self.assertEqual((entry["type"], entry["from"], entry["batch"]), ("approval", "drive", "dr-0001"))
         render = entry["render"]
         self.assertEqual([o["label"] for o in render["options"]], ["모두 승인 (추천)", "수정 요청"])
         self.assertIn("- T-001 r1 [디자인] 로그인 화면: https://claude.ai/artifact/abc-1", render["context"])
@@ -407,11 +407,12 @@ class DecisionCase(ApprovalCase):
                                         "sent_at": "2026-11-06T10:00:00Z"}, ensure_ascii=False), encoding="utf-8")
 
     def decide(self, oid, fix=None, answer=True, **kw):
-        """design-review --decide. fix 가 None 이면 입력 없이(기록대로 다시 한다). 입력을 주면 먼저 답이 온 것으로 둔다
-        (answer=False 면 두지 않는다. 결정은 답이 온 질문만 새로 계산한다)."""
+        """관제 쪽 design-decide(설계 7.4): 관제 환경에서는 결정을 바로 한다(0.3.0 의 design-review --decide). fix 가 None 이면
+        입력 없이(기록대로 다시 하거나 답 파일의 결정으로 한다). 입력을 주면 먼저 답이 온 것으로 둔다(answer=False 면 두지
+        않는다. 결정은 답이 온 질문만 새로 계산한다)."""
         if fix is not None and answer:
             self.answered(oid, "모두 승인 (추천)" if not fix else "수정 요청")
-        args = ["design-review", "--decide", oid] + ([] if fix is None else ["--json", "-"])
+        args = ["design-decide", oid] + ([] if fix is None else ["--json", "-"])
         stdin = None if fix is None else json.dumps({"fix": fix}, ensure_ascii=False)
         return self.hteam(*args, stdin=stdin, **kw)
 
@@ -424,12 +425,7 @@ class ApprovalReplyTest(DecisionCase):
         self.task("T-001", "awaiting_user")
         self.assertEqual(self.review()[0], 0)
         (self.state_dir / "tasks" / "T-001.json").write_text("{", encoding="utf-8")
-        view = approval.reply_view(self.p, "out-0001", "모두 승인 (추천)")
-        self.assertEqual((view["unknown"], view["tasks"][0]["pending"], view["decision"]), (["T-001"], False, None))
-        hint = approval.reply_hint(view, "out-0001")
-        self.assertIn("결정하지 않는다", hint)
-        self.assertIsNone(approval.reply_view(self.p, "out-0009", "x"))  # 일괄 승인 질문이 아니다
-        code, out = self.decide("out-0001", {})  # 결정도 상태를 읽지 못하면 하지 않는다
+        code, out = self.decide("out-0001", {})  # 결정은 상태를 읽지 못하면 하지 않는다
         self.assertEqual((code, out["error"]["code"]), (1, "bad_state_file"), out)
         self.assertNotIn("decision", self.record()["batches"][0])
 
@@ -507,7 +503,8 @@ class ApprovalDecisionTest(DecisionCase):
         self.assertEqual(code, 137)
         self.assertEqual(self.rounds("T-001", "T-002"), [("T-001", "awaiting_user", 1), ("T-002", "awaiting_user", 1)])
         tasks_ = {t["id"]: t for t in self.hteam("status")[1]["tasks"]}
-        self.assertEqual(tasks_["T-002"]["next"], [H, "design-review", "--decide", "out-0001"])  # 일반 fix 를 권하지 않는다
+        self.assertIsNone(tasks_["T-002"]["next"])  # 일반 fix 를 권하지 않는다. 결정을 잇는 것은 관제다(설계 8.3·8.7)
+        self.assertIn("일괄 승인 결정 out-0001 이 끝나지 않았다. 관제가 재확인마다 기록대로 마저 한다", tasks_["T-002"]["hint"])
         code, _ = self.decide("out-0001", env={"HTEAM_TEST_DIE_AT": "decision_after_fix"})  # 첫 fix 뒤 죽었다
         self.assertEqual(code, 137)
         self.assertEqual(self.rounds("T-001", "T-002"), [("T-001", "launch_failed", 2), ("T-002", "awaiting_user", 1)])
@@ -580,13 +577,10 @@ class ApprovalDecisionTest(DecisionCase):
         self.assertEqual(code, 137)
         self.assertEqual(self.task_state("T-001")["status"], "done")
         self.assertFalse((self.state_dir / "applied.json").exists())
-        view = approval.reply_view(self.p, "out-0001", "모두 승인 (추천)")
-        self.assertEqual((view["decision"], view["applied"]), ("done", False))
-        self.assertIn("--decide out-0001", approval.reply_hint(view, "out-0001"))  # ack 만 하라고 하지 않는다
+        with self.in_drive():
+            self.assertEqual(approval.pending_answers(self.p), [])  # 결정은 끝났다(applied 만 남았다)
         self.assertEqual(self.decide("out-0001")[0], 0)
         self.assertIn("out-0001", json.loads((self.state_dir / "applied.json").read_text(encoding="utf-8")))
-        view = approval.reply_view(self.p, "out-0001", "모두 승인 (추천)")
-        self.assertIn("ack 만", approval.reply_hint(view, "out-0001"))
 
     def test_unfinished_decision_comes_first(self):
         self.task("T-001", "awaiting_user")
@@ -611,8 +605,8 @@ class ApprovalDecisionTest(DecisionCase):
         self.assertEqual((code, out["error"]["code"]), (2, "usage"), out)
         code, out = self.decide("out-0009", {})
         self.assertEqual((code, out["error"]["code"]), (2, "unknown_batch"), out)
-        code, out = self.decide("out-0001", {}, as_="main")
-        self.assertEqual((code, out["error"]["code"]), (5, "drive_only"), out)
+        code, out = self.decide("out-0001", {}, as_="main")  # 메인은 {"answer", "fix"} 를 넘긴다(설계 7.4)
+        self.assertEqual((code, out["error"]["code"]), (2, "bad_decision"), out)
         self.assertNotIn("decision", self.record()["batches"][0])
 
     def test_corrupt_applied_record_stops_before_deciding(self):
@@ -790,7 +784,8 @@ class ApprovalFollowupTest(DecisionCase):
         with state.edit(self.p, "T-002") as st:
             st["rounds"][-1]["work"]["canceled"] = True
         task = {t["id"]: t for t in self.hteam("status")[1]["tasks"]}["T-002"]
-        self.assertEqual(task["next"], [H, "design-review", "--decide", "out-0001"])
+        self.assertIsNone(task["next"])
+        self.assertIn("관제가 재확인마다 기록대로 마저 한다", task["hint"])
 
     def test_decision_with_bad_skipped_is_a_bad_record(self):
         self.task("T-001", "awaiting_user")
@@ -1390,9 +1385,9 @@ class ApprovalCloseTest(DecisionCase):
         self.assertIn("out-0001 의 사용자 답을 기다린다", hint)
         self.answered("out-0001", "수정 요청")
         task = self.statuses()["T-001"]
-        self.assertIsNone(task["next"])  # 답 해석은 코디네이터가 한다
+        self.assertIsNone(task["next"])  # 답 해석은 메인이 한다
         self.assertIn("out-0001 의 답이 와 있다", task["hint"])
-        self.assertIn("design-review --decide out-0001 --json -", task["hint"])
+        self.assertIn("design-decide out-0001 --json -", task["hint"])
 
     def test_awaiting_hint_without_approval_role(self):
         # 최종 리뷰 M2: 승인 직무가 아니면 일괄 승인 기록을 탓하지 않는다
@@ -1444,15 +1439,12 @@ class ApprovalCloseTest(DecisionCase):
 
 
 class ApprovalFlowTest(DecisionCase):
-    """실제 워커로: accept → awaiting_user → design-review → 메인 답 → wait 주석 → 결정 → start-ready(설계 11.4)."""
+    """실제 워커로: accept → awaiting_user → design-review → 메인 design-decide(답 파일 + 요청 큐) → 관제의 결정 실행 →
+    start-ready(설계 7.4, 11.4)."""
 
     def setUp(self):
         super().setUp()
-        self.env.update({"HTEAM_WAIT_CHUNK": "0.3", "HTEAM_NO_STATUS_GRACE": "60"})
-
-    def decide(self, oid, fix=None, answer=False, **kw):
-        """흐름 테스트는 실제 `hteam answer` 가 답 파일을 남긴다. helper 가 대신 두지 않는다(그 경로의 회귀를 숨긴다)."""
-        return super().decide(oid, fix, answer=answer, **kw)
+        self.env["HTEAM_QUEUE_POLL_S"] = "0.05"
 
     def start_design(self, tid, screen, depends=None):
         self.write_spec(tid, "designer", title=f"{screen} 화면", owns=f"docs/design/screens/{screen}/**",
@@ -1479,17 +1471,24 @@ class ApprovalFlowTest(DecisionCase):
         self.assertEqual(code, 0, out)
         return {t["id"]: t for t in out["tasks"]}
 
-    def wait_mains(self):
-        """메인 답이 올 때까지 wait 하고 묶음마다 ack 한다. 메인 답이 든 묶음의 메인 메시지 hteam 주석들을 돌려준다."""
-        for _ in range(10):
-            code, out = self.hteam("wait", "--timeout", "5")
-            self.assertEqual(code, 0, out)
-            if out.get("delivery") is not None:
-                self.assertEqual(self.hteam("wait", "--ack", str(out["delivery"]), "--timeout", "0")[0], 0)
-            found = [m["hteam"] for m in out["messages"] if m["hteam"].get("kind") == "main"]
-            if found:
-                return found
-        self.fail("메인 답이 오지 않았다")
+    def main_decide(self, oid, answer, fix):
+        """메인이 결정을 넘기고(요청 큐) 관제가 그 요청을 실행한다. 메인의 (exit, 출력). 관제의 큐 실행은 따로 띄운
+        프로세스에서 한다(이 시험 프로세스가 실행자로 남으면 start-ready 가 살아 있는 실행자로 본다)."""
+        import subprocess
+        import sys
+        runner = ("import sys; sys.path.insert(0, sys.argv[1]); from hteam import drive; from hteam.paths import Project; "
+                  "drive.Drive(Project(sys.argv[2])).run_queue()")
+        proc = self.hteam_bg("design-decide", oid, "--json", "-", as_="main", env={"HTEAM_QUEUE_WAIT_S": "30"},
+                             stdin=json.dumps({"answer": answer, "fix": fix}, ensure_ascii=False))
+        queue = self.state_dir / "drive" / "queue"
+        deadline = time.monotonic() + 20
+        while not (queue.exists() and any(f.name.endswith(".json") and ".result" not in f.name for f in queue.iterdir())):
+            self.assertIsNone(proc.poll(), "메인이 큐에 넣기 전에 끝났다")
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.05)
+        subprocess.run([sys.executable, "-c", runner, str(ROOT / "lib"), str(self.proj)], env=self._env("drive", None, None),
+                       capture_output=True, text=True, timeout=60, check=True)
+        return self.finish(proc)
 
     def test_approve_all_then_dependent_development_starts(self):
         self.start_design("T-001", "login")
@@ -1505,32 +1504,27 @@ class ApprovalFlowTest(DecisionCase):
         self.assertIsNone(task["next"])
         self.assertIn("out-0001", task["hint"])
         self.assertIn("https://claude.ai/artifact/login-r1", self.outbox_items()[0]["render"]["context"])
-        self.assertEqual(self.hteam("answer", "out-0001", "모두 승인 (추천)", as_="main")[0], 0)
-        [info] = self.wait_mains()
-        self.assertEqual((info["reply_to"], info["duplicate"]), ("out-0001", False))
-        self.assertEqual(info["design_review"], {"batch": "dr-0001", "approve_all": True, "decision": None,
-                                                 "applied": False, "unknown": [], "tasks": [{"task": "T-001", "round": 1,
-                                                                           "status": "awaiting_user", "round_now": 1,
-                                                                           "pending": True}]})
-        self.assertIn("--decide out-0001", info["hint"])
-        code, out = self.decide("out-0001", {})
+        code, out = self.hteam("answer", "out-0001", "모두 승인 (추천)", as_="main")
+        self.assertEqual((code, out["error"]["code"]), (2, "use_design_decide"), out)
+        code, out = self.main_decide("out-0001", "모두 승인 (추천)", {})
         self.assertEqual((code, out["accepted"], self.task_state("T-001")["status"]), (0, ["T-001"], "done"), out)
+        answer = json.loads((self.state_dir / "answers" / "out-0001.json").read_text(encoding="utf-8"))
+        self.assertEqual((answer["answer"], answer["decision"]), ("모두 승인 (추천)", {"fix": {}}))
+        self.assertEqual(self.record()["batches"][0]["decision"]["request"], "q-000001")
         code, out = self.hteam("start-ready")
         self.assertEqual([s["task"] for s in out.get("started", [])], ["T-002"], out)
 
-    def test_same_answer_twice_in_one_delivery_is_handled_once(self):
+    def test_same_decision_twice_opens_one_round(self):
         self.start_design("T-001", "login")
         self.finish_design("T-001", "login")
         self.assertEqual(self.hteam("design-review")[0], 0)
-        for _ in range(2):  # 메인이 답을 다시 보냈다(보내기가 끊긴 줄 알았다)
-            self.assertEqual(self.hteam("answer", "out-0001", "수정 요청: 버튼을 크게", as_="main")[0], 0)
-        first, second = self.wait_mains()
-        self.assertEqual((first["duplicate"], second["duplicate"]), (False, True))
-        self.assertIn("design_review", first)
-        self.assertNotIn("design_review", second)
-        for _ in range(2):  # 두 번 처리해도 라운드는 하나만 열린다
-            self.assertEqual(self.decide("out-0001", {"T-001": "버튼을 크게"})[0], 0)
+        for _ in range(2):  # 메인이 같은 결정을 다시 넘겼다(넘기기가 끊긴 줄 알았다)
+            code, out = self.main_decide("out-0001", "수정 요청", {"T-001": "버튼을 크게"})
+            self.assertEqual(code, 0, out)
         self.assertEqual(self.rounds("T-001"), [("T-001", "launch_failed", 2)])
+        code, out = self.hteam("design-decide", "out-0001", "--json", "-", as_="main",
+                               stdin=json.dumps({"answer": "수정 요청", "fix": {"T-001": "다른 요청"}}, ensure_ascii=False))
+        self.assertEqual((code, out["error"]["code"]), (3, "already_answered"), out)
         code, out = self.hteam("fix", "T-001", "--round", "1", "--note=버튼을 크게")
         self.assertEqual((code, out["error"]["code"], out.get("round")), (3, "round_changed", 2), out)
 
@@ -1545,10 +1539,8 @@ class ApprovalFlowTest(DecisionCase):
         code, out = self.hteam("design-review")
         self.assertEqual((code, out.get("tasks")), (0, [{"task": "T-001", "round": 1}, {"task": "T-002", "round": 1}]),
                          out)
-        self.assertEqual(self.hteam("answer", "out-0001", "수정 요청: T-001 버튼, T-002 글꼴", as_="main")[0], 0)
-        [info] = self.wait_mains()
-        self.assertFalse(info["design_review"]["approve_all"])
-        code, out = self.decide("out-0001", {"T-001": "버튼을 더 크게", "T-002": "글꼴을 바꾼다"})
+        code, out = self.main_decide("out-0001", "수정 요청: T-001 버튼, T-002 글꼴",
+                                     {"T-001": "버튼을 더 크게", "T-002": "글꼴을 바꾼다"})
         self.assertEqual((code, [f["task"] for f in out["fixed"]]), (0, ["T-001", "T-002"]), out)
         self.assertTrue(self.task_state("T-001")["rounds"][1]["from_user"])
         first = (self.state_dir / "tasks/T-001/r2-work.md").read_text(encoding="utf-8")
@@ -1581,14 +1573,82 @@ class ApprovalFlowTest(DecisionCase):
         task = {t["id"]: t for t in out["tasks"]}["T-001"]
         self.assertIsNone(task["next"])
 
-    def test_unreadable_record_hint_does_not_say_applied(self):
+    def test_unreadable_record_stops_the_main_decision(self):
         self.task("T-001", "awaiting_user")
         self.assertEqual(self.review()[0], 0)
-        self.assertEqual(self.hteam("answer", "out-0001", "모두 승인 (추천)", as_="main")[0], 0)
         (self.state_dir / "design-review.json").write_text("{broken", encoding="utf-8")
-        [info] = self.wait_mains()
-        self.assertIn("warning", info)
-        self.assertNotIn(f"{H} applied", info["hint"])  # 일괄 승인 답인지 모르면 손으로 applied 하라고 하지 않는다
+        code, out = self.hteam("design-decide", "out-0001", "--json", "-", as_="main",
+                               stdin=json.dumps({"answer": "모두 승인 (추천)", "fix": {}}, ensure_ascii=False))
+        self.assertEqual((code, out["error"]["code"]), (1, "bad_side_file"), out)
+        self.assertFalse((self.state_dir / "answers" / "out-0001.json").exists())
+        self.assertFalse((self.state_dir / "drive" / "queue").exists())
+
+
+class DesignDecideTest(DecisionCase):
+    """메인의 `hteam design-decide <id> --json -`(설계 7.4): 검사 → 답과 결정을 한 답 파일에 → 요청 큐. 큐 제출이
+    거부돼도 결정은 답 파일에 남고 관제의 재확인이 실행한다(8.7 의 7)."""
+
+    def main(self, oid, obj, wait="0.3"):
+        text = obj if isinstance(obj, str) else json.dumps(obj, ensure_ascii=False)
+        return self.hteam("design-decide", oid, "--json", "-", as_="main", stdin=text, env={"HTEAM_QUEUE_WAIT_S": wait})
+
+    def answer_file(self, oid="out-0001"):
+        path = self.state_dir / "answers" / f"{oid}.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+    def test_checks_come_before_anything(self):
+        self.task("T-001", "awaiting_user")
+        self.assertEqual(self.review()[1]["id"], "out-0001")
+        outbox.append(self.p, {"type": "progress", "from": "drive", "body": "진행"})  # out-0002
+        cases = [("out-0002", {"answer": "x", "fix": {}}, (2, "not_approval")),
+                 ("out-0099", {"answer": "x", "fix": {}}, (2, "unknown_question")),
+                 ("out-0001", "{", (2, "bad_decision")),
+                 ("out-0001", {"fix": {}}, (2, "bad_decision")),
+                 ("out-0001", {"answer": " ", "fix": {}}, (2, "empty_answer")),
+                 ("out-0001", {"answer": "수정 요청", "fix": {"T-009": "x"}}, (2, "not_asked")),
+                 ("out-0001", {"answer": "수정 요청", "fix": {"T-001": " "}}, (2, "empty_request"))]
+        for oid, obj, want in cases:
+            with self.subTest(obj=obj):
+                code, out = self.main(oid, obj)
+                self.assertEqual((code, out["error"]["code"]), want, out)
+        code, out = self.main("out-0001", {"answer": "수정 요청", "fix": {"T-009": "x", "T-008": "y"}})
+        self.assertEqual(out["error"]["message"], "묻지 않은 태스크: T-008, T-009")
+        code, out = self.hteam("design-decide", "out-0001", as_="main")
+        self.assertEqual((code, out["error"]["code"]), (2, "usage"), out)  # 메인은 --json 이 있어야 한다
+        self.assertIsNone(self.answer_file())
+        self.assertFalse((self.state_dir / "drive" / "queue").exists())
+
+    def test_answer_file_survives_drive_down_and_is_executed_later(self):
+        self.task("T-001", "awaiting_user")
+        self.review()
+        (self.state_dir / "drive" / "drive.pid").unlink()
+        code, out = self.main("out-0001", {"answer": "수정 요청: 버튼", "fix": {"T-001": " 버튼을 크게 "}})
+        self.assertEqual((code, out["error"]["code"]), (1, "drive_down"), out)
+        self.assertIn("관제가 살아나면 이어 한다", out["error"]["hint"])
+        ans = self.answer_file()
+        self.assertEqual((ans["id"], ans["answer"], ans["decision"]),
+                         ("out-0001", "수정 요청: 버튼", {"fix": {"T-001": "버튼을 크게"}}))
+        self.assertNotIn("decision", self.record()["batches"][0])
+        # 같은 답·결정은 그대로 두고 다시 넘긴다. 다른 결정은 거부한다
+        code, out = self.main("out-0001", {"answer": "수정 요청: 버튼", "fix": {"T-001": "버튼을 크게"}})
+        self.assertEqual((code, out["error"]["code"]), (1, "drive_down"), out)
+        code, out = self.main("out-0001", {"answer": "모두 승인 (추천)", "fix": {}})
+        self.assertEqual((code, out["error"]["code"]), (3, "already_answered"), out)
+        self.assertEqual(outbox.open_questions(self.p), [])  # 질문은 답한 것으로 닫혔다
+        with self.in_drive():  # 다시 뜬 관제의 재확인이 답 파일에만 있는 결정을 실행한다(설계 8.7 의 7)
+            self.assertEqual(approval.pending_answers(self.p), ["out-0001"])
+            res = approval.decide(self.p, "out-0001", None)
+            self.assertEqual(approval.pending_answers(self.p), [])
+        self.assertEqual([f["task"] for f in res["fixed"]], ["T-001"])
+        self.assertEqual(self.rounds("T-001"), [("T-001", "launch_failed", 2)])
+
+    def test_slow_drive_returns_queued(self):
+        self.task("T-001", "awaiting_user")
+        self.review()
+        code, out = self.main("out-0001", {"answer": "모두 승인 (추천)", "fix": {}})
+        self.assertEqual((code, out["status"], out["request"]), (0, "queued", "q-000001"), out)
+        req = json.loads((self.state_dir / "drive" / "queue" / "000001.json").read_text(encoding="utf-8"))
+        self.assertEqual((req["command"], req["args"]), ("design-decide", {"id": "out-0001"}))
 
 
 class ApprovalDocsTest(unittest.TestCase):

@@ -50,7 +50,8 @@ class HarnessTest(TeamCase):
 
     def test_background_hteam_is_reaped(self):
         self.init_project()
-        proc = self.hteam_bg("wait", "--timeout", "30")
+        self.setup_run()
+        proc = self.hteam_bg("watch", as_="main")  # outbox 가 비어 기다린다
         self._reap(proc)
         self.assertIsNotNone(proc.returncode)  # 죽였고 거뒀다
 

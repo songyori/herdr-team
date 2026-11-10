@@ -29,6 +29,7 @@ COMMAND_MODULES: tuple[str, ...] = (
     "testgate",
     "followups",
     "drive",
+    "queue",
 )
 
 

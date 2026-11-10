@@ -340,7 +340,7 @@ def _read_run(p) -> dict:
 def _run_update(p, fn) -> dict:
     """run.json 을 잠금(state/run.lock) 안에서 읽고 fn 으로 바꿔 쓴다. fn 이 예외를 내면 쓰지 않는다.
 
-    run.lock 은 다른 hteam 잠금 안에서 잡지 않는다(잡는 곳: setup 의 up, drive 의 Run 연결, outbox.note_main. 셋 다 안에서
+    run.lock 은 다른 hteam 잠금 안에서 잡지 않는다(잡는 곳: setup 의 up, drive 의 Run 연결. 둘 다 안에서
     다른 hteam 잠금을 잡지 않는다)."""
     p.ensure_state()
     with flock(p.run_lock):

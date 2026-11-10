@@ -1,6 +1,7 @@
-"""메인 연결(설계 7장): render 검사, notify·watch·answer·applied·reask·tell, ask-user."""
+"""메인 연결(설계 7장): render 검사, outbox·watch·answer·reask, decide 닫기와 워커 회신, ask-user, 없앤 명령."""
 import json
 import os
+import threading
 import time
 import unittest
 from unittest import mock
@@ -52,6 +53,8 @@ class RenderTest(unittest.TestCase):
         self.assertIn("모르는 필드: extra", self.errors(render(extra=1)))
 
 
+
+
 class LinkCase(TeamCase):
     def setUp(self):
         super().setUp()
@@ -59,36 +62,44 @@ class LinkCase(TeamCase):
         self.run_id = self.setup_run()
         self.p = Project(self.proj)
         self.env["HTEAM_ORPHAN_CHECK"] = "0.1"
+        self.env["HTEAM_QUEUE_POLL_S"] = "0.05"
 
-    def notify_q(self, **kw):
-        code, out = self.hteam("notify", "--type", "question", "--json", "-", stdin=json.dumps(render(**kw)))
-        self.assertEqual(code, 0, out)
-        return out["id"]
+    def question(self, **kw) -> str:
+        """관제가 올린 질문(설계 7.2 의 question). 0.4.0 에는 notify 명령이 없다. 관제가 안에서 쓰는 것과 같다."""
+        return outbox.append(self.p, {"type": "question", "from": "drive", "render": outbox.validate_render(render(**kw),
+                                                                                                          "질문")})["id"]
+
+    def progress(self, body: str = "하나", type_: str = "progress") -> str:
+        return outbox.append(self.p, {"type": type_, "from": "drive", "body": body})["id"]
 
     def run_messages(self):
         code, out = self.horch("check", terminal=DRIVE)
         self.assertEqual(code, 0, out)
         return out["messages"]
 
+    def answer_file(self, oid: str) -> dict | None:
+        path = self.state_dir / "answers" / f"{oid}.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
 
-class NotifyWatchTest(LinkCase):
-    def test_notify_appends_outbox(self):
-        code, out = self.hteam("notify", "--type", "progress", "--body", "준비 완료")
-        self.assertEqual((code, out["id"]), (0, "out-0001"))
-        self.assertEqual(self.notify_q(), "out-0002")
-        lines = [json.loads(x) for x in (self.state_dir / "outbox.jsonl").read_text().splitlines()]
-        self.assertEqual([(e["type"], e["from"], e["answered"]) for e in lines],
-                         [("progress", "coordinator", False), ("question", "coordinator", False)])
-        self.assertEqual(lines[1]["render"]["header"], "저장 위치")
-        code, out = self.hteam("notify", "--type", "question", "--body", "x")
-        self.assertEqual((code, out["error"]["code"]), (2, "usage"))
-        code, out = self.hteam("notify", "--type", "question", "--json", "-", stdin="{")
-        self.assertEqual((code, out["error"]["code"]), (2, "bad_render"))
-        code, out = self.hteam("notify", "--type", "progress", "--body", "x", as_="main")
-        self.assertEqual(code, 5)
+    def requests(self) -> list[str]:
+        folder = self.drive_dir / "queue"
+        return sorted(f.name for f in folder.iterdir() if f.name.endswith(".json") and ".result" not in f.name) \
+            if folder.exists() else []
 
+    def wait_until(self, cond, what: str, limit: float = 20.0) -> None:
+        deadline = time.monotonic() + limit
+        while not cond():
+            self.assertLess(time.monotonic(), deadline, what)
+            time.sleep(0.05)
+
+    def run_queue(self) -> list:
+        with self.in_drive():
+            return self.make_drive().run_queue()
+
+
+class OutboxWatchTest(LinkCase):
     def test_watch_returns_new_items_then_moves_cursor(self):
-        self.hteam("notify", "--type", "progress", "--body", "하나")
+        self.progress("하나")
         code, out = self.hteam("watch", as_="main")
         self.assertEqual((code, out["count"], out["messages"][0]["body"]), (0, 1, "하나"), out)
         self.assertEqual((self.state_dir / "outbox.cursor").read_text().strip(), "1")
@@ -97,82 +108,188 @@ class NotifyWatchTest(LinkCase):
         self.assertIsNone(proc.poll())  # 새 항목이 없으면 기다린다
         code, again = self.hteam("watch", as_="main")
         self.assertEqual((code, again["error"]["code"]), (3, "watch_running"))
-        self.hteam("notify", "--type", "done", "--body", "둘")
+        self.progress("둘", "done")
         code, out = self.finish(proc, timeout=10)
         self.assertEqual((code, [m["body"] for m in out["messages"]]), (0, ["둘"]))
         self.assertFalse((self.state_dir / "watch.pid").exists())
 
-    def test_watch_orphaned_when_coordinator_ends(self):
-        self.update_terminal(DRIVE, state="finished")
+    def test_watch_orphaned_only_when_drive_is_down(self):
+        # 관제 생존은 pid·heartbeat 로 본다(설계 7.3, 8.2). 멈춤(hung)이면 끝내지 않는다
+        self.write_heartbeat(age_s=300)
+        proc = self.hteam_bg("watch", as_="main")
+        time.sleep(0.6)
+        self.assertIsNone(proc.poll())
+        self.progress("멈춘 동안 온 것")
+        code, out = self.finish(proc, timeout=10)
+        self.assertEqual((code, out["count"]), (0, 1), out)
+        (self.drive_dir / "drive.pid").unlink()
         code, out = self.hteam("watch", as_="main", timeout=10)
-        self.assertEqual((code, out["status"]), (0, "orphaned"))
+        self.assertEqual((code, out["status"]), (0, "orphaned"), out)
+        self.update_terminal(DRIVE, state="finished")  # 관제 터미널이 끝나도 판정은 pid 다
+        self.write_drive_pid()
+        self.write_heartbeat()
+        proc = self.hteam_bg("watch", as_="main")
+        time.sleep(0.6)
+        self.assertIsNone(proc.poll())
+        self.progress("셋")
+        self.assertEqual(self.finish(proc, timeout=10)[0], 0)
 
     def test_works_with_broken_config(self):
         (self.team / "config.toml").write_text("max_parallel = [")
-        code, out = self.hteam("notify", "--type", "progress", "--body", "x")
-        self.assertEqual(code, 0, out)
+        self.progress("x")
         self.assertEqual(self.hteam("watch", as_="main")[0], 0)
 
 
 class AnswerTest(LinkCase):
-    def test_tell_sends_main_message(self):
-        code, out = self.hteam("tell", "로그인 화면을 만들어 줘\n자세히는…", as_="main")
-        self.assertEqual(code, 0, out)
-        msg = self.run_messages()[0]
-        self.assertEqual((msg["subject"], msg["sender"]), ("[main] 로그인 화면을 만들어 줘", "external:t1"))
-
-    def test_answer_question_persists_then_sends_and_resends(self):
-        oid = self.notify_q()
+    def test_question_answer_is_a_file_and_is_not_sent(self):
+        oid = self.question()
         code, out = self.hteam("answer", oid, "localStorage (추천)", as_="main")
-        self.assertEqual((code, out["sent"]), (0, True), out)
-        self.assertEqual(json.loads((self.state_dir / "answers" / f"{oid}.json").read_text())["answer"],
-                         "localStorage (추천)")
-        self.assertEqual(self.hteam("answer", oid, "localStorage (추천)", as_="main")[0], 0)  # 끊겨 다시 보냄
-        subjects = [m["subject"] for m in self.run_messages()]
-        self.assertEqual(subjects, [f"[main] reply {oid}"] * 2)
+        self.assertEqual(out, {"ok": True, "id": oid, "type": "question", "test_confirmed": False}, out)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.answer_file(oid)["answer"], "localStorage (추천)")
+        self.assertEqual(self.run_messages(), [])  # 0.3.0 의 `[main] reply` 글은 없다
+        self.assertEqual(self.hteam("answer", oid, "localStorage (추천)", as_="main")[0], 0)  # 같은 답은 그대로
         code, out = self.hteam("answer", oid, "다른 답", as_="main")
         self.assertEqual((code, out["error"]["code"]), (3, "already_answered"))
         code, out = self.hteam("answer", "out-0099", "x", as_="main")
         self.assertEqual((code, out["error"]["code"]), (2, "unknown_question"))
-        self.hteam("notify", "--type", "progress", "--body", "x")
-        code, out = self.hteam("answer", "out-0002", "x", as_="main")
-        self.assertEqual((code, out["error"]["code"]), (2, "not_a_question"))
+        self.assertEqual(outbox.open_questions(self.p), [])
 
-    def test_tell_records_main_terminal_and_needs_one(self):
-        self.hteam("tell", "a", as_="main")
-        self.assertEqual(json.loads((self.state_dir / "run.json").read_text())["main_terminals"], ["t1"])
-        code, out = self.hteam("tell", "a", as_=None)
-        self.assertEqual((code, out["error"]["code"]), (5, "no_terminal"))
+    def test_kinds_that_are_not_answered(self):
+        for type_ in ("progress", "result", "done"):
+            oid = self.progress("x", type_)
+            code, out = self.hteam("answer", oid, "x", as_="main")
+            self.assertEqual((code, out["error"]["code"], out["error"]["message"]),
+                             (2, "not_answerable", f"{oid} 은 {type_} 항목이라 답하지 않는다"), out)
+        oid = outbox.append(self.p, {"type": "approval", "from": "drive", "batch": "dr-0001",
+                                     "render": outbox.validate_render(render(), "승인")})["id"]
+        code, out = self.hteam("answer", oid, "모두 승인 (추천)", as_="main")
+        self.assertEqual((code, out["error"]["code"], out["error"]["message"]),
+                         (2, "use_design_decide", f"{oid} 은 일괄 승인 질문이다. 태스크별 결정을 "
+                                                  f"`hteam design-decide {oid} --json -` 으로 넘긴다"), out)
+        self.assertIsNone(self.answer_file(oid))
 
-    def test_applied_and_reask(self):
-        first = self.notify_q()
+    def test_reask_and_open_questions(self):
+        first = self.question()
         self.hteam("watch", as_="main")  # first 를 출력했다
-        second = self.notify_q(header="둘째")
+        second = self.question(header="둘째")
         code, out = self.hteam("reask", as_="main")
         self.assertEqual((code, [m["id"] for m in out["messages"]]), (0, [first]))  # second 는 watch 가 준다
         self.hteam("answer", first, "a", as_="main")
         self.assertEqual(self.hteam("reask", as_="main")[1]["messages"], [])
-        self.assertEqual(self.hteam("applied", first)[0], 0)
-        self.assertIn(first, json.loads((self.state_dir / "applied.json").read_text()))
         self.assertEqual([q["id"] for q in outbox.open_questions(self.p)], [second])
 
+    def test_hyphen_leading_answer(self):
+        oid = self.question()
+        code, out = self.hteam("answer", oid, "--", "--no-cache", as_="main")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.answer_file(oid)["answer"], "--no-cache")
 
-class AppliedRecordTest(LinkCase):
-    def test_corrupt_applied_record_is_kept_and_reported(self):
-        from hteam import coord
-        oid = self.notify_q()
-        self.assertEqual(self.hteam("answer", oid, "a", as_="main")[0], 0)
-        path = self.state_dir / "applied.json"
-        path.write_text("{broken")
-        code, out = self.hteam("applied", oid)
-        self.assertEqual((code, out["error"]["code"]), (1, "bad_side_file"), out)
-        self.assertEqual(path.read_text(), "{broken")  # 빈 기록으로 덮어쓰지 않았다
-        msg = {"id": 9, "type": "status", "subject": f"[main] reply {oid}", "body": "a", "sender": "external:t1"}
-        info = coord.annotate(self.p, msg, [], "horch")["hteam"]
-        self.assertEqual((info["kind"], info["reply_to"], info["duplicate"]), ("main", oid, None))
-        self.assertIn("이미 적용했는지 모른다", info["hint"])
-        # 일괄 승인 답이어도 design_review 가 붙지 않는다. 손으로 반영(accept·fix)하지 않게 분명히 말한다
-        self.assertIn("이 답을 처리하지 않고 applied 도 적지 않는다", info["hint"])
+
+class DecideAnswerTest(LinkCase):
+    """decide 는 답 파일로 닫는다(설계 7.4, 8.10). 워커 질문이면 먼저 요청 큐 reply 로 워커에게 보낸다."""
+
+    def decide(self, kind="escalation", task="T-001", **extra) -> str:
+        with self.in_drive():
+            return self.make_drive().decide(kind, task, "요약", files=["docs/tasks/T-001/report.md"],
+                                            commands=[".herdr-team/bin/hteam drop T-001"], **extra)
+
+    def asking_worker(self) -> tuple[str, str, int]:
+        """일하는 작업 워커가 horch ask 로 질문을 남겼다(답을 기다리다 시간 초과). (Dispatch, 터미널, 질문 id)."""
+        self.write_spec("T-001")
+        state.create(self.p, "T-001", "developer")
+        self.assertEqual(self.hteam("start", "T-001")[0], 0)
+        did = self.work_dispatch("T-001")
+        term = self.dispatch_row(did)["terminal"]
+        code, out = self.horch("ask", "--dispatch", did, "--question", "설정 파일은 어디에 둘까", "--timeout-ms", "100",
+                               terminal=term)
+        self.assertEqual(code, 4, out)
+        return did, term, out["question"]
+
+    def test_plain_decide_is_closed_by_the_answer_file(self):
+        oid = self.decide()
+        self.assertEqual([(q["id"], q["type"]) for q in outbox.open_questions(self.p)], [(oid, "decide")])
+        self.hteam("watch", as_="main")
+        self.assertEqual([m["id"] for m in self.hteam("reask", as_="main")[1]["messages"]], [oid])
+        code, out = self.hteam("answer", oid, "T-001 를 drop 했다", as_="main")
+        self.assertEqual(out, {"ok": True, "id": oid, "type": "decide", "closed": True, "replied": False}, out)
+        self.assertEqual(self.answer_file(oid)["answer"], "T-001 를 drop 했다")
+        self.assertEqual(outbox.open_questions(self.p), [])
+        self.assertEqual(self.requests(), [])  # 회신이 없으면 큐를 거치지 않는다
+        code, out = self.hteam("answer", oid, "다시", as_="main")
+        self.assertEqual((code, out["error"]["code"]), (3, "already_answered"), out)
+
+    def test_worker_question_reply_goes_through_the_queue(self):
+        did, term, qid = self.asking_worker()
+        oid = self.decide("worker_question", question="설정 파일은 어디에 둘까", message_id=qid)
+        proc = self.hteam_bg("answer", oid, "src/config 에 둔다", as_="main", env={"HTEAM_QUEUE_WAIT_S": "30"})
+        self.wait_until(lambda: self.requests() or proc.poll() is not None, "reply 요청")
+        req = json.loads((self.drive_dir / "queue" / self.requests()[0]).read_text())
+        self.assertEqual((req["command"], req["args"]),
+                         ("reply", {"message_id": qid, "body": "src/config 에 둔다", "task": "T-001"}), req)
+        self.assertIsNone(self.answer_file(oid))  # 회신 결과를 받기 전에는 닫지 않는다
+        self.run_queue()
+        code, out = self.finish(proc)
+        self.assertEqual((code, out["closed"], out["replied"]), (0, True, True), out)
+        self.assertIsInstance(out["reply"], int)
+        self.assertEqual(self.answer_file(oid)["answer"], "src/config 에 둔다")
+        code, out = self.horch("ask", "--dispatch", did, "--resume", str(qid), "--timeout-ms", "100", terminal=term)
+        self.assertEqual((code, out["answer"]), (0, "src/config 에 둔다"), out)
+
+    def test_refused_reply_closes_the_decide(self):
+        self.write_spec("T-001")
+        state.create(self.p, "T-001", "developer")
+        oid = self.decide("escalation", message_id=999999)  # 처리에 실패한 워커 질문(8.5): 없는 질문 id
+        proc = self.hteam_bg("answer", oid, "답", as_="main", env={"HTEAM_QUEUE_WAIT_S": "30"})
+        self.wait_until(lambda: self.requests() or proc.poll() is not None, "reply 요청")
+        self.run_queue()
+        code, out = self.finish(proc)
+        self.assertEqual((code, out["error"]["code"]), (3, "reply_failed"), out)
+        msg = out["error"]["message"]
+        self.assertTrue(msg.startswith("워커에게 답을 보내지 못했다(unknown_question: "), msg)
+        self.assertTrue(msg.endswith('). 워커가 끝났으면 답을 지시로 넣어 hteam fix T-001 --note "<답>", 아직 일하는 중이면 '
+                                     'hteam scope T-001 "<답>" 로 전한다. 이 decide 는 닫았다'), msg)
+        self.assertEqual(self.answer_file(oid)["answer"], "답")
+        self.assertEqual(outbox.open_questions(self.p), [])
+
+    def test_drive_down_keeps_the_decide_open(self):
+        _, _, qid = self.asking_worker()
+        oid = self.decide("worker_question", message_id=qid)
+        (self.drive_dir / "drive.pid").unlink()
+        code, out = self.hteam("answer", oid, "답", as_="main")
+        self.assertEqual((code, out["error"]["code"]), (1, "drive_down"), out)
+        self.assertIsNone(self.answer_file(oid))
+        self.assertEqual([q["id"] for q in outbox.open_questions(self.p)], [oid])  # 다시 답할 수 있다
+
+    def test_queue_timeout_closes_the_decide(self):
+        _, _, qid = self.asking_worker()
+        oid = self.decide("worker_question", message_id=qid)
+        code, out = self.hteam("answer", oid, "답", as_="main", env={"HTEAM_QUEUE_WAIT_S": "0.3"})
+        self.assertEqual((code, out["closed"], out["replied"], out["status"], out["request"]),
+                         (0, True, None, "queued", "q-000001"), out)
+        self.assertEqual(self.answer_file(oid)["answer"], "답")
+        self.run_queue()
+        [res] = [e for e in self.outbox_items() if e["type"] == "result"]
+        self.assertEqual((res["command"], res["result"]["ok"]), ("reply", True), res)
+
+    def test_status_lists_open_decides(self):
+        oid = self.decide()
+        code, out = self.hteam("status", as_="main")
+        self.assertEqual(code, 0, out)
+        self.assertEqual([(q["id"], q["type"], q.get("kind"), q.get("task")) for q in out["open_questions"]],
+                         [(oid, "decide", "escalation", "T-001")])
+
+
+class RemovedCommandTest(LinkCase):
+    def test_removed_commands_are_usage_errors(self):
+        for args, kwargs in ((("tell", "x"), {"as_": "main"}), (("notify", "--type", "progress", "--body", "x"), {}),
+                             (("applied", "out-0001"), {}), (("wait",), {}), (("which", "dsp-1"), {}),
+                             (("design-review", "--decide", "out-0001"), {})):
+            with self.subTest(args=args):
+                code, out = self.hteam(*args, **kwargs)
+                self.assertEqual((code, out["error"]["code"]), (2, "usage"), out)
+        self.assertFalse((self.state_dir / "outbox.jsonl").exists())
+        self.assertEqual(self.run_messages(), [])
 
 
 class AskUserTest(LinkCase):
@@ -255,7 +372,7 @@ class AskUserTest(LinkCase):
 
 
 class TestConfirmTest(LinkCase):
-    """테스트 명령 확정(설계 5.7): --test-confirm 질문의 `## 테스트 명령` 절·식별값, 메인 answer 의 확정 기록, status."""
+    """테스트 명령 확정(설계 5.7): 확정 질문의 `## 테스트 명령` 절·식별값, 메인 answer 의 확정 기록(Run 에 보내지 않는다)."""
 
     def setUp(self):
         super().setUp()
@@ -278,6 +395,12 @@ class TestConfirmTest(LinkCase):
         with mock.patch.dict(os.environ, self.env, clear=True):
             return [a["digest"] for a in testgate.read_approvals(self.p)], testgate.approvals_path(self.p)
 
+    def drive_question(self) -> str:
+        """관제의 `[test]` 확정 질문(설계 8.4): 커밋된 HEAD 의 [test] 로 `## 테스트 명령` 절과 식별값을 붙인다."""
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            fields = outbox.test_confirm(outbox.validate_render(render(), "질문"), testgate.require_config(self.p))
+            return outbox.append(self.p, {"type": "question", "from": "drive", **fields})["id"]
+
     def test_ask_user_attaches_section_and_first_option_confirms(self):
         self.plan.write_text('[test]\nquick = " npx vitest related --run {files}"\nfull = "npx vitest run"\n',
                              encoding="utf-8")  # 커밋 전(작업 트리)이다
@@ -290,7 +413,7 @@ class TestConfirmTest(LinkCase):
                          '\n```toml\nquick = "npx vitest related --run {files}"\nfull = "npx vitest run"\n'
                          "timeout_min = 30\nok_exit = [0]\nexclusive = false\n```")
         code, out = self.hteam("answer", entry["id"], "localStorage (추천)", terminal=DRIVE, as_=None)
-        self.assertEqual(code, 5, out)  # 코디네이터 터미널은 답하지 못한다(기록도 없다)
+        self.assertEqual(code, 5, out)  # 관제 터미널은 답하지 못한다(기록도 없다)
         self.assertEqual(self.approvals()[0], [])
         code, out = self.hteam("answer", entry["id"], "localStorage (추천)", as_="main")
         self.assertEqual((code, out["test_confirmed"]), (0, True), out)
@@ -310,35 +433,29 @@ class TestConfirmTest(LinkCase):
         self.assertIn("4000자를 넘는다", out["error"]["message"])
         self.assertFalse((self.state_dir / "outbox.jsonl").exists())
 
-    def test_notify_reads_head_and_only_first_option_confirms(self):
-        code, out = self.hteam("notify", "--type", "question", "--json", "-", "--test-confirm", stdin=json.dumps(render()))
-        self.assertEqual((code, out["error"]["code"]), (2, "no_test_config"), out)
-        code, out = self.hteam("notify", "--type", "progress", "--body", "x", "--test-confirm")
-        self.assertEqual((code, out["error"]["code"]), (2, "usage"), out)
+    def test_drive_question_only_first_option_confirms_and_is_not_sent(self):
         self.use_gate(approve=False)
-        self.assertEqual(self.hteam("status")[1]["test_gate"]["state"], "unapproved")
-        self.assertIn("--test-confirm", self.hteam("status")[1]["test_gate"]["hint"])
-        code, out = self.hteam("notify", "--type", "question", "--json", "-", "--test-confirm", stdin=json.dumps(render()))
-        self.assertEqual(code, 0, out)
-        first = out["id"]
-        self.assertEqual(out["test_digest"], self.entries()[-1]["test_digest"])
+        gate = self.hteam("status")[1]["test_gate"]
+        self.assertEqual(gate["state"], "unapproved")
+        self.assertIn("hteam test-confirm", gate["hint"])  # 0.4.0 은 관제가 묻고, 메인은 큐로 다시 올린다
+        self.assertNotIn("notify", gate["hint"])
+        first = self.drive_question()
         self.assertTrue(self.entries()[-1]["render"]["context"].startswith("## 테스트 명령\n"))
         code, out = self.hteam("answer", first, "서버 DB", as_="main")
         self.assertEqual((code, out["test_confirmed"]), (0, False), out)
         self.assertEqual(self.approvals()[0], [])
-        code, out = self.hteam("notify", "--type", "question", "--json", "-", "--test-confirm", stdin=json.dumps(render()))
-        second = out["id"]
-        for _ in range(2):  # 끊겨 다시 보내도 기록은 하나다
+        second = self.drive_question()
+        for _ in range(2):  # 같은 답을 두 번 해도 기록은 하나다
             code, out = self.hteam("answer", second, "localStorage (추천)", as_="main")
             self.assertEqual((code, out["test_confirmed"]), (0, True), out)
         self.assertEqual(len(self.approvals()[0]), 1)
+        self.assertEqual(self.run_messages(), [])  # Run 에 보내지 않는다(설계 7.4)
         gate = self.hteam("status")[1]["test_gate"]
         self.assertEqual((gate["state"], gate["digest"], gate["error"]), ("approved", self.approvals()[0][0], None))
 
     def test_broken_record_stops_the_answer(self):
         self.use_gate(approve=False)
-        code, out = self.hteam("notify", "--type", "question", "--json", "-", "--test-confirm", stdin=json.dumps(render()))
-        oid = out["id"]
+        oid = self.drive_question()
         path = self.approvals()[1]
         path.parent.mkdir(parents=True)
         path.write_text("[1, 2]", encoding="utf-8")
@@ -346,7 +463,7 @@ class TestConfirmTest(LinkCase):
         self.assertEqual((code, out["error"]["code"]), (1, "bad_test_approvals"), out)
         self.assertIn(str(path), out["error"]["message"])
         self.assertEqual(path.read_text(encoding="utf-8"), "[1, 2]")
-        self.assertFalse((self.state_dir / "answers" / f"{oid}.json").exists())
+        self.assertIsNone(self.answer_file(oid))
         self.assertEqual(self.hteam("status")[1]["test_gate"]["state"], "error")
 
 
@@ -369,14 +486,12 @@ class HerdrVerdictTest(unittest.TestCase):
 
     def test_probe_not_found_is_unverifiable(self):
         from hteam import herdr
-        from unittest import mock
         with mock.patch.object(herdr, "get", side_effect=HteamError("hc_failed", "x", data={"kind": "not_found"})):
             self.assertEqual(herdr.probe("t9", ["claude"]), "unverifiable")
 
     def test_hc_missing_or_not_runnable_is_unverifiable(self):
         # hc 가 없으면 get 은 exit 12, 실행할 수 없으면(권한 등) hc_failed. probe 는 둘 다 모름이다(horch hcio 와 같다).
         from hteam import herdr
-        from unittest import mock
         for exc, code, exit_code in ((FileNotFoundError("hc"), "hc_missing", 12),
                                      (PermissionError("hc"), "hc_failed", 1)):
             with mock.patch.object(herdr.subprocess, "run", side_effect=exc):
@@ -393,7 +508,6 @@ class AfterHookTest(unittest.TestCase):
         """make_result(out) 가 돌려준 결과로 cli.main 을 돌린다. out 은 stdout 을 받는 StringIO 다."""
         import contextlib
         import io
-        from unittest import mock
         from hteam import cli
         out, err = io.StringIO(), io.StringIO()
         parser = cli.Parser(prog="hteam")
@@ -427,7 +541,6 @@ class AfterHookTest(unittest.TestCase):
     def test_after_skipped_when_stdout_fails(self):
         # 출력하지 못하면 _after(watch 커서)를 부르지 않는다. 그래야 전하지 못한 항목을 다음 watch 가 다시 준다.
         import contextlib
-        from unittest import mock
         from hteam import cli
 
         class Broken:
@@ -447,46 +560,39 @@ class AfterHookTest(unittest.TestCase):
 
 
 def outbox_line(oid, body="하나", **kw):
-    entry = {"id": oid, "at": "2026-01-01T00:00:00Z", "type": "progress", "body": body, "from": "coordinator",
+    entry = {"id": oid, "at": "2026-01-01T00:00:00Z", "type": "progress", "body": body, "from": "drive",
              "answered": False, **kw}
     return json.dumps(entry, ensure_ascii=False).encode("utf-8")
 
 
 class MainOnlyTest(LinkCase):
-    """tell·answer 는 메인 터미널만(부작용 전에 검사). 코디네이터·워커(지난 워커 포함)는 exit 5."""
+    """answer·watch·reask 는 메인 터미널만(부작용 전에 검사). 관제·워커(지난 워커 포함)는 exit 5."""
 
-    def run_json(self):
-        return json.loads((self.state_dir / "run.json").read_text())
-
-    def test_coordinator_cannot_answer_own_question(self):
-        oid = self.notify_q()
-        code, out = self.hteam("answer", oid, "x")  # 코디네이터 환경 + DRIVE 터미널
+    def test_drive_cannot_answer_its_own_question(self):
+        oid = self.question()
+        code, out = self.hteam("answer", oid, "x")  # 관제 환경 + DRIVE 터미널
         self.assertEqual((code, out["error"]["code"]), (5, "not_main"), out)
-        self.assertFalse((self.state_dir / "answers" / f"{oid}.json").exists())
-        self.assertNotIn("main_terminals", self.run_json())
+        self.assertIsNone(self.answer_file(oid))
         self.assertEqual([q["id"] for q in outbox.open_questions(self.p)], [oid])
 
-    def test_coordinator_terminal_or_role_refused(self):
-        code, out = self.hteam("tell", "a", as_=None, terminal=DRIVE)  # HTEAM_ROLE 없는 코디네이터 터미널
+    def test_drive_terminal_or_role_refused(self):
+        code, out = self.hteam("reask", as_=None, terminal=DRIVE)  # HTEAM_ROLE 없는 관제 터미널
         self.assertEqual((code, out["error"]["code"]), (5, "not_main"), out)
-        code, out = self.hteam("tell", "a", as_="main", env={"HTEAM_ROLE": "drive"})
+        code, out = self.hteam("reask", as_="main", env={"HTEAM_ROLE": "drive"})
         self.assertEqual((code, out["error"]["code"]), (5, "not_main"), out)
-        # bind 전(run.json 에 터미널이 아직 없음)의 코디네이터 터미널은 hteam up 이 붙인 hc 라벨로 가린다(설계 9.3)
-        self.add_terminal("t5", argv=["claude"], labels={"hteam.role": "drive"})
-        code, out = self.hteam("tell", "a", as_=None, terminal="t5")
+        # Run 에 묶이기 전(run.json 에 터미널이 아직 없음)의 관제 터미널은 hteam up 이 붙인 hc 라벨로 가린다(설계 9.3)
+        self.add_terminal("t5", argv=["hteam-drive"], labels={"hteam.role": "drive"})
+        code, out = self.hteam("reask", as_=None, terminal="t5")
         self.assertEqual((code, out["error"]["code"]), (5, "not_main"), out)
-        self.assertNotIn("main_terminals", self.run_json())
-        self.assertEqual(self.run_messages(), [])
 
     def test_unverifiable_terminal_refused(self):
         self.fail_hc("get", "boom")
-        code, out = self.hteam("tell", "a", as_="main")
+        code, out = self.hteam("reask", as_="main")
         self.assertEqual((code, out["error"]["code"]), (1, "main_unverified"), out)
-        self.assertNotIn("main_terminals", self.run_json())
 
     def test_unparseable_run_json_is_not_overwritten(self):
         (self.state_dir / "run.json").write_text("{", encoding="utf-8")
-        code, out = self.hteam("tell", "a", as_="main")
+        code, out = self.hteam("answer", "out-0001", "a", as_="main")
         self.assertEqual((code, out["error"]["code"]), (1, "bad_run_file"), out)
         self.assertEqual((self.state_dir / "run.json").read_text(), "{")
 
@@ -504,18 +610,16 @@ class WorkerGuardTest(LinkCase):
         return self.hteam("ask-user", "--task", "T-001", "--json", "-", as_=None, terminal=self.term,
                           stdin=json.dumps(render()))
 
-    def test_worker_cannot_answer_own_ask_or_tell(self):
+    def test_worker_cannot_answer_its_own_ask(self):
         code, out = self.ask()
         self.assertEqual(code, 4, out)
         code, out = self.hteam("answer", "out-0001", "self", as_=None, terminal=self.term)
         self.assertEqual((code, out["error"]["code"]), (5, "not_main"), out)
-        self.assertFalse((self.state_dir / "answers" / "out-0001.json").exists())
+        self.assertIsNone(self.answer_file("out-0001"))
         code, out = self.hteam("ask-user", "--task", "T-001", "--wait", "out-0001", as_=None, terminal=self.term)
         self.assertEqual(code, 4, out)
-        code, out = self.hteam("tell", "[x] hi", as_=None, terminal=self.term)
+        code, out = self.hteam("reask", as_=None, terminal=self.term)
         self.assertEqual((code, out["error"]["code"]), (5, "not_main"), out)
-        self.assertNotIn("main_terminals", json.loads((self.state_dir / "run.json").read_text()))
-        self.assertEqual(self.run_messages(), [])
 
     def test_past_worker_terminal_refused(self):
         # Dispatch 가 끝나면 horch status 는 dispatch 를 주지 않는다. 그래도 워커 터미널이면 메인이 아니다.
@@ -523,9 +627,8 @@ class WorkerGuardTest(LinkCase):
         self.assertEqual(code, 0, out)
         code, out = self.horch("status", terminal=self.term)
         self.assertIsNone(out["dispatch"], out)
-        code, out = self.hteam("tell", "[main] 지시", as_=None, terminal=self.term)
+        code, out = self.hteam("reask", as_=None, terminal=self.term)
         self.assertEqual((code, out["error"]["code"]), (5, "not_main"), out)
-        self.assertNotIn("main_terminals", json.loads((self.state_dir / "run.json").read_text()))
 
     def test_ack_checks_caller(self):
         self.ask()
@@ -547,50 +650,6 @@ class WorkerGuardTest(LinkCase):
         self.assertTrue(any("T-001" in w for w in out["warnings"]), out)
 
 
-class SendTest(LinkCase):
-    def test_hyphen_leading_text_is_body(self):
-        oid = self.notify_q()
-        code, out = self.hteam("answer", oid, "--", "--no-cache", as_="main")
-        self.assertEqual(code, 0, out)
-        code, out = self.hteam("tell", "--", "-x 로 해 줘", as_="main")
-        self.assertEqual(code, 0, out)
-        self.assertEqual([m["body"] for m in self.run_messages()], ["--no-cache", "-x 로 해 줘"])
-
-    def test_unsent_answer_stays_visible_until_resent(self):
-        oid = self.notify_q()
-        self.hteam("watch", as_="main")
-        run = json.loads((self.state_dir / "run.json").read_text())
-        good = run["run_id"]
-        run["run_id"] = "run-bogus"
-        (self.state_dir / "run.json").write_text(json.dumps(run))
-        code, out = self.hteam("answer", oid, "a", as_="main")
-        self.assertEqual(code, 1, out)  # 보내지 못했다
-        open_ = outbox.open_questions(self.p)
-        self.assertEqual([(q["id"], q.get("unsent"), q.get("answer")) for q in open_], [(oid, True, "a")])
-        self.assertIn(f"answer {oid}", open_[0]["hint"])
-        code, out = self.hteam("reask", as_="main")
-        self.assertEqual([(m["id"], m.get("unsent")) for m in out["messages"]], [(oid, True)])
-        run["run_id"] = good
-        (self.state_dir / "run.json").write_text(json.dumps(run))
-        code, out = self.hteam("answer", oid, "a", as_="main")
-        self.assertEqual(code, 0, out)
-        self.assertTrue(json.loads((self.state_dir / "answers" / f"{oid}.json").read_text())["sent_at"])
-        self.assertEqual(outbox.open_questions(self.p), [])
-
-    def test_tell_starting_with_reply_is_not_a_reply_subject(self):
-        import re
-        code, out = self.hteam("tell", "reply out-0001 은 취소하고 B 로 해 줘", as_="main")
-        self.assertEqual(code, 0, out)
-        msg = self.run_messages()[0]
-        self.assertIsNone(re.match(r"^\[main\] reply (out-\d+)", msg["subject"]), msg["subject"])
-        self.assertEqual(msg["body"], "reply out-0001 은 취소하고 B 로 해 줘")
-
-    def test_applied_rejects_unknown_id(self):
-        code, out = self.hteam("applied", "out-0099")
-        self.assertEqual((code, out["error"]["code"]), (2, "unknown_question"), out)
-        self.assertFalse((self.state_dir / "applied.json").exists())
-
-
 class OutboxReadTest(LinkCase):
     @property
     def outbox_path(self):
@@ -598,11 +657,10 @@ class OutboxReadTest(LinkCase):
 
     def test_unicode_line_separators_stay_in_record(self):
         body = "가 나 다\x85라"
-        self.assertEqual(self.hteam("notify", "--type", "progress", "--body", body)[0], 0)
+        self.progress(body)
         code, out = self.hteam("watch", as_="main")
         self.assertEqual((code, [m["body"] for m in out.get("messages", [])]), (0, [body]), out)
-        code, out = self.hteam("notify", "--type", "progress", "--body", "둘")
-        self.assertEqual((code, out.get("id")), (0, "out-0002"), out)
+        self.assertEqual(self.progress("둘"), "out-0002")
 
     def test_partial_last_line_and_corrupt_line(self):
         full = outbox_line("out-0002", "가나")
@@ -612,34 +670,39 @@ class OutboxReadTest(LinkCase):
         self.assertEqual((code, [m["id"] for m in out.get("messages", [])]), (0, ["out-0001"]), out)
         self.assertEqual((self.state_dir / "outbox.cursor").read_text().strip(), "1")
         self.assertEqual(self.hteam("reask", as_="main")[0], 0)
-        code, out = self.hteam("notify", "--type", "progress", "--body", "셋")
-        self.assertEqual((code, out.get("id")), (0, "out-0003"), out)  # 끊긴 줄도 한 줄로 센다(ID 재사용 없음)
+        self.assertEqual(self.progress("셋"), "out-0003")  # 끊긴 줄도 한 줄로 센다(ID 재사용 없음)
         with self.outbox_path.open("ab") as fh:
             fh.write(b"not json\n")
-        code, out = self.hteam("notify", "--type", "progress", "--body", "넷")
-        self.assertEqual((code, out.get("id")), (0, "out-0005"), out)
+        self.assertEqual(self.progress("넷"), "out-0005")
         code, out = self.hteam("watch", as_="main")
         self.assertEqual((code, [m["id"] for m in out["messages"]]), (0, ["out-0003", "out-0005"]), out)
         self.assertEqual(len(out["warnings"]), 2, out)  # 2번째(끊긴 줄)와 4번째 줄
 
-    def test_concurrent_notify_ids_unique(self):
-        procs = [self.hteam_bg("notify", "--type", "progress", "--body", f"n{i}") for i in range(8)]
-        ids = []
-        for proc in procs:
-            code, out = self.finish(proc, timeout=30)
-            self.assertEqual(code, 0, out)
-            ids.append(out["id"])
+    def test_concurrent_appends_ids_unique(self):
+        ids, errors = [], []
+
+        def one(i):
+            try:
+                ids.append(outbox.append(self.p, {"type": "progress", "from": "drive", "body": f"n{i}"})["id"])
+            except Exception as exc:  # 스레드 안의 실패를 시험으로 넘긴다
+                errors.append(exc)
+
+        threads = [threading.Thread(target=one, args=(i,)) for i in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+        self.assertEqual(errors, [])
         self.assertEqual(sorted(ids), [f"out-{i:04d}" for i in range(1, 9)])
 
     def test_reask_uses_one_snapshot(self):
-        from unittest import mock
-        first = self.notify_q()
+        first = self.question()
         self.hteam("watch", as_="main")
         real = outbox.cursor
 
         def cursor_then_append(p):
             value = real(p)
-            outbox.append(p, {"type": "question", "render": render(header="새 질문"), "from": "coordinator"})
+            outbox.append(p, {"type": "question", "render": render(header="새 질문"), "from": "drive"})
             return value
 
         with mock.patch.object(outbox, "cursor", side_effect=cursor_then_append):
@@ -651,7 +714,6 @@ class JsonLineTest(unittest.TestCase):
     """horch·hc 출력의 JSON 줄도 LF 로만 나눈다(본문의 U+2028 등이 JSON 을 자르지 않게)."""
 
     def test_horch_and_hc_output_split_on_lf_only(self):
-        from unittest import mock
         from hteam import herdr, horch
         line = json.dumps({"ok": True, "body": "가 나 다\x85라"}, ensure_ascii=False)
         self.assertEqual(horch.parse("잡음\n" + line + "\n")["body"], "가 나 다\x85라")
@@ -661,30 +723,24 @@ class JsonLineTest(unittest.TestCase):
 
 
 class WatchLockTest(LinkCase):
-    def wait_for(self, cond, what, limit=10.0):
-        deadline = time.monotonic() + limit
-        while not cond():
-            self.assertLess(time.monotonic(), deadline, what)
-            time.sleep(0.05)
-
     def test_exclusive_without_pid_file(self):
         proc = self.hteam_bg("watch", as_="main")
-        self.wait_for((self.state_dir / "watch.pid").exists, "watch.pid")
+        self.wait_until((self.state_dir / "watch.pid").exists, "watch.pid")
         (self.state_dir / "watch.pid").unlink()  # pid 파일이 사라져도 단일 실행은 잠금이 지킨다
         code, out = self.hteam("watch", as_="main", timeout=5)
         self.assertEqual((code, out["error"]["code"]), (3, "watch_running"), out)
-        self.hteam("notify", "--type", "progress", "--body", "하나")
+        self.progress("하나")
         self.assertEqual(self.finish(proc, timeout=10)[0], 0)
 
     def test_concurrent_watches_only_one_runs(self):
         procs = [self.hteam_bg("watch", as_="main") for _ in range(3)]
-        self.wait_for(lambda: sum(p.poll() is not None for p in procs) >= 2, "두 watch 가 끝난다")
+        self.wait_until(lambda: sum(p.poll() is not None for p in procs) >= 2, "두 watch 가 끝난다")
         losers = [p for p in procs if p.poll() is not None]
         self.assertEqual(len(losers), 2)
         for p in losers:
             code, out = self.finish(p)
             self.assertEqual((code, out["error"]["code"]), (3, "watch_running"), out)
-        self.hteam("notify", "--type", "progress", "--body", "하나")
+        self.progress("하나")
         winner = next(p for p in procs if p not in losers)
         code, out = self.finish(winner, timeout=10)
         self.assertEqual((code, [m["body"] for m in out["messages"]]), (0, ["하나"]))
@@ -693,9 +749,9 @@ class WatchLockTest(LinkCase):
         gate = self.tmp / "gate"
         proc = self.hteam_bg("watch", as_="main", env={"HTEAM_TEST_PAUSE_AT": "watch_before_cursor",
                                                         "HTEAM_TEST_PAUSE_FILE": str(gate)})
-        self.wait_for((self.state_dir / "watch.pid").exists, "watch.pid")
-        self.hteam("notify", "--type", "progress", "--body", "하나")
-        self.wait_for(gate.with_name("gate.reached").exists, "출력 뒤 커서 전에 멈춘다")
+        self.wait_until((self.state_dir / "watch.pid").exists, "watch.pid")
+        self.progress("하나")
+        self.wait_until(gate.with_name("gate.reached").exists, "출력 뒤 커서 전에 멈춘다")
         code, out = self.hteam("watch", as_="main", timeout=5)  # 출력했지만 커서를 옮기기 전이다
         self.assertEqual((code, out["error"]["code"]), (3, "watch_running"), out)
         gate.touch()
@@ -759,11 +815,11 @@ class TornAskTest(LinkCase):
 
 
 class CallerTest(LinkCase):
-    """watch·reask 도 메인 전용이다(설계 8.3). 코디네이터가 wait 와 헷갈려 부르면 잠금·커서를 건드리지 않고 exit 5."""
+    """watch·reask 도 메인 전용이다(설계 8.3). 관제가 부르면 잠금·커서를 건드리지 않고 exit 5."""
 
-    def test_coordinator_watch_and_reask_refused(self):
-        self.notify_q()
-        code, out = self.hteam("watch", timeout=10)  # 코디네이터 환경
+    def test_drive_watch_and_reask_refused(self):
+        self.question()
+        code, out = self.hteam("watch", timeout=10)  # 관제 환경
         self.assertEqual((code, out.get("error", {}).get("code")), (5, "not_main"), out)
         code, out = self.hteam("watch", as_=None, terminal=DRIVE, timeout=10)
         self.assertEqual((code, out.get("error", {}).get("code")), (5, "not_main"), out)
@@ -774,10 +830,10 @@ class CallerTest(LinkCase):
         self.assertEqual((code, [m["id"] for m in out["messages"]]), (0, ["out-0001"]), out)
 
     def test_unread_counts_complete_lines_after_cursor(self):
-        self.hteam("notify", "--type", "progress", "--body", "하나")
+        self.progress("하나")
         with (self.state_dir / "outbox.jsonl").open("ab") as fh:
             fh.write(b"not json\n")
-        self.hteam("notify", "--type", "progress", "--body", "셋")
+        self.progress("셋")
         with (self.state_dir / "outbox.jsonl").open("ab") as fh:
             fh.write(b'{"id": "out-0004"')  # 쓰는 중인 마지막 조각은 세지 않는다
         self.assertEqual(outbox.unread(self.p), 3)  # 깨진 줄도 센다(len(read_outbox) 는 2)
@@ -786,30 +842,29 @@ class CallerTest(LinkCase):
 
 
 class ParentTest(LinkCase):
-    """hc parent 를 따라 올라가 워커·코디네이터 터미널 아래에서 띄운 터미널을 메인으로 보지 않는다(최대 10단계)."""
+    """hc parent 를 따라 올라가 워커·관제 터미널 아래에서 띄운 터미널을 메인으로 보지 않는다(최대 10단계)."""
 
-    def tell_from(self, term):
-        return self.hteam("tell", "a", as_=None, terminal=term)
+    def reask_from(self, term):
+        return self.hteam("reask", as_=None, terminal=term)
 
     def child(self, address, parent, **kw):
         self.add_terminal(address, **kw)
         self.update_terminal(address, parent=parent)
 
-    def test_child_of_worker_or_coordinator_refused(self):
+    def test_child_of_worker_or_drive_refused(self):
         self.add_terminal("t50", labels={"horch.run": "r", "horch.dispatch": "dsp-x"})
         self.child("t51", "t50")
         self.child("t52", "t51")
         self.add_terminal("t60", labels={"hteam.role": "drive"})
         self.child("t61", "t60")
         for term in ("t51", "t52", "t61"):
-            code, out = self.tell_from(term)
+            code, out = self.reask_from(term)
             self.assertEqual((code, out.get("error", {}).get("code")), (5, "not_main"), (term, out))
-        self.assertEqual(self.run_messages(), [])
 
     def test_plain_parent_chain_is_main(self):
         self.add_terminal("t70")
         self.update_terminal("t1", parent="t70")
-        code, out = self.tell_from("t1")
+        code, out = self.reask_from("t1")
         self.assertEqual(code, 0, out)
 
     def test_cycle_or_missing_parent_is_unverified(self):
@@ -817,7 +872,7 @@ class ParentTest(LinkCase):
         self.child("t81", "t80")
         self.child("t82", "t99")  # 없는 터미널
         for term in ("t80", "t82"):
-            code, out = self.tell_from(term)
+            code, out = self.reask_from(term)
             self.assertEqual((code, out.get("error", {}).get("code")), (1, "main_unverified"), (term, out))
 
 

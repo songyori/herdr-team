@@ -50,6 +50,11 @@ class HookCase(TeamCase):
     def decision(self, out):
         return out and out["hookSpecificOutput"]["permissionDecision"]
 
+    def drive_question(self, obj):
+        """관제가 올린 질문(설계 7.2 의 question). 0.4.0 에는 notify 명령이 없어 관제가 안에서 쓰는 것과 같이 쓴다."""
+        from hteam import outbox
+        return outbox.append(self.p, {"type": "question", "from": "drive", "render": outbox.validate_render(obj, "질문")})
+
     def worker_terminal(self, tid, role):
         self.write_spec(tid, role)
         state.create(self.p, tid, role)
@@ -93,9 +98,8 @@ class RoleTest(HookCase):
         self.assertEqual((proc.returncode, proc.stdout), (0, ""))
 
     def test_main_session_start_caches_and_guides(self):
-        self.hteam("notify", "--type", "question", "--json", "-", stdin=json.dumps({
-            "question": "q?\n예: e", "options": [{"label": "a (추천)", "description": "추천 사유: x"},
-                                                 {"label": "b", "description": "y"}]}))
+        self.drive_question({"question": "q?\n예: e", "options": [{"label": "a (추천)", "description": "추천 사유: x"},
+                                                                  {"label": "b", "description": "y"}]})
         out = self.hook("session-start", terminal=MAIN)
         ctx = out["hookSpecificOutput"]["additionalContext"]
         self.assertIn("/herdr-team:up", ctx)
@@ -231,11 +235,9 @@ class GuardTest(HookCase):
     def ask_with_context(self, n):
         text = f"질문 {n} 을 확정할까요?\n예: 확정이면 진행한다"
         ctx = f"## 맥락 {n}\n" + f"질문 {n} 의 배경 설명이다. 앞 80자가 넘게 길다. " * 3
-        code, out = self.hteam("notify", "--type", "question", "--json", "-", stdin=json.dumps({
-            "question": text, "context": ctx,
-            "options": [{"label": "확정 (추천)", "description": "추천 사유: 빠진 것이 없다"},
-                        {"label": "수정", "description": "고칠 곳을 말한다"}]}))
-        self.assertEqual(code, 0, out)
+        self.drive_question({"question": text, "context": ctx,
+                             "options": [{"label": "확정 (추천)", "description": "추천 사유: 빠진 것이 없다"},
+                                         {"label": "수정", "description": "고칠 곳을 말한다"}]})
         return text, ctx
 
     def test_context_already_shown_is_allowed(self):
@@ -286,10 +288,9 @@ class GuardTest(HookCase):
 
     def test_main_context_guard_once(self):
         ctx = "## 계획 요약\n- 화면 셋과 저장소는 localStorage 로 정한다. 표는 아래와 같다. " * 2
-        self.hteam("notify", "--type", "question", "--json", "-", stdin=json.dumps({
-            "question": "이대로 확정할까요?\n예: 확정이면 개발을 시작한다", "context": ctx,
-            "options": [{"label": "확정 (추천)", "description": "추천 사유: 빠진 항목이 없다"},
-                        {"label": "수정", "description": "고칠 곳을 말한다"}]}))
+        self.drive_question({"question": "이대로 확정할까요?\n예: 확정이면 개발을 시작한다", "context": ctx,
+                             "options": [{"label": "확정 (추천)", "description": "추천 사유: 빠진 항목이 없다"},
+                                         {"label": "수정", "description": "고칠 곳을 말한다"}]})
         transcript = self.tmp / "t.jsonl"
         transcript.write_text(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "안녕"}]}}) + "\n")
         payload = {"tool_name": "AskUserQuestion", "transcript_path": str(transcript),

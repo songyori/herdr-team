@@ -42,8 +42,8 @@ STATUS_TEXT = {"passed": "통과", "flaky": "통과(불안정 의심: 첫 실행
                "skipped": "돌리지 않음(관련 파일 없음)", "failed": "실패", "timeout": "시간 초과"}
 CONFIRM_LINE = ("이 명령은 리뷰 전에 코디네이터 환경에서 자동으로 돈다(Codex 샌드박스 밖, 사용자 권한). "
                 "워커도 자기 환경에서 돌린다.")
-CONFIRM_HINT = (f"커밋된 `[test]` 를 사용자가 확정하지 않았다. `{SHIM} notify --type question --json - --test-confirm` "
-                "으로 묻는다")
+CONFIRM_HINT = (f"커밋된 `[test]` 를 사용자가 확정하지 않았다. 관제가 확정 질문을 올린다. 확정 기록이 빠졌으면 "
+                f"`{SHIM} test-confirm`")
 NO_CONFIG = (f"커밋된 HEAD 의 {PLAN_FILE} 에 [test] 가 없다(작업 트리에만 있으면 커밋한다). 테스트 관문이 꺼져 있다")
 
 
@@ -255,8 +255,8 @@ def approved_config(p) -> GateConfig:
     """`hteam test` 의 설정: HEAD 의 [test] 가 있고 사용자가 확정한 것. 아니면 no_test_config·test_unapproved(exit 2)."""
     cfg = require_config(p)
     if not is_approved(p, digest(cfg)):
-        raise HteamError("test_unapproved", "커밋된 [test] 를 사용자가 확정하지 않았다. 코디네이터가 메인을 거쳐 확정을 "
-                         "묻는다(hteam notify --type question --json - --test-confirm)", USAGE)
+        raise HteamError("test_unapproved", "커밋된 [test] 를 사용자가 확정하지 않았다. 관제가 메인에 확정 질문을 올린다"
+                         "(hteam status 의 test_gate)", USAGE)
     return cfg
 
 

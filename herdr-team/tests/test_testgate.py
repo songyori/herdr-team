@@ -156,7 +156,7 @@ class ApprovalTest(GateCase):
         self.commit("src/a.py", "a\n", "[T-001] a")
         code, out = self.run_test("T-001")
         self.assertEqual((code, out["error"]["code"]), (2, "test_unapproved"), out)
-        self.assertIn("--test-confirm", out["error"]["message"])
+        self.assertIn("hteam status 의 test_gate", out["error"]["message"])
         self.assertEqual(self.gate_calls(), [])
         with mock.patch.dict(os.environ, self.env, clear=True):
             self.assertEqual(testgate.gate_state(self.p)["state"], "unapproved")

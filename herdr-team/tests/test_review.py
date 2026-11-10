@@ -1516,12 +1516,12 @@ class ReviewGateTest(GateCase):
         while not (self.tmp / "fake" / "started").exists():
             self.assertLess(time.monotonic(), deadline, "관문이 시작하지 않았다")
             time.sleep(0.05)
-        fix = self.hteam_bg("fix", "T-001", "--note=x")
-        time.sleep(1.0)
-        self.assertIsNone(fix.poll())  # 관문이 끝날 때까지 finish 잠금에서 기다린다
+        code, out = self.hteam("fix", "T-001", "--note=x")  # 관제 안의 fix 는 관문을 기다리지 않는다(설계 8.5)
+        self.assertEqual((code, out["error"]["code"]), (3, "review_busy"), out)
+        self.assertEqual(self.task_state("T-001")["round"], 1)
         (self.tmp / "fake" / "go").touch()
         self.assertEqual(self.finish(review)[1]["status"], "reviewing")
-        code, out = self.finish(fix)
+        code, out = self.hteam("fix", "T-001", "--note=x")
         self.assertEqual((code, out["error"]["code"]), (3, "bad_state"), out)  # 관문 뒤 상태(reviewing)를 본다
 
     def test_roles_without_gate(self):
