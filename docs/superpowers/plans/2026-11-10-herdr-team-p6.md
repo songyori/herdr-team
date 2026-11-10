@@ -1077,13 +1077,13 @@ herdr-orch 설계 13.5(닫기)·13.7(hcio)·13.8(비우기)·13.9(명령·오류
 **Interfaces:**
 - Consumes: Task 1 의 `persist.inspect`·`reservation`·`last_persistent`·`RESET_PREFIX`·`_running`(같은 모듈 안), `workers._kill_ok`·`_rm_ok`, `auth.owner_run_id`·`owned_dispatch`, `liveness.status_word`, `procs.me`, `mailbox.post`·`wake`.
 - Produces:
-  - CLI `terminal-close --terminal <t> [--abandon]`(소유자) → `{"terminal", "closed": true, "abandoned": <진행 중이던 Dispatch 또는 null>, "released": [<id>…]}`, 터미널이 이미 없으면 `{"terminal", "closed": false, "reason": "not_found", "abandoned", "released"}`(exit 0). exit 3 `not_persistent_terminal`·`terminal_busy`(data `dispatch`), exit 1 `hc_failed`(hc get·kill·rm 실패, 상태를 바꾸지 않는다), exit 5 `not_owner`.
+  - CLI `terminal-close --terminal <t> [--abandon]`(소유자) → `{"terminal", "closed": true, "abandoned": <진행 중이던 Dispatch 또는 null>, "released": [<id>…]}`, 터미널이 이미 없으면 `{"terminal", "closed": false, "reason": "not_found", "abandoned", "released"}`(exit 0). exit 3 `not_persistent_terminal`·`terminal_busy`(data `dispatch`. 살아 있는 다른 리셋·닫기 예약이면 `dispatch` null), exit 1 `hc_failed`(hc get·kill·rm 실패, 상태를 바꾸지 않는다), exit 5 `not_owner`.
   - CLI `terminal-reset --terminal <t> [--name <이름>] [--timeout-ms N]`(소유자, 기본 10000) → `{"terminal", "agent", "turn", "status": "idle", "title", "seconds": float, "signal": "event"|"poll", "warnings": [] | ["name_ignored"]}`. exit 2 `usage`(`--name 은 소문자로 시작하는 소문자·숫자·- 1–32자다`, `^[a-z][a-z0-9-]{0,31}$`), exit 3 Task 1 의 `terminal_gone`·`not_persistent_terminal`·`terminal_busy`·`terminal_not_ready`, exit 1 `hc_failed`(keys 실패 등), exit 4 `reset_timeout`(`고정 터미널 {t} 을 비웠다는 신호가 {N}ms 안에 오지 않았다`, hint `비웠는지 알 수 없다. 터미널을 닫고(terminal-close) 새로 띄운다`, data `{"turn_before": N, "last": {"status", "turn", "title"}}`).
   - CLI `send … [--key <K>]`: 결과에 늘 `duplicate`(새로 쓰면 false). 같은 key 의 메시지가 있으면 `{"message": <그 id>, "wake": null, "duplicate": true}`. exit 2 `usage`(`--key 는 [A-Za-z0-9._:-] 1–64자다`), exit 3 `send_key_conflict`(`같은 key {K} 로 다른 제목·본문을 이미 보냈다(메시지 {id})`).
-  - `persist.close(store, run_id, terminal, abandon) -> dict`, `persist.reset(store, run_id, terminal, name, timeout_ms) -> dict`, `persist.NAME_RE`, `persist.CLEAR_KEYS = ["/", "c", "l", "e", "a", "r"]`, `persist.RESET_POLL_S = 0.2`.
+  - `persist.close(store, run_id, terminal, abandon) -> dict`, `persist.reset(store, run_id, terminal, name, timeout_ms) -> dict`, `persist.NAME_RE`, `persist.CLEAR_KEYS = ["/", "c", "l", "e", "a", "r"]`, `persist.RESET_POLL_S = 0.2`. 닫기와 리셋이 함께 쓰는 터미널 예약 `persist._reserve(store, terminal, kind, *, running_ok=False) -> (key, value)`·`persist._release(store, key, value)`(모듈 안). Task 1 의 `persist.reservation` 은 값의 넷째 칸을 종류(`reset`·`close`, 없으면 `reset`)로 읽어 `"kind"` 를 더 주고, `terminal_busy` 문구는 종류에 따라 "비우는 중이다(terminal-reset)"·"닫는 중이다(terminal-close)" 다.
   - `comms.send(store, to, subject, body, key=None) -> dict`, `comms.KEY_RE`, `mailbox.post(..., send_key=None)`.
-  - `hcio.keys(terminal, keys: list[str], timeout=10) -> dict`: `hc keys --json T <키…>`(`--json` 을 키 앞에 둔다: 실험 X2 의 꼴. 키 목록 뒤에 두면 키 이름으로 읽힐 수 있다), `hcio.events(terminal) -> EventStream`(`hc events --json --terminal T` 를 Popen 으로 띄운다. 띄우지 못하면 `hc_missing`(exit 12)·`HcFailure("exec_failed")`), `EventStream.read(timeout: float) -> dict | None`(마감까지 다음 JSON 객체 줄, 없거나 EOF 면 None), `EventStream.close()`, `EventStream.closed: bool`(EOF 를 봤거나 닫았다), `hcio.kill(terminal, timeout=30)`.
-  - 가짜 hc: `keys`(기록·on_clear), `events`, `connect`(doc.get), `get` 결과의 `title`(없으면 "").
+  - `hcio.keys(terminal, keys: list[str], timeout=10) -> dict`: `hc keys --json T <키…>`(`--json` 을 키 앞에 둔다: 실험 X2 의 꼴. 키 목록 뒤에 두면 키 이름으로 읽힐 수 있다), `hcio.events(terminal) -> EventStream`(`hc events --json --terminal T` 를 Popen 으로 띄운다. 띄우지 못하면 `hc_missing`(exit 12)·`HcFailure("exec_failed")`), `EventStream(proc, terminal=None)`(스냅숏에서 그 터미널을 고른다), `EventStream.read(timeout: float) -> dict | None`(마감까지 다음 사건을 평평한 dict 로: `{"type", "terminal"}` 에 `snapshot` 은 `status`·`turn`·`title`, `status` 는 `status`, `turn` 은 `turn`·`status`(= data.state), `title` 은 `title`. `status` 는 hc get 과 같은 꼴(`{"app","state"}` 또는 낱말)이라 `liveness.status_word` 로 읽는다. 없거나 EOF 면 None. `0` 이면 기다리지 않고 버퍼와 한 번의 비차단 읽기만 본다), `EventStream.close()`, `EventStream.closed: bool`(EOF 를 봤거나 닫았다), `hcio.kill(terminal, timeout=30)`.
+  - 가짜 hc: `keys`(기록·on_clear), `events`(실제 꼴: 스냅숏 한 줄, 그 뒤 바뀔 때마다 status → turn → title 알림, `on_clear: event` 의 늦은 줄은 turn 알림과 이름이 있으면 title 알림. state 의 `"noise": {주소: 초}` 면 스냅숏 뒤 그 초 동안 heartbeat 알림을 쉬지 않고 낸다), `connect`(doc.get, 실제 꼴: `{"result": {"value": {"spaces": [{"id", "name", "folder", "tabs": [{"id", "name", "root": {"type": "row", "id", "children": [{"type": "block", "id": "p<주소>", "content": {"terminal": <주소>}}]}}]}]}, "version": 1}}`. state 의 `"doc"` 가 있으면 그것을 `value` 로 쓴다), `get` 결과의 `title`(없으면 "").
   - 버전 0.2.0 세 곳(`herdr-orch/lib/horch/paths.py` 의 `VERSION`, `herdr-orch/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` 의 herdr-orch 항목).
 
 **Rules:**
@@ -1091,18 +1091,18 @@ herdr-orch 설계 13.5(닫기)·13.7(hcio)·13.8(비우기)·13.9(명령·오류
 1. `terminal-close`(13.5):
    1. `hc get <t>`(5초). `not_found` 면 4 의 기록 정리만 하고 `closed: false, reason: "not_found"`. 그 밖의 실패는 exit 1 `hc_failed`.
    2. 라벨 `horch.run` 이 이 Run 이고 `horch.persistent` 가 있어야 한다(아니면 `not_persistent_terminal`).
-   3. 그 터미널에 `launching`·`active` Dispatch 가 있으면 `--abandon` 이 있어야 한다(아니면 `terminal_busy`, data `dispatch`).
+   3. 그 터미널에 `launching`·`active` Dispatch 가 있으면 `--abandon` 이 있어야 한다(아니면 `terminal_busy`, data `dispatch`). 이 검사는 터미널 예약 `_reserve(store, t, "close", running_ok=abandon)` 안에서 한다: `BEGIN IMMEDIATE` 에서 진행 중 Dispatch 와 살아 있는 다른 예약(`reservation`, 있으면 `terminal_busy`, data `dispatch` null)을 본 뒤 `meta` 에 `reset:<t>` = `<pid>|<시작 시각>|<at>|close` 를 쓴다. 이 예약을 kill 전에 잡아 kill·rm·기록 정리가 끝날 때까지(성공·실패 모두) 쥐고 `finally` 에서 `_release`(자기 값일 때만 지운다)한다. 그동안 `--terminal` 넣기·`terminal-reset` 은 살아 있는 예약을 보고 `terminal_busy`("닫는 중이다(terminal-close)")다(검사와 kill 사이에 새 Dispatch 가 들어와 `--abandon` 없이 닫히는 일을 막는다, orch 설계 13.5 의 4, Codex 커밋 리뷰 c6d82d2). 1 의 `not_found` 는 hc 를 부르지 않으므로 예약 없이 기록만 정리한다.
    4. live 면 `workers._kill_ok`(not_found·finished 는 성공), 그다음 `workers._rm_ok`(live 동안만 잠깐 다시). 실패하면 상태를 바꾸지 않고 exit 1. 그 뒤 한 트랜잭션에서 그 터미널의 진행 중 고정 Dispatch 를 `abandoned` 로 쓰고(결과의 `abandoned`), 이어서 그 터미널의 `settled`·`retained`·`abandoned` 고정 Dispatch 를 모두 `released`(`closed_at`)로 쓴다. 방금 `abandoned` 로 쓴 것도 `released` 에 든다(터미널이 없으니 남길 것이 없다). 다시 부르면 이어 한다(이미 끝난 터미널은 kill 없이 rm, 이미 없으면 1).
 2. `terminal-reset`(13.8):
    1. `--name` 형식 검사(exit 2, hc 를 부르기 전).
    2. `persist.inspect(store, run_id, t)`(Task 1 의 2 와 같은 거부). 에이전트는 앞 고정 Dispatch 의 `agent`. Claude 에 `--name` 이면 이름을 버리고 `warnings` 에 `name_ignored`.
-   3. 리셋 예약: `BEGIN IMMEDIATE` 에서 진행 중 Dispatch 와 살아 있는 다른 예약(`persist.reservation`)을 다시 보고(있으면 exit 3 `terminal_busy`) `meta` 에 `reset:<t>` = `<pid>|<시작 시각>|<now>` 를 쓴다(`INSERT … ON CONFLICT(key) DO UPDATE`, 죽은 프로세스의 옛 값은 덮어쓴다). 이 뒤의 모든 길(성공·실패·시간 초과·예외)은 `finally` 에서 `DELETE FROM meta WHERE key=? AND value=?`(자기 값일 때만)를 한다.
+   3. 리셋 예약 `_reserve(store, t, "reset")`: `BEGIN IMMEDIATE` 에서 진행 중 Dispatch 와 살아 있는 다른 예약(`persist.reservation`, 리셋·닫기 모두)을 다시 보고(있으면 exit 3 `terminal_busy`) `meta` 에 `reset:<t>` = `<pid>|<시작 시각>|<now>|reset` 을 쓴다(`INSERT … ON CONFLICT(key) DO UPDATE`, 죽은 프로세스의 옛 값은 덮어쓴다). `reservation` 은 종류가 없는 옛 값(`<pid>|<시작 시각>|<at>`)을 `reset` 으로 본다. 이 뒤의 모든 길(성공·실패·시간 초과·예외)은 `finally` 에서 `_release` = `DELETE FROM meta WHERE key=? AND value=?`(자기 값일 때만)를 한다.
    4. `hcio.events(t)` 구독을 먼저 띄우고(실패하면 폴링만), `hc get` 으로 `turn_before` 를 읽는다. 구독은 keys 보다 먼저 띄운다: 가짜 hc 의 `on_clear: event` 는 keys 를 받을 때 이미 붙은 구독에만 turn 사건을 주고 `hc get` 은 옛 turn 그대로 둔다(`test_turn_event_needs_subscription_before_keys`). keys 뒤에 구독하거나 폴링만 하는 구현은 그 시험에서 `reset_timeout` 이 된다.
    5. `hcio.keys(t, CLEAR_KEYS + (["space", *이름] if Codex 이고 이름 else []) + ["enter"])`. 실패는 exit 1 `hc_failed`. 빈칸 키 이름은 `space` 다(실제 hc 로 확인했다: `hc keys --json <T> a space b enter` 가 동작하고 `spc` 는 `invalid_params`. 결과 JSON 은 `{"status": null, "turn": 0}`. 가짜 hc 도 같은 꼴을 낸다).
-   6. 기다림: 마감(`timeout_ms`)까지 구독 줄 가운데 `turn > turn_before` 이고 `status == "idle"` 인 첫 줄이면 `signal: "event"`, 아니면 `RESET_POLL_S` 마다 `hc get`(3초) 해 같은 조건이면 `signal: "poll"`. 줄의 모양은 `{"terminal", "status", "turn", "title"}` 로 본다(실제 `hc events` 의 줄 모양은 구현자가 `hc events --help` 로 확인하고 다르면 읽는 쪽만 맞춘다. 맞지 않는 줄은 건너뛰고 폴링이 받는다). `seconds` 는 keys 뒤 신호까지(소수 셋째 자리 float). `title` 은 신호 뒤 `hc get` 의 값. 폴링 `hc get` 의 3초는 남은 시간으로 줄이지 않는다(마감 직전 호출이 마감을 넘을 수 있다. orch 설계 13.11 의 한계).
-   7. 마감까지 없으면 exit 4 `reset_timeout`(`last` 는 마지막으로 본 `hc get`). 구독 프로세스는 늘 `close()` 한다.
+   6. 기다림: 마감(`timeout_ms`)까지 구독의 `turn` 사건 가운데 `turn > turn_before` 이고 상태가 `idle` 인 첫 사건이면 `signal: "event"`, 아니면 `RESET_POLL_S` 마다 `hc get`(3초) 해 같은 조건이면 `signal: "poll"`. 사건의 상태는 `liveness.status_word(사건)` 이고, turn 사건에 상태가 없으면 마지막 `status`·`snapshot` 사건의 상태를 쓴다. 상태는 `idle` 만 받는다: `/clear` 뒤에는 Claude·Codex 모두 `idle`·turn+1 이고(X2·X3b·X6) 보통 턴은 `done` 으로 끝난다. `done` 을 받으면 보통 글로 처리된 `/clear`(X3 의 감싼 `/clear`)를 비운 것으로 본다(`persist._cleared` 는 사건·폴링 모두 같은 조건). 실제 `hc events --json` 의 줄 꼴(2026-11-10 실제 hc 로 확인)은 첫 줄 스냅숏 `{"channel": null, "seq", "terminals": [<hc get 꼴>]}`, 그 뒤 사건마다 JSON-RPC 알림 `{"jsonrpc": "2.0", "method": "event", "params": {"type", "terminal", "seq", "data"}}` 이다(turn 의 data `{"state", "turn"}`, state 는 그 turn 이 끝난 뒤 상태. status 의 data `{"records", "reported", "status": {"app", "state"}}`. title 의 data `{"title"}`). 이 해석은 `hcio` 의 `EventStream` 만 한다(Interfaces). heartbeat·missed·labels 등 그 밖의 종류와 JSON 객체가 아닌 줄은 건너뛴다. `seconds` 는 keys 뒤 신호까지(소수 셋째 자리 float). `title` 은 신호 뒤 `hc get` 의 값(event 신호 뒤 그 `hc get` 이 실패하면 `""`. turn 알림에는 title 이 없다). 폴링 `hc get` 의 3초는 남은 시간으로 줄이지 않는다(마감 직전 호출이 마감을 넘을 수 있다. orch 설계 13.11 의 한계).
+   7. 마감까지 없으면 시간 초과로 정하기 전에 `stream.read(0)` 을 None 이 나올 때까지 되풀이해 이미 온 사건을 기다리지 않고 다 읽는다. 그 가운데 6 의 완료 사건이 있으면 성공(`signal: "event"`)이다(느린 폴링 `hc get` 이 마감을 넘기는 동안 온 신호, Codex 커밋 리뷰 c6d82d2). 그래도 없으면 exit 4 `reset_timeout`(`last` 는 마지막으로 본 `hc get`). 구독 프로세스는 늘 `close()` 한다.
 3. `send --key`(13.9): 검사 순서는 key 형식 → 소유자 확인(`dispatch:` 는 `auth.owner_run_id` → `auth.owned_dispatch`, 지금 그대로 exit 5·3) → key 조회(`SELECT … FROM messages WHERE mailbox=? AND send_key=?`) → 있으면 제목·본문이 같으면 `duplicate`, 다르면 `send_key_conflict` → 없을 때만 지금의 `active` 검사와 쓰기(`mailbox.post(..., send_key=K)`). 동시 쓰기로 `send_key_once` 위반(`sqlite3.IntegrityError`)이 나면 다시 조회해 같은 판정을 한다. `run:` 메일함에도 같은 규칙(key 조회는 쓰기 트랜잭션 안). key 없는 send 는 지금 그대로(`duplicate: false` 만 더한다).
-4. hcio(13.7): hc 를 부르는 곳은 여전히 `hcio.py` 뿐이다. `EventStream.read` 는 `select` 로 마감을 지키고 줄 단위로 JSON 객체만 돌려준다. `close()` 는 살아 있으면 terminate → 2초 → kill 하고 파이프를 닫는다.
+4. hcio(13.7): hc 를 부르는 곳은 여전히 `hcio.py` 뿐이다. `EventStream.read` 는 `select` 로 마감을 지키고(반복마다 마감을 먼저 본다. 지났으면 버퍼의 줄만 보고 새로 읽지 않는다. 건너뛸 알림(heartbeat, 작업 중 Codex 의 잦은 title 등)이 쉬지 않고 들어와 파이프가 늘 읽을 수 있어도 마감을 넘기지 않는다. `0` 이면 버퍼와 한 번의 비차단 읽기만 한다, Codex 커밋 리뷰 79bd058) 줄 단위로 읽은 JSON 객체를 평평한 사건으로 바꿔 돌려준다(2 의 6 의 꼴. 스냅숏은 생성자의 `terminal` 인 항목, 해석할 수 없는 줄은 건너뛴다. 줄바꿈 없이 끝난 마지막 줄도 본다). `hcio` 는 `liveness` 를 들여오지 않는다(순환): 사건의 `status` 는 hc get 꼴 그대로 두고 persist 가 `liveness.status_word` 로 읽는다. `close()` 는 살아 있으면 terminate → 2초 → kill 하고 파이프를 닫는다.
 5. skill.md 와 버전은 아래 Step 3 의 블록 그대로.
 
 - [ ] **Step 1: 실패하는 테스트 작성**
@@ -1117,6 +1117,7 @@ import time
 import unittest
 
 from tests.test_persist import PersistCase
+from horch import procs
 
 CLEAR = ["/", "c", "l", "e", "a", "r"]
 
@@ -1201,6 +1202,42 @@ class TerminalCloseTest(PersistCase):
         code, res = self.o("terminal-close", "--terminal", term)  # 이미 끝난 터미널: kill 없이 rm 만
         self.assertEqual((code, res["closed"], res["released"]), (0, True, [d1]))
 
+    def test_close_holds_reservation_against_put_and_reset(self):
+        """닫기는 kill 전에 터미널 예약(종류 close)을 잡아 끝날 때까지 쥔다. 그동안 --terminal 넣기·terminal-reset 은
+        terminal_busy 이고, 닫기가 끝나면 예약은 지워진다(Codex 커밋 리뷰 c6d82d2)."""
+        d1, term = self.first()
+        self.delay_hc("kill", 3.0)
+        bg = self.horch_bg("terminal-close", "--terminal", term, terminal="t100")
+        self.addCleanup(lambda: bg.poll() is None and bg.kill())
+        deadline = time.monotonic() + 10
+        while (row := self.db().execute("SELECT value FROM meta WHERE key=?", (f"reset:{term}",)).fetchone()) is None:
+            self.assertLess(time.monotonic(), deadline, "닫기 예약이 생기지 않았다")
+            time.sleep(0.05)
+        self.assertTrue(row["value"].endswith("|close"), row["value"])
+        dispatches = self.count("dispatches")
+        code, res = self.put(term)
+        self.assertEqual((code, res["error"]["code"], res["dispatch"]), (3, "terminal_busy", None), res)
+        self.assertIn("terminal-close", res["error"]["message"])
+        code, res = self.o("terminal-reset", "--terminal", term)
+        self.assertEqual((code, res["error"]["code"]), (3, "terminal_busy"), res)
+        self.assertEqual(self.count("dispatches"), dispatches)
+        self.assertIsNone(bg.poll())  # 두 거부를 본 동안 닫기는 아직 kill 을 기다린다
+        code, res = self.finish(bg)
+        self.assertEqual((code, res["closed"], res["abandoned"], res["released"]), (0, True, None, [d1]), res)
+        self.assertIsNone(self.db().execute("SELECT 1 FROM meta WHERE key=?", (f"reset:{term}",)).fetchone())
+
+    def test_close_refused_while_other_reservation_lives(self):
+        _, term = self.first()
+        pid, started = procs.me()  # 이 시험 프로세스는 살아 있다(리셋 중인 것으로 본다)
+        self.reserve(term, pid, started)
+        calls = len(self.hc_calls())
+        code, res = self.o("terminal-close", "--terminal", term, "--abandon")
+        self.assertEqual((code, res["error"]["code"], res["dispatch"]), (3, "terminal_busy", None), res)
+        self.assertIn("terminal-reset", res["error"]["message"])
+        self.assertEqual([c for c in self.hc_calls()[calls:] if c[0] in ("kill", "rm")], [])
+        self.assertEqual(self.hc_state()["terminals"][term]["state"], "live")
+        self.assertIsNotNone(self.db().execute("SELECT 1 FROM meta WHERE key=?", (f"reset:{term}",)).fetchone())
+
     def test_hc_failure_and_owner(self):
         _, term = self.first()
         self.fail_hc("get", "timeout")
@@ -1284,6 +1321,47 @@ class TerminalResetTest(PersistCase):
         self.assertEqual((out["signal"], out["turn"], out["status"]), ("event", 4, "idle"))
         self.assertEqual(self.hc_state()["keys"][-1]["subscribed"], True)
         self.assertEqual(self.hc_state()["terminals"][term]["turn"], 3)  # 폴링으로는 알 수 없었다
+        self.assertIsNone(self.reservation_row(term))
+
+    def test_slow_poll_still_sees_arrived_event(self):
+        """느린 폴링 hc get 이 마감을 넘겨도, 그 사이 이미 온 turn 사건을 시간 초과 전에 읽어 성공한다
+        (Codex 커밋 리뷰 c6d82d2 의 재현: on_clear event, get 지연 0.7초, --timeout-ms 500)."""
+        _, term = self.first()
+        with self._hc_locked() as st:
+            st["on_clear"] = {term: "event"}
+            st.setdefault("delay", {})["get"] = 0.7
+        code, out = self.o("terminal-reset", "--terminal", term, "--timeout-ms", "500")
+        self.assertEqual(code, 0, out)
+        self.assertEqual((out["signal"], out["turn"], out["status"]), ("event", 4, "idle"))
+        self.assertIsNone(self.reservation_row(term))
+
+    def reset_then(self, term, *, status, turn, timeout_ms):
+        """on_clear none 으로 리셋을 띄우고 keys 가 온 뒤(turn_before 를 읽은 뒤) 터미널을 status·turn 으로 바꾼다.
+        가짜 events 는 그 변화를 turn 알림(data.state = status)으로, hc get 은 같은 값으로 준다."""
+        with self._hc_locked() as st:
+            st["on_clear"] = {term: "none"}
+        bg = self.horch_bg("terminal-reset", "--terminal", term, "--timeout-ms", str(timeout_ms), terminal="t100")
+        self.addCleanup(lambda: bg.poll() is None and bg.kill())
+        deadline = time.monotonic() + 10
+        while not self.keys_to(term):
+            self.assertLess(time.monotonic(), deadline, "keys 가 오지 않았다")
+            time.sleep(0.05)
+        self.update_terminal(term, status=status, turn=turn)
+        return self.finish(bg)
+
+    def test_idle_after_clear_counts_for_codex(self):
+        """Codex 도 /clear 뒤 idle·turn+1 이면 비운 것이다(X3b)."""
+        _, term = self.first(agent="codex")
+        code, res = self.reset_then(term, status="idle", turn=4, timeout_ms=20000)
+        self.assertEqual((code, res["turn"], res["status"]), (0, 4, "idle"), res)
+
+    def test_done_turn_is_not_cleared(self):
+        """turn 이 올라도 done 이면 비운 것으로 보지 않는다. 보통 턴은 done 으로 끝나고, 보통 글로 처리된 /clear
+        (X3 의 감싼 /clear)도 그렇다. 사건·폴링 모두 받지 않고 마감까지 기다려 reset_timeout 이다."""
+        _, term = self.first(agent="codex")
+        code, res = self.reset_then(term, status="done", turn=4, timeout_ms=1500)
+        self.assertEqual((code, res["error"]["code"]), (4, "reset_timeout"), res)
+        self.assertEqual((res["turn_before"], res["last"]["status"], res["last"]["turn"]), (3, "done", 4))
         self.assertIsNone(self.reservation_row(term))
 
     def test_keys_failure_is_hc_failed(self):
@@ -1448,6 +1526,8 @@ from unittest import mock
 import json
 import os
 import subprocess
+import sys
+import time
 import unittest
 from unittest import mock
 ```
@@ -1493,19 +1573,40 @@ class HcioKeysEventsTest(HorchCase):
         self.assertEqual(cm.exception.kind, "not_found")
 
     def test_events_stream_and_close(self):
+        # 가짜 hc events 는 실제 꼴(스냅숏 한 줄 + JSON-RPC 알림)을 내고, EventStream 이 평평한 사건으로 바꾼다
         self.add_terminal("t3", status="done", turn=2)
         stream = hcio.events("t3")
         try:
             first = stream.read(5)
-            self.assertEqual((first["terminal"], first["status"], first["turn"]), ("t3", "done", 2))
+            self.assertEqual((first["type"], first["terminal"], liveness.status_word(first), first["turn"]),
+                             ("snapshot", "t3", "done", 2))
             self.update_terminal("t3", status="idle", turn=3)
-            nxt = stream.read(5)
-            self.assertEqual((nxt["status"], nxt["turn"]), ("idle", 3))
+            got = [stream.read(5), stream.read(5)]
+            self.assertEqual([(e["type"], e["terminal"], liveness.status_word(e), e.get("turn")) for e in got],
+                             [("status", "t3", "idle", None), ("turn", "t3", "idle", 3)])
             self.assertIsNone(stream.read(0.2))  # 바뀐 것이 없으면 마감까지 None
         finally:
             stream.close()
         self.assertTrue(stream.closed)
         self.assertIn(["events", "--json", "--terminal", "t3"], self.hc_calls())
+
+    def test_read_keeps_deadline_under_skipped_notices(self):
+        """건너뛸 알림(heartbeat)이 쉬지 않고 와 파이프가 늘 읽을 수 있어도 read 는 마감을 지킨다. read(0) 도 버퍼와 한 번의
+        비차단 읽기만 한다(Codex 커밋 리뷰 79bd058: 실제 Codex 는 작업 중 제목 사건을 0.1초마다 낸다)."""
+        self.add_terminal("t3", status="done", turn=2)
+        with self._hc_locked() as st:
+            st["noise"] = {"t3": 3.0}
+        stream = hcio.events("t3")
+        try:
+            self.assertEqual(stream.read(5)["type"], "snapshot")
+            for timeout in (0.05, 0):
+                with self.subTest(timeout=timeout):
+                    t0 = time.monotonic()
+                    self.assertIsNone(stream.read(timeout))
+                    self.assertLess(time.monotonic() - t0, 0.3)
+            self.assertFalse(stream.closed)  # 알림은 아직 이어진다
+        finally:
+            stream.close()
 
     def test_events_failure_ends_stream(self):
         self.add_terminal("t3", status="done", turn=2)
@@ -1535,10 +1636,46 @@ class HcioKeysEventsTest(HorchCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         res = json.loads(proc.stdout.strip().splitlines()[-1])
         self.assertEqual(res["id"], 7)
-        tab = res["result"]["spaces"][0]["tabs"][0]
-        self.assertEqual((res["result"]["spaces"][0]["id"], tab["id"], tab["root"]["type"]), ("spA", "tbA", "row"))
-        self.assertEqual([c["terminal"] for c in tab["root"]["children"]], ["t2", "t1"])
-        self.assertEqual(tab["root"]["children"][0]["pane"], "pt2")
+        # 실제 꼴: result 는 {"value": 문서, "version"}, 자식은 {"type": "block", "id": <pane>, "content": {"terminal"}}
+        space = res["result"]["value"]["spaces"][0]
+        tab = space["tabs"][0]
+        self.assertEqual((space["id"], tab["id"], tab["root"]["type"]), ("spA", "tbA", "row"))
+        self.assertIn("version", res["result"])
+        self.assertEqual([c["content"]["terminal"] for c in tab["root"]["children"]], ["t2", "t1"])
+        self.assertEqual((tab["root"]["children"][0]["type"], tab["root"]["children"][0]["id"]), ("block", "pt2"))
+
+    def test_event_lines_real_shape(self):
+        """실제 hc events --json 줄(2026-11-10 확인한 꼴)을 평평한 사건으로 바꾸고 나머지는 건너뛴다."""
+        def note(kind, data, term="t12w"):
+            return {"jsonrpc": "2.0", "method": "event", "params": {"type": kind, "terminal": term, "seq": 5, "data": data}}
+        lines = [
+            {"channel": None, "seq": 1, "terminals": [
+                {"address": "t9", "status": {"app": "codex", "state": "working"}, "turn": 7, "title": "x"},
+                {"address": "t12w", "status": {"app": "codex", "state": "done"}, "turn": 1, "title": "⠙ codexproj"}]},
+            note("heartbeat", {}),
+            note("status", {"records": {}, "reported": True, "status": {"app": "codex", "state": "idle"}}),
+            "not json",
+            [1, 2],
+            note("labels", {"labels": {"a": "b"}}),
+            note("turn", {"state": "done", "turn": 2}),
+            note("title", {"title": "test-a1 | proj"}),
+            {"jsonrpc": "2.0", "method": "missed", "params": {"terminal": "t12w"}},
+        ]
+        text = "\n".join(x if isinstance(x, str) else json.dumps(x) for x in lines)  # 마지막 줄은 줄바꿈 없이 끝난다
+        proc = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdout.write(sys.argv[1])", text],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE)
+        stream = hcio.EventStream(proc, "t12w")
+        try:
+            got = []
+            while not stream.closed:
+                event = stream.read(5)
+                if event is not None:
+                    got.append(event)
+        finally:
+            stream.close()
+        self.assertEqual([(e["type"], e["terminal"], liveness.status_word(e), e.get("turn"), e.get("title")) for e in got],
+                         [("snapshot", "t12w", "done", 1, "⠙ codexproj"), ("status", "t12w", "idle", None, None),
+                          ("turn", "t12w", "done", 2, None), ("title", "t12w", None, None, "test-a1 | proj")])
 
 
 if __name__ == "__main__":
@@ -1678,9 +1815,12 @@ if __name__ == "__main__":
 
 0.2.0(herdr-orch 설계 13.7): "on_send": {주소: accept|drop|working|mismatch}, "on_clear": {주소: turn|none|event}(기본 turn:
 `/clear` 키를 받으면 turn+1·idle. event: 상태는 그대로 두고, keys 를 받을 때 이미 붙어 있던 events 구독에만 0.3초 뒤
-turn+1·idle 줄을 준다. keys 는 그 구독이 붙기를 3초까지 기다리고 기록에 subscribed 를 남긴다), "keys": [{terminal, keys}]
-기록, "layout": {탭: [주소…]}(connect 의 doc 순서), "doc"(있으면 connect doc.get 결과 그대로). events 는 0.05초마다
-상태를 보고 바뀐 줄을 낸다(FAKE_HC_EVENTS_MAX 초 뒤 끝). 구독은 "subscribers": {주소: [pid…]} 에 이름을 올린다."""
+turn+1·idle 의 turn 알림(이름이 있으면 title 알림도)을 준다. keys 는 그 구독이 붙기를 3초까지 기다리고 기록에 subscribed 를
+남긴다), "keys": [{terminal, keys}] 기록, "layout": {탭: [주소…]}(connect 의 doc 순서), "doc"(있으면 connect doc.get 결과의
+value 그대로). events 는 실제 hc 꼴이다: 처음 스냅숏 한 줄 {"channel", "seq", "terminals": [get 꼴]}, 그 뒤 0.05초마다
+상태를 보고 바뀐 것마다 JSON-RPC 알림 한 줄 {"jsonrpc", "method": "event", "params": {"type": status|turn|title, "terminal",
+"seq", "data"}}(FAKE_HC_EVENTS_MAX 초 뒤 끝). 구독은 "subscribers": {주소: [pid…]} 에 이름을 올린다.
+"noise": {주소: 초} 면 스냅숏 뒤 그 초 동안 heartbeat 알림을 쉬지 않고 낸다(건너뛸 알림이 이어지는 구독 흉내)."""
 ```
 
 **Edit** `herdr-orch/tests/fakes/hc`
@@ -1693,7 +1833,8 @@ def handle(st, argv):
 
 ```python
 def doc_of(st):
-    """core 문서 herdr-app 흉내: 라벨 herdr.space·herdr.tab 이 있는 live 터미널을 탭 root row 의 pane 으로(순서는 layout)."""
+    """core 문서 herdr-app 의 value 흉내(실제 꼴): 라벨 herdr.space·herdr.tab 이 있는 live 터미널을 탭 root row 의 block
+    {"type": "block", "id": "p<주소>", "content": {"terminal": <주소>}} 으로(순서는 layout)."""
     spaces = {}
     for t in st["terminals"].values():
         labels = t.get("labels") or {}
@@ -1707,10 +1848,15 @@ def doc_of(st):
         for tb, addrs in tabs.items():
             first = [a for a in layout.get(tb, []) if a in addrs]
             order = first + [a for a in addrs if a not in first]
-            items.append({"id": tb, "root": {"type": "row", "children": [
-                {"type": "pane", "pane": f"p{a}", "terminal": a} for a in order]}})
-        result.append({"id": sp, "tabs": items})
+            items.append({"id": tb, "name": tb, "root": {"type": "row", "id": f"r{tb}", "children": [
+                {"type": "block", "id": f"p{a}", "content": {"terminal": a}} for a in order]}})
+        result.append({"id": sp, "name": sp, "folder": "/", "tabs": items})
     return {"spaces": result}
+
+
+def notice(kind, address, seq, data):
+    """실제 hc events 의 사건 알림 한 줄."""
+    return {"jsonrpc": "2.0", "method": "event", "params": {"type": kind, "terminal": address, "seq": seq, "data": data}}
 
 
 def handle(st, argv, lines=()):
@@ -1763,10 +1909,12 @@ def handle(st, argv, lines=()):
                 subs = live_subscribers(st, t["address"])
                 rec["subscribed"] = bool(subs)
                 if subs:
-                    line = {"terminal": t["address"], "status": "idle", "turn": t.get("turn", 0) + 1,
-                            "title": title or t.get("title", "")}
-                    st.setdefault("pending_events", {}).setdefault(t["address"], []).append(
-                        {"to": subs, "at": time.time() + 0.3, "line": line})
+                    lines = [notice("turn", t["address"], 0, {"state": "idle", "turn": t.get("turn", 0) + 1})]
+                    if title:
+                        lines.append(notice("title", t["address"], 0, {"title": title}))
+                    for line in lines:
+                        st.setdefault("pending_events", {}).setdefault(t["address"], []).append(
+                            {"to": list(subs), "at": time.time() + 0.3, "line": line})
         out({"status": None, "turn": 0})  # 실제 hc keys --json 의 결과 꼴
         return 0
     if cmd == "connect":
@@ -1776,7 +1924,8 @@ def handle(st, argv, lines=()):
                 continue
             req = json.loads(line)
             if req.get("method") == "doc.get" and (req.get("params") or {}).get("name") == "herdr-app":
-                print(json.dumps({"jsonrpc": "2.0", "id": req.get("id"), "result": st.get("doc") or doc_of(st)}))
+                print(json.dumps({"jsonrpc": "2.0", "id": req.get("id"),
+                                  "result": {"value": st.get("doc") or doc_of(st), "version": 1}}))
             else:
                 print(json.dumps({"jsonrpc": "2.0", "id": req.get("id"),
                                   "error": {"code": -32601, "message": "method not found"}}))
@@ -1846,11 +1995,13 @@ def wait_subscriber(args):
 
 
 def events(args):
-    """hc events --json --terminal T 흉내: 처음 한 줄, 그 뒤 상태·turn·제목이 바뀔 때마다 한 줄. 잠금은 볼 때만 잡는다.
-    처음 볼 때 "subscribers" 에 자기 pid 를 올리고, on_clear: event 가 이 구독에 남긴 줄(pending_events)은 때가 되면 낸다."""
+    """hc events --json --terminal T 흉내(실제 꼴): 처음 스냅숏 한 줄, 그 뒤 상태·turn·제목이 바뀔 때마다 그 종류의 알림 한 줄
+    (status → turn → title 차례). 잠금은 볼 때만 잡는다. 처음 볼 때 "subscribers" 에 자기 pid 를 올리고, on_clear: event 가
+    이 구독에 남긴 알림(pending_events)은 때가 되면 낸다."""
     term = opt(args, "--terminal")
     end = time.monotonic() + float(os.environ.get("FAKE_HC_EVENTS_MAX", "30"))
     last = None
+    seq = 0
     me = os.getpid()
     joined = False
     while True:
@@ -1876,13 +2027,40 @@ def events(args):
                     changed = True
             if changed:
                 path.write_text(json.dumps(st))
+        addr = t["address"]
+        cur = {"status": t.get("status"), "turn": t.get("turn", 0), "title": t.get("title", "")}
+        out_lines = []
+        if last is None:
+            seq += 1
+            out_lines.append({"channel": None, "seq": seq,
+                              "terminals": [{"title": "", **{k: v for k, v in t.items() if k != "flags"}}]})
+            noise = float(st.get("noise", {}).get(addr, 0))
+        else:
+            if cur["status"] != last["status"]:
+                seq += 1
+                out_lines.append(notice("status", addr, seq, {"records": {}, "reported": cur["status"] is not None,
+                                                              "status": cur["status"]}))
+            if cur["turn"] != last["turn"]:
+                seq += 1
+                out_lines.append(notice("turn", addr, seq, {"state": (cur["status"] or {}).get("state"),
+                                                            "turn": cur["turn"]}))
+            if cur["title"] != last["title"]:
+                seq += 1
+                out_lines.append(notice("title", addr, seq, {"title": cur["title"]}))
         for line in due:
+            seq += 1
+            line["params"]["seq"] = seq
+            out_lines.append(line)
+        for line in out_lines:
             print(json.dumps(line), flush=True)
-        snap = {"terminal": t["address"], "status": (t.get("status") or {}).get("state"), "turn": t.get("turn", 0),
-                "title": t.get("title", "")}
-        if snap != last:
-            print(json.dumps(snap), flush=True)
-            last = snap
+        if last is None and noise:
+            # 잠금 밖에서 큰 묶음으로 쉬지 않고 쓴다. 파이프가 늘 차 있어 읽는 쪽에는 언제나 읽을 것이 있다
+            blob = "".join(json.dumps(notice("heartbeat", addr, 0, {})) + "\n" for _ in range(2000))
+            until = time.monotonic() + noise
+            while time.monotonic() < until:
+                sys.stdout.write(blob)
+                sys.stdout.flush()
+        last = cur
         if time.monotonic() >= end:
             return 0
         time.sleep(0.05)
@@ -1891,7 +2069,7 @@ def events(args):
 - [ ] **Step 2: 실패 확인**
 
 Run: `cd herdr-orch && python3 -m unittest tests.test_reset tests.test_mailbox tests.test_hcio tests.test_meta tests.test_cli 2>&1 | tail -5`
-Expected: herdr-orch: `Ran 91 tests` / `FAILED (failures=24, errors=13)`. herdr-team `cd herdr-team && python3 -m unittest tests.test_base tests.test_cli`: `Ran 21 tests` / `FAILED (failures=2)`(`AssertionError: '0.1.' != '0.2.'`, 설치 기록 고르기의 `HteamError not raised`. `test_versions_match` 는 Step 3 이 marketplace·`HORCH_MIN` 을 함께 올리므로 이 단계에서는 통과한다). 대표 메시지: `unrecognized arguments: --keep-open`(17건, Task 1 구현이 없어서), `KeyError: 'duplicate'`, `sqlite3.OperationalError: no such column: send_key`, `AttributeError: module 'horch.hcio' has no attribute 'keys'`·`'events'`, `TypeError: kill() got an unexpected keyword argument 'timeout'`, `Tuples differ: (2, 'usage') != (3, 'send_key_conflict')`. ce3fe82 에 Task 1 블록과 이 태스크 Step 1 블록을 더한 트리(구현 없음)에서 쟀다. Task 1 구현이 있으면 `test_reset` 은 `terminal-close`·`terminal-reset` 이 `invalid choice`(exit 2)로, `SendKeyTest` 는 `unrecognized arguments: --key` 로, 버전 시험은 `'0.1.2' != '0.2.0'` 으로 실패한다. `HcioKeysEventsTest.test_fake_connect_doc_get` 은 가짜 hc 계약 시험이라 이 단계에서도 통과한다.
+Expected: herdr-orch: `Ran 91 tests` / `FAILED (failures=24, errors=13)`. herdr-team `cd herdr-team && python3 -m unittest tests.test_base tests.test_cli`: `Ran 21 tests` / `FAILED (failures=2)`(`AssertionError: '0.1.' != '0.2.'`, 설치 기록 고르기의 `HteamError not raised`. `test_versions_match` 는 Step 3 이 marketplace·`HORCH_MIN` 을 함께 올리므로 이 단계에서는 통과한다). 대표 메시지: `unrecognized arguments: --keep-open`(17건, Task 1 구현이 없어서), `KeyError: 'duplicate'`, `sqlite3.OperationalError: no such column: send_key`, `AttributeError: module 'horch.hcio' has no attribute 'keys'`·`'events'`, `TypeError: kill() got an unexpected keyword argument 'timeout'`, `Tuples differ: (2, 'usage') != (3, 'send_key_conflict')`. ce3fe82 에 Task 1 블록과 이 태스크 Step 1 블록을 더한 트리(구현 없음)에서 쟀다(79bd058·6786431·2cd720c 의 리뷰 고치기가 시험을 더하기 전 블록이다. 그 시험은 이 블록에 들었다). Task 1 구현이 있으면 `test_reset` 은 `terminal-close`·`terminal-reset` 이 `invalid choice`(exit 2)로, `SendKeyTest` 는 `unrecognized arguments: --key` 로, 버전 시험은 `'0.1.2' != '0.2.0'` 으로 실패한다. `HcioKeysEventsTest.test_fake_connect_doc_get` 은 가짜 hc 계약 시험이라 이 단계에서도 통과한다.
 
 - [ ] **Step 3: 구현**
 
@@ -1911,6 +2089,7 @@ Rules 1–5 와 Interfaces 대로 `persist.py`·`comms.py`·`mailbox.py`·`hcio.
 - 띄우기: `horch worker-start --keep-open [--tab <탭 id> | --hidden] --agent … --title … --spec-file …`. 결과의 `terminal` 이 고정 터미널이다(라벨 `horch.persistent=1`). `--tab` 은 소유자 space 의 그 탭에 붙이고 `--hidden` 은 화면에 붙이지 않는다(`--keep-open` 없이도 쓴다).
 - 다시 넣기: 앞 Dispatch 가 끝난 뒤 `horch worker-start --terminal <t> --title … --spec-file …`(또는 `--task <task> [--retry]`). 에이전트·모델·인자·cwd 는 그 터미널의 것을 그대로 쓴다(주면 exit 2). 상태가 `idle`·`done` 이 아니면 `terminal_not_ready`, 진행 중 Dispatch·리셋이 있으면 `terminal_busy`, 터미널이 없거나 끝났거나 다른 프로그램이면 `terminal_gone` 이고 어느 것이든 보내지 않는다(exit 3).
 - 들어갔는지: 결과의 `start_turn` 보다 turn 이 오르거나 워커가 horch 명령을 부르면 들어간 것이다. 보낸 뒤 60초 동안 아무 변화가 없으면 observed `not_started` 가 온다. horch 는 다시 보내지 않는다. 다시 넣으려면 `horch worker-abandon --dispatch <d> --keep-terminal` 뒤 `horch worker-start --terminal <t> --task <task>`. `warnings` 의 `delivery_uncertain` 은 보내기 응답을 받지 못했다는 뜻이다(들어갔을 수 있다).
+- 고정 Dispatch 의 `launch_failed` 는 `worker-list`·`worker-show` 의 `next` 를 주지 않는다(배치를 저장하지 않는다). 배치를 아는 호출자가 다시 띄운다.
 - 끝난 고정 Dispatch 는 `worker-release` 해도 터미널이 남는다. 일하는 중인 세션은 그대로 두고 Dispatch 만 떼려면 `worker-abandon --dispatch <d> --keep-terminal`(고정 Dispatch 에 `--kill` 은 exit 2).
 - 세션 비우기: `horch terminal-reset --terminal <t> [--name <이름>] [--timeout-ms N]` 이 `/clear` 를 키로 치고 turn 사건을 기다린다(`--name` 은 Codex 대화 이름). exit 4 `reset_timeout` 이면 비웠는지 모른다: 터미널을 닫고 새로 띄운다.
 - 닫기: `horch terminal-close --terminal <t> [--abandon]`(진행 중 Dispatch 가 있으면 `--abandon` 이 있어야 한다). 끄고 지운 뒤에만 `closed: true` 다.
@@ -1941,6 +2120,18 @@ Rules 1–5 와 Interfaces 대로 `persist.py`·`comms.py`·`mailbox.py`·`hcio.
 | `worker-start --keep-open` / `worker-start --terminal <t>` | 코디네이터 | 고정 터미널 띄우기 / 같은 터미널에 다시 넣기 |
 | `terminal-reset --terminal [--name] [--timeout-ms]` / `terminal-close --terminal [--abandon]` | 코디네이터 | 고정 터미널 세션 비우기 / 닫기 |
 | `ask` / `check --dispatch` / `escalate` / `done` | 워커 | 프리앰블 참고 |
+```
+
+exit 4 는 ask 만의 것이 아니게 됐다(`terminal-reset` 의 `reset_timeout`):
+
+**Edit** `herdr-orch/lib/horch/skill.md`
+
+```markdown
+0 성공, 1 실패·확인 불가, 2 입력 오류, 3 상태 충돌, 4 ask 시간 초과(`question` 으로 `--resume`), 5 권한 없음, 12 의존 프로그램 없음.
+```
+
+```markdown
+0 성공, 1 실패·확인 불가, 2 입력 오류, 3 상태 충돌, 4 시간 초과(ask 는 `question` 으로 `--resume`, `terminal-reset` 의 `reset_timeout` 은 비웠는지 모른다), 5 권한 없음, 12 의존 프로그램 없음.
 ```
 
 **Edit** `herdr-orch/.claude-plugin/plugin.json`
@@ -2377,7 +2568,7 @@ class TemplateConfigTest(unittest.TestCase):
 - [ ] **Step 2: 실패 확인**
 
 Run: `cd herdr-team && python3 -m unittest tests.test_config -v 2>&1 | tail -30`
-Expected: `Ran 34 tests`, `FAILED (failures=7, errors=12)`. 대표 메시지: `AttributeError: 'Config' object has no attribute 'crew'`(8건), `AttributeError: module 'hteam.config' has no attribute 'OLD_CONFIG_MESSAGE'`, `AssertionError: HteamError not raised`(crew 검사 넷), `KeyError: 'warnings'`(doctor), `AssertionError: 'coordinator' unexpectedly found in …`(템플릿). ce3fe82 에 Task 1·2 블록과 이 태스크 Step 1 블록을 더한 트리(템플릿 Replace 전, 구현 없음)에서 쟀다(앞 태스크 구현이 있으면 대표 메시지가 달라질 수 있다).
+Expected: `Ran 34 tests`, `FAILED (failures=7, errors=12)`. 대표 메시지: `AttributeError: 'Config' object has no attribute 'crew'`(8건), `AttributeError: module 'hteam.config' has no attribute 'OLD_CONFIG_MESSAGE'`, `AssertionError: HteamError not raised`(crew 검사 넷), `KeyError: 'warnings'`(doctor), `AssertionError: 'coordinator' unexpectedly found in …`(템플릿). ce3fe82 에 Task 1·2 블록과 이 태스크 Step 1 블록을 더한 트리(템플릿 Replace 전, 구현 없음)에서 쟀고, Task 1·2 구현이 있는 2cd720c 에 이 태스크 Step 1 블록을 더한 트리에서 다시 재도 숫자·대표 메시지가 같다(그 밖에 `'Config' object has no attribute 'overflow'`, `module 'hteam.config' has no attribute 'crew_warnings'` 각 1건).
 
 Run: `cd herdr-team && python3 -m unittest tests.test_setup.TemplateContractTest.test_auto_up_in_templates tests.test_autoup.DecideTest.test_auto_up_false_only_informs tests.test_hooks.AutoUpHookTest.test_auto_up_false_only_informs 2>&1 | tail -5`
 Expected: `Ran 3 tests`, `FAILED (failures=2, errors=1)`(템플릿의 `KeyError: 'drive'`, 자동 부활 둘은 `[drive]` 를 아직 읽지 않아 `Tuples differ: ('spawn', …) != (None, …)`·REVIVED 문구).
@@ -3094,10 +3285,15 @@ class AutoUpHookTest(HookCase):
 """테스트용 가짜 herdr-app(herdr-team 시험 전용, 설계 5.9.2·6.5·8.2). 호출 argv 를 $FAKE_HC_DIR/herdr-calls.jsonl 에 남기고,
 가짜 hc 와 같은 상태 파일($FAKE_HC_DIR/state.json)을 같은 잠금(lock)으로 읽고 쓴다.
 
-- status: horch 가짜와 같은 출력(doctor 시험).
+- status: 실제 herdr-app status 의 키(zoom·font_size·ui_font_size·space·tab·focused_pane·layout·agent·floats·overlays·
+  errors, 2026-11-10 확인)를 여러 줄 JSON 으로. herdr-team 은 horch doctor 의 herdr_app 검사(exit 0 과 한 줄 요약)로만
+  쓴다. 가짜가 모르는 값은 null·빈 목록이다.
 - do tab.rename --id X --name N: {"ok": true}.
-- ls: {"spaces": [{"id", "tabs": [{"id", "panes": [{"pane": "p<주소>", "terminal": "<주소>"}]}]}]}. live 이고 라벨
-  herdr.space·herdr.tab 이 있는 터미널만. 탭 안 순서는 상태 "layout"[탭] 의 주소 순서, 그 밖은 상태에 있는 순서로 뒤에.
+- ls: 실제 꼴(2026-11-10 확인) {"spaces": [{"id", "name", "folder", "machine": null, "active", "tabs": [{"id", "name",
+  "active", "settled", "terminals": [{"terminal": "<주소>", "pane": "p<주소>", "status", "app", "name": null,
+  "sub_agents": []}]}]}], "recent": []}. live 이고 라벨 herdr.space·herdr.tab 이 있는 터미널만. 탭 안 순서는 상태
+  "layout"[탭] 의 주소 순서, 그 밖은 상태에 있는 순서로 뒤에. space·탭의 name 은 id, folder 는 "/", 처음 space 와 space 마다
+  처음 탭이 active. 터미널의 status·app 은 상태 파일의 status({"app", "state"})에서, 모르면 null.
 - do pane.split '<JSON {direction, pane, argv}>': 새 터미널(주소 t<next>, argv, 그 pane 터미널의 herdr 라벨)을 만들고
   layout 에서 그 pane 바로 오른쪽에 둔다. {"pane", "terminal"}.
 - do pane.swap '<JSON {pane, target}>': layout 에서 두 pane 의 자리를 바꾼다. {"ok": true}.
@@ -3146,15 +3342,30 @@ def row(st, tab):
     return []
 
 
+def ls_terminal(t):
+    """ls 의 탭 terminals 항목(실제 꼴). status·app 은 상태 파일의 status 에서, 모르면 null."""
+    status = t.get("status")
+    if isinstance(status, str):
+        status = {"state": status}
+    status = status if isinstance(status, dict) else {}
+    return {"terminal": t["address"], "pane": f"p{t['address']}", "status": status.get("state"), "app": status.get("app"),
+            "name": None, "sub_agents": []}
+
+
 def handle(st, argv):
     if argv[:1] == ["status"]:
-        print(json.dumps({"running": True, "version": "0.9.0", "spaces": [{"id": "spA"}, {"id": "spB"}]}, indent=2))
+        print(json.dumps({"zoom": 1.0, "font_size": 13, "ui_font_size": 13, "space": None, "tab": None,
+                          "focused_pane": None, "layout": None, "agent": None, "floats": [], "overlays": [],
+                          "errors": []}, indent=2))
         return 0
     if argv[:1] == ["ls"]:
         spaces = {}
         for (space, tab), addrs in placed(st).items():
-            spaces.setdefault(space, []).append({"id": tab, "panes": [{"pane": f"p{a}", "terminal": a} for a in addrs]})
-        return out({"spaces": [{"id": s, "tabs": tabs} for s, tabs in spaces.items()]})
+            tabs = spaces.setdefault(space, [])
+            tabs.append({"id": tab, "name": tab, "active": not tabs, "settled": True,
+                         "terminals": [ls_terminal(st["terminals"][a]) for a in addrs]})
+        return out({"spaces": [{"id": s, "name": s, "folder": "/", "machine": None, "active": i == 0, "tabs": tabs}
+                               for i, (s, tabs) in enumerate(spaces.items())], "recent": []})
     if argv[:1] != ["do"] or len(argv) < 2:
         return 2
     name = argv[1]
@@ -4306,7 +4517,7 @@ Run: `cd herdr-team && python3 -m unittest tests.test_drive tests.test_autoup 2>
 Expected: `ImportError: cannot import name 'drive' from 'hteam'` 로 두 모듈 모두 가져오기 실패(`Ran 2 tests`, `FAILED (errors=2)`).
 
 Run: `cd herdr-team && python3 -m unittest tests.test_setup.UpDriveTest tests.test_hooks tests.test_base 2>&1 >/dev/null | grep -E '^(Ran|FAILED|OK)'`
-Expected: `Ran 69 tests`, `FAILED (failures=24, errors=6)`. 대표 메시지: `{'code': 'not_coordinator', 'message': '이 명령은 코디네이터만 부른다'…}`(5건, 시험 도구가 관제 환경으로 부른다), 훅의 `'herdr-team: 코디네이터 실행 기록이 불확실하다…' != 'herdr-team: 코디네이터가 꺼져 있어…'`(자동 부활이 아직 hc 로 본다), `AttributeError: module 'hteam.roles' has no attribute 'drive_env'`, `AttributeError: module 'hteam.autoup' has no attribute 'HUNG'`·`'OLD_CONFIG'`, up 의 `Tuples differ: (1, None, None, None, None) != (0, 'launched', 't300', …)`. ce3fe82 에 Task 1–3 블록과 이 태스크 Step 1 블록을 더한 트리(구현 없음)에서 쟀다(Task 1–3 구현이 있으면 숫자가 조금 달라질 수 있다). 이름을 바꾼 다른 시험 모듈도 구현 전에는 관제 판별이 없어 대부분 실패한다(`drive_only`·`not_coordinator` 차이).
+Expected: `Ran 69 tests`, `FAILED (failures=22, errors=6)`. 대표 메시지: `{'code': 'not_coordinator', 'message': '이 명령은 코디네이터만 부른다'…}`(5건, 시험 도구가 관제 환경으로 부른다), 훅의 `'herdr-team: 코디네이터 실행 기록이 불확실하다…' != 'herdr-team: 코디네이터가 꺼져 있어…'`(자동 부활이 아직 hc 로 본다), `AttributeError: module 'hteam.roles' has no attribute 'drive_env'`, `AttributeError: module 'hteam.autoup' has no attribute 'HUNG'`·`'OLD_CONFIG'`, up 의 `Tuples differ: (1, None, None, None, None) != (0, 'launched', 't300', …)`. Task 1·2 구현이 있는 2cd720c 에 Task 3 블록과 이 태스크 Step 1 블록을 더한 트리(Task 3 구현 없음)에서 쟀다(ce3fe82 에 Task 1–3 블록을 더한 트리에서는 `failures=24`). 그 밖에 `TypeError: 'NoneType' object is not subscriptable` 2건, up·관제 터미널의 `'t100' != 't200'`·`'^hteam-drive-[0-9a-f]{6}$' not found in 'hteam-coord-…'`. Task 3 구현이 있으면 숫자가 조금 달라질 수 있다. 이름을 바꾼 다른 시험 모듈도 구현 전에는 관제 판별이 없어 대부분 실패한다(`drive_only`·`not_coordinator` 차이).
 
 - [ ] **Step 3: 구현**
 
@@ -8380,7 +8591,7 @@ Expected: ast 오류 없음, grep 빈 출력. 구현자는 여기서 멈춘다(�
   - `tasks.fix(..., force=False, from_queue=False, request=None)`(지금 인자에 더한다). CLI `hteam fix T … --force`. 고정 에이전트 태스크의 결과는 지금 결과(새 라운드) 또는 `{"id", "status": "queued", "agent"}`(exit 0). 오류: 다른 작업 에이전트 `--worker` 는 exit 2 `usage`(`T-xxx: 고정 에이전트 태스크의 수정 라운드는 작업 에이전트를 바꾸지 못한다`), 이 태스크를 아직 하고 있는 세션이 일하는 중이면 exit 3 `worker_active`(`T-xxx: 고정 에이전트가 아직 이 태스크를 하고 있을 수 있다(<상태>). worker_done 을 기다린다. 지금 고쳐야 하면 --force(세션을 닫고 새 세션으로 띄운다)`), 닫기 실패 exit 1 `stop_failed`.
   - `tasks.drop` 결과에 닫기 실패면 `hint`(`이전 세션을 닫지 못했다. 사용자에게 그 에이전트 탭의 작업 pane 을 닫아 달라고 한다. 닫지 않으면 이전 세션이 지금 풀린 소유 경로를 계속 고칠 수 있다`).
   - `dispatch.launch(..., keep_open_tab=None, same_terminal=None)`(Task 9 의 `hidden` 과 겹치지 않는 이름): `same_terminal` 이면 새 Task `worker-start --terminal <t> --title <실행 키> --spec-file <사양>`, 같은 Task 재시도 `worker-start --terminal <t> --task <Task> --retry`(모델·effort·인자·cwd 없음). `keep_open_tab` 이면 지금 argv 에 `--keep-open --tab <탭>` 을 더한다(재시도 `--task … --retry --keep-open --tab …` 도). 결과 dict 에 `placement`·`start_turn`·`delivery` 를 더한다. `dispatch.cleanup` 은 worker-list 행의 `persistent` 가 참인 active Dispatch 에 `--kill` 대신 `--keep-terminal` 로 abandon 한다(세션 상태는 부르는 쪽이 먼저 확인했다).
-  - `herdr.pane_of(terminal, timeout=10) -> str | None`(`herdr-app ls` JSON 의 spaces → tabs → panes 에서 그 터미널의 pane. 실패·없음은 None), `herdr.swap(pane, target, timeout=10)`(`herdr-app do pane.swap '{"pane", "target"}'`, 실패는 `HteamError("herdr_app_failed", …, 1)`), `herdr.tab_row(tab, timeout=5) -> list[str] | None`(`hc connect` 표준 입력에 JSON-RPC `{"jsonrpc": "2.0", "id": 1, "method": "doc.get", "params": {"name": "herdr-app"}}` 한 줄, 결과 `spaces[].tabs[]` 에서 그 탭 `root.children` 의 `terminal` 순서. 읽지 못하면 None). 실제 출력 형식은 Task 12 에서 확인한다(가짜는 Task 2·4).
+  - `herdr.pane_of(terminal, timeout=10) -> str | None`(`herdr-app ls` JSON 의 `spaces[].tabs[].terminals[]` 에서 `terminal` 이 그 터미널인 항목의 `pane`. 실패·없음은 None. 실제 꼴은 2026-11-10 확인했다: 탭의 목록 키는 `terminals` 이고 항목은 `{"terminal", "pane", "status", "app", "name", "sub_agents"}` 다), `herdr.swap(pane, target, timeout=10)`(`herdr-app do pane.swap '{"pane", "target"}'`, 실패는 `HteamError("herdr_app_failed", …, 1)`), `herdr.tab_row(tab, timeout=5) -> list[str] | None`(`hc connect` 표준 입력에 JSON-RPC `{"jsonrpc": "2.0", "id": 1, "method": "doc.get", "params": {"name": "herdr-app"}}` 한 줄, 응답 `result.value.spaces[].tabs[]` 에서 `id` 가 그 탭인 탭의 `root` 를 깊이 우선으로 훑어 `type` 이 `block` 인 노드의 `content.terminal` 을 만난 차례로(`children` 이 있는 노드(`row`·`column` 등)는 그 `children` 을 차례로 내려간다. 중첩된 것도 같다). 읽지 못하면 None). 실제 꼴은 2026-11-10 확인했다: 응답은 `{"jsonrpc", "id", "result": {"value": {"spaces": [{"id", "name", "folder", "tabs": [{"id", "name", "root": {"type": "row", "id", "children": [{"type": "block", "id": "<pane id>", "content": {"terminal": "<주소>"}, "size"?}]}}]}]}, "version": N}}`(가짜 hc 의 `connect` 도 같은 꼴, Task 2). 나뉜 pane 의 중첩 꼴(`row` 안 `column` 등)은 보지 못했다(Task 12).
   - `drive.Drive.crew_done(tid, did)`(`crew.work_done`), `crew_gone(tid, did)`(그 태스크를 맡은 에이전트, 없으면 그 라운드의 `crew` 에이전트의 터미널을 `crew.forget`), `crew_check()`(재확인 2: `crew.check_terminals(self)` 뒤 `crew.sync_queues`, 잊은 에이전트가 맡고 있던 태스크마다 그 Dispatch 의 observed exited·lost 와 같은 메시지를 `self.handle` 에 넘긴다).
   - `status` 출력에 `crew: [{name, title, agent, model, roles, terminal, task, queue, reset_pending, resetting, since_reset}]`(설정 순서. entry 가 없거나 비면 설정 값, 설정을 읽지 못하면 `[]`). `queued_fix` 가 있는 태스크의 `next` 는 null, `hint` 는 `수정 라운드가 에이전트 대기열에 있다. 에이전트가 비면 관제가 띄운다`.
   - 상태 필드: 라운드 기록 `crew`(이름 또는 `"temp"`), `model_ignored`(bool), `start_turn`·`delivery`(같은 터미널에 넣었을 때), `forced`(`fix --force`), 작업 실행 기록 `work.transient`(일시 거부, 넣기에 성공하면 지운다). 태스크 `queued_fix = {"note", "supplement", "force_round", "at", "request"}`(at 은 `util.now()`). crew entry 예:
@@ -13521,7 +13732,7 @@ Expected: ast 오류 없음, grep 빈 출력. `git rm` 은 따로 하지 않는�
 
 ### Task 12: 실환경 확인 — 실제 Claude·Codex 고정 에이전트로 기획 → 개발 → 묶음 테스트 → 리셋 → 복구, 결과 기록, 전체 시험, 브랜치 리뷰
 
-설계 15.2 의 6단계(사용자 결정 2026-11-10): 버리는 시험 프로젝트에서 실제 Claude 메인·실제 Claude·Codex 고정 에이전트로 한 바퀴 돌린다. 설계가 "실환경에서 확인" 으로 표시한 것(6.5 의 3·9: split pane 안 일반 `hc attach`·떼기 키·보기 pane 크기·끝난 split pane 이 저절로 닫히는지와 `pane.close`·`hc rm` 순서, 5.9.7: 자동 압축 동안 7501 상태, 15.2: 플러그인 환경 상속, 5.9.2: Codex 첫 세션 제목, orch 13.8: `hc keys` 의 빈칸 키 이름(`space` 는 계획 리뷰 때 실제 hc 로 확인했다. 여기서는 Codex 제목으로 한 번 더 본다))과 이 계획이 가짜로만 본 형식(`herdr-app ls` 출력, `hc connect` 의 `doc.get` 트리, Task 4·7·9)을 그 단계에서 본다. 결과는 설계 15.4 에 `#### 6단계` 로 적고, 마지막에 두 전체 시험 모음과 브랜치 전체 Codex 리뷰(main 병합 전, CLAUDE.md)를 한다. 코드는 결함을 고칠 때만 바꾼다(고치면 그 결함을 재현하는 시험을 먼저 더하고, 고친 커밋마다 `scripts/codex-review.sh commit HEAD`). 가짜와 실제가 다른 형식(위 셋)이면 `herdr.py` 의 해석과 가짜(`herdr-team/tests/fakes/herdr-app`, `herdr-orch/tests/fakes/hc`)를 함께 실제에 맞추고 그 시험을 고친 뒤 같은 절차로 커밋·리뷰한다. main 병합은 하지 않는다(컨트롤러가 한다).
+설계 15.2 의 6단계(사용자 결정 2026-11-10): 버리는 시험 프로젝트에서 실제 Claude 메인·실제 Claude·Codex 고정 에이전트로 한 바퀴 돌린다. 설계가 "실환경에서 확인" 으로 표시한 것(6.5 의 3·9: split pane 안 일반 `hc attach`·떼기 키·보기 pane 크기·끝난 split pane 이 저절로 닫히는지와 `pane.close`·`hc rm` 순서, 5.9.7: 자동 압축 동안 7501 상태, 15.2: 플러그인 환경 상속, 5.9.2: Codex 첫 세션 제목, orch 13.8: Codex `/clear <이름>` 이 제목을 붙이는지(빈칸 키 이름 `space` 는 확인됨(2026-11-10)))과 이 계획이 가짜로만 본 형식을 그 단계에서 본다. 가짜로만 본 형식은 나뉜 pane 의 `doc.get` 트리 꼴(보기 pane 이 붙은 탭, Task 7 의 `tab_row`), `hc events` 의 `heartbeat`·`missed` 줄, `herdr-app do pane.split`·`pane.swap`·`pane.close`·`tab.rename` 의 결과 꼴(Task 4·7·9)이다. 확인됨(2026-11-10, 읽기 전용 명령과 버리는 시험 터미널로, 가짜를 맞췄다): `hc events --json` 의 스냅숏·사건 알림 꼴(Task 2), `hc connect` 의 `doc.get` 응답 꼴(나뉘지 않은 탭: `result.value`·`version`, `row` 의 자식 `block`·`content.terminal`, Task 2·7), `herdr-app ls` 꼴(탭의 `terminals`, Task 4·7), `herdr-app status` 키(Task 4), `hc keys --json` 결과 `{"status": null, "turn": 0}` 와 빈칸 키 `space`(Task 2). 결과는 설계 15.4 에 `#### 6단계` 로 적고, 마지막에 두 전체 시험 모음과 브랜치 전체 Codex 리뷰(main 병합 전, CLAUDE.md)를 한다. 코드는 결함을 고칠 때만 바꾼다(고치면 그 결함을 재현하는 시험을 먼저 더하고, 고친 커밋마다 `scripts/codex-review.sh commit HEAD`). 가짜와 실제가 다른 형식(위의 가짜로만 본 형식)이면 `herdr.py` 의 해석과 가짜(`herdr-team/tests/fakes/herdr-app`, `herdr-orch/tests/fakes/hc`)를 함께 실제에 맞추고 그 시험을 고친 뒤 같은 절차로 커밋·리뷰한다. main 병합은 하지 않는다(컨트롤러가 한다).
 
 보지 않는 것(설계 15.2): hc core 재시작(X7), 디자인 직무의 고정 에이전트 흐름(단위 시험으로만), 생산 에이전트 여러 개, 리뷰 보기 pane 에 사람이 키를 치는 경우.
 
@@ -13675,7 +13886,7 @@ env -u HC_TERMINAL_ID hc send "$M" "claude --plugin-dir '$REPO_ROOT/herdr-team'"
 확인:
 - `herdr-team 생산` 에이전트 탭이 생기고 작업 pane 제목이 `생산 (Claude)`(`hc get` 의 title). `crew.json` 의 `production.terminal`·`terminal_argv`·`work_pane`·`task: T-001`.
 - 기획 인터뷰: 기획자의 `ask-user` 질문이 메인을 거쳐 온다. 운영자가 답한다(추천안). `[test]` 확정 질문에는 `확정한다 (추천)`.
-- 기획 리뷰(Codex)가 생산 탭 오른쪽 보기 pane 에 보인다: `doc.get herdr-app` 의 그 탭 트리가 `row[작업, 보기]`(`hc connect` 로 읽는다, 실험의 `meta/layout.py` 와 같은 방법), 리뷰가 끝나면 `row[작업]`. 이때 6.5 의 9 를 본다: 보기 pane 화면을 그림(Herdr 창 스크린숏, 가능하면) 또는 `hc read <보기 터미널> --lines 40` 으로 잘림 여부, 크기(`hc get <리뷰어>` 의 size 가 있으면), 끝난 split pane 이 저절로 닫혔는지(관제의 `pane.close` 전에 사라졌는지는 drive.log 의 보기 닫기 줄과 `herdr-app ls` 로), `hc rm` 뒤 보기 터미널이 `hc ls --all` 에 없는지. `herdr-app ls` 의 실제 출력과 `doc.get` 트리 모양을 `$E2E/formats.txt` 에 남기고 Task 4·7·9 의 가짜 형식과 견준다(다르면 이 태스크 머리의 규칙대로 고친다).
+- 기획 리뷰(Codex)가 생산 탭 오른쪽 보기 pane 에 보인다: `doc.get herdr-app` 의 그 탭 트리가 `row[작업, 보기]`(`hc connect` 로 읽는다, 실험의 `meta/layout.py` 와 같은 방법), 리뷰가 끝나면 `row[작업]`. 이때 6.5 의 9 를 본다: 보기 pane 화면을 그림(Herdr 창 스크린숏, 가능하면) 또는 `hc read <보기 터미널> --lines 40` 으로 잘림 여부, 크기(`hc get <리뷰어>` 의 size 가 있으면), 끝난 split pane 이 저절로 닫혔는지(관제의 `pane.close` 전에 사라졌는지는 drive.log 의 보기 닫기 줄과 `herdr-app ls` 로), `hc rm` 뒤 보기 터미널이 `hc ls --all` 에 없는지. 보기 pane 이 붙은 동안의 `doc.get` 트리(나뉜 pane 의 중첩 꼴: `row` 안 `block` 둘인지, 중첩 노드가 생기는지), `herdr-app do pane.split`·`pane.swap`·`pane.close`·`tab.rename` 의 결과 꼴(관제·hteam 은 출력을 남기지 않으므로 그 호출이 성공했는지를 drive.log 의 보기 열기·닫기 줄, crew entry 의 `view`·`layout_error`, 탭 이름으로 본다. 실패하면 같은 호출을 시험 space 에서 한 번 손으로 해 출력을 남긴다), 시험 터미널에 `hc events --json` 을 20초 넘게 붙여 본 `heartbeat` 줄(뒤처짐을 만들 수 없으면 `missed` 는 못 봄으로 적는다)을 `$E2E/formats.txt` 에 남기고 Task 2·4·7·9 의 가짜 형식과 견준다(다르면 이 태스크 머리의 규칙대로 고친다). 나뉘지 않은 탭의 `doc.get`·`herdr-app ls`·`hc events` 사건 꼴은 확인됨(2026-11-10)이라 다시 견주지 않는다.
 - 관제의 accept → `plan apply` → progress `기획 적용: …` 가 메인 watch 로 온다. `drive.log` 에 `요청 q-000001 start: 완료`, `T-001 리뷰 시작`, `T-001 r1 APPROVE`.
 
 - [ ] **Step 7: 개발과 overflow·수정 라운드(설계 15.2 의 3)**
@@ -13690,7 +13901,7 @@ env -u HC_TERMINAL_ID hc send "$M" "claude --plugin-dir '$REPO_ROOT/herdr-team'"
 확인:
 - `herdr-team 테스트` 탭(Codex)이 뜨고 tester 태스크를 한다. Codex 첫 세션 제목은 Codex 가 정한 것(5.9.2). Claude 리뷰어가 그 탭 오른쪽 보기 pane 에 보이는지와 크기(6.5 의 9)를 본다.
 - 묶음이 끝나면(tester accept) `crew.json` 의 두 에이전트 `reset_pending: true`(묶음 처리가 후속 태스크보다 먼저), progress `묶음 완료: <tester 태스크 ID>. 리셋할 에이전트: production, test`(Task 10 Rules 3 은 묶음 key 가 아니라 tester 태스크 ID 를 쓴다). 후속 태스크(있으면)는 리셋 뒤 새 세션이 받는다.
-- 리셋: 두 에이전트 모두 인수인계(`[handoff] <이름> s1` Dispatch, `docs/handoff/production.md`·`test.md` 커밋 `[handoff] <이름>: 인수인계`) → `terminal-reset`. drive.log `production 리셋: reset(turn <n>, <초>초)`(Claude 0.1–0.3초 근처), `test 리셋: reset(…)`(Codex 1.5–1.8초 근처). 같은 터미널 주소, Codex 제목 `test | conv`(`/clear test` 가 이름을 붙였다. orch 13.8 의 빈칸 키가 실제로 맞는지 여기서 본다).
+- 리셋: 두 에이전트 모두 인수인계(`[handoff] <이름> s1` Dispatch, `docs/handoff/production.md`·`test.md` 커밋 `[handoff] <이름>: 인수인계`) → `terminal-reset`. drive.log `production 리셋: reset(turn <n>, <초>초)`(Claude 0.1–0.3초 근처), `test 리셋: reset(…)`(Codex 1.5–1.8초 근처). 같은 터미널 주소, Codex 제목 `test | conv`(`/clear test` 가 이름을 붙였다. 빈칸 키 이름 `space` 는 확인됨(2026-11-10). 여기서는 Codex 가 그 이름을 제목으로 받는지 본다).
 - 리셋 뒤 첫 태스크 사양에 `먼저 \`docs/handoff/<이름>.md\` 를 읽는다` 줄이 있고 세션이 그 파일을 읽는다(그 워커의 보고서·화면). 리뷰 중 인수인계 커밋이 판정을 무효로 하지 않는다(`review_tampered` 없음).
 - 생산 에이전트(Claude)의 `/clear` 뒤 새 세션에 이 브랜치의 훅이 걸린다(설계 9.4 의 6단계 줄): 리셋 뒤 첫 프롬프트가 들어간 다음 `.herdr-team/state/sessions/` 에 리셋 전과 다른 session id 의 캐시 파일이 생기고 그 역할이 워커다. 생기지 않으면 멈추고 그 터미널 argv 의 `--plugin-dir`(Step 5)과 `.herdr-team/state/hook-errors.log` 를 본다.
 - 자동 압축이 일어나면 그동안 `hc get` 의 status 가 `working` 인지 적는다(5.9.7. 일어나지 않으면 "보지 못함" 으로 적는다).
@@ -13712,7 +13923,7 @@ env -u HC_TERMINAL_ID hc send "$M" "claude --plugin-dir '$REPO_ROOT/herdr-team'"
 
 - 시작: 관제 <터미널>, drive.pid·heartbeat, 메인 터미널의 horch `run` null. crew 두 에이전트, 경고 <없음>.
 - 기획: 생산 탭·작업 pane 제목, 인터뷰 질문 <n>개, 확정 질문, 보기 pane 트리 `row[작업, 보기]` → `row[작업]`, 보기 pane 크기 <cols×rows | 잘림>, 끝난 split pane 이 저절로 닫힘 <예 | 아니오>, `pane.close`·`hc rm` 순서 <결과>.
-- 형식: `herdr-app ls` <가짜와 같음 | 다름(고친 커밋)>, `doc.get` <같음 | 다름>.
+- 형식: `hc events` 사건·`doc.get`(나뉘지 않은 탭)·`herdr-app ls`·`herdr-app status`·`hc keys` 결과는 확인됨(2026-11-10, 계획 단계). 나뉜 탭의 `doc.get` 트리 <row 안 block 둘 | 중첩(꼴)>, `pane.split`·`pane.swap`·`pane.close`·`tab.rename` 결과 <가짜와 같음 | 다름(고친 커밋)>, `heartbeat` 줄 <꼴 | 못 봄>, `missed` <꼴 | 못 봄>.
 - 개발: overflow 임시 워커 <태스크>, 같은 세션 수정 라운드 <태스크 rN, start_turn a → b>, 수정 대기열 <있음 | 없음>.
 - 묶음 테스트: Codex 탭, Codex 첫 제목 <값>, Claude 리뷰어 보기 pane <크기>.
 - 리셋: production <초>, test <초>, Codex 제목 `test | conv` <예 | 아니오>, 인수인계 줄·읽음, 리뷰 중 인수인계 커밋 영향 <없음>, 자동 압축 중 상태 <working | 보지 못함>.
@@ -13810,4 +14021,6 @@ Expected: 커밋 하나, grep 빈 출력, 리뷰 pane 주소. `hc wait <주소> 
 - 자동화: 토큰 갱신·보강·정리 태스크의 Target·Change·Acceptance 문구 일부, 바뀐 파일의 "처음 시작한 태스크" 는 history 첫 `start` 사건 시각, `create_task` 의 `{tid}` 치환, `token_update` decide 의 task 는 UI 기반 태스크, 마지막 전체 테스트 결과를 버릴 때의 로그, `DECISION_QUIET` 의 `review_busy`(Task 10).
 - 문구: decide 판단 기준 표의 `unknown_regression` 은 8.4 의 두 줄을 풀어 적었다, watch 처리 목록에 `approval`·`decide`·`result`, "다른 워커·관제·메인의 커밋", init·up 스킬과 README 전문(Task 11).
 
-확인하지 못한 것(실환경 Task 12 에서 본다): 실제 `herdr-app ls` 출력 모양과 `hc connect` 의 `doc.get` JSON-RPC 꼴(가짜는 Task 2·4 가 herdr.d.ts 를 본떠 정했다), `hc events --json` 줄 모양, `hc label`·`hc send` 결과의 키, split pane 안 일반 `hc attach`·떼기 키·보기 pane 크기·끝난 split pane 이 저절로 닫히는지, 자동 압축 중 7501 상태, 플러그인 환경 상속, Codex 첫 세션 제목, `/clear` 뒤 Claude SessionStart 가 새 session id 로 오는지.
+확인됨(2026-11-10, 읽기 전용 명령과 버리는 시험 터미널로 확인하고 가짜·해석을 맞췄다): `hc events --json` 의 줄 꼴(첫 줄 스냅숏 `{channel, seq, terminals}`, 그 뒤 JSON-RPC 알림 `{method: "event", params: {type, terminal, seq, data}}`, Task 2), `hc connect` 의 `doc.get` 꼴(`result: {value: {spaces: [{id, name, folder, tabs: [{id, name, root: {type: "row", id, children: [{type: "block", id, content: {terminal}}]}}]}]}, version}`, 나뉘지 않은 탭, Task 2·7), `herdr-app ls` 꼴(탭의 `terminals: [{terminal, pane, status, app, name, sub_agents}]`, Task 4·7), `herdr-app status` 키(Task 4), `hc keys --json` 결과 `{"status": null, "turn": 0}`·빈칸 키 `space`(Task 2).
+
+확인하지 못한 것(실환경 Task 12 에서 본다): 나뉜 pane 이 있는 탭의 `doc.get` 트리 꼴(중첩 노드가 생기는지), `hc events` 의 `heartbeat`·`missed` 줄 꼴(해석은 건너뛰므로 어느 꼴이든 오판하지 않는다), `herdr-app do pane.split`·`pane.swap`·`pane.close`·`tab.rename` 의 결과 꼴, `hc label`·`hc send` 결과의 키, split pane 안 일반 `hc attach`·떼기 키·보기 pane 크기·끝난 split pane 이 저절로 닫히는지, 자동 압축 중 7501 상태, 플러그인 환경 상속, Codex 첫 세션 제목, `/clear` 뒤 Claude SessionStart 가 새 session id 로 오는지.
