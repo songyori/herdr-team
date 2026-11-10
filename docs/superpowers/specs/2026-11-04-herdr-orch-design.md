@@ -221,7 +221,7 @@ Dispatch:
 | `doctor` | 없음 | 점검 목록(10장) |
 | `skill` | 없음 | 사용법 텍스트 |
 
-`send --to dispatch:D` 는 D 가 소유자의 Run 에 속하고 `active` 일 때만 받는다(아니면 exit 3).
+`send --to dispatch:D` 는 D 가 소유자의 Run 에 속하고 `active` 일 때만 받는다(아니면 exit 3). 0.2.0 의 `send --key` 는 13.9.
 
 0.2.0 의 옵션과 명령(`--keep-open`, `--terminal`, `--tab`, `--hidden`, `--keep-terminal`, `terminal-close`, `terminal-reset`)과 새 오류 code 는 13.4–13.9.
 
@@ -525,8 +525,10 @@ herdr-team 0.4.0 의 고정 에이전트(같은 세션이 여러 태스크를 �
 | `delivery TEXT` | 보내기 기록(JSON, 13.4 의 6) |
 | `seen_at TEXT` | 이 Dispatch 로 워커 명령(`check --dispatch`·`ask`·`escalate`·`done`·`send`)이 처음 신원 확인을 통과한 시각 |
 
+`messages` 에 `send_key TEXT` 열과 부분 유일 인덱스 `send_key_once ON messages(mailbox, send_key) WHERE send_key IS NOT NULL` 을 더한다(`send --key`, 13.9).
+
 - 새 부분 유일 인덱스 `dispatch_one_per_terminal ON dispatches(terminal) WHERE state IN ('launching','active') AND terminal IS NOT NULL`: 한 터미널에 진행 중 Dispatch 는 하나다. 지금의 `dispatch_terminal` 인덱스(유일 아님)는 그대로 둔다.
-- 마이그레이션은 누적으로 고친다: `if v < 2: …` 다음 `if v < 3: …`. v2 → v3 은 다섯 열을 `ALTER TABLE ADD COLUMN` 하고 인덱스를 만든 뒤 `schema_version` 을 3 으로 쓴다. v2 의 행은 모두 `persistent = 0` 이다. v2 에서는 Dispatch 하나가 터미널 하나와 짝이라 인덱스를 만들 때 겹치는 행이 없다. 10장 "스키마" 줄의 "현재 2" 는 "현재 3" 이 된다.
+- 마이그레이션은 누적으로 고친다: `if v < 2: …` 다음 `if v < 3: …`. v2 → v3 은 `dispatches` 의 다섯 열과 `messages.send_key` 를 `ALTER TABLE ADD COLUMN` 하고 두 인덱스를 만든 뒤 `schema_version` 을 3 으로 쓴다. v2 의 행은 모두 `persistent = 0` 이다. v2 에서는 Dispatch 하나가 터미널 하나와 짝이라 인덱스를 만들 때 겹치는 행이 없다. 10장 "스키마" 줄의 "현재 2" 는 "현재 3" 이 된다.
 - `launch_argv` 는 `hc run` 으로 띄운 Dispatch 에만 있다. `--terminal` Dispatch 는 NULL 이다.
 
 ### 13.4 `worker-start --keep-open` 과 `--terminal`
@@ -566,7 +568,7 @@ herdr-team 0.4.0 의 고정 에이전트(같은 세션이 여러 태스크를 �
 7. 보내기 결과(`delivery`)와 `active` 전이를 한 트랜잭션에서 쓴다(조건부 쓰기, `launching` 일 때만). 둘 사이에 죽는 틈이 없다. 라벨을 `hc label <t> horch.dispatch=<새 id>` 로 바꾼다. 실패하면 `warnings` 에 `label_failed` 를 넣고 계속한다(고정 터미널의 정리는 이 라벨에 기대지 않는다, 13.5).
 8. 결과 `{task, dispatch, terminal, state: "active", placement: "same_terminal", start_turn, delivery, warnings}`.
 
-실행자가 죽었을 때(5장 launching 조정에 더한다): 고정 Dispatch 가 `launching` 이고 실행자가 죽었으면, `delivery.attempted` 가 없으면(보내기 전에 죽었다) 지금처럼 `launch_failed` 다. 있으면(보냈을 수 있다. 결과 기록은 `active` 전이와 한 트랜잭션이라 `launching` 으로 남은 것은 결과를 쓰기 전이다) `hc get` 을 보고 turn 이 `start_turn` 보다 크거나 상태가 `working` 이면 `active`, 아니면 `launch_failed` 다. hc 를 확인할 수 없으면 `launching` 으로 둔다(다음 조정이 다시 본다).
+실행자가 죽었을 때(5장 launching 조정에 더한다): 고정 Dispatch 가 `launching` 이고 실행자가 죽었으면, `delivery.attempted` 가 없으면(보내기 전에 죽었다) 지금처럼 `launch_failed` 다. 있으면(보냈을 수 있다. 결과 기록은 `active` 전이와 한 트랜잭션이라 `launching` 으로 남은 것은 결과를 쓰기 전이다) 순간 상태로 실패를 정하지 않는다. 죽은 실행자의 `hc send` 가 아직 끝나지 않았거나 들어간 입력이 아직 시작하지 않았을 수 있고(X1: 정상 제출도 `started:true, status:done, turn:1` 이었다), 고정 터미널에는 새 터미널의 가드 같은 늦은 실행 막기가 없기 때문이다. 6 의 응답 유실과 같게 `active` 로 두고 `delivery` 에 `{attempted: true, uncertain: true, error: "executor_died"}` 를 쓴다(조건부 쓰기). 그다음은 전달 판정이 정한다: turn 이 `start_turn` 보다 오르거나 이 Dispatch 의 워커 명령(`seen_at`)·`done` 이 오면 들어간 것이고, 60초 뒤에도 turn 그대로·활동 없음이면 `not_started` 관찰이 호출자에게 알린다(13.6). hc 를 부르지 않는다. 그래서 `attempted` 뒤의 결과는 늘 `active`(확실하거나 불확실한) 하나다.
 
 ### 13.5 release, abandon, terminal-close
 
@@ -638,6 +640,8 @@ herdr-team 0.4.0 의 고정 에이전트(같은 세션이 여러 태스크를 �
 | `terminal-close` | `--terminal`, `--abandon` | `{terminal, closed, abandoned, released}` |
 | `terminal-reset` | `--terminal`, `--name`, `--timeout-ms` | `{terminal, agent, turn, status, title, seconds, signal}` |
 
+`send --key <K>`(0.2.0, 선택): 같은 메일함·같은 key 의 메시지가 이미 있으면 새로 쓰지 않고 그 메시지와 `duplicate: true` 를 돌려준다(깨우지도 않는다). 본문·제목이 다르면 exit 3 `send_key_conflict`. key 는 1–64자 `[A-Za-z0-9._:-]`(아니면 exit 2 `usage`). 저장은 `messages.send_key` 열과 부분 유일 인덱스 `send_key_once ON messages(mailbox, send_key) WHERE send_key IS NOT NULL`(13.3 의 v3 에 더한다). 호출자가 요청 id 로 같은 전송을 다시 해도 한 번만 간다(herdr-team 의 `scope`).
+
 6장 권한 표: `terminal-close`·`terminal-reset` 은 그 Run 의 소유자다. `worker-list`·`worker-show` 행에 `persistent`, `start_turn`, `delivery`, `seen_at` 을 더한다(`worker-list --state` 의 선택지는 그대로 7개).
 
 새 오류 code:
@@ -650,6 +654,7 @@ herdr-team 0.4.0 의 고정 에이전트(같은 세션이 여러 태스크를 �
 | `terminal_not_ready` | 3 | 상태가 `idle`·`done` 이 아니다(보내지 않았다) |
 | `reset_timeout` | 4 | 비우기 신호가 마감까지 오지 않았다 |
 | `no_owner_space` | 2 | `--tab` 인데 소유 space 가 없다 |
+| `send_key_conflict` | 3 | `send --key` 의 같은 key 로 다른 제목·본문을 보냈다 |
 
 exit 코드 표(7장)는 그대로다(새 값 없음).
 
@@ -658,8 +663,9 @@ exit 코드 표(7장)는 그대로다(새 값 없음).
 - 스키마: v2 DB 를 열면 v3 으로 올라가고 기존 행은 `persistent = 0`, 인덱스가 같은 터미널의 두 번째 진행 중 Dispatch 를 막는다.
 - `--keep-open`: 라벨 `horch.persistent=1`, `terminal_argv = launch_argv`, `--tab`·`--hidden` 라벨과 `placement`.
 - `--terminal`: 옵션 충돌(exit 2), 2 의 거부 표 전부, 5 의 다시 보기가 자기 Dispatch 를 빼고 정상 재투입이 통과함, 리셋 예약과 Dispatch 예약의 배제(한쪽만 성공), `idle` 이면 `--if idle`·`done` 이면 조건 없음(가짜 hc 가 받은 인자), 감싸지 않음(환경에 `HC_TERMINAL_ID` 없음), `start_turn` 이 보내기 직전 turn, `status_mismatch` 면 `launch_failed`, 응답 유실이면 `active` 와 `delivery_uncertain`, 라벨 갱신, 프리앰블의 이어 받기 줄.
-- 실행자 사망: 보내기 전(`launch_failed`), 보낸 뒤 결과 기록 전에 turn 이 오름(`active`)·turn 그대로(`launch_failed`), 결과와 `active` 를 함께 쓴 뒤(`active` 그대로).
+- 실행자 사망: 보내기 전(`launch_failed`), `attempted` 뒤 결과 기록 전(`active` 와 `uncertain`, 그 뒤 turn 이 오르면 관찰 없음·그대로면 60초 뒤 `not_started`), 결과와 `active` 를 함께 쓴 뒤(`active` 그대로).
 - 판정: 고정 Dispatch 의 생존을 `terminal_argv` 로, `idle_turn` 이 `start_turn` 기준(다시 넣자마자 거짓 idle 이 나오지 않음), `not_started` 의 조건(60초, turn 그대로, `seen_at` 없음, 메시지 없음)과 `working` 이면 관찰 없음.
+- `send --key`: 같은 key 두 번은 메시지 하나와 `duplicate: true`, 본문이 다르면 `send_key_conflict`, key 없는 send 는 지금 그대로.
 - release·abandon·terminal-close: 고정 Dispatch 의 release 가 hc 를 부르지 않음, abandon 의 `--keep-terminal`·`--kill` 규칙, terminal-close 의 `--abandon`·`not_found`·kill 실패 재시도.
 - terminal-reset: keys 인자(`/clear`, Codex 이름), turn 사건 대기, 대체 신호(`hc get` 폴링), 마감 exit 4, 진행 중 표시가 `--terminal` 을 막음, 진행 중 Dispatch·`working` 이면 거부.
 - 0.1.x 테스트는 그대로 통과한다(고정이 아닌 Dispatch 의 release 가 kill·rm).
