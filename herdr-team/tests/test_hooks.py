@@ -757,6 +757,19 @@ class StopRunTest(HookCase):
         self.update_terminal(DRIVE, state="finished")
         self.assertIsNone(self.hook("stop", terminal=MAIN))
 
+    def test_dead_drive_with_unread_outbox_blocks(self):
+        """관제가 알림을 남긴 직후 죽었다: watch 는 관제 생존을 보기 전에 미전달 항목을 준다. 한 번 돌리게 막는다(Codex 커밋
+        리뷰 81c2c30). 전달한 뒤(커서가 따라잡으면) 다시 막지 않는다."""
+        self.drive_question({"question": "q?\n예: e", "options": [{"label": "a (추천)", "description": "추천 사유: x"},
+                                                                  {"label": "b", "description": "y"}]})
+        (self.drive_dir / "drive.pid").unlink()
+        self.update_terminal(DRIVE, state="finished")
+        out = self.hook("stop", terminal=MAIN)
+        self.assertEqual(out and out["decision"], "block")
+        self.assertIn("watch", out["reason"])
+        (self.state_dir / "outbox.cursor").write_text("1\n")
+        self.assertIsNone(self.hook("stop", {"session_id": "s2"}, terminal=MAIN))
+
     def test_live_drive_without_watch_blocks(self):
         out = self.hook("stop", terminal=MAIN)
         self.assertEqual(out and out["decision"], "block")

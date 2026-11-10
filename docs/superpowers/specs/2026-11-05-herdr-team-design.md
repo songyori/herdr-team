@@ -1060,7 +1060,7 @@ orca-team 0.7.0 `queue.py` 를 옮긴다(`lib/hteam/queue.py`). 메인은 horch 
 
 - 2초마다 outbox 를 본다. 커서 뒤 새 항목이 있으면 출력하고 커서를 옮긴 뒤 끝난다(출력한 뒤에야 옮기므로 적어도 한 번 전달된다). Claude Code 의 완료 알림이 메인을 깨운다.
 - 관제가 꺼져 있으면(8.2 의 판정이 꺼짐) `{status: "orphaned"}` 로 끝난다. 멈춤(hung)이면 끝내지 않는다. 0.3.0 은 코디네이터 터미널이 끝났는지로 봤다.
-- 메인은 처리한 뒤 다시 띄운다. 관제가 꺼지지 않았으면 Stop 훅이 이를 강제한다(9.4).
+- 메인은 처리한 뒤 다시 띄운다. 관제가 꺼지지 않았거나 미전달 항목이 있으면 Stop 훅이 이를 강제한다(9.4).
 
 ### 7.4 질문 형식 (`render`)과 답
 
@@ -1590,7 +1590,7 @@ Python 3.11 이상, git(없으면 `git init` 과 빈 커밋을 권함), `horch` 
 | PreToolUse (Edit·Write·MultiEdit·NotebookEdit) | 경로는 `..`·심볼릭 링크를 실제 경로로 푼 뒤 본다. 누구나 `state/` 를 고칠 수 없다. 메인은 `setup-mode` 가 아니면 제품 파일(`.herdr-team/`·`.claude/`·`docs/superpowers/`·`CLAUDE.md`·`AGENTS.md`·`.gitignore` 밖의 프로젝트 파일)을 고칠 수 없다. 메인은 태스크 사양(`.herdr-team/tasks/`)을 쓴다. 프로젝트 밖은 메인에게 제품 파일이 아니다. 풀 수 없는 경로는 메인에게 거부한다 |
 | PreToolUse (AskUserQuestion) | planner·director 워커 → `hteam ask-user` 안내. 다른 워커 → `horch ask` 안내("프리앰블의 ask 명령으로 묻는다(메인이 답한다)"). 리뷰어 → 묻지 않고 리뷰 파일에 적으라고 거부("리뷰어는 묻지 않는다. 판단할 수 없는 것은 리뷰 파일에 적고 판정을 마친다"). 메인 → outbox 질문의 `context` 를 먼저 보여 주지 않았으면 보일 때까지 거부한다(메인의 답변 글 끝부분에 정규화한 `context` 앞 80자가 있어야 보인 것이다). 같은 질문은 세 번까지만 거부하고 그 뒤는 통과시킨다(2단계 실환경에서 메인이 `context` 를 생각 줄에만 남긴 일이 5건 중 2건 있었다) |
 | PreToolUse (Bash) | 메인이 `horch` 를 직접 부르면 거부(같은 일을 하는 `hteam` 큐 명령을 안내). 6단계: 메인의 `hteam drive` 도 거부(`hteam drive 는 관제 탭에서만 돈다. 메인 터미널이 관제가 되면 horch 깨우기 글이 사용자 입력란에 들어온다. 관제를 띄우려면 /herdr-team:up 을 쓴다`). `hteam` 판별은 0.3.0 의 `HORCH_RE` 와 같은 경계 규칙으로 하고, 앞 옵션(`--root …`)을 건너뛴 하위 명령이 정확히 `drive` 일 때만 막는다(따옴표·절대 경로 포함, `hteam drive-x` 는 통과) |
-| Stop | 메인이고 `run.json` 에 `run_id` 가 있고 관제가 꺼짐(8.2 의 alive·hung·starting 이 모두 아님)이 아닌데 watch 가 없으면 턴을 끝내지 못하게 하고 watch 를 다시 띄우라고 한다. 관제가 꺼졌으면 watch 가 곧바로 `orphaned` 로 끝나므로 막지 않는다(막으면 watch → orphaned → up 실패 → Stop 이 사용자 입력 없이 되풀이된다. 꺼진 관제는 다음 프롬프트의 자동 부활 확인이 알린다, 9.5. 최종 리뷰 I1). Herdr 터미널 밖의 메인, `setup-mode`, `stop_hook_active` 는 막지 않는다 |
+| Stop | 메인이고 `run.json` 에 `run_id` 가 있고 관제가 꺼짐(8.2 의 alive·hung·starting 이 모두 아님)이 아닌데 watch 가 없으면 턴을 끝내지 못하게 하고 watch 를 다시 띄우라고 한다. 관제가 꺼졌으면 watch 가 곧바로 `orphaned` 로 끝나므로 outbox 에 미전달 항목이 없을 때는 막지 않는다(막으면 watch → orphaned → up 실패 → Stop 이 사용자 입력 없이 되풀이된다. 꺼진 관제는 다음 프롬프트의 자동 부활 확인이 알린다, 9.5. 최종 리뷰 I1). 미전달 항목이 있으면(커서 뒤 줄, `status` 의 `unread_outbox` 와 같은 기준) 관제가 꺼졌어도 막는다. watch 는 관제 생존을 보기 전에 그것을 주고, 전달하면 커서가 따라잡아 다음 Stop 은 막지 않는다(Codex 커밋 리뷰 81c2c30). Herdr 터미널 밖의 메인, `setup-mode`, `stop_hook_active` 는 막지 않는다 |
 
 Codex 워커·리뷰어에는 Claude 훅이 걸리지 않는다. 그쪽은 `AGENTS.md` 의 규칙(owns 밖 커밋 금지, 리뷰어는 리뷰 파일만)과 리뷰 사전 검사·변조 검사로 막는다. Bash 로 하는 파일 수정(`sed -i` 등)은 훅이 막지 못한다(리뷰가 잡는다). Codex 고정 에이전트(6단계)도 같다.
 
