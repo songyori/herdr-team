@@ -557,16 +557,16 @@ herdr-team 0.4.0 의 고정 에이전트(같은 세션이 여러 태스크를 �
    | 그 터미널에 `launching`·`active` Dispatch 가 있음, 또는 `terminal-reset` 이 진행 중(13.8) | `terminal_busy` | `dispatch` |
    | 상태가 `idle`·`done` 이 아님(`working`, `blocked`, `error`, 보고 없음) | `terminal_not_ready` | `status`, `turn` |
 
-3. `BEGIN IMMEDIATE` 트랜잭션에서 소유자를 다시 확인하고 Task(또는 `--task`)와 Dispatch(`launching`, `persistent = 1`, `terminal = <t>`, `terminal_argv`, 옮긴 에이전트 값, `launcher_pid`·`launcher_started`)를 만든다. `dispatch_one_per_terminal` 에 걸리면 exit 3 `terminal_busy`.
+3. `BEGIN IMMEDIATE` 트랜잭션에서 소유자를 다시 확인하고, 그 터미널의 리셋 예약(13.8 의 3, 살아 있는 프로세스의 것)이 없는지 다시 본 뒤 Task(또는 `--task`)와 Dispatch(`launching`, `persistent = 1`, `terminal = <t>`, `terminal_argv`, 옮긴 에이전트 값, `launcher_pid`·`launcher_started`)를 만든다. 리셋 예약이 있거나 `dispatch_one_per_terminal` 에 걸리면 아무것도 만들지 않고 exit 3 `terminal_busy`. 리셋 예약 확인과 Dispatch 예약이 한 트랜잭션이라 리셋과 재투입이 서로 배제된다(13.8).
 4. `spec.md`·`preamble.md` 를 쓴다(8장). 프리앰블 첫 항목 뒤에 한 줄을 더한다: "이 세션은 앞 태스크를 이어 받았을 수 있다. 앞 대화의 Task·Dispatch ID 는 쓰지 않는다. 이 프리앰블의 ID 만 쓴다." 0.2.0 은 모든 Dispatch 의 프리앰블 4항 "코디네이터 메시지" 를 "소유자 메시지" 로 바꾼다.
-5. `hc get <t>` 로 상태와 turn 을 다시 읽는다. 2 의 조건에 걸리면 Dispatch 를 `launch_failed` 로 두고 그 code 로 끝난다. 아니면 그 turn 을 `start_turn` 으로, `delivery = {"sending": true}` 를 먼저 기록한다(조건부 쓰기, `launching` 일 때만).
-6. 프리앰블 글 전체를 보낸다: `HC_TERMINAL_ID` 를 뺀 환경으로 `hc send <t> <글> --json`(상태가 `idle` 이면 `--if idle` 을 붙이고, `done` 이면 붙이지 않는다). 결과를 `delivery` 에 쓴다: `{via: "send", if: "idle"|null, status_before, turn_before, started, status, turn, at}`.
-   - `status_mismatch`(그 사이 `working`·`blocked` 가 됐다. hc 는 아무것도 치지 않는다): Dispatch 를 `launch_failed` 로 두고 exit 3 `terminal_not_ready`.
-   - 그 밖의 hc 실패(시간 초과, 응답 유실): 들어갔을 수 있다(hc 도움말: "send 가 실패해도 들어갔을 수 있다"). `active` 로 두고 `delivery` 에 `{uncertain: true, error}` 를 쓰고 `warnings` 에 `delivery_uncertain` 을 넣는다. 들어가지 않았으면 13.6 의 `not_started` 가 알린다.
-7. `active` 로 바꾼다(조건부 쓰기). 라벨을 `hc label <t> horch.dispatch=<새 id>` 로 바꾼다. 실패하면 `warnings` 에 `label_failed` 를 넣고 계속한다(고정 터미널의 정리는 이 라벨에 기대지 않는다, 13.5).
+5. `hc get <t>` 로 상태와 turn 을 다시 읽는다. 2 의 조건 가운데 `terminal_gone`·`not_persistent_terminal`·`terminal_not_ready` 와, 이 Dispatch 가 아닌 진행 중 Dispatch·리셋 예약(`terminal_busy`)을 다시 본다. 3 에서 만든 자기 Dispatch 는 빼고 본다. 걸리면 Dispatch 를 `launch_failed` 로 두고 그 code 로 끝난다. 아니면 그 turn 을 `start_turn` 으로, `delivery = {"attempted": true, "turn_before": <turn>}` 을 먼저 기록한다(조건부 쓰기, `launching` 일 때만).
+6. 프리앰블 글 전체를 보낸다: `HC_TERMINAL_ID` 를 뺀 환경으로 `hc send <t> <글> --json`(상태가 `idle` 이면 `--if idle` 을 붙이고, `done` 이면 붙이지 않는다). 결과는 7 에서 `delivery` 에 쓴다: `{attempted: true, via: "send", if: "idle"|null, status_before, turn_before, started, status, turn, at}`. `attempted` 는 지우지 않는다.
+   - `status_mismatch`(그 사이 `working`·`blocked` 가 됐다. hc 는 아무것도 치지 않는다): 한 트랜잭션에서 `delivery` 에 `{attempted: true, typed: false, error}` 를 쓰고 Dispatch 를 `launch_failed` 로 둔 뒤 exit 3 `terminal_not_ready`.
+   - 그 밖의 hc 실패(시간 초과, 응답 유실): 들어갔을 수 있다(hc 도움말: "send 가 실패해도 들어갔을 수 있다"). 7 에서 `active` 로 두고 `delivery` 에 `{attempted: true, uncertain: true, error}` 를 쓰고 `warnings` 에 `delivery_uncertain` 을 넣는다. 들어가지 않았으면 13.6 의 `not_started` 가 알린다.
+7. 보내기 결과(`delivery`)와 `active` 전이를 한 트랜잭션에서 쓴다(조건부 쓰기, `launching` 일 때만). 둘 사이에 죽는 틈이 없다. 라벨을 `hc label <t> horch.dispatch=<새 id>` 로 바꾼다. 실패하면 `warnings` 에 `label_failed` 를 넣고 계속한다(고정 터미널의 정리는 이 라벨에 기대지 않는다, 13.5).
 8. 결과 `{task, dispatch, terminal, state: "active", placement: "same_terminal", start_turn, delivery, warnings}`.
 
-실행자가 죽었을 때(5장 launching 조정에 더한다): 고정 Dispatch 가 `launching` 이고 실행자가 죽었으면, `delivery` 에 `sending` 이 없으면 지금처럼 `launch_failed` 다. 있으면(보냈을 수 있다) `hc get` 을 보고 turn 이 `start_turn` 보다 크거나 상태가 `working` 이면 `active`, 아니면 `launch_failed` 다. hc 를 확인할 수 없으면 `launching` 으로 둔다(다음 조정이 다시 본다).
+실행자가 죽었을 때(5장 launching 조정에 더한다): 고정 Dispatch 가 `launching` 이고 실행자가 죽었으면, `delivery.attempted` 가 없으면(보내기 전에 죽었다) 지금처럼 `launch_failed` 다. 있으면(보냈을 수 있다. 결과 기록은 `active` 전이와 한 트랜잭션이라 `launching` 으로 남은 것은 결과를 쓰기 전이다) `hc get` 을 보고 turn 이 `start_turn` 보다 크거나 상태가 `working` 이면 `active`, 아니면 `launch_failed` 다. hc 를 확인할 수 없으면 `launching` 으로 둔다(다음 조정이 다시 본다).
 
 ### 13.5 release, abandon, terminal-close
 
@@ -619,7 +619,7 @@ herdr-team 0.4.0 의 고정 에이전트(같은 세션이 여러 태스크를 �
 
 1. 13.4 의 2 와 같은 확인을 한다(`terminal_gone`·`not_persistent_terminal`·`terminal_busy`·`terminal_not_ready`). 에이전트는 그 터미널의 마지막 고정 Dispatch 의 `agent` 다.
 2. `--name` 은 Codex 에만 쓴다. `^[a-z][a-z0-9-]{0,31}$` 가 아니면 exit 2 `usage`. Claude 에 주면 무시하고 `warnings` 에 `name_ignored`(Claude 는 띄울 때 준 `--name` 제목이 `/clear` 뒤에도 남는다, X6).
-3. `meta` 에 `reset:<t> = <pid>|<시작 시각>|<at>` 을 쓴다. 이 표시가 있고 그 프로세스가 살아 있는 동안 `worker-start --terminal`·다른 `terminal-reset` 은 exit 3 `terminal_busy` 다. 끝나면(성공·실패 모두) 지운다.
+3. 리셋 예약: `BEGIN IMMEDIATE` 트랜잭션에서 그 터미널에 `launching`·`active` Dispatch 가 없고 살아 있는 다른 리셋 예약이 없는지 다시 본 뒤 `meta` 에 `reset:<t> = <pid>|<시작 시각>|<at>` 을 쓴다(걸리면 exit 3 `terminal_busy`). 예약이 있고 그 프로세스가 살아 있는 동안 `worker-start --terminal`(13.4 의 3 이 같은 트랜잭션 꼴로 본다)·다른 `terminal-reset` 은 exit 3 `terminal_busy` 다. 끝나면(성공·실패 모두) 값이 자기 pid·시작 시각일 때만 지운다(조건부 쓰기). 죽은 프로세스의 예약은 없는 것으로 본다.
 4. `events(t)` 구독을 먼저 붙이고 `turn_before`(지금 turn)를 읽는다. 구독을 띄우지 못하면 아래 5 의 대체 신호만 쓴다.
 5. `keys(t, ["/", "c", "l", "e", "a", "r", "enter"])`. Codex 에 `--name` 이 있으면 `enter` 앞에 빈칸과 이름 글자를 하나씩 넣는다(X3b C1 에서 `/clear p6x-next` 가 이름을 붙였다. 빈칸의 키 이름은 hc 의 키 표를 따른다). 감싼 send 나 `/new` 는 쓰지 않는다. keys 가 실패하면 exit 1 `hc_failed`.
 6. 기다림: 구독 줄 가운데 turn 이 `turn_before` 보다 큰 첫 줄(그 줄의 상태가 `idle`)을 마감까지 기다린다. 대체 신호로 0.2초마다 `hc get` 을 보고 turn > `turn_before` 이고 상태 `idle` 이면 끝난 것으로 본다(둘 중 먼저 온 것). Claude 는 0.1–0.3초, Codex 는 1.5–1.8초였다(X2, X3b).
@@ -657,8 +657,8 @@ exit 코드 표(7장)는 그대로다(새 값 없음).
 
 - 스키마: v2 DB 를 열면 v3 으로 올라가고 기존 행은 `persistent = 0`, 인덱스가 같은 터미널의 두 번째 진행 중 Dispatch 를 막는다.
 - `--keep-open`: 라벨 `horch.persistent=1`, `terminal_argv = launch_argv`, `--tab`·`--hidden` 라벨과 `placement`.
-- `--terminal`: 옵션 충돌(exit 2), 2 의 거부 표 전부, `idle` 이면 `--if idle`·`done` 이면 조건 없음(가짜 hc 가 받은 인자), 감싸지 않음(환경에 `HC_TERMINAL_ID` 없음), `start_turn` 이 보내기 직전 turn, `status_mismatch` 면 `launch_failed`, 응답 유실이면 `active` 와 `delivery_uncertain`, 라벨 갱신, 프리앰블의 이어 받기 줄.
-- 실행자 사망: 보내기 전(`launch_failed`), 보낸 뒤 turn 이 오름(`active`), 보낸 뒤 turn 그대로(`launch_failed`).
+- `--terminal`: 옵션 충돌(exit 2), 2 의 거부 표 전부, 5 의 다시 보기가 자기 Dispatch 를 빼고 정상 재투입이 통과함, 리셋 예약과 Dispatch 예약의 배제(한쪽만 성공), `idle` 이면 `--if idle`·`done` 이면 조건 없음(가짜 hc 가 받은 인자), 감싸지 않음(환경에 `HC_TERMINAL_ID` 없음), `start_turn` 이 보내기 직전 turn, `status_mismatch` 면 `launch_failed`, 응답 유실이면 `active` 와 `delivery_uncertain`, 라벨 갱신, 프리앰블의 이어 받기 줄.
+- 실행자 사망: 보내기 전(`launch_failed`), 보낸 뒤 결과 기록 전에 turn 이 오름(`active`)·turn 그대로(`launch_failed`), 결과와 `active` 를 함께 쓴 뒤(`active` 그대로).
 - 판정: 고정 Dispatch 의 생존을 `terminal_argv` 로, `idle_turn` 이 `start_turn` 기준(다시 넣자마자 거짓 idle 이 나오지 않음), `not_started` 의 조건(60초, turn 그대로, `seen_at` 없음, 메시지 없음)과 `working` 이면 관찰 없음.
 - release·abandon·terminal-close: 고정 Dispatch 의 release 가 hc 를 부르지 않음, abandon 의 `--keep-terminal`·`--kill` 규칙, terminal-close 의 `--abandon`·`not_found`·kill 실패 재시도.
 - terminal-reset: keys 인자(`/clear`, Codex 이름), turn 사건 대기, 대체 신호(`hc get` 폴링), 마감 exit 4, 진행 중 표시가 `--terminal` 을 막음, 진행 중 Dispatch·`working` 이면 거부.
