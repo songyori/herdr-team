@@ -1245,6 +1245,39 @@ class UnrecordedDispatchTest(EventCase):
             self.assertTrue(self.acked(asked["question"]))
             self.assertEqual(len(self.decides()), 1)
 
+    def test_held_question_of_finished_reviewer_is_not_raised(self):
+        """미룬 질문을 다시 볼 때 그 리뷰어가 이미 done 했으면 decide 로 올리지 않는다. 올리면 리뷰 자식을 거둘 때 그 표시가
+        써져 재확인이 그 태스크를 건너뛰고 승인된 리뷰가 reviewing 에 남는다(Codex 커밋 리뷰 9540edc)."""
+        self.start()
+        self.act_work("T-001")
+        gate = self.tmp / "pause"
+        with mock.patch.dict("os.environ", {"HTEAM_DRIVE_WAIT_MS": "200"}):
+            with mock.patch.dict("os.environ", {"HTEAM_TEST_PAUSE_AT": "after_launch",
+                                                "HTEAM_TEST_PAUSE_FILE": str(gate)}):
+                self.d.check_mail()  # 리뷰 자식이 리뷰어를 띄운 뒤 기록 전에 멈춘다(finish 잠금을 쥔 채)
+            deadline = time.monotonic() + 30
+            while not gate.with_name("pause.reached").exists():
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.05)
+            did, term = self.reviewer()
+            code, asked = self.horch("ask", "--dispatch", did, "--question", "어느 쪽인가", "--timeout-ms", "100",
+                                     terminal=term)
+            self.assertEqual(code, 4, asked)
+            self.d.check_mail()  # 미룬다
+            att = self.attempt("T-001")
+            code, out = self.act(did, {"done": {"outcome": "succeeded", "summary": "APPROVE", "report_path": att["file"]},
+                                       "review": {"file": att["file"], "text": "## 지적 사항\n- 없음\n",
+                                                  "verdict": "APPROVE"}})
+            self.assertEqual(code, 0, out)
+            self.d.check_mail()  # 미룬 질문을 다시 본다: 리뷰어가 끝났다
+            self.assertEqual(self.logged(f"T-001 끝난 디스패치의 question 무시: {did}"), 1)
+            self.d.check_mail()  # 리뷰어 worker_done: 리뷰 자식이 finish 잠금을 쥐어 아직 마무리하지 못한다
+            gate.touch()
+            self.wait_jobs()
+            self.d.reconcile()
+        self.assertEqual(self.decides(), [])
+        self.assertEqual(self.task_state("T-001")["status"], "done")
+
 
 class StartReadyDecideTest(EventCase):
     """start-ready 는 지금 라운드의 열린 decide 가 있는 태스크를 띄우지 않는다(설계 5.4)."""

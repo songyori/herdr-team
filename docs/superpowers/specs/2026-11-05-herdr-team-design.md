@@ -1365,7 +1365,7 @@ Herdr 신호로 바꾼 곳: orca 의 `ACTIVE_OUTPUT_SECONDS`(마지막 출력 30
 
 ### 8.6 이벤트 처리
 
-관제는 메시지의 Dispatch 로 태스크·라운드·종류(작업·리뷰·인수인계)를 찾는다(0.3.0 `hteam which` 의 `locate` 를 안에서 쓴다). 인수인계 Dispatch 는 `crew.json` 의 `resetting.dispatch` 로 찾는다. 태스크를 못 찾으면 워커 목록(`horch worker-list`)을 한 번 새로 받아 다시 찾는다. 상태 파일에는 아직 없지만 새 목록에 이 Run 의 진행 중(launching·active) 워커로 있으면(리뷰 자식·`start` 가 띄운 직후 상태를 기록하기 전) 그 메시지가 든 묶음을 ack 하지 않고 다음 틱에 그 메시지만 다시 처리한다. 처음 미룬 뒤 `RECONCILE_S` 가 지나면 버린다(미루는 동안 horch 는 새 묶음을 주지 않는다, Codex 커밋 리뷰 75a6612). 그래도 못 찾으면 로그 `모르는 Dispatch 의 <type> 무시: <dispatch>` 만 남긴다. 지난 라운드·시도의 메시지면 로그 `<T> 지난 디스패치의 <type> 무시: <dispatch>`, 태스크가 `done`·`dropped` 면 로그 `<T> 이미 끝난 태스크(<상태>)의 <type> 무시: <dispatch>`.
+관제는 메시지의 Dispatch 로 태스크·라운드·종류(작업·리뷰·인수인계)를 찾는다(0.3.0 `hteam which` 의 `locate` 를 안에서 쓴다). 인수인계 Dispatch 는 `crew.json` 의 `resetting.dispatch` 로 찾는다. 태스크를 못 찾으면 워커 목록(`horch worker-list`)을 한 번 새로 받아 다시 찾는다. 상태 파일에는 아직 없지만 새 목록에 이 Run 의 진행 중(launching·active) 워커로 있으면(리뷰 자식·`start` 가 띄운 직후 상태를 기록하기 전) 그 메시지가 든 묶음을 ack 하지 않고 다음 틱에 그 메시지만 다시 처리한다. 처음 미룬 뒤 `RECONCILE_S` 가 지나면 버린다(미루는 동안 horch 는 새 묶음을 주지 않는다, Codex 커밋 리뷰 75a6612). question(미루지 않은 것도)과 미뤘던 escalation 은 그 Dispatch 가 지금 목록에서 더는 진행 중이 아니면 decide 로 올리지 않고 로그 `<T> 끝난 디스패치의 <type> 무시: <dispatch>` 만 남긴다(끝난 워커의 질문은 답할 곳이 없고, 그 worker_done 이 마무리한다. Codex 커밋 리뷰 9540edc). 그래도 못 찾으면 로그 `모르는 Dispatch 의 <type> 무시: <dispatch>` 만 남긴다. 지난 라운드·시도의 메시지면 로그 `<T> 지난 디스패치의 <type> 무시: <dispatch>`, 태스크가 `done`·`dropped` 면 로그 `<T> 이미 끝난 태스크(<상태>)의 <type> 무시: <dispatch>`.
 
 | 메시지 | 조건 | 관제가 자동으로 | 메인에 올림 |
 |---|---|---|---|

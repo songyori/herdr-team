@@ -67,6 +67,7 @@ GATE_NOTE = "테스트 관문 반려: quick 이 통과하지 못했다({file} �
 # worker_question 의 판단 근거 문서(설계 7.7, 있는 것만)
 GROUNDS = ("docs/planning/spec.md", "docs/planning/contracts.md", "docs/planning/interview.md", "docs/planning/voice.md")
 TEST_CONFIG_CODES = frozenset({"test_unrunnable", "bad_test_config", "plan_unreadable"})
+LIVE = ("launching", "active")  # 진행 중인 Dispatch(horch 상태)
 
 
 def _heartbeat_age(p) -> float | None:
@@ -273,7 +274,8 @@ class Drive:
 
         못 찾으면 워커 목록을 한 번 새로 받아 다시 찾는다. 상태 파일에는 아직 없고 새 목록에 이 Run 의 진행 중(launching·
         active) 워커로 있으면(리뷰 자식·start 가 띄운 직후 기록 전) True 를 돌려 미룬다(check_mail 이 ack 하지 않는다). 처음
-        미룬 뒤 RECONCILE_S 가 지나면 버린다."""
+        미룬 뒤 RECONCILE_S 가 지나면 버린다. question(늘)과 미뤘던 escalation 은 그 Dispatch 가 지금 목록에서 더는 진행 중이
+        아니면(끝난 워커의 질문) decide 로 올리지 않고 로그만 남긴다."""
         kind = message.get("type")
         if kind == "status":
             return None
@@ -283,11 +285,13 @@ class Drive:
         body = coord._body(message)
         did = message.get("dispatch") or body.get("dispatch")
         mid = message.get("id")
+        held, fresh = mid in self._held, False
         loc = coord.locate(self.p, did, self.rows)
-        if did and (loc is None or (mid in self._held and not loc["recorded"])):
+        if did and (loc is None or (held and not loc["recorded"])):
             loc = coord.locate(self.p, did, self.write_workers())
+            fresh = True
             row = dispatch.row_by_id(self.rows, did)
-            if loc is not None and not loc["recorded"] and row is not None and row.get("state") in ("launching", "active"):
+            if loc is not None and not loc["recorded"] and row is not None and row.get("state") in LIVE:
                 first = self._held.setdefault(mid, time.monotonic())
                 if time.monotonic() - first < RECONCILE_S:
                     return True
@@ -303,6 +307,11 @@ class Drive:
         if loc["canceled"] or not loc["current"]:
             self.log(f"{tid} 지난 디스패치의 {kind} 무시: {did}")
             return
+        if kind == "question" or (held and kind == "escalation"):
+            row = dispatch.row_by_id(self.rows if fresh else self.write_workers(), did)
+            if row is None or row.get("state") not in LIVE:  # 끝난 워커의 질문: 답할 곳이 없다. 종료 메시지가 마무리한다
+                self.log(f"{tid} 끝난 디스패치의 {kind} 무시: {did}")
+                return None
         work = loc["kind"] == "work"
         if kind == "worker_done":
             if work:
