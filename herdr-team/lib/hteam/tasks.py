@@ -9,8 +9,8 @@ import contextlib
 import os
 from typing import Iterator
 
-from . import compose, config, dispatch, gitio, outbox, plan, procs, queue, roles, specs, state
-from .errors import CONFLICT, FAIL, USAGE, HteamError
+from . import compose, config, crew, dispatch, gitio, outbox, plan, procs, queue, roles, specs, state
+from .errors import CONFLICT, FAIL, MISSING, USAGE, HteamError
 from .globs import any_overlap, within
 from .horch import Horch, failure
 from .paths import SHIM, find_project
@@ -126,6 +126,34 @@ def _new_round(st: dict, n: int, head: str, choice, note=None, supplement=None, 
     return rd
 
 
+def _crew_choice(cfg, spec, cli: dict, plc: dict):
+    """고정 에이전트 라운드의 작업 에이전트·모델(설계 4.1 6단계)과 model_ignored. 처음 띄우면 [crew.<이름>] > [defaults],
+    같은 터미널에 넣으면 떠 있는 세션의 entry 값(설정을 바꿨어도 세션 그대로). 리뷰어는 직무 규칙 그대로다."""
+    choice, ignored = config.crew_choice(cfg, plc["crew"], spec.role, spec.front, cli)
+    if plc["mode"] == "insert":
+        choice.model, choice.effort = plc["entry"]["model"], plc["entry"]["effort"]
+    return choice, ignored
+
+
+def _crew_round(rd: dict, plc: dict, ignored, forced: bool = False) -> None:
+    """라운드 기록의 고정 에이전트 이름(설계 5.3·5.9.1 의 agent 를 키 crew 로 둔다) 또는 temp, model_ignored, forced."""
+    rd["crew"] = plc["crew"].name if plc["kind"] == "crew" else "temp"
+    if plc["kind"] == "crew":
+        rd["model_ignored"] = bool(ignored)
+    if forced:
+        rd["forced"] = True
+
+
+def _agent_busy(reason: str) -> HteamError:
+    return HteamError("agent_busy", reason, CONFLICT, data={"reason": "agent", "detail": reason})
+
+
+def _recovery_place(p, cfg, spec, rd: dict) -> dict:
+    """같은 라운드 복구의 배정: 그 라운드의 고정 에이전트(바쁘거나 리셋 중이면 기다린다), temp·없음이면 임시 워커."""
+    name = crew.round_crew(rd)
+    return crew.place(p, cfg, spec.role, rd["agent"], crew_name=name) if name else dict(crew.TEMP)
+
+
 LIVE = ("launching", "active")
 
 
@@ -174,7 +202,9 @@ def _req(request: str | None) -> dict:
     return {"request": request} if request else {}
 
 
-def _prepare_start(p, cfg, spec, choice, cli: dict, cap: Capacity | None = None, request: str | None = None) -> None:
+def _prepare_start(p, cfg, spec, choice, cli: dict, cap: Capacity | None = None, request: str | None = None) -> dict:
+    """시작 예약(설계 5.4 1–4). 프로젝트 잠금 안에서 상태 → 잠금 → 결정 → 동시 수 상한 뒤 배정(5.9.4)을 보고 배정을
+    돌려준다. 기다려야 하면 아무것도 쓰지 않고 exit 3 agent_busy."""
     tid = spec.id
     with state.project_lock(p):
         state.create(p, tid, spec.role)  # 사양만 있고 상태가 없으면 pending 으로 만든다
@@ -213,10 +243,15 @@ def _prepare_start(p, cfg, spec, choice, cli: dict, cap: Capacity | None = None,
                 if len(busy) >= cap.limit:
                     raise HteamError("parallel_limit", f"동시 수 상한 {cap.limit} 에 닿았다: {', '.join(busy)}",
                                      CONFLICT, data={"occupied": busy})
+            plc = _recovery_place(p, cfg, spec, rd) if recovering else crew.place(p, cfg, spec.role, choice.worker)
+            if plc["kind"] == "wait":
+                raise _agent_busy(plc["reason"])
             if not recovering:
                 st["role"] = spec.role  # 워커는 이 사양의 직무로 뜬다. planner 하나 검사가 저장된 직무를 본다
                 head = gitio.head(p.root)
-                rd = _new_round(st, st["round"] + 1, head, choice)
+                ch, ignored = _crew_choice(cfg, spec, cli, plc) if plc["kind"] == "crew" else (choice, None)
+                rd = _new_round(st, st["round"] + 1, head, ch)
+                _crew_round(rd, plc, ignored)
                 text = compose.work_spec(p, cfg, spec, rd, owns)
                 if st["base"] is None:
                     st["base"] = head  # 태스크를 처음 띄울 때 한 번만
@@ -228,24 +263,59 @@ def _prepare_start(p, cfg, spec, choice, cli: dict, cap: Capacity | None = None,
                     compose.work_spec(p, cfg, spec, rd, owns)
             st["owns"] = owns
             _begin(p, st, rd, text, "start", **_req(request))
+    return plc
 
 
-def run_work(p, cfg, h, tid: str) -> dict:
-    """현재 라운드 작업 워커를 띄운다(설계 5.4 5–6). 실패하면 launch_failed 그대로 exit 1(horch 의 12 는 12)."""
+TRANSIENT = ("terminal_not_ready", "terminal_busy")  # 확인과 보내기 사이에 세션이 일을 시작했다(일시 거부, 5.9.3 의 3)
+
+
+def run_work(p, cfg, h, tid: str, plc: dict | None = None) -> dict:
+    """현재 라운드 작업 워커를 띄운다(설계 5.4 5–6). 실패하면 launch_failed 그대로 exit 1(horch 의 12 는 12).
+
+    plc 는 배정(crew.place): 임시 워커는 지금 그대로, 고정 에이전트의 처음은 에이전트 탭에 --keep-open(Claude 는 --name),
+    살아 있는 세션은 --terminal 로 넣는다(5.9.2·5.9.3). 넣기가 일시 거부면 그 라운드에 transient 를 쓰고 그대로 실패,
+    terminal_gone 이면 터미널을 잊고 같은 라운드를 새 세션으로 띄운다. working 뒤 고정 에이전트 기록(crew.after_launch)."""
+    plc = plc or dict(crew.TEMP)
     rd = state.require(p, tid)["rounds"][-1]
-    res = dispatch.launch(p, h, tid, work_slot, agent=rd["agent"], model=rd["model"], effort=rd["effort"],
-                          args=cfg.args(rd["agent"]), spec_file=_spec_file(p, tid, rd["round"]),
-                          expect={"launch_failed"}, on_fresh=_launch_basis)
+    args, where = cfg.args(rd["agent"]), {}
+    if plc["kind"] == "crew":
+        if plc["mode"] == "insert":
+            where["same_terminal"] = plc["terminal"]
+        else:
+            where["keep_open_tab"] = crew.agent_tab(p.root, outbox._run(p).get("team_space"), plc["crew"].name)
+            extra = crew.name_arg(plc["crew"])
+            args = [*args, extra] if extra else args
+    try:
+        res = dispatch.launch(p, h, tid, work_slot, agent=rd["agent"], model=rd["model"], effort=rd["effort"],
+                              args=args, spec_file=_spec_file(p, tid, rd["round"]),
+                              expect={"launch_failed"}, on_fresh=_launch_basis, **where)
+    except HteamError as exc:
+        code = (((exc.data or {}).get("horch") or {}).get("error") or {}).get("code")
+        if plc["kind"] == "crew" and code in TRANSIENT:
+            with dispatch.owned(p, tid, work_slot, {"launch_failed"}) as st:
+                work_slot(st)["transient"] = True  # 관제 재확인이 decide 를 올리지 않고 start-ready 가 다시 넣는다(8.7)
+            raise
+        if plc["kind"] == "crew" and plc["mode"] == "insert" and code == "terminal_gone":
+            crew.forget(p, plc["crew"].name)
+            return run_work(p, cfg, h, tid, {"kind": "crew", "crew": plc["crew"], "mode": "fresh"})
+        raise
     try:
         # fix·drop 의 취소·전이가 그 사이 끼었으면 working 으로 두지 않는다(정리는 그쪽이 horch 상태로 한다)
         with dispatch.owned(p, tid, work_slot, {"launch_failed"}) as st:
+            cur = st["rounds"][-1]
             if res["mode"] == "adopt":  # 실제로 도는 워커에 맞춘다(리뷰어는 이 agent 의 반대쪽)
-                st["rounds"][-1].update(agent=res["agent"], model=res["model"], effort=res["effort"])
+                cur.update(agent=res["agent"], model=res["model"], effort=res["effort"])
+            cur["work"].pop("transient", None)
+            for key in ("start_turn", "delivery"):  # 같은 터미널에 넣었을 때(5.9.3 의 3)
+                if res.get(key) is not None:
+                    cur[key] = res[key]
             state.move(st, "working", "launched", dispatch=res["dispatch"])
-            rd = st["rounds"][-1]
+            rd = cur
     except HteamError as exc:
         dispatch.left_running(exc, res, h)
         raise
+    if plc["kind"] == "crew":
+        crew.after_launch(p, plc, tid, rd, res)
     out = {"task": tid, "round": rd["round"], "status": "working", "agent": rd["agent"], "model": rd["model"],
            "effort": rd["effort"], **res}
     nxt, hint = _adopted_next(cfg, tid, rd["round"], res)
@@ -284,8 +354,35 @@ def start(p, tid: str, cli: dict, cfg=None, h=None, cap: Capacity | None = None,
     spec = specs.check(p, cfg, tid)
     choice = config.resolve(cfg, spec.role, spec.front, cli)
     h = h or Horch(p.horch_home)
-    _prepare_start(p, cfg, spec, choice, cli, cap, request)
-    return run_work(p, cfg, h, tid)
+    plc = _prepare_start(p, cfg, spec, choice, cli, cap, request)
+    return run_work(p, cfg, h, tid, plc)
+
+
+# hteam start 의 기다림(설계 5.4 의 6단계 문단): 처음 시작하는 태스크가 지금 시작할 수 없으면 pending 그대로 exit 0
+START_WAIT = {"deps_unmet": "deps", "owns_locked": "lock", "planner_busy": "lock", "agent_busy": "agent"}
+WAIT_TAIL = {"deps": "선행이 끝나면 관제가 띄운다", "lock": "잠금이 풀리면 관제가 띄운다", "agent": "에이전트가 비면 관제가 띄운다"}
+
+
+def _waiting(tid: str, reason: str, said: str) -> dict:
+    return {"id": tid, "status": "waiting", "reason": reason,
+            "message": f"{tid}: {said}. pending 으로 두었다. {WAIT_TAIL[reason]}"}
+
+
+def start_command(p, tid: str, cli: dict, *, request: str | None = None) -> dict:
+    """`hteam start T` 와 큐 요청 start 의 명령 의미(설계 5.4 의 6단계 문단). 처음 시작(상태 없음·pending)이면 먼저 의존을
+    보고(끝나지 않았으면 기다린다), 잠금·에이전트 거부를 exit 0 waiting 으로 바꾼다. 같은 라운드 복구는 그 오류 그대로다."""
+    cfg = config.load(p)
+    spec = specs.check(p, cfg, tid)
+    st = state.load(p, tid)
+    first = st is None or st["status"] == "pending"
+    if first and not deps_met(p, cfg, spec):
+        return _waiting(tid, "deps", f"선행이 끝나지 않았다({_unmet_text(unmet_deps(p, cfg, spec), spec)})")
+    try:
+        return start(p, tid, cli, cfg=cfg, request=request)
+    except HteamError as exc:
+        if first and exc.code in START_WAIT:
+            return _waiting(tid, START_WAIT[exc.code], exc.message)
+        raise
 
 
 def _dep_done(cfg, spec, ds: dict) -> bool:
@@ -364,17 +461,74 @@ def dropped_hint(tid: str, gone: dict[str, list[str]]) -> str:
 
 
 WAIT_CODES = {"owns_locked": "lock", "planner_busy": "lock", "launching": "launching", "parallel_limit": "limit",
-              "deps_unmet": "deps", "decision_pending": "decision", "decide_open": "decide"}
+              "deps_unmet": "deps", "decision_pending": "decision", "decide_open": "decide", "agent_busy": "agent"}
+
+
+def _transient(p, tid: str) -> bool:
+    """지금 라운드의 작업 실행 기록에 일시 거부 표시(transient)가 있나."""
+    rd = state.current_round(_load_quiet(p, tid) or {})
+    return bool(rd and rd["work"].get("transient"))
+
+
+def _refused(exc: HteamError, note: str | None) -> str:
+    """관제 절차 실패 문구(설계 8.5)."""
+    return f"관제 절차 실패: {exc.code}: {exc.message}" + (f" (아직 전하지 못한 지시: {note})" if note else "")
+
+
+def drain(p, cfg) -> list[dict]:
+    """수정 대기열 비우기(설계 5.9.5, start-ready 맨 앞): 설정 순서로 에이전트마다 맡은 태스크·리셋이 없고 큐가 있으면 맨 앞
+    하나의 queued_fix 로 fix(from_queue) 한다. 작업 터미널이 확인 불가이거나 쉬지 않으면 꺼내지 않는다. 리뷰 관문이 잡고 있으면
+    그대로 두고, 그 밖의 거부는 queued_fix 를 지우고 decide 로 올린다. 새 라운드를 연 [{task, round, dispatch}]."""
+    from .drive import Drive  # drive 가 tasks 를 쓴다
+    out: list[dict] = []
+    data = crew.load(p)
+    for name in cfg.crew:
+        e = {**crew.blank(name), **(data.get(name) or {})}
+        if e["task"] or e["resetting"] or not e["queue"]:
+            continue
+        tid = e["queue"][0]
+        q = (state.load(p, tid) or {}).get("queued_fix")
+        if not q:
+            crew.unqueue(p, tid)  # 라운드를 연 뒤 큐에서 빼기 전에 멈췄다
+            continue
+        if e["terminal"]:
+            verdict, info = crew.probe(e["terminal"], e["terminal_argv"])
+            if verdict == "unknown" or (verdict == "live" and crew.word(info) not in crew.READY):
+                continue
+        try:
+            res = fix(p, tid, note=q.get("note"), supplement=q.get("supplement"), force_round=bool(q.get("force_round")),
+                      cli={}, from_queue=True, request=q.get("request"), nowait=True)
+        except HteamError as exc:
+            if exc.exit_code == MISSING:
+                raise
+            if exc.code == "review_busy":  # 리뷰 관문이 finish 잠금을 쥐었다: 다음 start-ready 가 다시 꺼낸다
+                continue
+            if (state.load(p, tid) or {}).get("queued_fix"):  # 라운드를 열기 전에 거부됐다
+                crew.clear_queued(p, tid)
+                flags = " --force-round" if exc.code == "max_rounds" else ""
+                Drive(p).decide("escalation", tid, _refused(exc, q.get("note")),
+                                commands=[f'hteam fix {tid}{flags} --note "<지시>"', f"hteam drop {tid}"])
+            else:
+                crew.unqueue(p, tid)
+            continue
+        if "round" not in res:  # 그 사이 다시 바빠져 줄을 섰다
+            continue
+        Drive(p).log(f"{tid} r{res['round']} 수정 시작")
+        out.append({"task": tid, "round": res["round"], "dispatch": res["dispatch"]})
+    return out
 
 
 def start_ready(p) -> dict:
-    """tasks.toml 순서로 사양 → 의존 → 잠금 → 동시 수 상한을 보고 통과한 것을 start 한다(설계 5.4).
+    """tasks.toml 순서로 사양 → 의존 → 잠금 → 동시 수 상한을 보고 통과한 것을 start 한다(설계 5.4). 먼저 고정 에이전트의
+    수정 대기열을 비운다(drain, 5.9.5).
 
     잠금·상한은 start 가 프로젝트 잠금 안에서 본다(복구는 저장된 owns, 상한 검사와 예약은 원자적).
-    한 태스크의 오류(예상 밖 오류 포함)는 그 태스크만 실패로 두고 계속한다."""
+    한 태스크의 오류(예상 밖 오류 포함)는 그 태스크만 실패로 두고 계속한다. 일시 거부(transient)로 남은 launch_failed 는
+    실패가 아니라 대기 사유 agent 다."""
     cfg = config.load(p)
     h = Horch(p.horch_home)
     cap = Capacity(h, cfg.max_parallel)
+    drained = drain(p, cfg)
     started, waiting, failed = [], [], []
     graph = None  # dropped 선행을 볼 때 만든다
     order = plan.order(p)
@@ -416,13 +570,15 @@ def start_ready(p) -> dict:
                                                       "hint": ""}})
             elif exc.code in WAIT_CODES:
                 waiting.append({"task": tid, "reason": WAIT_CODES[exc.code], "detail": exc.message})
+            elif exc.code == "launch_failed" and _transient(p, tid):
+                waiting.append({"task": tid, "reason": "agent", "detail": exc.message})
             else:
                 failed.append({"task": tid, "error": exc.to_json()["error"]})
     if failed:
         raise HteamError("start_failed", f"{len(failed)}개 태스크를 띄우지 못했다", FAIL,
                          "실패한 태스크는 hteam status 의 next 를 따른다",
-                         data={"started": started, "waiting": waiting, "failed": failed})
-    return {"started": started, "waiting": waiting}
+                         data={"started": started, "waiting": waiting, "failed": failed, "drained": drained})
+    return {"started": started, "waiting": waiting, "drained": drained}
 
 
 FIX_FROM = ("changes", "launch_failed", "working", "awaiting_user")
@@ -589,10 +745,53 @@ def _closing(p, tid: str, seen: dict) -> Iterator[dict]:
             yield st
 
 
+def _keep_abandon(h, did: str | None) -> None:
+    """쉬는 고정 에이전트 세션을 둔 채 그 Dispatch 를 버린다(active 일 때만, 설계 5.9.5·5.9.6). release 는 _close_round 가 한다."""
+    row = dispatch.row_by_id(h.workers(), did)
+    if row is not None and row["state"] == "active":
+        h.ok("worker-abandon", "--dispatch", did, "--keep-terminal")
+
+
+def _crew_fix(p, h, tid: str, member, st: dict, *, force: bool, from_queue: bool) -> tuple[dict | None, bool]:
+    """고정 에이전트 라운드 fix 의 에이전트 보기(설계 5.9.5·5.9.6): (배정, forced). 배정이 None 이면 대기열에 넣는다.
+    held(그 에이전트가 아직 이 태스크를 맡았다)면 바쁨으로 보지 않는다(자기 뒤에 줄 서면 드레인이 영영 꺼내지 않는다).
+    --force 는 대상 확인(맡은 태스크·지금 작업 Dispatch)을 통과했을 때만 세션을 닫고 새 세션으로 띄운다."""
+    rd = state.current_round(st) or {}
+    did = rd["work"].get("dispatch") if rd else None
+    e = crew.entry(p, member.name)
+    held = e["task"] == tid
+    fresh = {"kind": "crew", "crew": member, "mode": "fresh"}
+    if force and held and did and e["dispatch"] == did:
+        crew.close_session(p, member.name, tid)
+        return fresh, True
+    if not held and (e["task"] or e["resetting"] or (not from_queue and any(x != tid for x in e["queue"]))):
+        return None, False
+    if not e["terminal"]:
+        return fresh, False
+    verdict, info = crew.probe(e["terminal"], e["terminal_argv"])
+    if verdict == "gone":
+        crew.forget(p, member.name)
+        return fresh, False
+    if verdict == "unknown":
+        if held:
+            raise HteamError("unverifiable", f"{tid}: 이 태스크를 맡은 {member.title} 에이전트 작업 터미널({e['terminal']}) "
+                             "상태를 확인하지 못했다", FAIL, "잠시 뒤 다시 한다")
+        return None, False
+    word = crew.word(info)
+    if word in crew.READY:
+        if held:
+            _keep_abandon(h, did)
+        return {"kind": "crew", "crew": member, "mode": "insert", "terminal": e["terminal"], "entry": e}, False
+    if held:
+        raise HteamError("worker_active", f"{tid}: 고정 에이전트가 아직 이 태스크를 하고 있을 수 있다({word or '보고 없음'}). "
+                         "worker_done 을 기다린다. 지금 고쳐야 하면 --force(세션을 닫고 새 세션으로 띄운다)", CONFLICT)
+    return None, False
+
+
 def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: bool, cli: dict,
         expect_round: int | None = None, queue: bool = False, from_user: bool = False,
         extra_from: tuple[str, ...] = (), follower: bool = False, request: str | None = None,
-        nowait: bool = False) -> dict:
+        nowait: bool = False, force: bool = False, from_queue: bool = False) -> dict:
     """새 라운드(설계 6.4). 입력(사양·owns·잠금)을 먼저 검사하고, 이전 라운드들의 작업·리뷰 Dispatch 를 모두 정리한
     뒤에만 새 라운드를 쓰고 띄운다(이전 워커와 새 워커가 같은 폴더에서 함께 일하지 않게). 일하는 중인 워커는
     abandon --kill 뒤 release.
@@ -605,7 +804,11 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
     리뷰 중·승인됨이어도 다시 만든다).
 
     request 는 큐 요청 id(fix 사건에 남긴다). nowait(관제 안)면 라운드를 닫는 finish 잠금을 기다리지 않는다(_close_round).
-    보강 후행 태스크의 대기 라운드(_queue_followers)에는 잇지 않는다(알려진 한계, 설계 13장)."""
+    보강 후행 태스크의 대기 라운드(_queue_followers)에는 잇지 않는다(알려진 한계, 설계 13장).
+
+    고정 에이전트 라운드(설계 5.9.5)는 같은 에이전트가 고친다: 비어 있으면 같은 터미널에 넣고, 바쁘면 queued_fix 로 대기열에
+    넣어 {id, status: queued, agent} 를 돌려준다(새 라운드는 드레인이 꺼낼 때 연다). force 는 일하는 세션을 닫고 새 세션으로
+    띄운다(5.9.6, 임시 워커는 무시한다). from_queue 는 드레인이 맨 앞을 골라 부를 때다(큐 자리를 세지 않는다)."""
     cfg = config.load(p)
     spec = specs.check(p, cfg, tid)
     choice = config.resolve(cfg, spec.role, spec.front, cli)
@@ -639,11 +842,25 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
                              "사용자가 계속하라고 하면 --force-round(한 라운드만 넘긴다)",
                              data={"round": st["round"], "max_rounds": cfg.max_rounds})
 
-    allowed(state.require(p, tid))
+    first = state.require(p, tid)
+    allowed(first)
+    last = state.current_round(first) or {}
+    member = cfg.crew.get(crew.round_crew(last) or "")  # 설정에서 그 고정 에이전트를 지웠으면 임시 경로
+    if member is not None and cli.get("worker") and cli["worker"] != last.get("agent"):
+        raise HteamError("usage", f"{tid}: 고정 에이전트 태스크의 수정 라운드는 작업 에이전트를 바꾸지 못한다", USAGE)
     owns = checked_owns(cfg, spec)  # 입력 검사(owns·잠금)는 이전 워커를 정리하기 전에 한다
     _check_locks(p, cfg, spec, owns)
     if not queue or follower:  # 끝나지 않은 결정이 고치는 태스크면 워커를 죽이거나 라운드를 닫기 전에 거부한다(_closing 에서 다시 본다)
         _start_gate(p, cfg, spec, check_deps=False)
+    plc, forced = dict(crew.TEMP), False
+    if member is not None and (queue or defer):
+        plc = {"kind": "crew", "crew": member, "mode": "fresh"}  # 띄우지 않는 라운드: start-ready 의 복구가 배정한다
+    elif member is not None:
+        plc, forced = _crew_fix(p, h, tid, member, first, force=force, from_queue=from_queue)
+        if plc is None:
+            return crew.enqueue(p, tid, member.name, note=note, supplement=supplement, force_round=force_round,
+                                request=request)
+    rchoice, ignored = _crew_choice(cfg, spec, cli, plc) if plc["kind"] == "crew" else (choice, None)
     seen: dict = {}
     _close_round(p, h, tid, kill=True, check=allowed, seen=seen, nowait=nowait)
     die_at("fix_closed")  # 테스트: 이전 라운드를 정리한 뒤 새 라운드를 쓰기 전에 죽는다(관제 fix 이어 하기, 설계 8.7)
@@ -666,8 +883,9 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
             # (수정 블록이 보강 결과를 계속 보이고, 다시 승인된 뒤 그 라운드의 제안을 보강 대상으로 보지 않는다)
             supplement = prior["supplement"]
         st["role"] = spec.role  # 첫 실행과 같이 워커가 뜨는 사양의 직무로 맞춘다. planner 하나 검사가 저장된 직무를 본다
-        rd = _new_round(st, st["round"] + 1, gitio.head(p.root), choice, note=note, supplement=supplement,
+        rd = _new_round(st, st["round"] + 1, gitio.head(p.root), rchoice, note=note, supplement=supplement,
                         coord_note=coord_note)
+        _crew_round(rd, plc, ignored, forced)
         if from_user:
             rd["from_user"] = True  # 사용자 일괄 승인의 수정 요청(설계 11.4). 수정 블록이 사용자 요청으로 적는다
             # 마지막으로 실제 리뷰된 라운드의 판정(그 뒤 라운드는 띄우지 않았거나 판정 전에 닫혔다). 수정 요청이면 그 지적도
@@ -681,13 +899,15 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
         st["owns"] = owns
         st["note"] = note
         st.pop("drive_fix", None)  # 관제 fix 표시는 새 라운드를 쓰는 이 쓰기에서 지운다(설계 8.7)
+        st.pop("queued_fix", None)  # 대기열의 수정도 이 라운드가 한다(설계 5.9.5)
         _begin(p, st, rd, text, "fix", previous=old, force_round=force_round, **_req(request))
+    crew.unqueue(p, tid)  # 라운드 전이가 확정된 뒤에 큐에서 뺀다(그 사이 멈추면 큐 맞추기가 뺀다)
     fixed, skipped = _queue_followers(p, followers, supplement, tid) if followers else ([], [])
     if queue or defer:  # 띄우지 않는다. start-ready 의 의존 검사가 선행이 다시 승인된 뒤에 띄운다(설계 11.4)
         return {"task": tid, "round": rd["round"], "status": "launch_failed", "queued": True, "followers": fixed,
                 "warnings": skipped, "next": [SHIM, "start-ready"],
                 "hint": "수정 라운드를 만들었다. start-ready 가 선행이 끝난(승인 직무는 awaiting_user) 뒤에 띄운다"}
-    res = run_work(p, cfg, h, tid)
+    res = run_work(p, cfg, h, tid, plc)
     if followers:
         res["followers"] = fixed
     if skipped:
@@ -913,7 +1133,9 @@ def accept(p, tid: str, expect_round: int | None = None, decision: str | None = 
             if cur["round"] != st["round"]:  # 멈춘 사이 다음 라운드가 같은 상태에 닿았다. 본 적 없는 라운드를 닫지 않는다
                 raise _changed(tid, st, cur)
             work_slot(cur)["cleaned"] = cleaned
+            cur.pop("queued_fix", None)  # 대기열의 수정은 하지 않는다(설계 5.9.5)
             state.move(cur, to, "accept", **_req(request))
+    crew.unqueue(p, tid)
     out = {"task": tid, "status": to, "warnings": warnings}
     if to == "awaiting_user":  # 승인 직무: 다른 승인 태스크와 묶어 사용자에게 묻는다(설계 11.4)
         out["next"] = [SHIM, "design-review"]
@@ -922,23 +1144,65 @@ def accept(p, tid: str, expect_round: int | None = None, decision: str | None = 
     return out
 
 
+DROP_HINT = ("이전 세션을 닫지 못했다. 사용자에게 그 에이전트 탭의 작업 pane 을 닫아 달라고 한다. 닫지 않으면 이전 세션이 지금 "
+             "풀린 소유 경로를 계속 고칠 수 있다")
+
+
+def _drop_session(p, h, tid: str, st: dict, force: bool) -> str | None:
+    """drop 의 고정 에이전트 세션(설계 5.9.6). 대상 확인(맡은 태스크·지금 작업 Dispatch)을 통과했을 때만: 쉬는 세션이면
+    Dispatch 만 버리고 세션은 둔다(--force 와 상관없다). --force 이고 일하는 중이면 세션을 닫고 잊는다. 닫지 못하면 그 세션에
+    다음 태스크를 넣지 않게 터미널을 잊고 Dispatch 를 버려 보고 hint 를 돌려준다. --force 없이 일하는 세션이면 _close_round 가
+    worker_active 로 거부한다."""
+    rd = state.current_round(st) or {}
+    name = crew.round_crew(rd)
+    did = rd["work"].get("dispatch") if rd else None
+    if not name or not did:
+        return None
+    e = crew.entry(p, name)
+    if e["task"] != tid or e["dispatch"] != did:
+        return None
+    verdict, info = crew.probe(e["terminal"], e["terminal_argv"]) if e["terminal"] else ("gone", None)
+    word = crew.word(info) if verdict == "live" else None
+    if word in crew.READY:
+        _keep_abandon(h, did)
+    elif force and word in ("working", "blocked"):
+        try:
+            crew.close_session(p, name, tid)
+        except HteamError:
+            crew.detach(p, name)
+            try:
+                _keep_abandon(h, did)
+            except HteamError:
+                pass  # 정리는 _close_round 가 다시 본다
+            return DROP_HINT
+    return None
+
+
 def drop(p, tid: str, force: bool, expect_round: int | None = None, request: str | None = None,
          nowait: bool = False) -> dict:
     """dropped 로(설계 6.4). 끝나지 않은 실행 키와 리뷰 시도는 canceled. active 는 --force 로만 abandon --kill 뒤
     release. 모든 대상의 정리를 확인한 뒤, 취소 때 본 상태·라운드 그대로일 때만 dropped 를 쓴다(pending 이면 그 사이
     start 가 라운드를 쓰지 않았을 때만). expect_round 는 큐 요청이 본 라운드(바뀌었으면 round_changed, 설계 7.1),
-    nowait(관제 안)면 finish 잠금을 기다리지 않는다(설계 8.5). request 는 drop 사건에 남긴다."""
+    nowait(관제 안)면 finish 잠금을 기다리지 않는다(설계 8.5). request 는 drop 사건에 남긴다. 고정 에이전트 세션은
+    _drop_session, 끝나면 queued_fix 를 지우고 큐에서 빼고 그 에이전트를 비운다(5.9.5·5.9.6)."""
     h = Horch(p.horch_home)
     st = state.require(p, tid)
     _expect_round(tid, st, expect_round)  # 상태보다 먼저: 다른 라운드로 옮겨 갔으면 그 요청은 이미 처리된 것이다
     if st["status"] in state.CLOSED:
         raise state.closed_error(st)
+    hint = _drop_session(p, h, tid, st, force)
     seen: dict = {}
     released = _close_round(p, h, tid, kill=force, check=lambda cur: _expect_round(tid, cur, expect_round), seen=seen,
                             nowait=nowait)
     with _closing(p, tid, seen) as cur:
+        cur.pop("queued_fix", None)
         state.move(cur, "dropped", "drop", force=force, **_req(request))
-    return {"task": tid, "status": "dropped", "released": released}
+    crew.unqueue(p, tid)
+    crew.free(p, tid)
+    out = {"task": tid, "status": "dropped", "released": released}
+    if hint:
+        out["hint"] = hint
+    return out
 
 
 def _check_body(body: str) -> None:
@@ -1004,7 +1268,7 @@ def _round(p, tid: str, given: int | None = None):
 def _cmd_start(args) -> dict:
     p = find_project(args.root)
     cli = _cli(args)
-    return queue.route(p, "start", {"task": args.task, **cli}, lambda req: start(p, args.task, cli),
+    return queue.route(p, "start", {"task": args.task, **cli}, lambda req: start_command(p, args.task, cli),
                        check=lambda: specs.check(p, config.load(p), args.task))
 
 
@@ -1021,11 +1285,12 @@ def _cmd_fix(args) -> dict:
         specs.check(p, config.load(p), args.task)
         state.require(p, args.task)
 
-    given = {"note": args.note, "supplement": args.supplement, "force_round": args.force_round or None}
+    given = {"note": args.note, "supplement": args.supplement, "force_round": args.force_round or None,
+             "force": args.force or None}
     return queue.route(p, "fix", {"task": args.task, **{k: v for k, v in given.items() if v is not None}, **cli},
                        lambda req: fix(p, args.task, note=args.note, supplement=args.supplement,
                                        force_round=args.force_round, cli=cli, expect_round=args.expect_round,
-                                       nowait=True),
+                                       nowait=True, force=args.force),
                        check=check, expect_round=_round(p, args.task, args.expect_round))
 
 
@@ -1070,6 +1335,7 @@ def register(sub) -> None:
     s.add_argument("--note")
     s.add_argument("--supplement", help="디렉터 보강 태스크 ID(설계 11.4)")
     s.add_argument("--force-round", action="store_true")
+    s.add_argument("--force", action="store_true", help="고정 에이전트의 일하는 세션을 닫고 새 세션으로(설계 5.9.6)")
     s.add_argument("--round", type=int, dest="expect_round", help="지금 라운드가 이것일 때만(설계 6.4)")
     _overrides(s)
     s.set_defaults(func=_cmd_fix)

@@ -105,25 +105,27 @@ class StartTest(StartCase):
         self.make_task("T-002", owns="src/auth/**")
         self.make_task("T-003", "tester")
         self.assertEqual(self.hteam("start", "T-001")[0], 0)
-        code, out = self.hteam("start", "T-002")
-        self.assertEqual((code, out["error"]["code"]), (3, "owns_locked"), out)
-        self.assertEqual(out["conflicts"][0]["task"], "T-001")
+        code, out = self.hteam("start", "T-002")  # 처음 시작하는 태스크는 exit 3 대신 waiting(6단계, 설계 5.4)
+        self.assertEqual((code, out["status"], out["reason"]), (0, "waiting", "lock"), out)
+        self.assertIn("T-001", out["message"])
         self.assertEqual(self.task_state("T-002")["status"], "pending")
         self.assertEqual(self.hteam("start", "T-003")[0], 0)
         self.make_task("T-004", "planner", owns="docs/planning/a/**")
         self.make_task("T-005", "planner", owns="docs/planning/b/**")
         self.assertEqual(self.hteam("start", "T-004")[0], 0)
         code, out = self.hteam("start", "T-005")
-        self.assertEqual((code, out["error"]["code"]), (3, "planner_busy"))
+        self.assertEqual((code, out["status"], out["reason"]), (0, "waiting", "lock"), out)
+        self.assertIn("진행 중인 기획 태스크가 있다: T-004", out["message"])
 
     def test_owns_lock_ignores_case(self):
         # 대소문자를 구분하지 않는 파일시스템(macOS 기본)에서 src/Foo 와 src/foo 는 같은 디렉터리다
         self.make_task("T-001", owns="src/Foo/**")
         self.make_task("T-002", owns="src/foo/**")
         self.assertEqual(self.hteam("start", "T-001")[0], 0)
-        code, out = self.hteam("start", "T-002")
-        self.assertEqual((code, out["error"]["code"]), (3, "owns_locked"), out)
-        self.assertEqual(out["conflicts"][0]["pairs"], [["src/foo/**", "src/Foo/**"]])
+        with self.in_process(), self.assertRaises(HteamError) as ctx:  # 잠금 오류 자체(waiting 으로 바꾸기 전)
+            tasks.start(self.p, "T-002", {})
+        self.assertEqual(ctx.exception.code, "owns_locked")
+        self.assertEqual(ctx.exception.data["conflicts"][0]["pairs"], [["src/foo/**", "src/Foo/**"]])
         self.assertEqual(self.task_state("T-002")["status"], "pending")
 
     def test_launch_failure_then_retry_same_horch_task(self):
@@ -255,7 +257,8 @@ class StartTest(StartCase):
         self.assertEqual(self.task_state("T-001")["role"], "planner")
         self.make_task("T-002", "planner", owns="docs/planning/b/**")
         code, out = self.hteam("start", "T-002")
-        self.assertEqual((code, out["error"]["code"]), (3, "planner_busy"), out)
+        self.assertEqual((code, out["status"], out["reason"]), (0, "waiting", "lock"), out)
+        self.assertIn("T-001", out["message"])
 
     def test_corrupt_state_file_blocks_new_starts(self):
         """잠금을 가진 태스크의 상태 파일이 손상되면 그 잠금을 알 수 없다. 새 작업을 띄우지 않는다(exit 1)."""
@@ -837,8 +840,9 @@ class StartReadyTest(StartCase):
         self.set_max_parallel(2)
         self.make_task("T-001", owns="src/a/**")
         self.make_task("T-002", owns="src/b/**")
-        self.make_task("T-003", owns="src/c/**", depends="T-001")  # start-ready 는 deps 로 건너뛴다
+        self.make_task("T-003", owns="src/c/**")
         self.assertEqual(self.hteam("start", "T-003", env={"HTEAM_TEST_DIE_AT": "after_launch"})[0], 137)
+        self.write_spec("T-003", owns="src/c/**", depends="T-001")  # 띄운 뒤 의존을 더했다: start-ready 는 deps 로 건너뛴다
         did = next(r["id"] for r in self.horch_tasks() if r["title"] == "T-003 r1 작업")
         self.assertEqual(self.dispatch_row(did)["state"], "active")
         real_go = launch.Barrier.go

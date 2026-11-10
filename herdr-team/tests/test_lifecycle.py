@@ -284,8 +284,8 @@ class FixTest(LifeCase):
         self.assertEqual((st["role"], st["owns"]), ("planner", ["docs/planning/a/**"]))
         self.write_spec("T-002", "planner", owns="docs/planning/b/**")
         state.create(self.p, "T-002", "planner")
-        code, out = self.hteam("start", "T-002")
-        self.assertEqual((code, out["error"]["code"]), (3, "planner_busy"), out)
+        code, out = self.hteam("start", "T-002")  # 처음 시작하는 태스크는 exit 3 대신 waiting(6단계, 설계 5.4)
+        self.assertEqual((code, out["status"], out["reason"]), (0, "waiting", "lock"), out)
 
 
 class DropTest(LifeCase):

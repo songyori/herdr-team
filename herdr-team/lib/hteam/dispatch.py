@@ -155,12 +155,17 @@ def _run_barrier(p, tid: str, pick, argv: list[str], expect, on_fresh=None) -> t
 
 
 def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str | None, args: list[str],
-           spec_file, expect=None, on_fresh=None) -> dict:
+           spec_file, expect=None, on_fresh=None, keep_open_tab: str | None = None,
+           same_terminal: str | None = None) -> dict:
     """pick(st) 가 가리키는 실행 기록으로 horch 워커를 띄우거나 이어 붙인다. 실패하면 HteamError(launch_failed).
 
     기록을 쓸 때마다 owned 로 이전 상태(expect)·취소·실행자를 다시 확인한다. 어긋나면 exit 3(launch_canceled 등).
     on_fresh(st) 는 기존 horch Task 없이 새로 띄울 때(fresh)만 launched 와 같은 저장에서 부른다. 이어 붙이거나(adopt)
-    같은 horch Task 를 다시 띄우면(retry) 부르지 않는다."""
+    같은 horch Task 를 다시 띄우면(retry) 부르지 않는다.
+
+    고정 에이전트(설계 5.4 의 6단계 문단): keep_open_tab 이면 그 에이전트 탭에 고정 터미널로(`--keep-open --tab`),
+    same_terminal 이면 그 고정 터미널에 넣는다(`--terminal`, 모델·effort·인자·cwd 없음). 실행 키·시작 장벽·복구 규칙은 같다.
+    결과에 horch 의 placement·start_turn·delivery 를 더한다."""
     slot = pick(state.require(p, tid))
     mode, row, warnings = existing(h, slot)
     if mode == "adopt":
@@ -174,7 +179,15 @@ def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str |
         return {"mode": "adopt", "horch_task": row["task"], "dispatch": row["id"], "terminal": row.get("terminal"),
                 "state": row["state"], "outcome": row.get("outcome"), "summary": row.get("summary"),
                 "agent": row.get("agent"), "model": row.get("model"), "effort": row.get("effort"),
+                "placement": None, "start_turn": row.get("start_turn"), "delivery": row.get("delivery"),
                 "warnings": warnings}
+    if same_terminal:
+        if mode == "retry":
+            argv = h.argv("worker-start", "--terminal", same_terminal, "--task", row["task"], "--retry")
+        else:
+            argv = h.argv("worker-start", "--terminal", same_terminal, "--title", slot["title"], "--spec-file",
+                          str(spec_file))
+        return _start(p, h, tid, pick, argv, mode, expect, on_fresh, warnings)
     if agent == "codex" and browser.defines(args):
         # 사용자 Codex 의 같은 일을 하는 chrome-devtools 를 이 codex 에서만 끈다(설계 14장). 조회하지 못하면 끄지 않고 알린다
         off, warning = browser.user_off(p.root, args)
@@ -186,12 +199,18 @@ def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str |
         opts += ["--model", model]
     if effort:
         opts += ["--effort", effort]
+    keep = ["--keep-open", "--tab", keep_open_tab] if keep_open_tab else []
     if mode == "retry":
         argv = h.argv("worker-start", "--task", row["task"], "--retry", "--agent", agent, "--cwd", str(p.root),
-                      *opts, *agent_args(args))
+                      *opts, *agent_args(args), *keep)
     else:
         argv = h.argv("worker-start", "--agent", agent, "--title", slot["title"], "--spec-file", str(spec_file),
-                      "--cwd", str(p.root), *opts, *agent_args(args))
+                      "--cwd", str(p.root), *opts, *agent_args(args), *keep)
+    return _start(p, h, tid, pick, argv, mode, expect, on_fresh, warnings)
+
+
+def _start(p, h, tid: str, pick, argv: list[str], mode: str, expect, on_fresh, warnings: list[str]) -> dict:
+    """시작 장벽 뒤 horch worker-start 를 부르고 결과를 실행 기록에 쓴다(fresh·retry 공통)."""
     code, data = _run_barrier(p, tid, pick, argv, expect, on_fresh if mode == "fresh" else None)
     ok = code == 0 and data.get("ok")
     try:
@@ -215,7 +234,8 @@ def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str |
         warnings.append(data["warning"])
     warnings += list(data.get("warnings") or [])
     return {"mode": mode, "horch_task": data["task"], "dispatch": data["dispatch"], "terminal": data.get("terminal"),
-            "state": data.get("state"), "warnings": warnings}
+            "state": data.get("state"), "placement": data.get("placement"), "start_turn": data.get("start_turn"),
+            "delivery": data.get("delivery"), "warnings": warnings}
 
 
 REVIEW_ENDED = ("settled", "retained", "abandoned", "released", "launch_failed")
@@ -256,6 +276,8 @@ CLEANABLE = ("active", "settled", "retained", "abandoned")
 
 def cleanup(h, did: str, *, kill: bool) -> dict:
     """Dispatch 정리(설계 6.4): settled·retained·abandoned 는 release, active 는 kill 이면 abandon --kill 뒤 release.
+    고정 Dispatch(persistent)의 active 는 --kill 대신 --keep-terminal 로 abandon 한다(세션 상태는 부르는 쪽이 먼저
+    확인했다, 5.9.5). 고정 Dispatch 의 release 는 터미널을 남긴다(herdr-orch 13.5).
 
     launch_failed 는 건드리지 않는다(horch 가 가드가 거부한 터미널을 정리한다). launching 이면 exit 3 launching,
     active 이고 kill 이 아니면 exit 3 worker_active. 상태는 이 호출에서 새로 묻는다."""
@@ -268,7 +290,7 @@ def cleanup(h, did: str, *, kill: bool) -> dict:
     if s == "active":
         if not kill:
             raise HteamError("worker_active", f"Dispatch {did} 가 아직 active 다", CONFLICT, "끝내려면 --force")
-        h.ok("worker-abandon", "--dispatch", did, "--kill")
+        h.ok("worker-abandon", "--dispatch", did, "--keep-terminal" if row.get("persistent") else "--kill")
         s = "abandoned"
     if s in ("settled", "retained", "abandoned"):
         h.ok("worker-release", "--dispatch", did)

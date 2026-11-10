@@ -218,7 +218,7 @@ def _overrides(args: dict) -> dict:
 def _x_start(p, d, req):
     from . import tasks
     a = req["args"]
-    return tasks.start(p, a["task"], _overrides(a), request=req["id"])
+    return tasks.start_command(p, a["task"], _overrides(a), request=req["id"])  # 메인의 start 와 같은 waiting 결과(설계 5.4)
 
 
 def _x_start_ready(p, d, req):
@@ -231,7 +231,7 @@ def _x_fix(p, d, req):
     a = req["args"]
     res = tasks.fix(p, a["task"], note=a.get("note"), supplement=a.get("supplement"),
                     force_round=bool(a.get("force_round")), cli=_overrides(a), expect_round=req.get("expect_round"),
-                    request=req["id"], nowait=True)
+                    request=req["id"], nowait=True, force=bool(a.get("force")))
     if "round" in res:  # 새 라운드를 열었다(설계 8.11. 대기열에만 넣은 결과에는 round 가 없다)
         d.log(f"{a['task']} r{res['round']} 수정 시작")
     return res

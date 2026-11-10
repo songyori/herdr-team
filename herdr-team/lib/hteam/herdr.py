@@ -1,4 +1,5 @@
-"""hc·herdr-app 직접 호출(설계 3.3). 코디네이터 실행·생존 확인과 팀 탭 이름 붙이기뿐이다. 워커 실행은 늘 horch 를 거친다."""
+"""hc·herdr-app 직접 호출(설계 3.3). 관제 실행·생존 확인, 탭 이름 붙이기, 고정 에이전트 작업 터미널 상태와 pane 배치(5.9.2)뿐이다.
+워커 실행은 늘 horch 를 거친다."""
 from __future__ import annotations
 
 import json
@@ -86,6 +87,89 @@ def run_bg(name: str, cwd: str, labels: dict[str, str], argv: list[str]) -> dict
     for key, value in labels.items():
         args += ["--label", f"{key}={value}"]
     return _hc(args, ["--", *argv])
+
+
+def _app(args: list[str], timeout: float) -> subprocess.CompletedProcess | None:
+    """herdr-app 한 번. 실행하지 못했거나 시간을 넘기면 None."""
+    try:
+        return subprocess.run(["herdr-app", *args], capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired, UnicodeDecodeError):
+        return None
+
+
+def _json(text: str):
+    """출력 전체를 JSON 으로, 안 되면 마지막 JSON 줄. 읽지 못하면 None."""
+    try:
+        return json.loads(text)
+    except ValueError:
+        pass
+    for line in reversed(text.strip().split("\n")):
+        try:
+            return json.loads(line)
+        except ValueError:
+            continue
+    return None
+
+
+def pane_of(terminal: str, timeout: float = 10) -> str | None:
+    """`herdr-app ls` 에서 그 터미널의 pane id(설계 5.9.2 의 5). 탭의 목록 키는 terminals 이고 항목은 {terminal, pane, status,
+    app, name, sub_agents} 다(2026-11-10 확인). 실패·없음은 None."""
+    proc = _app(["ls"], timeout)
+    data = _json(proc.stdout) if proc is not None and proc.returncode == 0 else None
+    if not isinstance(data, dict):
+        return None
+    for space in data.get("spaces") or []:
+        for tab in (space or {}).get("tabs") or []:
+            for item in (tab or {}).get("terminals") or []:
+                if isinstance(item, dict) and item.get("terminal") == terminal:
+                    return item.get("pane")
+    return None
+
+
+def swap(pane: str, target: str, timeout: float = 10) -> None:
+    """`herdr-app do pane.swap '{"pane", "target"}'`(설계 5.9.2 의 5). 실패는 herdr_app_failed(exit 1)."""
+    proc = _app(["do", "pane.swap", json.dumps({"pane": pane, "target": target})], timeout)
+    if proc is None:
+        raise HteamError("herdr_app_failed", "herdr-app pane.swap 를 실행하지 못했다", FAIL)
+    if proc.returncode != 0:
+        said = (proc.stdout or proc.stderr or "").strip()[:200]
+        raise HteamError("herdr_app_failed", f"herdr-app pane.swap 실패(exit {proc.returncode}): {said}", FAIL)
+
+
+def _blocks(node) -> list[str]:
+    """doc.get 의 탭 root 를 깊이 우선으로 훑어 block 노드의 content.terminal 을 만난 차례로."""
+    if not isinstance(node, dict):
+        return []
+    if node.get("type") == "block":
+        term = (node.get("content") or {}).get("terminal")
+        return [term] if term else []
+    return [t for child in node.get("children") or [] for t in _blocks(child)]
+
+
+def tab_row(tab: str, timeout: float = 5) -> list[str] | None:
+    """core 문서 doc.get herdr-app(`hc connect` JSON-RPC 한 줄)에서 그 탭의 터미널 순서(설계 5.9.2 의 5: 배치 확인).
+    읽지 못하면 None."""
+    req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "doc.get", "params": {"name": "herdr-app"}})
+    try:
+        proc = subprocess.run(["hc", "connect"], input=req + "\n", capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired, UnicodeDecodeError):
+        return None
+    if proc.returncode != 0:
+        return None
+    for line in proc.stdout.split("\n"):
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(msg, dict) or msg.get("id") != 1:
+            continue
+        value = (msg.get("result") or {}).get("value") if isinstance(msg.get("result"), dict) else None
+        for space in (value or {}).get("spaces") or []:
+            for item in (space or {}).get("tabs") or []:
+                if isinstance(item, dict) and item.get("id") == tab:
+                    return _blocks(item.get("root"))
+        return None
+    return None
 
 
 def rename_tab(tab: str, name: str, tries: int = 10, pause: float = 0.3) -> bool:

@@ -28,6 +28,14 @@ class ReviewCase(TeamCase):
         self.assertEqual(code, 0, out)
         return out
 
+    def deps_done(self, depends="T-001"):
+        """6단계부터 start 는 선행이 끝나지 않은 pending 태스크를 띄우지 않는다(설계 5.4). 묶음 리뷰를 보려고 선행을 done 으로 둔다."""
+        for dep in (d.strip() for d in depends.split(",")):
+            if state.load(self.p, dep) is None:
+                state.create(self.p, dep, "developer")
+            with state.edit(self.p, dep) as st:
+                state.move(st, "done", "accept")
+
     def worked(self, tid="T-001", **kw):
         self.started(tid, **kw)
         code, out = self.act_work(tid)
@@ -1384,6 +1392,7 @@ class GateCase(ReviewCase):
         return [w for w in self.horch("worker-list")[1]["workers"] if "리뷰" in (w.get("title") or "")]
 
     def tester(self, tid="T-003", depends="T-001", files=None):
+        self.deps_done(depends)
         self.started(tid, "tester", owns="tests/grp/**, docs/qa/grp.md", depends=depends, front={"plan_key": "grp"})
         code, out = self.act_work(tid, files or {"tests/grp/test_flow.py": "t\n"})
         self.assertEqual(code, 0, out)
@@ -1603,6 +1612,7 @@ class GateUnapprovedTest(ReviewCase):
         self.assertIn("확정하지 않은 `[test]` 명령(quick·full, 그것을 그대로 쓴 보고서·Acceptance 의 명령 포함)은 직접 돌리지 "
                       "않는다", text)
         self.assertNotIn("테스트는 직접 확인한다", text)
+        self.deps_done("T-001")
         self.started("T-003", "tester", owns="tests/grp/**, docs/qa/grp.md", depends="T-001")
         self.assertEqual(self.act_work("T-003", {"tests/grp/test_flow.py": "t\n"})[0], 0)
         code, out = self.hteam("review", "T-003")
@@ -1670,6 +1680,7 @@ class ReviewGroupTest(GateCase):
         text = self.prompt("T-003")
         self.assertIn("- full: 통과 (", text)
         self.assertNotIn("출력 끝:", text)
+        self.deps_done("T-001")
         self.started("T-004", "tester", owns="tests/grp2/**, docs/qa/grp2.md", depends="T-001")
         self.assertEqual(self.act_work("T-004", {"tests/grp2/test_a.py": "a\n"})[0], 0)
         self.assertEqual(self.hteam("test", "T-004", "--full", as_=None)[0], 0)

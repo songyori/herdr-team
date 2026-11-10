@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from . import designdiff, lint, specs, state, testgate, textlint
 from .errors import USAGE, HteamError
-from .paths import SHIM, TEMPLATES, report_rel, review_rel
+from .paths import SHIM, TEMPLATES, handoff_rel, report_rel, review_rel
 from .util import fill, show
 
 ASK_ROLES = ("planner", "director")  # 사용자에게 직접 묻는 직무(설계 7.5)
@@ -64,7 +64,8 @@ def test_block(p, spec) -> str:
 
 
 def work_spec(p, cfg, spec, rd: dict, owns: list[str]) -> str:
-    """직무 문서 → 태스크 본문 → 선행 태스크 → owns 와 작업 규칙 → 테스트 절(test_block) → 수정 블록(수정 라운드)."""
+    """직무 문서 → 태스크 본문 → 선행 태스크 → 인수인계 줄(그 직무의 고정 에이전트가 있고 파일이 작업 트리에 있을 때) → owns 와
+    작업 규칙 → 테스트 절(test_block) → 수정 블록(수정 라운드)."""
     tid, n = spec.id, rd["round"]
     if spec.role in ASK_ROLES:
         ask_rule = (f"사용자에게 물어야 하면 `{SHIM} ask-user --task {tid} --json -` 로 묻는다(Bash `timeout: 600000`, "
@@ -79,6 +80,10 @@ def work_spec(p, cfg, spec, rd: dict, owns: list[str]) -> str:
         parts += [f"- {d}: `{report_rel(d)}`" for d in spec.depends_on]
     else:
         parts.append("없음.")
+    member = cfg.crew_of(spec.role)
+    if member is not None and (p.root / handoff_rel(member.name)).is_file():  # 인수인계 줄(설계 5.5 의 7)
+        parts += ["", f"먼저 `{handoff_rel(member.name)}` 를 읽는다. {member.title} 에이전트가 이 프로젝트에서 정한 결정과 규칙, "
+                      "남은 일이 적혀 있다."]
     parts += ["", fill(_template("worker-rules.md"), owns=_bullets(owns), report=report_rel(tid), task_id=tid,
                        round=str(n), ask_rule=ask_rule).rstrip()]
     block = test_block(p, spec)

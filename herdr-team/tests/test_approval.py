@@ -309,11 +309,16 @@ class DesignReviewTest(ApprovalCase):
         self.assertEqual(approval.stale(self.p, config.load(self.p), state.all_states(self.p)), {"T-002": ["T-001"]})
 
     def start_dependent(self):
-        """T-001 에 의존하는 T-002 를 손으로 띄우고 그 라운드의 basis 를 돌려준다."""
+        """T-001 에 의존하는 T-002 를 의존 검사 없이 띄우고 그 라운드의 basis 를 돌려준다. 6단계부터 `hteam start` 는
+        선행이 끝나지 않은 pending 태스크를 띄우지 않으므로(설계 5.4) 의존을 보지 않는 tasks.start 를 바로 부른다."""
+        from hteam import tasks
         self.write_spec("T-002", "designer", owns="docs/design/screens/t-002/**", depends="T-001", commit=False)
         state.create(self.p, "T-002", "designer")
-        code, out = self.hteam("start", "T-002")
-        self.assertEqual(code, 0, out)
+        with self.in_drive():
+            out = tasks.start(self.p, "T-002", {})
+        self.assertEqual(out["status"], "working", out)
+        with state.edit(self.p, "T-002") as st:  # 실행자는 이 시험 프로세스였다. 끝난 실행자로 둔다(뒤의 hteam fix 가 기다리지 않게)
+            st["launcher"] = None
         return self.task_state("T-002")["rounds"][-1]["basis"]
 
     def test_predecessor_dropped_after_approval_is_finished(self):

@@ -41,6 +41,10 @@ class Project:
         self.test_confirm_file = self.drive_dir / "test-confirm.json"
         self.workers_file = self.drive_dir / "workers.json"
         self.jobs_dir = self.drive_dir / "jobs"
+        # 고정 에이전트(설계 5.9.1): crew.json 과 그 잠금, 인수인계 사양(5.9.7). 관제와 그 자식만 쓴다
+        self.crew_file = self.state / "crew.json"
+        self.crew_lock = self.state / "crew.json.lock"
+        self.crew_dir = self.state / "crew"
         self.task_states = self.state / "tasks"
         self.plan_file = self.state / "plan.json"
         self.outbox = self.state / "outbox.jsonl"
@@ -93,6 +97,11 @@ def report_rel(tid: str) -> str:
 def review_rel(tid: str, rnd: int, attempt: int | None = None) -> str:
     name = f"r{rnd}.md" if attempt is None else f"r{rnd}-a{attempt}.md"
     return f"docs/reviews/{tid}/{name}"
+
+
+def handoff_rel(name: str) -> str:
+    """고정 에이전트의 인수인계 파일(설계 5.5 의 7, 5.9.7)."""
+    return f"docs/handoff/{name}.md"
 
 
 def find_project(arg: str | None) -> Project:

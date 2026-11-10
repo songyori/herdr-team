@@ -4,8 +4,9 @@
 시작 순서(8.2 의 1–7: 실행 거부, drive.pid 단일 인스턴스, Run 연결, 탭 이름, 시작 재확인), heartbeat 와 생존 판정
 (liveness·view), 틱 순서와 단계마다 격리(8.5), decide 쓰기와 표시(8.10), drive.log(8.11), 요청 큐(7.1, queue.run_pending)와
 그 틱의 start-ready, 메시지 처리(8.6 의 이벤트 표·review-finish 결과 표·review 자식 결과 표·accept 뒤), 자식 프로세스(8.8),
-재확인(8.7, reconcile_task·워커 목록 사본). 고정 에이전트·인수인계(5.9)·묶음·마무리·기획 적용·디자인 단계(8.4·8.9)는
-자리 메서드로 두고 뒤 단계가 채운다. 리셋(5.9.7)·보기(6.5) 단계도 뒤 단계가 채운다.
+재확인(8.7, reconcile_task·워커 목록 사본). 고정 에이전트의 worker_done·exited 정리와 재확인의 터미널 확인·큐 맞추기는
+crew 모듈에 맡긴다(5.9.3·5.9.5·8.7 의 2). 인수인계(5.9.7)·묶음·마무리·기획 적용·디자인 단계(8.4·8.9)는 자리 메서드로 두고
+뒤 단계가 채운다. 리셋(5.9.7)·보기(6.5) 단계도 뒤 단계가 채운다.
 """
 from __future__ import annotations
 
@@ -905,16 +906,32 @@ class Drive:
         return False
 
     def crew_done(self, tid: str, did: str) -> None:
-        """고정 에이전트의 작업 worker_done(task 비우기·since_reset, 5.9.3). Task 7 이 채운다."""
+        """고정 에이전트의 작업 worker_done(5.9.3 끝): 그 태스크를 맡은 에이전트를 비우고 since_reset 을 센다."""
+        from . import crew  # crew 가 이 모듈을 쓴다
+        crew.work_done(self.p, tid, did)
 
     def crew_gone(self, tid: str, did: str) -> None:
-        """고정 에이전트 작업 터미널의 exited·lost(터미널 정리·잊기, 5.9.8). Task 7 이 채운다."""
+        """고정 에이전트 작업 터미널의 exited·lost(5.9.8): 맡은 에이전트(없으면 그 라운드의 에이전트)의 터미널을 정리하고
+        잊는다. 뒤의 fix 가 같은 에이전트의 새 세션으로 띄운다(라운드 crew 가 그대로다)."""
+        from . import crew
+        name = crew.holder(self.p, tid) or crew.round_crew(state.current_round(state.require(self.p, tid)) or {})
+        if name:
+            crew.forget(self.p, name)
 
     def on_not_started(self, tid: str, did: str, body: dict) -> None:
         """observed not_started(입력 유실 재투입, 5.9.8). Task 8 이 채운다."""
 
     def crew_check(self) -> None:
-        """고정 에이전트 터미널 확인(8.7 의 2). Task 7 이 채운다."""
+        """고정 에이전트 터미널 확인(8.7 의 2) 뒤 큐 맞추기(5.9.5). 잊은 에이전트가 맡고 있던 태스크마다 그 Dispatch 의 observed
+        exited·lost 와 같은 메시지로 handle 을 부른다(horch 의 같은 관찰이 뒤에 오면 지난 Dispatch 로 무시된다)."""
+        from . import crew
+        gone = crew.check_terminals(self)
+        crew.sync_queues(self.p)
+        for tid, did, term, kind in gone:
+            body = {"dispatch": did, "kind": kind, "key": kind, "terminal": term, "status": None}
+            m = {"id": None, "type": "observed", "sender": "horch", "subject": f"observed {did}",
+                 "body": json.dumps(body, ensure_ascii=False), "dispatch": did}
+            self.isolated(f"reconcile:{tid}", lambda m=m: self.handle(m))
 
     def handoff_check(self) -> None:
         """끝나지 않은 인수인계 정리(8.7 의 3). Task 8 이 채운다."""

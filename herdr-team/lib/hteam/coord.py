@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import time
 
-from . import approval, config, dispatch, drive, outbox, roles, state, tasks, testgate
+from . import approval, config, crew, dispatch, drive, outbox, roles, state, tasks, testgate
 from .errors import HteamError
 from .horch import Horch
 from .paths import SHIM, find_project
@@ -18,6 +18,7 @@ LIVE = ("launching", "active")
 NO_ROWS = "관제의 워커 목록 사본이 없다(관제가 재확인마다 쓴다)"
 DRIVE_ONLY = ("review", "review-finish", "design-review")  # 관제만 하는 next(review 는 --retry 없이, 설계 8.3)
 CANCELED_HINT = "앞선 fix·drop 이 끝나지 않았다(실행 키가 취소됐다). 같은 명령을 다시 한다"
+QUEUED_HINT = "수정 라운드가 에이전트 대기열에 있다. 에이전트가 비면 관제가 띄운다"  # queued_fix(설계 5.9.5)
 # horch.workers._attention 이 내는 값 가운데 실제 상태 보고를 본 것이 아닌 상태: 시작 전·확인 불가·워커가 죽음.
 # 이 상태는 정상 관측(attention.json 의 ok)으로 치지 않는다
 UNCONFIRMED = frozenset({"no_status", "launching", "launch_failed", "unverifiable",
@@ -385,7 +386,10 @@ def status(p) -> dict:
         gone = None  # 영영 시작하지 못하게 하는 dropped 선행(직간접). start-ready 로 띄울 태스크만 본다
         if st["status"] == "pending" or approval.unlaunched(st):
             gone = tasks.dropped_blockers(graph, st["id"], by_id.get)
-        nxt, hint = _drive_next(*next_step(cfg, st, by_task, copied is not None, copied, appr=appr, gone=gone))
+        if st.get("queued_fix"):
+            nxt, hint = None, QUEUED_HINT
+        else:
+            nxt, hint = _drive_next(*next_step(cfg, st, by_task, copied is not None, copied, appr=appr, gone=gone))
         rd = state.current_round(st)
         work = by_task.get(rd["work"].get("horch_task")) if rd and rd["work"].get("horch_task") else None
         items.append({"id": st["id"], "role": st.get("role"), "title": title, "status": st["status"],
@@ -395,15 +399,21 @@ def status(p) -> dict:
                       "next": nxt, "hint": hint})
     questions = [_question(q) for q in outbox.open_questions(p, warnings)]
     warnings += [f"{tid} 상태 파일을 읽지 못해 목록에서 뺐다" for tid in state.unreadable_ids(p)]
+    crew_rows: list[dict] = []
     if cfg is not None:
         warnings += config.crew_warnings(cfg)  # 설정 경고(오류 아님, 설계 4.2)
+        try:
+            crew_rows = crew.status_rows(p, cfg)  # crew.json 과 설정만 읽는다(hc 를 부르지 않는다)
+        except HteamError as exc:
+            warnings.append(f"고정 에이전트 기록: {exc.message}")
     run, run_error = {}, None
     try:
         run = outbox._run(p)
     except HteamError as exc:  # 손상된 run.json 을 없는 것처럼 숨기지 않는다(up·큐 명령은 bad_run_file 로 거부한다)
         run_error = exc.message
     out = {"tasks": items, "config_error": config_error, "run_error": run_error, "horch_error": horch_error,
-           "horch": horch_cmd, "workers_at": workers_at, "drive": drive.view(p, run), "watch_alive": outbox.watch_alive(p),
+           "horch": horch_cmd, "workers_at": workers_at, "drive": drive.view(p, run), "crew": crew_rows,
+           "watch_alive": outbox.watch_alive(p),
            "open_questions": questions, "unread_outbox": outbox.unread(p), "test_gate": testgate.gate_state(p)}
     if warnings:
         out["warnings"] = warnings
