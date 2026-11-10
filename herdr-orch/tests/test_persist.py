@@ -640,5 +640,83 @@ class KeepTerminalTest(PersistCase):
         self.assertIn("worker-release", row["next"])
 
 
+class HandoverTest(PersistCase):
+    """보내기 표시 뒤 결과 기록 전에 온 워커 명령(Codex 커밋 리뷰 847e971 P1, 설계 13.4 의 7 뒤).
+    새 터미널의 가드 등록처럼 launching 을 active 로 넘기고 명령을 이어 간다. 가짜 hc 의 send 를 늦춰 그 틈을 만든다."""
+
+    def start_slow(self, term):
+        import time
+        self.delay_hc("send", 3)
+        proc = self.horch_bg("worker-start", "--terminal", term, "--title", "T2", "--spec", "두 번째", terminal="t100")
+        db = self.db()
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            row = db.execute("SELECT id, delivery FROM dispatches WHERE terminal=? ORDER BY created_at DESC, rowid DESC "
+                             "LIMIT 1", (term,)).fetchone()
+            if row and row["delivery"] and json.loads(row["delivery"]).get("attempted"):
+                return proc, row["id"]
+            time.sleep(0.05)
+        proc.kill()
+        self.fail("보내기 표시가 기록되지 않았다")
+
+    def test_worker_check_after_attempt_takes_over(self):
+        _, term = self.first()
+        proc, did = self.start_slow(term)
+        self.assertEqual(self.row(did)["state"], "launching")
+        code, out = self.horch("check", "--dispatch", did, terminal=term)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.row(did)["state"], "active")
+        code, res = self.finish(proc)
+        self.assertEqual(code, 0, res)  # 실행자 7단계: 워커가 먼저 넘겼으면 결과만 쓰고 성공이다
+        self.assertEqual((res["dispatch"], res["state"]), (did, "active"))
+        row = self.row(did)
+        delivery = json.loads(row["delivery"])
+        self.assertEqual((row["state"], delivery["via"], delivery["started"]), ("active", "send", True))
+        self.assertEqual(res["delivery"], delivery)
+        self.assertEqual(self.hc_state()["terminals"][term]["labels"]["horch.dispatch"], did)
+
+    def test_worker_done_after_attempt_is_recorded(self):
+        _, term = self.first()
+        proc, did = self.start_slow(term)
+        self.settle(did, term)
+        row = self.row(did)
+        self.assertEqual((row["state"], row["outcome"]), ("settled", "succeeded"))
+        task = self.db().execute("SELECT status FROM tasks WHERE id=?", (row["task_id"],)).fetchone()
+        self.assertEqual(task["status"], "settled")
+        done = self.db().execute("SELECT COUNT(*) FROM messages WHERE type='worker_done' AND dispatch_id=?",
+                                 (did,)).fetchone()[0]
+        self.assertEqual(done, 1)
+        code, res = self.finish(proc)
+        self.assertEqual(code, 0, res)
+        self.assertEqual(self.row(did)["state"], "settled")
+
+    def test_worker_call_before_attempt_is_refused(self):
+        _, term = self.first()
+        code, _ = self.put(term, env={"HORCH_TEST_DIE_AT": "terminal_created"})
+        self.assertEqual(code, 137)
+        did = self.db().execute("SELECT id FROM dispatches WHERE terminal=? ORDER BY created_at DESC, rowid DESC",
+                                (term,)).fetchone()["id"]
+        code, out = self.horch("check", "--dispatch", did, terminal=term)
+        self.assertEqual((code, out["error"]["code"]), (3, "dispatch_not_active"), out)
+        self.assertEqual(self.row(did)["state"], "launching")
+
+
+class PersistentRetryHintTest(PersistCase):
+    def test_launch_failed_persistent_has_no_next(self):
+        """고정 Dispatch 의 launch_failed 는 재시도 안내를 주지 않는다(배치를 저장하지 않는다, Codex 커밋 리뷰 847e971 P2)."""
+        self.fail_hc("run", "spawn_failed")
+        code, out = self.o("worker-start", "--keep-open", "--hidden", "--agent", "codex", "--title", "R", "--spec", "s",
+                           "--cwd", str(self.tmp))
+        self.assertEqual((code, out["error"]["code"]), (1, "launch_failed"), out)
+        self.clear_hc_fail("run")
+        code, listed = self.o("worker-list")
+        self.assertEqual(code, 0, listed)
+        row = {w["id"]: w for w in listed["workers"]}[out["dispatch"]]
+        self.assertEqual((row["attention"], row["next"]), ("launch_failed", None))
+        code, shown = self.o("worker-show", "--dispatch", out["dispatch"], "--lines", "0")
+        self.assertEqual(code, 0, shown)
+        self.assertEqual((shown["worker"]["attention"], shown["worker"]["next"]), ("launch_failed", None))
+
+
 if __name__ == "__main__":
     unittest.main()

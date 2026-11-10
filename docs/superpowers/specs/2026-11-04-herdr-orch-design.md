@@ -566,7 +566,9 @@ herdr-team 0.4.0 의 고정 에이전트(같은 세션이 여러 태스크를 �
    - `status_mismatch`(그 사이 `working`·`blocked` 가 됐다. hc 는 아무것도 치지 않는다): 한 트랜잭션에서 `delivery` 에 `{attempted: true, typed: false, error}` 를 쓰고 Dispatch 를 `launch_failed` 로 둔 뒤 exit 3 `terminal_not_ready`.
    - 그 밖의 hc 실패(시간 초과, 응답 유실): 들어갔을 수 있다(hc 도움말: "send 가 실패해도 들어갔을 수 있다"). 7 에서 `active` 로 두고 `delivery` 에 `{attempted: true, uncertain: true, error}` 를 쓰고 `warnings` 에 `delivery_uncertain` 을 넣는다. 들어가지 않았으면 13.6 의 `not_started` 가 알린다.
 7. 보내기 결과(`delivery`)와 `active` 전이를 한 트랜잭션에서 쓴다(조건부 쓰기, `launching` 일 때만). 둘 사이에 죽는 틈이 없다. 라벨을 `hc label <t> horch.dispatch=<새 id>` 로 바꾼다. 실패하면 `warnings` 에 `label_failed` 를 넣고 계속한다(고정 터미널의 정리는 이 라벨에 기대지 않는다, 13.5).
+   - 워커가 먼저 온 경우(Codex 커밋 리뷰 847e971): 보낸 입력이 7 보다 먼저 처리돼 이 Dispatch 의 워커 명령(`check --dispatch`·`ask`·`escalate`·`done`)이 신원 확인을 통과하면, 그 Dispatch 가 `--terminal` Dispatch(`persistent = 1`, `launch_argv` NULL)이고 `launching` 이며 `delivery.attempted` 가 있을 때 조건부 쓰기(`launching` 일 때만)로 `active` 로 넘기고 명령을 이어 간다(새 터미널의 가드 등록과 같은 자리). `attempted` 전이면 지금처럼 `dispatch_not_active` 로 거부한다. 7 의 조건부 쓰기가 행을 바꾸지 못했고 지금 상태가 `active` 면 `delivery` 결과만 쓰고 성공으로 끝낸다. 그 밖의 상태(워커가 이미 `done` 했다 등)면 쓰지 않고 지금 상태를 결과에 낸다.
 8. 결과 `{task, dispatch, terminal, state: "active", placement: "same_terminal", start_turn, delivery, warnings}`.
+- 고정 Dispatch 의 `launch_failed` 는 `worker-list`·`worker-show` 의 재시도 안내(`next`)를 주지 않는다(attention 은 `launch_failed` 그대로). 배치(`--keep-open`·`--tab`·`--hidden`·`--terminal`)를 저장하지 않으므로 배치를 아는 호출자가 다시 띄운다(Codex 커밋 리뷰 847e971).
 
 실행자가 죽었을 때(5장 launching 조정에 더한다): 고정 Dispatch 가 `launching` 이고 실행자가 죽었으면, `delivery.attempted` 가 없으면(보내기 전에 죽었다) 지금처럼 `launch_failed` 다. 있으면(보냈을 수 있다. 결과 기록은 `active` 전이와 한 트랜잭션이라 `launching` 으로 남은 것은 결과를 쓰기 전이다) 순간 상태로 실패를 정하지 않는다. 죽은 실행자의 `hc send` 가 아직 끝나지 않았거나 들어간 입력이 아직 시작하지 않았을 수 있고(X1: 정상 제출도 `started:true, status:done, turn:1` 이었다), 고정 터미널에는 새 터미널의 가드 같은 늦은 실행 막기가 없기 때문이다. 6 의 응답 유실과 같게 `active` 로 두고 `delivery` 에 `{attempted: true, uncertain: true, error: "executor_died"}` 를 쓴다(조건부 쓰기). 그다음은 전달 판정이 정한다: turn 이 `start_turn` 보다 오르거나 이 Dispatch 의 워커 명령(`seen_at`)·`done` 이 오면 들어간 것이고, 60초 뒤에도 turn 그대로·활동 없음이면 `not_started` 관찰이 호출자에게 알린다(13.6). hc 를 부르지 않는다. 그래서 `attempted` 뒤의 결과는 늘 `active`(확실하거나 불확실한) 하나다.
 
@@ -675,6 +677,7 @@ exit 코드 표(7장)는 그대로다(새 값 없음).
 ### 13.11 한계
 
 - hc core 재시작 뒤 고정 터미널과 진행 중 Dispatch 가 이어지는지는 확인하지 않았다(실험 X7 을 하지 않았다). 10장 판정대로 복구 셸로 바뀐 터미널은 `lost` 이고 `--terminal` 은 `terminal_gone` 이다.
+- v2 → v3 마이그레이션은 같은 터미널 주소의 `launching`·`active` Dispatch 가 둘이면 `dispatch_one_per_terminal` 을 만들지 못해 저장소를 열 수 없다. 13.3 은 v2 에 그런 행이 없다고 본다(hc 가 주소를 다시 쓰고 옛 Dispatch 가 `active` 로 남았을 때만 생긴다). hc 가 주소를 다시 쓰는지는 herdr-team 6단계 실환경 확인(Task 12)에서 본다(태스크 리뷰 Minor 3, 고치지 않음).
 - 입력 유실은 60초 뒤 `not_started` 로만 안다. 그 사이 워커는 아무것도 하지 않는다.
 - `terminal-reset` 은 비우기를 turn 신호로만 확인한다. 화면이나 대화 기록을 읽지 않는다. 신호가 왔는데 비우지 못한 경우(바뀐 CLI 화면 등)는 잡지 못한다.
 - `terminal-reset` 의 대체 신호 `hc get`(호출마다 3초)은 남은 시간으로 줄이지 않는다. 마감 직전에 시작한 호출이 마감을 3초까지 넘길 수 있고, 그 호출이 본 신호는 성공으로 받는다(Codex 계획 리뷰 r1, 기록만).

@@ -184,8 +184,11 @@ def _deliver(store, run_id: str, terminal: str, base: dict, spec: str, progress:
     workers._die_at("terminal_sent")
     with store.tx():
         # 보내기 결과와 active 전이를 한 트랜잭션에서 쓴다. 둘 사이에 죽는 틈이 없다(설계 13.4 의 7)
-        store.run("UPDATE dispatches SET delivery=?, state='active' WHERE id=? AND state='launching'",
-                  (_dumps(result), dispatch_id))
+        cur = store.run("UPDATE dispatches SET delivery=?, state='active' WHERE id=? AND state='launching'",
+                        (_dumps(result), dispatch_id))
+        if not cur.rowcount:
+            # 워커가 먼저 와서 active 로 넘겼다(auth.worker_dispatch). 결과만 쓴다
+            store.run("UPDATE dispatches SET delivery=? WHERE id=? AND state='active'", (_dumps(result), dispatch_id))
     workers._die_at("terminal_recorded")
     try:
         hcio.label(terminal, {"horch.dispatch": dispatch_id})

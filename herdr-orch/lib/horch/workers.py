@@ -382,6 +382,9 @@ def _attention(home, r, verdict: str | None, info: dict | None) -> tuple[str | N
     if st == "launch_failed":
         if r["attempt"] != r["last_attempt"] or r["task_status"] != "open":
             return None, None  # 다음 시도가 이미 있거나 Task 가 끝났다. 이 행으로 재시도하면 반드시 거부된다
+        if r["persistent"]:
+            # 배치(--keep-open·--tab·--hidden·--terminal)를 저장하지 않는다. 배치를 아는 호출자가 다시 띄운다(설계 13.4)
+            return "launch_failed", None
         argv = [*base, "worker-start", "--agent", r["agent"], "--task", r["task_id"], "--retry", "--cwd", r["cwd"]]
         if r["model"]:
             argv += ["--model", r["model"]]
