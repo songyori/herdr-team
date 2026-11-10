@@ -17,7 +17,7 @@ import os
 import re
 from typing import Iterator
 
-from . import compose, config, dispatch, gitio, plan, procs, queue, roles, specs, state, tasks, testgate
+from . import compose, config, crew, dispatch, gitio, plan, procs, queue, roles, specs, state, tasks, testgate
 from .errors import CONFLICT, FAIL, USAGE, HteamError
 from .globs import covers_tree, matches_any
 from .horch import Horch
@@ -204,7 +204,7 @@ def tamper_check(p, tid: str, base: dict) -> tuple[dict | None, list[str]]:
     during = [s["id"] for s in states.values() if s["id"] != tid and any(
         h.get("event") in ("start", "fix") and h.get("at", "") >= base["at"] for h in s.get("history", []))]
     excluded_tasks = sorted(set(base["in_progress"]) | set(during))
-    patterns = [".herdr-team/**", "docs/reviews/**"]
+    patterns = [".herdr-team/**", "docs/reviews/**", "docs/handoff/**"]  # 인수인계(5.9.7)는 어느 태스크의 일도 아니다
     for t in excluded_tasks:
         patterns += list(states.get(t, {}).get("owns") or []) + [f"docs/tasks/{t}/**"]
 
@@ -270,7 +270,8 @@ def _gitlink_move(*entries) -> bool:
 def _launch_attempt(p, cfg, h, tid: str, k: int, request: str | None = None) -> dict:
     """프롬프트를 (없으면) 만들고 시작 장벽으로 리뷰어를 띄운 뒤 reviewing 으로 간다(설계 6.1 6–8).
 
-    기록을 쓸 때마다 dispatch.owned 로 이전 상태(REVIEW_STATES)·취소·실행자를 다시 확인한다."""
+    기록을 쓸 때마다 dispatch.owned 로 이전 상태(REVIEW_STATES)·취소·실행자를 다시 확인한다. 라운드를 고정 에이전트가 맡았으면
+    리뷰어를 숨겨 띄운다(--hidden, 6.1 7·6.5 의 1. 보기는 관제의 view_step 이 에이전트 탭 pane 에 연다)."""
     pick = attempt_slot(k)
     st = state.require(p, tid)
     rd = st["rounds"][-1]
@@ -287,7 +288,8 @@ def _launch_attempt(p, cfg, h, tid: str, k: int, request: str | None = None) -> 
     if not prompt.is_file():
         write_atomic(prompt, compose.review_prompt(p, cfg, spec, rd, att, st["rounds"]))
     res = dispatch.launch(p, h, tid, pick, agent=att["agent"], model=att["model"], effort=att["effort"],
-                          args=cfg.args(att["agent"]), spec_file=prompt, expect=REVIEW_STATES)
+                          args=cfg.args(att["agent"]), spec_file=prompt, expect=REVIEW_STATES,
+                          hidden=crew.round_crew(rd) is not None)
     try:
         # fix·drop 의 취소·전이가 그 사이 끼었으면 reviewing 으로 두지 않는다(정리는 그쪽이 horch 상태로 한다)
         with dispatch.owned(p, tid, pick, REVIEW_STATES) as cur:

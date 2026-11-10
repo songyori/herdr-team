@@ -1884,3 +1884,288 @@ class AlignFlowTest(ReviewCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --- 6단계: 고정 에이전트 태스크 리뷰(숨은 리뷰어, 리뷰 보기 pane)와 인수인계 경로(설계 6.1 5·7, 6.5, 5.9.8) ---
+import contextlib  # noqa: E402
+import io  # noqa: E402
+
+from tests.helpers import CREW_CONFIG, HORCH_FAKES  # noqa: E402
+
+
+class CrewReviewCase(TeamCase):
+    """작업은 production 고정 에이전트(CREW_CONFIG: planner·developer)의 고정 터미널에서 돈다(Task 7). 리뷰어는 hteam
+    review 를 관제로 불러 띄우고, 보기 pane 은 관제의 view_step(틱 8 단계)을 이 프로세스에서 바로 부른다."""
+
+    def setUp(self):
+        super().setUp()
+        self.init_project(CREW_CONFIG)
+        self.setup_run()
+        self.p = Project(self.proj)
+
+    def crew(self) -> dict:
+        path = self.state_dir / "crew.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+    def edit_crew(self, name: str, **fields) -> None:
+        """crew.json 의 한 entry 를 고친다(관제만 쓰는 파일이다. 시험이 관제가 했을 일을 대신한다)."""
+        data = self.crew()
+        data[name].update(fields)
+        (self.state_dir / "crew.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    def crew_reviewing(self, tid: str = "T-001", owns: str = "src/a/**") -> str:
+        """고정 에이전트가 tid 를 하고 done 한 뒤 리뷰어를 띄운다. 리뷰어 터미널 주소를 돌려준다."""
+        self.write_spec(tid, "developer", owns=owns)
+        code, out = self.hteam("start", tid)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.crew()["production"]["task"], tid, out)  # 고정 에이전트가 맡았다(설계 5.9.4)
+        folder = owns[:-len("/**")]
+        code, out = self.act_work(tid, {f"{folder}/app.py": f"print('{tid}')\n"})
+        self.assertEqual(code, 0, out)
+        self.edit_crew("production", task=None, dispatch=None)  # 관제가 worker_done 에서 비운다(설계 5.9.3)
+        code, out = self.hteam("review", tid)
+        self.assertEqual((code, out.get("status")), (0, "reviewing"), out)
+        return self.dispatch_row(self.attempt(tid)["dispatch"])["terminal"]
+
+    def view_step(self) -> str:
+        """관제의 리뷰 보기 단계(설계 8.5 의 8)를 한 번 돌린다. 관제 화면(stdout)에 쓴 줄을 돌려준다."""
+        buf = io.StringIO()
+        with self.in_drive(), contextlib.redirect_stdout(buf):
+            self.make_drive().view_step()
+        return buf.getvalue()
+
+    def log_lines(self) -> list[str]:
+        path = self.drive_dir / "drive.log"
+        return path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+
+    def calls(self, name: str) -> list[dict]:
+        """가짜 herdr-app 이 받은 `do <name> '<JSON>'` 의 JSON 인자(실패한 호출도 남는다)."""
+        return [json.loads(c[2]) for c in self.herdr_calls() if c[:2] == ["do", name]]
+
+    def removed(self) -> list[str]:
+        return [c[1] for c in self.hc_calls() if c[:1] == ["rm"]]
+
+    def labels(self, terminal: str) -> dict:
+        return self.hc_state()["terminals"][terminal]["labels"]
+
+
+class CrewReviewerTest(CrewReviewCase):
+    def test_crew_task_reviewer_is_hidden(self):
+        rev = self.crew_reviewing()
+        labels = self.labels(rev)
+        self.assertNotIn("herdr.tab", labels)  # --hidden: herdr 라벨 없이(화면 밖) 띄운다(설계 6.5 의 1)
+        self.assertNotIn("herdr.space", labels)
+        self.assertEqual(labels.get("horch.dispatch"), self.attempt("T-001")["dispatch"])
+        entry = self.crew()["production"]
+        self.assertEqual(self.labels(entry["terminal"]).get("herdr.tab"), entry["tab"])  # 작업은 에이전트 탭
+
+    def test_temp_task_reviewer_stays_in_drive_tab_without_view(self):
+        # 생산 에이전트가 바쁘면 독립 태스크는 임시 워커로 돈다(overflow, 설계 5.9.4). 그 리뷰어는 지금처럼 관제 탭에 붙는다
+        self.write_spec("T-001", "developer", owns="src/a/**")
+        code, out = self.hteam("start", "T-001")
+        self.assertEqual(code, 0, out)
+        self.write_spec("T-002", "developer", owns="src/b/**")
+        code, out = self.hteam("start", "T-002")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.crew()["production"]["task"], "T-001")
+        code, out = self.act_work("T-002", {"src/b/app.py": "print('b')\n"})
+        self.assertEqual(code, 0, out)
+        code, out = self.hteam("review", "T-002")
+        self.assertEqual((code, out.get("status")), (0, "reviewing"), out)
+        rev = self.dispatch_row(self.attempt("T-002")["dispatch"])["terminal"]
+        self.assertEqual(self.labels(rev).get("herdr.tab"), "tbTeam")
+        self.view_step()
+        self.assertEqual(self.calls("pane.split"), [])  # 임시 워커 태스크에는 보기 pane 이 없다
+        self.assertIsNone(self.crew()["production"].get("view"))
+
+
+class ReviewViewTest(CrewReviewCase):
+    def test_open_after_review_then_close_after_finish(self):
+        rev = self.crew_reviewing()
+        work_pane = self.crew()["production"]["work_pane"]
+        self.assertTrue(work_pane)
+        self.view_step()
+        (split,) = self.calls("pane.split")
+        # 일반 attach(--observe 아님), hc 는 PATH 에서 찾은 절대 경로(설계 6.5 의 2)
+        self.assertEqual(split, {"direction": "right", "pane": work_pane,
+                                 "argv": [str(HORCH_FAKES / "hc"), "attach", rev]})
+        view = self.crew()["production"]["view"]
+        self.assertEqual({k: view[k] for k in ("reviewer", "task", "round", "attempt")},
+                         {"reviewer": rev, "task": "T-001", "round": 1, "attempt": 1})
+        self.assertEqual(self.hc_state()["terminals"][view["terminal"]]["argv"], split["argv"])
+        self.assertTrue(view["pane"])
+        self.view_step()  # 리뷰가 도는 동안 다시 열지 않는다(한 탭에 하나)
+        self.assertEqual(len(self.calls("pane.split")), 1)
+        code, out = self.act_review("T-001", "APPROVE")
+        self.assertEqual(code, 0, out)
+        code, out = self.hteam("review-finish", "T-001")
+        self.assertEqual((code, out.get("status")), (0, "approved"), out)
+        self.view_step()  # review-finish 가 시도를 끝냈다: 닫고 보기 터미널을 지운다(설계 6.5 의 3)
+        self.assertEqual(self.calls("pane.close"), [{"pane": view["pane"]}])
+        self.assertIn(view["terminal"], self.removed())
+        self.assertNotIn(view["terminal"], self.hc_state()["terminals"])
+        self.assertIsNone(self.crew()["production"]["view"])
+        self.view_step()  # 멱등
+        self.assertEqual((len(self.calls("pane.close")), len(self.calls("pane.split"))), (1, 1))
+        self.assertEqual(self.calls("terminal.show"), [])  # 사용자 화면을 옮기는 terminal.show 는 쓰지 않는다
+
+    def test_close_when_attempt_canceled(self):
+        self.crew_reviewing()
+        self.view_step()
+        view = self.crew()["production"]["view"]
+        with state.edit(self.p, "T-001") as st:  # fix·drop 이 리뷰 중 시도를 canceled 로 표시했다(설계 6.4)
+            st["rounds"][-1]["reviews"][-1]["canceled"] = True
+        self.view_step()
+        self.assertEqual(self.calls("pane.close"), [{"pane": view["pane"]}])
+        self.assertIsNone(self.crew()["production"]["view"])
+        self.view_step()
+        self.assertEqual(len(self.calls("pane.close")), 1)
+
+    def test_close_when_task_dropped_by_drop_force(self):
+        rev = self.crew_reviewing()
+        self.view_step()
+        view = self.crew()["production"]["view"]
+        code, out = self.hteam("drop", "T-001", "--force")  # 리뷰 중 drop --force: 리뷰어를 끝내고 dropped
+        self.assertEqual((code, out.get("status")), (0, "dropped"), out)
+        self.view_step()
+        self.assertEqual(self.calls("pane.close"), [{"pane": view["pane"]}])
+        self.assertIn(view["terminal"], self.removed())
+        self.assertIsNone(self.crew()["production"]["view"])
+        self.assertNotEqual(self.hc_state()["terminals"].get(rev, {}).get("state"), "live")
+
+    def test_close_when_reviewer_gone_even_if_view_is_gone(self):
+        rev = self.crew_reviewing()
+        self.view_step()
+        view = self.crew()["production"]["view"]
+        with self._hc_locked() as st:  # 리뷰어 터미널도 보기 터미널도 이미 없다
+            del st["terminals"][rev]
+            del st["terminals"][view["terminal"]]
+        self.view_step()
+        self.assertEqual(self.calls("pane.close"), [])  # 남은 pane 이 없으면 닫지 않는다
+        self.assertIsNone(self.crew()["production"]["view"])  # view 만 비운다
+        self.assertEqual(self.task_state("T-001")["status"], "reviewing")  # 리뷰에는 영향이 없다
+        self.view_step()
+        self.assertIsNone(self.crew()["production"]["view"])
+
+    def test_reopen_for_auto_retry_with_hidden_reviewer(self):
+        first = self.crew_reviewing()
+        self.view_step()
+        old = self.crew()["production"]["view"]
+        code, out = self.act_review("T-001", write=False)  # 리뷰 파일 없이 done: 시도 실패
+        self.assertEqual(code, 0, out)
+        code, out = self.hteam("review-finish", "T-001")
+        self.assertEqual((code, out.get("retried"), out.get("attempt")), (0, True, 2), out)
+        second = self.dispatch_row(self.attempt("T-001")["dispatch"])["terminal"]
+        self.assertNotEqual(second, first)
+        self.assertNotIn("herdr.tab", self.labels(second))  # 자동 재시도 리뷰어도 숨긴다
+        self.view_step()  # 앞 시도의 보기를 닫고 같은 단계에서 새 리뷰어로 다시 연다(설계 6.5 의 4)
+        self.assertEqual(self.calls("pane.close"), [{"pane": old["pane"]}])
+        view = self.crew()["production"]["view"]
+        self.assertEqual((view["reviewer"], view["attempt"]), (second, 2))
+        self.assertEqual([s["argv"][-1] for s in self.calls("pane.split")], [first, second])
+
+    def test_one_view_per_tab_then_next_review(self):
+        first = self.crew_reviewing("T-001", "src/a/**")
+        work = self.crew()["production"]["terminal"]
+        self.update_terminal(work, status="idle")  # 앞 태스크를 마친 세션이 입력을 받을 수 있다
+        self.write_spec("T-002", "developer", owns="src/b/**")
+        code, out = self.hteam("start", "T-002")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.dispatch_row(self.work_dispatch("T-002"))["terminal"], work)  # 같은 세션
+        code, out = self.act_work("T-002", {"src/b/app.py": "print('b')\n"})
+        self.assertEqual(code, 0, out)
+        self.edit_crew("production", task=None, dispatch=None)
+        code, out = self.hteam("review", "T-002")
+        self.assertEqual((code, out.get("status")), (0, "reviewing"), out)
+        second = self.dispatch_row(self.attempt("T-002")["dispatch"])["terminal"]
+        self.view_step()
+        self.view_step()
+        self.assertEqual([s["argv"][-1] for s in self.calls("pane.split")], [first])  # 가장 먼저 시작한 리뷰 하나만
+        old = self.crew()["production"]["view"]
+        code, out = self.act_review("T-001", "APPROVE")
+        self.assertEqual(code, 0, out)
+        code, out = self.hteam("review-finish", "T-001")
+        self.assertEqual((code, out.get("status")), (0, "approved"), out)
+        self.view_step()  # 닫고 같은 단계에서 남은 리뷰어로 다시 연다
+        self.assertEqual(self.calls("pane.close"), [{"pane": old["pane"]}])
+        self.assertEqual([s["argv"][-1] for s in self.calls("pane.split")], [first, second])
+        view = self.crew()["production"]["view"]
+        self.assertEqual((view["task"], view["reviewer"]), ("T-002", second))
+
+    def test_detached_view_is_not_reopened_during_that_review(self):
+        self.crew_reviewing()
+        self.view_step()
+        view = self.crew()["production"]["view"]
+        self.update_terminal(view["terminal"], state="finished", exit_code=0)  # 떼기(ctrl+\): 보기 프로그램만 끝났다
+        self.view_step()
+        self.assertEqual(len(self.calls("pane.split")), 1)
+        self.assertEqual(self.crew()["production"]["view"], view)  # 그 리뷰 동안은 그대로 둔다(설계 6.5 의 7)
+        code, out = self.act_review("T-001", "APPROVE")
+        self.assertEqual(code, 0, out)
+        code, out = self.hteam("review-finish", "T-001")
+        self.assertEqual((code, out.get("status")), (0, "approved"), out)
+        self.view_step()
+        self.assertEqual(self.calls("pane.close"), [])  # pane 이 이미 없다(프로그램이 끝났다)
+        self.assertIn(view["terminal"], self.removed())  # 끝난 보기 터미널은 지운다
+        self.assertIsNone(self.crew()["production"]["view"])
+
+    def test_open_failure_logs_once_and_review_goes_on(self):
+        self.crew_reviewing()
+        self.fail_hc("herdr-app pane.split", "split_failed")
+        self.view_step()
+        self.view_step()  # 같은 리뷰에는 다시 열지 않는다(로그도 한 줄)
+        self.assertEqual(len(self.calls("pane.split")), 1)
+        self.assertEqual(len([ln for ln in self.log_lines() if "production 리뷰 보기 열기 실패" in ln]), 1)
+        code, out = self.act_review("T-001", "APPROVE")
+        self.assertEqual(code, 0, out)
+        code, out = self.hteam("review-finish", "T-001")
+        self.assertEqual((code, out.get("status")), (0, "approved"), out)  # 리뷰는 그대로 간다(설계 6.5 의 6)
+        self.view_step()
+        self.assertEqual(self.calls("pane.close"), [])
+        self.assertIsNone(self.crew()["production"]["view"])
+
+    def test_no_work_pane_logs_once(self):
+        self.crew_reviewing()
+        self.edit_crew("production", work_pane=None)  # 배치 실패로 작업 pane 을 모른다(설계 5.9.2 의 6)
+        self.view_step()
+        self.view_step()
+        self.assertEqual(self.calls("pane.split"), [])
+        self.assertEqual(len([ln for ln in self.log_lines() if "production 리뷰 보기 열기 실패" in ln]), 1)
+
+    def test_close_failure_is_retried_next_tick(self):
+        self.crew_reviewing()
+        self.view_step()
+        view = self.crew()["production"]["view"]
+        code, out = self.act_review("T-001", "APPROVE")
+        self.assertEqual(code, 0, out)
+        code, out = self.hteam("review-finish", "T-001")
+        self.assertEqual(code, 0, out)
+        self.fail_hc("herdr-app pane.close", "close_failed")
+        self.view_step()
+        self.assertEqual(self.crew()["production"]["view"], view)  # 닫지 못하면 view 를 남겨 다음 틱에 다시 한다
+        self.assertEqual(len([ln for ln in self.log_lines() if "production 리뷰 보기 닫기 실패" in ln]), 1)
+        with self._hc_locked() as st:
+            st["fail"].pop("herdr-app pane.close")
+        self.view_step()
+        self.assertIsNone(self.crew()["production"]["view"])
+        self.assertIn(view["terminal"], self.removed())
+
+
+class HandoffTamperTest(ReviewCase):
+    def test_handoff_commit_during_review_is_not_tamper(self):
+        # 리뷰를 기다리는 동안 빈 고정 에이전트가 인수인계를 커밋해도 판정이 무효가 되지 않는다(설계 6.1 5, orca §17 P1-1)
+        self.reviewing()
+        self.commit("docs/handoff/production.md", "# 인수인계\n", "[handoff] production: 인수인계")
+        code, out = self.act_review("T-001", "APPROVE")
+        self.assertEqual(code, 0, out)
+        code, out = self.hteam("review-finish", "T-001")
+        self.assertEqual((code, out.get("status")), (0, "approved"), out)
+
+    def test_path_beside_handoff_folder_is_still_tamper(self):
+        self.reviewing()
+        self.commit("docs/handoff.md", "# 인수인계가 아니다\n", "[handoff] production: 인수인계")
+        code, out = self.act_review("T-001", "APPROVE")
+        self.assertEqual(code, 0, out)
+        code, out = self.hteam("review-finish", "T-001")
+        self.assertEqual((code, out.get("error", {}).get("code")), (1, "review_tampered"), out)
+        self.assertEqual(out["tamper"]["paths"], ["docs/handoff.md"])

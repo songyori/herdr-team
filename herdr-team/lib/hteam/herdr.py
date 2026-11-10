@@ -1,8 +1,10 @@
-"""hc·herdr-app 직접 호출(설계 3.3). 관제 실행·생존 확인, 탭 이름 붙이기, 고정 에이전트 작업 터미널 상태와 pane 배치(5.9.2)뿐이다.
-워커 실행은 늘 horch 를 거친다."""
+"""hc·herdr-app 직접 호출(설계 3.3). 관제 실행·생존 확인, 탭 이름 붙이기, 고정 에이전트 작업 터미널 상태와 pane 배치(5.9.2),
+리뷰 보기 pane(6.5: pane.split 의 hc attach, pane.close, 보기 터미널 hc rm)뿐이다. 워커 실행은 늘 horch 를 거친다."""
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 import time
 
@@ -44,6 +46,24 @@ def _hc(args: list[str], tail: list[str] | None = None, timeout: float = 30) -> 
 
 def get(terminal: str, timeout: float = 10) -> dict:
     return _hc(["get", terminal], timeout=timeout)
+
+
+def rm(terminal: str, timeout: float = 10) -> None:
+    """`hc rm <터미널> --json`(설계 6.5 의 3: 끝난 보기 터미널 지우기). 이미 없으면(not_found) 성공이다. 그 밖의 실패(아직
+    live 포함)는 hc_failed(data kind)."""
+    try:
+        _hc(["rm", terminal], timeout=timeout)
+    except HteamError as exc:
+        if exc.data.get("kind") != "not_found":
+            raise
+
+
+def hc_path() -> str:
+    """이 프로세스 PATH 에서 찾은 hc 의 절대 경로(설계 6.5 의 2: 보기 pane 의 PATH 에 기대지 않는다). 없으면 hc_missing."""
+    found = shutil.which("hc")
+    if not found:
+        raise HteamError("hc_missing", "hc 실행 파일을 찾지 못했다", MISSING, "herdr-core 를 설치한다")
+    return os.path.abspath(found)
 
 
 def verdict(info: dict | None, expected_argv: list[str] | None) -> str:
@@ -126,14 +146,44 @@ def pane_of(terminal: str, timeout: float = 10) -> str | None:
     return None
 
 
-def swap(pane: str, target: str, timeout: float = 10) -> None:
-    """`herdr-app do pane.swap '{"pane", "target"}'`(설계 5.9.2 의 5). 실패는 herdr_app_failed(exit 1)."""
-    proc = _app(["do", "pane.swap", json.dumps({"pane": pane, "target": target})], timeout)
-    if proc is None:
-        raise HteamError("herdr_app_failed", "herdr-app pane.swap 를 실행하지 못했다", FAIL)
+def _do(name: str, args: dict, timeout: float) -> dict:
+    """`herdr-app do <name> '<JSON>'` 한 번. 결과 JSON 객체(읽지 못하면 {}). 실패는 herdr_app_failed(exit 1, 문구
+    `herdr-app <name> 실패: <출력의 error 또는 exit_<코드>>`), herdr-app 이 없으면 herdr_app_missing(exit 12)."""
+    try:
+        proc = subprocess.run(["herdr-app", "do", name, json.dumps(args, ensure_ascii=False)], capture_output=True,
+                              text=True, timeout=timeout)
+    except FileNotFoundError:
+        raise HteamError("herdr_app_missing", "herdr-app 실행 파일을 찾지 못했다", MISSING, "Herdr 앱을 설치한다") from None
+    except (OSError, subprocess.TimeoutExpired, UnicodeDecodeError):
+        raise HteamError("herdr_app_failed", f"herdr-app {name} 를 실행하지 못했다", FAIL) from None
+    data = _json(proc.stdout or "")
     if proc.returncode != 0:
-        said = (proc.stdout or proc.stderr or "").strip()[:200]
-        raise HteamError("herdr_app_failed", f"herdr-app pane.swap 실패(exit {proc.returncode}): {said}", FAIL)
+        if not isinstance(data, dict):
+            data = _json(proc.stderr or "")
+        err = data.get("error") if isinstance(data, dict) else None
+        if isinstance(err, dict):
+            err = err.get("kind") or err.get("code") or err.get("message")
+        raise HteamError("herdr_app_failed", f"herdr-app {name} 실패: {err or f'exit_{proc.returncode}'}", FAIL)
+    return data if isinstance(data, dict) else {}
+
+
+def swap(pane: str, target: str, timeout: float = 10) -> None:
+    """`herdr-app do pane.swap '{"pane", "target"}'`(설계 5.9.2 의 5). 실패는 _do 와 같다."""
+    _do("pane.swap", {"pane": pane, "target": target}, timeout)
+
+
+def split_right(pane: str, argv: list[str], timeout: float = 10) -> dict:
+    """`herdr-app do pane.split '{"direction": "right", "pane", "argv"}'`(설계 6.5 의 2). 사용자 초점은 바뀌지 않는다.
+    {"pane", "terminal"}. 결과에 둘이 없으면 herdr_app_failed."""
+    data = _do("pane.split", {"direction": "right", "pane": pane, "argv": list(argv)}, timeout)
+    if not data.get("pane") or not data.get("terminal"):
+        raise HteamError("herdr_app_failed", "herdr-app pane.split 결과에 pane·terminal 이 없다", FAIL)
+    return {"pane": data["pane"], "terminal": data["terminal"]}
+
+
+def close_pane(pane: str, timeout: float = 10) -> None:
+    """`herdr-app do pane.close '{"pane"}'`(설계 6.5 의 3). 실패는 _do 와 같다."""
+    _do("pane.close", {"pane": pane}, timeout)
 
 
 def _blocks(node) -> list[str]:

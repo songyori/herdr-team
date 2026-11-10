@@ -744,8 +744,110 @@ class Drive:
         for name in cfg.crew:
             self.isolated(f"reset:{name}", lambda name=name: crew.begin_reset(self, cfg, name))
 
+    # --- 리뷰 보기(6.5) ---
     def view_step(self) -> None:
-        """리뷰 보기 pane 닫기·열기(설계 6.5, 에이전트마다 view:<이름> 격리). Task 9 가 채운다."""
+        """리뷰 보기 pane 닫기·열기(설계 6.5, 8.5 의 8). crew.json 의 에이전트마다(그 순서로) view:<이름> 격리. 리뷰 자식이
+        리뷰어를 띄운 틱에도 여기서 연다(8.6). 열기·닫기 실패는 로그 한 줄뿐이고 태스크 상태·decide 를 건드리지 않는다."""
+        from . import crew  # crew 가 이 모듈을 쓴다
+        data = self.isolated("view", lambda: crew.load(self.p))
+        for name in data or {}:
+            self.isolated(f"view:{name}", lambda name=name: self._view(name))
+
+    def _view(self, name: str) -> None:
+        """에이전트 하나(6.5 의 2–4·6·7). 연 보기가 끝나지 않았으면 그대로 둔다(한 탭에 하나. 떼거나 보기 pane 이 죽어도 그
+        리뷰 동안은 다시 열지 않는다). 끝났으면 닫고, 닫았으면 같은 단계에서 이 에이전트의 남은 리뷰(가장 먼저 시작한 것)로
+        연다. 열지 못하면 pane·terminal null 과 error 를 view 에 남겨 그 시도 동안 다시 열지 않는다."""
+        from . import crew
+        entry = crew.load(self.p).get(name) or {}
+        view = entry.get("view")
+        if view:
+            if not self._view_ended(view):
+                return
+            if not self._close_view(name, view):
+                return  # 닫지 못했다(로그). 다음 틱에 다시
+        found = self._running_review(name)
+        if found is None:
+            return
+        st, rd, att = found
+        record = {"pane": None, "terminal": None, "reviewer": att["terminal"], "task": st["id"], "round": rd["round"],
+                  "attempt": att["attempt"]}
+        try:
+            if not entry.get("work_pane"):
+                raise HteamError("no_work_pane", "작업 pane 을 모른다", FAIL)
+            # 일반 attach(--observe 는 크기를 맞추지 않아 좁은 pane 에서 TUI 가 깨진다, X5). terminal.show 는 쓰지 않는다
+            record.update(herdr.split_right(entry["work_pane"], [herdr.hc_path(), "attach", att["terminal"]]))
+        except HteamError as exc:
+            if exc.exit_code == MISSING:
+                raise
+            record["error"] = exc.message
+            self.log(f"{name} 리뷰 보기 열기 실패: {exc.message}")
+        with crew.edit(self.p) as data:
+            if data.get(name) is not None and data[name].get("view") is None:
+                data[name]["view"] = record
+
+    def _view_ended(self, view: dict) -> bool:
+        """보기의 리뷰 시도가 끝났나(6.5 의 3, 하나라도 맞으면): 태스크가 없거나 done·dropped, 지금 라운드가 보기의 라운드가
+        아니다, 그 시도가 없거나 결과가 있다, 그 시도나 작업 실행 기록이 취소됐다, 리뷰어 터미널이 finished 이거나 없다.
+        hc get 이 다른 까닭으로 실패하면 끝나지 않은 것으로 본다(모르면 그대로 둔다)."""
+        st = state.load(self.p, view["task"])
+        if st is None or st["status"] in state.CLOSED:
+            return True
+        rd = state.current_round(st)
+        if rd is None or rd["round"] != view["round"]:
+            return True
+        att = next((a for a in rd["reviews"] if a["attempt"] == view["attempt"]), None)
+        if att is None or att.get("result") is not None or att.get("canceled") or rd["work"].get("canceled"):
+            return True
+        try:
+            info = herdr.get(view["reviewer"], timeout=3)
+        except HteamError as exc:
+            if exc.exit_code == MISSING:
+                raise
+            return exc.data.get("kind") == "not_found"
+        return info.get("state") == "finished"
+
+    def _close_view(self, name: str, view: dict) -> bool:
+        """보기 닫기(6.5 의 3, 멱등): pane 이 남아 있으면 pane.close, 보기 터미널은 hc rm(이미 없으면 성공) 뒤 view 를 비운다.
+        실패하면 로그 한 줄을 남기고 view 를 그대로 둔 채 False(다음 틱에 다시 한다)."""
+        from . import crew
+        try:
+            if view.get("pane") and view.get("terminal") and herdr.pane_of(view["terminal"]):
+                herdr.close_pane(view["pane"])
+            if view.get("terminal"):
+                herdr.rm(view["terminal"])
+        except HteamError as exc:
+            if exc.exit_code == MISSING:
+                raise
+            self.log(f"{name} 리뷰 보기 닫기 실패: {exc.message}")
+            return False
+        with crew.edit(self.p) as data:
+            if data.get(name) is not None and data[name].get("view") == view:
+                data[name]["view"] = None
+        return True
+
+    def _running_review(self, name: str) -> tuple[dict, dict, dict] | None:
+        """이 에이전트의 도는 리뷰 (상태, 라운드, 시도)(6.5 의 4): reviewing 이고 지금 라운드를 이 에이전트가 맡았고 열린 시도에
+        Dispatch·리뷰어 터미널이 있으며 그 터미널이 live(hc get 실패·live 아님은 후보가 아니다). 여럿이면 가장 먼저 시작한
+        리뷰(시도 기준점 시각, 태스크 번호)."""
+        from . import crew
+        found = []
+        for st in state.all_states(self.p):
+            rd = state.current_round(st)
+            if st["status"] != "reviewing" or crew.round_crew(rd) != name:
+                continue
+            att = state.open_attempt(rd)
+            if att and att.get("dispatch") and att.get("terminal"):
+                found.append(((att["baseline"]["at"], state.id_number(st["id"])), st, rd, att))
+        for _, st, rd, att in sorted(found, key=lambda item: item[0]):
+            try:
+                live = herdr.get(att["terminal"], timeout=3).get("state") == "live"
+            except HteamError as exc:
+                if exc.exit_code == MISSING:
+                    raise
+                live = False
+            if live:
+                return st, rd, att
+        return None
 
     # --- 재확인(8.7) ---
     def write_workers(self) -> list[dict]:

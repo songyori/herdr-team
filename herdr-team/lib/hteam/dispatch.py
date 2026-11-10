@@ -1,7 +1,8 @@
 """horch Task 실행·복구·정리(설계 5.4, 6.1, 6.4): 시작 장벽, 제목(실행 키)으로 찾기, 같은 Task 다시 띄우기, 정리(cleanup).
 
 실행 기록(slot)은 상태 파일 안의 dict 다(작업: rounds[-1].work, 리뷰: rounds[-1].reviews[i]).
-필드: title(실행 키), horch_task, dispatch, launched(시작 장벽 자식 {pid, started}), error, canceled, cleaned.
+필드: title(실행 키), horch_task, dispatch, launched(시작 장벽 자식 {pid, started}), error, canceled, cleaned,
+terminal(그 Dispatch 의 hc 터미널. launch 가 horch_task·dispatch 와 같은 갱신에서 쓴다. 관제의 리뷰 보기가 리뷰어를 이것으로 안다).
 """
 from __future__ import annotations
 
@@ -156,7 +157,7 @@ def _run_barrier(p, tid: str, pick, argv: list[str], expect, on_fresh=None) -> t
 
 def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str | None, args: list[str],
            spec_file, expect=None, on_fresh=None, keep_open_tab: str | None = None,
-           same_terminal: str | None = None) -> dict:
+           same_terminal: str | None = None, hidden: bool = False) -> dict:
     """pick(st) 가 가리키는 실행 기록으로 horch 워커를 띄우거나 이어 붙인다. 실패하면 HteamError(launch_failed).
 
     기록을 쓸 때마다 owned 로 이전 상태(expect)·취소·실행자를 다시 확인한다. 어긋나면 exit 3(launch_canceled 등).
@@ -165,13 +166,15 @@ def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str |
 
     고정 에이전트(설계 5.4 의 6단계 문단): keep_open_tab 이면 그 에이전트 탭에 고정 터미널로(`--keep-open --tab`),
     same_terminal 이면 그 고정 터미널에 넣는다(`--terminal`, 모델·effort·인자·cwd 없음). 실행 키·시작 장벽·복구 규칙은 같다.
-    결과에 horch 의 placement·start_turn·delivery 를 더한다."""
+    hidden 이면 새로 띄우거나 같은 Task 를 다시 띄울 때 `--hidden`(herdr 라벨 없이, 고정 에이전트 태스크의 리뷰어, 설계 6.5 의
+    1)을 더한다. 이어 붙이기는 그대로다.
+    결과에 horch 의 placement·start_turn·delivery 를 더한다. 실행 기록에는 horch Task·Dispatch 와 함께 그 터미널을 쓴다."""
     slot = pick(state.require(p, tid))
     mode, row, warnings = existing(h, slot)
     if mode == "adopt":
         try:
             with owned(p, tid, pick, expect) as st:
-                pick(st).update(horch_task=row["task"], dispatch=row["id"], error=None)
+                pick(st).update(horch_task=row["task"], dispatch=row["id"], terminal=row.get("terminal"), error=None)
         except HteamError as exc:
             left_running(exc, {"task": row["task"], "dispatch": row["id"], "state": row["state"]}, h)
             raise
@@ -200,12 +203,13 @@ def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str |
     if effort:
         opts += ["--effort", effort]
     keep = ["--keep-open", "--tab", keep_open_tab] if keep_open_tab else []
+    hide = ["--hidden"] if hidden else []
     if mode == "retry":
         argv = h.argv("worker-start", "--task", row["task"], "--retry", "--agent", agent, "--cwd", str(p.root),
-                      *opts, *agent_args(args), *keep)
+                      *opts, *agent_args(args), *keep, *hide)
     else:
         argv = h.argv("worker-start", "--agent", agent, "--title", slot["title"], "--spec-file", str(spec_file),
-                      "--cwd", str(p.root), *opts, *agent_args(args), *keep)
+                      "--cwd", str(p.root), *opts, *agent_args(args), *keep, *hide)
     return _start(p, h, tid, pick, argv, mode, expect, on_fresh, warnings)
 
 
@@ -217,7 +221,7 @@ def _start(p, h, tid: str, pick, argv: list[str], mode: str, expect, on_fresh, w
         with owned(p, tid, pick, expect) as st:
             s = pick(st)
             if ok:
-                s.update(horch_task=data["task"], dispatch=data["dispatch"], error=None)
+                s.update(horch_task=data["task"], dispatch=data["dispatch"], terminal=data.get("terminal"), error=None)
             else:
                 s["horch_task"] = data.get("task") or s.get("horch_task")
                 s["error"] = {"exit": code, **(data.get("error") or {})}
