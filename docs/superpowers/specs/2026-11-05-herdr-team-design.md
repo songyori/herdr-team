@@ -411,7 +411,7 @@ full = "npx vitest run"
 
 상태 파일 필드: `id`, `status`, `round`, `base`(첫 라운드 시작 때 HEAD), `rounds`(라운드별 `{round_base, work: {title, horch_task, dispatch, cleaned}, reviews: [{attempt, title, horch_task, dispatch, file, result, cleaned, tamper}], verdict}`), `launcher`(`{pid, started, key}`), `history`(전이와 시각), `note`. `title` 은 horch Task 제목이자 실행 키다: 작업 `T-xxx rN 작업`, 리뷰 `T-xxx rN 리뷰 aK`.
 
-6단계 필드: 라운드 기록의 `agent`(맡은 고정 에이전트 이름 또는 `temp`)·`model_ignored`·`start_turn`·`delivery`(같은 터미널에 넣었을 때), 태스크의 `queued_fix`(고정 에이전트 대기열의 수정 요청, 5.9.5), `unknown_starts`(입력 유실 재투입 수, 5.9.8), `decide`·`decide_round`(열린 decide, 8.10), `liveness_unknown_since`·`liveness_escalated`(8.7), `blocked_decide`(확인 창 decide, 8.6), `launch_failed_asked`·`dropped_deps_asked`(8.7), `plan_applied`(planner, 8.9). 이 필드는 관제만 쓴다.
+6단계 필드: 라운드 기록의 `agent`(맡은 고정 에이전트 이름 또는 `temp`)·`model_ignored`·`start_turn`·`delivery`(같은 터미널에 넣었을 때), 태스크의 `queued_fix`(고정 에이전트 대기열의 수정 요청, 5.9.5), `unknown_starts`(입력 유실 재투입 수, 5.9.8), `decide`·`decide_round`(열린 decide, 8.10), `liveness_unknown_since`·`liveness_escalated`(8.7), `blocked_decide`(확인 창 decide, 8.6), `launch_failed_asked`·`dropped_deps_asked`(8.7), `drive_fix`(관제 fix 이어 하기)·`review_failure_asked`(실패·변조 decide 를 올린 시도)(8.7, Codex 계획 리뷰 r1), 작업 실행 기록의 `resend`(재투입 이어 붙이기, 5.9.8), `plan_applied`(planner, 8.9). 이 필드는 관제만 쓴다.
 
 전이는 상태 파일마다 flock 으로 잠그고 이전 상태를 확인한 뒤 원자적으로 쓴다(임시 파일 + `os.replace`). 상태를 바꾸는 명령은 관제와 그 자식 프로세스만 부른다. 메인의 명령은 요청 큐를 거쳐 관제가 실행한다(7.1, 8.3). 0.3.0 까지는 코디네이터가 불렀다.
 
@@ -782,6 +782,8 @@ worker_done 이 오면 관제가 `task = null` 로 비우고(entry 의 `task` �
 | 리뷰 보기 pane 이 죽었다 | 리뷰 시작·끝 때 확인 | 리뷰에는 영향이 없다. 다음 리뷰 때 다시 연다(6.5) |
 | 관제가 죽었다 | 메인 훅(9.5) | 새 관제가 시작 재확인에서 `crew.json` 의 터미널을 하나씩 확인해 죽은 것을 잊고 이어 간다(8.7) |
 | hc core 재시작 | 확인하지 않았다(X7) | 복구 셸로 바뀐 터미널은 lost 로 보고 잊는다(herdr-orch 10장 판정). 실제 동작은 한계(13장) |
+
+재투입 이어 붙이기(Codex 계획 리뷰 r1): 재투입은 앞 Dispatch 를 abandon 하기 전에 라운드 작업 기록에 `resend = {from: <앞 Dispatch>, n}` 를 쓰고, 새 Dispatch 를 띄운 뒤 같은 상태 쓰기에서 `dispatch`·`start_turn`·`delivery`·`unknown_starts = n` 을 쓰고 `resend` 를 지운다. 띄운 뒤 기록 전에 관제가 죽으면 처리하던 not_started 는 ack 전이라 다시 온다. 그때 `resend` 가 남아 있으면 먼저 그 horch Task 의 최신 시도를 본다: `from` 과 다르고 `launch_failed` 가 아니면 그것을 작업 Dispatch 로 이어 붙이고(crew entry `dispatch` 도, 로그 `<T> not_started: resent(<n>)`) 다시 넣지 않는다. 그러지 않으면 새 Dispatch 의 메시지가 기록된 Dispatch 와 달라 지난 것으로 버려진다(8.6). 최신이 `from` 이면(띄우기 전에 죽었다) `resend` 만 지우고 보통 처리로 가고(앞 Dispatch 가 이미 abandoned 면 abandon 을 건너뛴다), `launch_failed` 면 `resend` 를 지우고 관제 절차 실패 decide(8.5).
 
 이중 디스패치를 막는 장치: horch 는 한 터미널에 진행 중 Dispatch 를 하나만 허락하고(herdr-orch 13.3), `working`·`blocked` 세션에는 보내지 않는다(13.4). 관제는 `terminal-close` 가 성공한 뒤에만 새 세션을 띄운다. orca 는 `--keep-open` 탭이 `worker-release` 로 닫히지 않아 두 세션이 같은 체크아웃에서 같은 태스크를 했다(§17 P1-2).
 
@@ -1281,7 +1283,7 @@ orca-team 0.6.0 의 `orch followups`(`lib/orch/followups.py`)를 `lib/hteam/foll
 3. 모든 태스크 ID 목록(정렬)이 `finish.json.reported` 와 같으면 끝(같은 태스크 묶음으로 done 을 한 번만).
 4. 앞 전체 테스트 실패로 올린 decide(`final_decide`)가 열려 있으면 끝. 닫혔으면 `final_failed`·`final_decide` 를 지우고 이어 한다.
 5. 묶음 밖 후속: `finish.json.rest_done` 이 아니고 `출처: rest followups` 태스크가 없으면, `rest_done = true` 를 먼저 쓰고 `followups --rest` 결과를 묶음 후속과 같은 규칙으로 처리한다(출처 `rest followups`, decide 의 task 는 `rest`). 새 태스크가 생겼으면 끝(그것들이 끝난 뒤 다시 온다). 전역 한 번이다.
-6. 커밋된 HEAD 에 확정한 `[test]` 가 있으면 `hteam test --full` 을 자식 프로세스로 돌리고 끝(8.8). 결과:
+6. 커밋된 HEAD 에 확정한 `[test]` 가 있으면 그때의 모든 태스크 ID 목록을 `finish.json.final_ids` 에 쓰고 `hteam test --full` 을 자식 프로세스로 돌리고 끝(8.8). 결과를 처리하기 전에 테스트 도중 태스크가 바뀌었는지 본다(Codex 계획 리뷰 r1: 자식이 도는 동안에도 관제는 새 요청을 처리한다): `done`·`dropped` 아닌 태스크가 있거나 지금 목록이 `final_ids` 와 다르면 결과를 쓰지 않고(done·`reported`·`final_failed`·decide 없음) `final_ids` 를 지운 뒤 로그 `마지막 전체 테스트 결과를 버린다(그 사이 태스크가 바뀌었다)`. 다음 마무리가 늘어난 목록으로 다시 돈다. 아니면 `final_ids` 를 아래의 ID 목록으로 쓰고 지운다. 결과:
    - exit 0: 7 로.
    - exit 1: decide `unknown_regression`(task 없음, `마지막 전체 테스트가 실패했다. 원인 태스크를 정해 회귀 수정 태스크를 만든다`, files 로그, `tail`, source `출처: final followups`). `finish.json` 에 `final_failed`(ID 목록)·`final_decide`. 5단계는 코디네이터가 원인 태스크를 찾아 회귀 수정 태스크를 만들었다. 관제는 원인을 기계적으로 고를 수 없어 decide 로 올린다(orca 코드와 같다).
    - exit 4 `test_lock_timeout`: 로그 `전체 테스트 잠금 대기 초과. 다음 확인 때 다시 한다`(기록하지 않는다).
@@ -1395,7 +1397,7 @@ Herdr 신호로 바꾼 곳: orca 의 `ACTIVE_OUTPUT_SECONDS`(마지막 출력 30
 | `approved` | accept(아래) | |
 | `changes`, 리뷰어 리뷰 | 최대 라운드가 아니면 `hteam fix T`(메모 없이. 리뷰 중 생긴 소유 경로 안의 추적 안 된 파일이 있으면 note `리뷰 중 소유 경로에 추적 안 된 파일이 생겼다. 커밋하거나 지운다: <목록>`). 5단계 규칙대로 P2·P3 와 리뷰 요약은 note 에 넣지 않는다(5.5) | 최대 라운드면 decide `max_rounds`(`최대 <n> 라운드에도 승인되지 않았다`, files 리뷰 파일, commands `hteam fix T --force-round --note "<지시>"`, `hteam drop T`) |
 | exit 3(리뷰어가 아직 돈다, `reviewer_running`) | 기다린다 | |
-| exit 1 `review_failed`·`review_tampered` | | decide escalation `리뷰 실패(<code>): <message 300자>`(commands `hteam review T --retry`, `hteam drop T`) |
+| exit 1 `review_failed`·`review_tampered` | decide 뒤 `review_failure_asked = [라운드, 시도]`(8.7 의 `reviewing` 복구가 같은 시도로 다시 올리지 않게) | decide escalation `리뷰 실패(<code>): <message 300자>`(commands `hteam review T --retry`, `hteam drop T`) |
 | 그 밖의 오류 | | decide escalation |
 
 `hteam review T` 자식 결과:
@@ -1431,12 +1433,12 @@ accept 뒤(`accepted`, 관제 판정 경로와 큐 accept 모두):
 6. 묶음 처리 안 된 done tester(8.4).
 7. `start-ready` → 디자인 단계(8.9) → 끝나지 않은 일괄 승인 결정 이어 하기(11.4)와 답 파일에만 있는 결정 실행(7.4) → 마무리(8.4).
 
-`reconcile_task(st)`: 열린 decide 가 있고 그 decide 의 라운드가 지금 라운드면(메인이 답하지 않았다) 건드리지 않는다. 그 태스크의 자식 프로세스가 돌아도 건드리지 않는다. 그 밖에는 상태별 하나:
+`reconcile_task(st)`: 열린 decide 가 있고 그 decide 의 라운드가 지금 라운드면(메인이 답하지 않았다) 건드리지 않는다. 그 태스크의 자식 프로세스가 돌아도 건드리지 않는다. 닫히지 않은 태스크에 지금 라운드의 `drive_fix` 가 남아 있으면 상태별 처리 대신 같은 note 로 그 fix 를 다시 한다(아래 "관제 fix 이어 하기"). 그 밖에는 상태별 하나:
 
 | 상태 | 조건 | 동작 |
 |---|---|---|
 | `working` | `queued_fix` 없음 | 작업자 확인(아래) |
-| `reviewing` | 리뷰 자식이 없다 | 리뷰어 Dispatch 가 끝났으면 `review-finish`. 시도 기록만 있고 리뷰어가 없으면 `review`(6.1 0 의 복구) |
+| `reviewing` | 리뷰 자식이 없다 | 리뷰어 Dispatch 가 끝났으면 `review-finish`. 시도 기록만 있고 리뷰어가 없으면 `review`(6.1 0 의 복구). 열린 시도가 없고 지금 라운드의 마지막 시도가 실패·변조(`result` 가 `failed`·`tampered`)인데 `review_failure_asked` 가 그 `[라운드, 시도]` 가 아니면 8.6 의 `review_failed`·`review_tampered` decide 를 그 시도 기록(이유·변조 경로)으로 올리고 그 값을 쓴다(review-finish 가 시도 결과를 쓴 뒤 decide 전에 관제가 죽었다. 다시 온 worker_done 은 `no_open_review` 라 아무것도 하지 않는다, Codex 계획 리뷰 r1) |
 | `approved` | | accept |
 | `changes` | `queued_fix` 없음 | 8.6 의 review-finish `changes` 처리 |
 | `pending` | | 선행이 `dropped` 면 decide escalation 한 번(`선행 태스크 <a, b> 가 중단(dropped)돼 <T> 를 시작할 수 없다. 진행하지 않으면 drop 하고, 이어 가려면 depends_on 을 고친다`, files 사양, commands `hteam drop T`, `depends_on 을 고쳐 커밋한 뒤 hteam start T`) |
@@ -1445,6 +1447,8 @@ accept 뒤(`accepted`, 관제 판정 경로와 큐 accept 모두):
 | 그 밖 | | 아무것도 안 한다 |
 
 `queued_fix` 가 있는 `working`·`changes` 는 메인의 수정이 대기열에 있으므로 건드리지 않는다(메인 지시를 덮지 않는다).
+
+관제 fix 이어 하기(Codex 계획 리뷰 r1): 관제가 스스로 하는 fix(8.6 의 exited·lost, review-finish·리뷰 자식의 `changes`, `uncommitted_owned`)는 메시지 처리 안에서 한 번 부르고 큐 요청이 없다. fix 는 이전 실행의 취소·정리를 먼저 저장하고 새 라운드를 나중에 쓰므로(6.4), 그 사이에 관제가 죽으면 태스크가 `working`·취소된 실행·released Dispatch 로 남고 다시 온 메시지는 취소된 라운드라 무시된다. 그래서 관제는 fix 를 부르기 전에 태스크 상태에 `drive_fix = {round, note, at}` 를 쓰고, fix 가 새 라운드를 쓰거나 수정 대기열 표시(`queued_fix`, 5.9.5)를 쓰는 같은 상태 쓰기가 그것을 지운다. 재확인은 지금 라운드의 `drive_fix` 가 남은 태스크에 같은 note 로 fix 를 다시 한다(정리는 다시 불러도 이어 한다, 6.4). `review_busy` 면 표시를 두고 다음 재확인에 다시 하고, 그 밖의 거부는 표시를 지우고 관제 절차 실패 decide(8.5)로 올린다. 라운드가 이미 바뀐 표시는 지운다.
 
 작업자 확인(working), 지금 작업 Dispatch 의 워커 목록 행으로 본다:
 

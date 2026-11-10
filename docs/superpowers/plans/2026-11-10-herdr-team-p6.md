@@ -72,19 +72,21 @@ herdr-team/
                    run_queue·start_ready·procedure_failed·spawn_review·confirm_test 자리(Task 5), 이벤트·자식·재확인·accept 뒤·
                    fix_task·워커 사본(Task 6), crew_done·crew_gone·crew_check(Task 7), reset_step·handoff_message·handoff_check·
                    on_not_started(Task 8), view_step(Task 9), 묶음 처리·마무리·확정 질문·기획 적용·디자인 단계·create_task(Task 10)
-    queue.py       새로: 요청 큐(route·submit·run_pending·recorded·EXECUTORS)(Task 5), start·fix 실행(Task 7), agent reset(Task 8),
-                   test-confirm 복구(Task 10)
+    queue.py       새로: 요청 큐(route·submit·run_pending·recorded·EXECUTORS)(Task 5), accept 뒤처리(Task 6), start·fix 실행(Task 7),
+                   agent reset(Task 8), test-confirm 복구(Task 10)
     crew.py        새로: crew.json·배정 place·처음 띄우기·넣기·대기열·드레인·force·round_crew·status_rows(Task 7),
                    리셋·인수인계·agent reset·mark_batch_reset·not_started 재투입(Task 8)
     roles.py       관제 판별 drive_env·require_drive·drive_only(Task 4), crew_terminal(Task 11)
-    tasks.py       require_drive(Task 4), 큐 경로·request·nowait·expect_round·scope(Task 5), start-ready 의 열린 decide 제외(Task 6),
-                   배정·start_command·waiting·대기열·드레인·--force(Task 7)
-    review.py      require_drive(Task 4), review --retry 의 큐·request, review_finish 의 nowait(Task 5), 숨은 --request(Task 6),
+    tasks.py       require_drive(Task 4), 큐 경로·request·nowait·expect_round·scope(Task 5), start-ready 의 열린 decide 제외·
+                   drive_fix·fix_closed·_live_error hint(Task 6), 배정·start_command·waiting·대기열·드레인·--force(Task 7)
+    review.py      require_drive(Task 4), review --retry 의 큐·request, review_finish 의 nowait(Task 5), 숨은 --round·--request·
+                   attempt_error(Task 6),
                    --hidden·docs/handoff/** 제외(Task 9), 관문 반려 파일 문구(Task 11)
     outbox.py      require_main 의 관제(Task 4), decide 쓰기(Task 4), TYPES·answer·open_questions·watch, tell·notify·applied 삭제(Task 5),
                    open_decide·append 의 fill(Task 6)
-    approval.py    require_drive(Task 4), design-decide·record_answer·pending_answers(Task 5), design_review 의 skip(Task 10)
-    coord.py       status 의 warnings(Task 3), drive(Task 4), wait·which 삭제·열린 질문(Task 5), 워커 사본·관제만 하는 next(Task 6),
+    approval.py    require_drive(Task 4), design-decide·record_answer·pending_answers·decide 의 nowait(Task 5), design_review 의 skip(Task 10)
+    coord.py       status 의 warnings(Task 3), drive(Task 4), wait·which 삭제·열린 질문(Task 5), 워커 사본·관제만 하는 next·horch 없는
+                   hint(Task 6),
                    crew·queued_fix hint(Task 7)
     setup.py       doctor warnings(Task 3), up 이 관제를 띄움·bind 삭제(Task 4), FILES·UPGRADE·UPGRADE_NEXT(Task 11)
     autoup.py      관제 판정·문구 여섯(Task 4)
@@ -122,7 +124,7 @@ herdr-team/
     test_drive_flows.py   새로(Task 10)
     test_wording.py       새로(Task 11)
     test_config.py(Task 3), test_setup.py·test_hooks.py·test_base.py(Task 3·4·11), test_mainlink.py·test_coord.py(Task 5 다시 씀,
-    Task 6), test_approval.py(Task 5·6·7·11), test_review.py(Task 5·7·9·11), test_start.py(Task 5·7·11), test_lifecycle.py(Task 5·7·11),
+    Task 6), test_approval.py(Task 5·6·7·11), test_review.py(Task 5·7·9·11), test_start.py(Task 5·7·11), test_lifecycle.py(Task 5·6·7·11),
     test_state_specs.py·test_harness.py(Task 5), test_cli.py(Task 2·11), test_design_docs.py(Task 11),
     Task 4 의 이름 바꾸기(**Run**)가 닿는 시험 파일
 .claude-plugin/marketplace.json   herdr-orch 0.2.0(Task 2), herdr-team 0.4.0(Task 11)
@@ -136,7 +138,7 @@ docs/superpowers/specs/2026-11-05-herdr-team-design.md   머리 상태 줄과 15
 - `state/run.json`(Task 4): `{run_id, drive_terminal, drive_argv, team_space, team_tab, pending_launch: {nonce, at}, bound_nonce, bound_at}`(띄우는 동안 `launched_at`). `coordinator_*` 는 없다.
 - `state/drive/`(Task 4–10): `drive.pid`(`{pid, started}`), `heartbeat`(로컬 ISO), `drive.log`, `queue/<NNNNNN>.json`·`.result.json`·`.abandoned`, `queue.lock`, `queue.seq`(Task 5), `workers.json`(`{at, rows}`)·`jobs/`(Task 6), `finish.json`·`supplement.json`·`test-confirm.json`(Task 10).
 - `state/crew.json`(Task 7·8): 설계 5.9.1 의 entry(`resetting` 의 하위 `idle_asked`·`clear_error`, `reset_request` 를 더한다), `state/crew/<이름>-handoff-s<번호>.md`.
-- 태스크 상태(Task 4–8): `decide`·`decide_round`(Task 4·6), `blocked_decide`·`liveness_unknown_since`·`liveness_escalated`·`launch_failed_asked`·`dropped_deps_asked`·`plan_applied`(Task 6·10), `queued_fix`·`unknown_starts`(Task 7·8), 라운드 기록의 `crew`(고정 에이전트 이름 또는 `temp`)·`model_ignored`·`start_turn`·`delivery`·`forced`, 작업 실행 기록의 `transient`·`terminal`(Task 7·9), history 사건의 `request`(Task 5).
+- 태스크 상태(Task 4–8): `decide`·`decide_round`(Task 4·6), `blocked_decide`·`liveness_unknown_since`·`liveness_escalated`·`launch_failed_asked`·`dropped_deps_asked`·`drive_fix`·`review_failure_asked`·`plan_applied`(Task 6·10), `queued_fix`·`unknown_starts`(Task 7·8), 작업 실행 기록의 `resend`(Task 8), 라운드 기록의 `crew`(고정 에이전트 이름 또는 `temp`)·`model_ignored`·`start_turn`·`delivery`·`forced`, 작업 실행 기록의 `transient`·`terminal`(Task 7·9), history 사건의 `request`(Task 5).
 - outbox(Task 4·5): `decide`(설계 8.10 모양)·`result`(`{request, command, result, body}`). `notify` 는 없다.
 
 ## 태스크 순서와 의존
@@ -1095,9 +1097,9 @@ herdr-orch 설계 13.5(닫기)·13.7(hcio)·13.8(비우기)·13.9(명령·오류
    1. `--name` 형식 검사(exit 2, hc 를 부르기 전).
    2. `persist.inspect(store, run_id, t)`(Task 1 의 2 와 같은 거부). 에이전트는 앞 고정 Dispatch 의 `agent`. Claude 에 `--name` 이면 이름을 버리고 `warnings` 에 `name_ignored`.
    3. 리셋 예약: `BEGIN IMMEDIATE` 에서 진행 중 Dispatch 와 살아 있는 다른 예약(`persist.reservation`)을 다시 보고(있으면 exit 3 `terminal_busy`) `meta` 에 `reset:<t>` = `<pid>|<시작 시각>|<now>` 를 쓴다(`INSERT … ON CONFLICT(key) DO UPDATE`, 죽은 프로세스의 옛 값은 덮어쓴다). 이 뒤의 모든 길(성공·실패·시간 초과·예외)은 `finally` 에서 `DELETE FROM meta WHERE key=? AND value=?`(자기 값일 때만)를 한다.
-   4. `hcio.events(t)` 구독을 먼저 띄우고(실패하면 폴링만), `hc get` 으로 `turn_before` 를 읽는다.
-   5. `hcio.keys(t, CLEAR_KEYS + (["space", *이름] if Codex 이고 이름 else []) + ["enter"])`. 실패는 exit 1 `hc_failed`. 빈칸 키 이름은 hc 의 키 표를 따른다: 구현자가 먼저 `hc keys --help` 를 읽어(읽기만 한다) `space` 가 아니면 이 규칙과 가짜 hc(`keys[6:7] == ["space"]`)와 `test_reset.py` 의 `test_codex_name_keys_and_title` 기대 목록을 함께 바꾼다.
-   6. 기다림: 마감(`timeout_ms`)까지 구독 줄 가운데 `turn > turn_before` 이고 `status == "idle"` 인 첫 줄이면 `signal: "event"`, 아니면 `RESET_POLL_S` 마다 `hc get`(3초) 해 같은 조건이면 `signal: "poll"`. 줄의 모양은 `{"terminal", "status", "turn", "title"}` 로 본다(실제 `hc events` 의 줄 모양은 구현자가 `hc events --help` 로 확인하고 다르면 읽는 쪽만 맞춘다. 맞지 않는 줄은 건너뛰고 폴링이 받는다). `seconds` 는 keys 뒤 신호까지(소수 셋째 자리 float). `title` 은 신호 뒤 `hc get` 의 값.
+   4. `hcio.events(t)` 구독을 먼저 띄우고(실패하면 폴링만), `hc get` 으로 `turn_before` 를 읽는다. 구독은 keys 보다 먼저 띄운다: 가짜 hc 의 `on_clear: event` 는 keys 를 받을 때 이미 붙은 구독에만 turn 사건을 주고 `hc get` 은 옛 turn 그대로 둔다(`test_turn_event_needs_subscription_before_keys`). keys 뒤에 구독하거나 폴링만 하는 구현은 그 시험에서 `reset_timeout` 이 된다.
+   5. `hcio.keys(t, CLEAR_KEYS + (["space", *이름] if Codex 이고 이름 else []) + ["enter"])`. 실패는 exit 1 `hc_failed`. 빈칸 키 이름은 `space` 다(실제 hc 로 확인했다: `hc keys --json <T> a space b enter` 가 동작하고 `spc` 는 `invalid_params`. 결과 JSON 은 `{"status": null, "turn": 0}`. 가짜 hc 도 같은 꼴을 낸다).
+   6. 기다림: 마감(`timeout_ms`)까지 구독 줄 가운데 `turn > turn_before` 이고 `status == "idle"` 인 첫 줄이면 `signal: "event"`, 아니면 `RESET_POLL_S` 마다 `hc get`(3초) 해 같은 조건이면 `signal: "poll"`. 줄의 모양은 `{"terminal", "status", "turn", "title"}` 로 본다(실제 `hc events` 의 줄 모양은 구현자가 `hc events --help` 로 확인하고 다르면 읽는 쪽만 맞춘다. 맞지 않는 줄은 건너뛰고 폴링이 받는다). `seconds` 는 keys 뒤 신호까지(소수 셋째 자리 float). `title` 은 신호 뒤 `hc get` 의 값. 폴링 `hc get` 의 3초는 남은 시간으로 줄이지 않는다(마감 직전 호출이 마감을 넘을 수 있다. orch 설계 13.11 의 한계).
    7. 마감까지 없으면 exit 4 `reset_timeout`(`last` 는 마지막으로 본 `hc get`). 구독 프로세스는 늘 `close()` 한다.
 3. `send --key`(13.9): 검사 순서는 key 형식 → 소유자 확인(`dispatch:` 는 `auth.owner_run_id` → `auth.owned_dispatch`, 지금 그대로 exit 5·3) → key 조회(`SELECT … FROM messages WHERE mailbox=? AND send_key=?`) → 있으면 제목·본문이 같으면 `duplicate`, 다르면 `send_key_conflict` → 없을 때만 지금의 `active` 검사와 쓰기(`mailbox.post(..., send_key=K)`). 동시 쓰기로 `send_key_once` 위반(`sqlite3.IntegrityError`)이 나면 다시 조회해 같은 판정을 한다. `run:` 메일함에도 같은 규칙(key 조회는 쓰기 트랜잭션 안). key 없는 send 는 지금 그대로(`duplicate: false` 만 더한다).
 4. hcio(13.7): hc 를 부르는 곳은 여전히 `hcio.py` 뿐이다. `EventStream.read` 는 `select` 로 마감을 지키고 줄 단위로 JSON 객체만 돌려준다. `close()` 는 살아 있으면 terminate → 2초 → kill 하고 파이프를 닫는다.
@@ -1271,6 +1273,19 @@ class TerminalResetTest(PersistCase):
         self.assertEqual(code, 0, out)
         self.assertEqual((out["signal"], out["turn"]), ("poll", 4))
 
+    def test_turn_event_needs_subscription_before_keys(self):
+        """turn 사건으로만 비웠다는 신호가 온다(hc get 은 옛 turn 그대로). 사건은 0.3초 늦게, keys 를 받을 때 이미 붙은
+        구독에만 온다(herdr-orch 설계 13.7 의 가짜 시나리오, 13.8 의 4: 구독을 먼저 붙인다)."""
+        _, term = self.first()
+        with self._hc_locked() as st:
+            st["on_clear"] = {term: "event"}
+        code, out = self.o("terminal-reset", "--terminal", term)
+        self.assertEqual(code, 0, out)
+        self.assertEqual((out["signal"], out["turn"], out["status"]), ("event", 4, "idle"))
+        self.assertEqual(self.hc_state()["keys"][-1]["subscribed"], True)
+        self.assertEqual(self.hc_state()["terminals"][term]["turn"], 3)  # 폴링으로는 알 수 없었다
+        self.assertIsNone(self.reservation_row(term))
+
     def test_keys_failure_is_hc_failed(self):
         _, term = self.first()
         self.fail_hc("keys", "timeout")
@@ -1296,8 +1311,8 @@ class TerminalResetTest(PersistCase):
     def test_reset_excludes_put_and_other_reset(self):
         _, term = self.first()
         with self._hc_locked() as st:
-            st["on_clear"] = {term: "none"}
-        bg = self.horch_bg("terminal-reset", "--terminal", term, "--timeout-ms", "3000", terminal="t100")
+            st["on_clear"] = {term: "none"}  # 비운 신호가 오지 않는다: 시험이 장벽을 풀 때까지 리셋이 예약을 쥔다
+        bg = self.horch_bg("terminal-reset", "--terminal", term, "--timeout-ms", "60000", terminal="t100")
         self.addCleanup(lambda: bg.poll() is None and bg.kill())
         deadline = time.monotonic() + 10
         while self.reservation_row(term) is None:
@@ -1309,8 +1324,10 @@ class TerminalResetTest(PersistCase):
         self.assertEqual(self.count("dispatches"), dispatches)
         code, res = self.o("terminal-reset", "--terminal", term, "--timeout-ms", "200")
         self.assertEqual((code, res["error"]["code"]), (3, "terminal_busy"))
+        self.assertIsNone(bg.poll())  # 두 거부를 본 동안 앞 리셋은 아직 예약을 쥐고 기다린다
+        self.update_terminal(term, status="idle", turn=4)  # 장벽을 푼다: 앞 리셋이 비운 신호를 받는다
         code, res = self.finish(bg)
-        self.assertEqual((code, res["error"]["code"]), (4, "reset_timeout"))
+        self.assertEqual((code, res["turn"]), (0, 4), res)
         self.assertIsNone(self.reservation_row(term))
         code, res = self.put(term)
         self.assertEqual(code, 0, res)
@@ -1552,7 +1569,7 @@ if __name__ == "__main__":
         for needle in ("## 고정 터미널(0.2.0)", "worker-start --keep-open", "worker-start --terminal <t>",
                        "observed `not_started`", "--keep-terminal", "terminal-reset --terminal <t>",
                        "terminal-close --terminal <t> [--abandon]", "--key <요청 id>", "`duplicate: true`",
-                       "`reset_timeout`"):
+                       "`reset_timeout`", "고정 Dispatch 는 `--kill` 대신 `terminal-close --terminal <t> --abandon`"):
             self.assertIn(needle, proc.stdout)
 
     def test_skill_stub(self):
@@ -1659,9 +1676,11 @@ if __name__ == "__main__":
 ```python
 "<명령> <대상>"(예: "get t100") 키는 그 대상에만 적용되고 명령 키보다 먼저 본다.
 
-0.2.0(herdr-orch 설계 13.7): "on_send": {주소: accept|drop|working|mismatch}, "on_clear": {주소: turn|none}(기본 turn:
-`/clear` 키를 받으면 turn+1·idle), "keys": [{terminal, keys}] 기록, "layout": {탭: [주소…]}(connect 의 doc 순서),
-"doc"(있으면 connect doc.get 결과 그대로). events 는 0.05초마다 상태를 보고 바뀐 줄을 낸다(FAKE_HC_EVENTS_MAX 초 뒤 끝)."""
+0.2.0(herdr-orch 설계 13.7): "on_send": {주소: accept|drop|working|mismatch}, "on_clear": {주소: turn|none|event}(기본 turn:
+`/clear` 키를 받으면 turn+1·idle. event: 상태는 그대로 두고, keys 를 받을 때 이미 붙어 있던 events 구독에만 0.3초 뒤
+turn+1·idle 줄을 준다. keys 는 그 구독이 붙기를 3초까지 기다리고 기록에 subscribed 를 남긴다), "keys": [{terminal, keys}]
+기록, "layout": {탭: [주소…]}(connect 의 doc 순서), "doc"(있으면 connect doc.get 결과 그대로). events 는 0.05초마다
+상태를 보고 바뀐 줄을 낸다(FAKE_HC_EVENTS_MAX 초 뒤 끝). 구독은 "subscribers": {주소: [pid…]} 에 이름을 올린다."""
 ```
 
 **Edit** `herdr-orch/tests/fakes/hc`
@@ -1728,15 +1747,27 @@ def handle(st, argv, lines=()):
         if not t:
             return fail("not_found", 3)
         keys = rest[1:]
-        st.setdefault("keys", []).append({"terminal": t["address"], "keys": keys})
+        rec = {"terminal": t["address"], "keys": keys}
+        st.setdefault("keys", []).append(rec)
         # `/clear [space <이름>] enter`: on_clear 가 turn 이면 비운 것으로(turn+1, idle). 이름이 있으면 Codex 처럼 제목을 정한다
         if keys[:6] == ["/", "c", "l", "e", "a", "r"] and keys[-1:] == ["enter"]:
-            if st.get("on_clear", {}).get(t["address"], "turn") == "turn":
+            mode = st.get("on_clear", {}).get(t["address"], "turn")
+            title = (f"{''.join(keys[7:-1])} | {os.path.basename(t.get('cwd') or '/')}" if keys[6:7] == ["space"]
+                     else None)
+            if mode == "turn":
                 t["turn"] = t.get("turn", 0) + 1
                 t["status"] = {"app": "claude-code", "msg": "", **(t.get("status") or {}), "state": "idle"}
-                if keys[6:7] == ["space"]:
-                    t["title"] = f"{''.join(keys[7:-1])} | {os.path.basename(t.get('cwd') or '/')}"
-        out({"sent": True})
+                if title:
+                    t["title"] = title
+            elif mode == "event":  # turn 사건만 준다(hc get 은 옛 turn). 지금 붙어 있는 구독에만, 0.3초 늦게
+                subs = live_subscribers(st, t["address"])
+                rec["subscribed"] = bool(subs)
+                if subs:
+                    line = {"terminal": t["address"], "status": "idle", "turn": t.get("turn", 0) + 1,
+                            "title": title or t.get("title", "")}
+                    st.setdefault("pending_events", {}).setdefault(t["address"], []).append(
+                        {"to": subs, "at": time.time() + 0.3, "line": line})
+        out({"status": None, "turn": 0})  # 실제 hc keys --json 의 결과 꼴
         return 0
     if cmd == "connect":
         # JSON-RPC 한 줄에 한 응답. doc.get {"name": "herdr-app"} 만 안다(herdr-team 의 배치 확인이 쓴다)
@@ -1774,6 +1805,8 @@ def handle(st, argv, lines=()):
         time.sleep(delay)  # 느린 hc 흉내. 잠금 밖에서 자서 다른 hc 호출을 막지 않는다
     if argv[:1] == ["events"]:
         return events(argv[1:])
+    if argv[:1] == ["keys"]:
+        wait_subscriber(argv[1:])
     lines = sys.stdin.read().splitlines() if argv[:1] == ["connect"] else ()  # 잠금 밖에서 요청을 다 읽는다
     with open(DIR / "lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -1784,21 +1817,67 @@ def handle(st, argv, lines=()):
     return code
 
 
-def events(args):
-    """hc events --json --terminal T 흉내: 처음 한 줄, 그 뒤 상태·turn·제목이 바뀔 때마다 한 줄. 잠금은 볼 때만 잡는다."""
-    term = opt(args, "--terminal")
-    end = time.monotonic() + float(os.environ.get("FAKE_HC_EVENTS_MAX", "30"))
-    last = None
-    while True:
+def live_subscribers(st, address):
+    """그 터미널의 events 구독 가운데 살아 있는 프로세스(pid)."""
+    alive = []
+    for pid in st.get("subscribers", {}).get(address, []):
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            continue
+        alive.append(pid)
+    return alive
+
+
+def wait_subscriber(args):
+    """on_clear 가 event 인 터미널이면 keys 를 처리하기 전에(잠금 밖에서) 그 터미널의 구독이 붙기를 3초까지 기다린다.
+    keys 보다 먼저 띄운 구독은 늦게 떠도 여기서 붙는다. keys 뒤에 띄우는 구독은 붙지 않아 subscribed=false 다."""
+    rest = [a for a in args if a != "--json"]
+    end = time.monotonic() + 3
+    while rest:
         with open(DIR / "lock", "w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             st = json.loads((DIR / "state.json").read_text())
-        f = st.get("fail", {}).get("events")
-        if f:
-            return fail(f["kind"], f.get("code", 1))
-        t = find(st, term) if term else None
-        if t is None:
-            return fail("not_found", 3) if last is None else 0
+        t = find(st, rest[0])
+        if (t is None or st.get("on_clear", {}).get(t["address"]) != "event" or live_subscribers(st, t["address"])
+                or time.monotonic() >= end):
+            return
+        time.sleep(0.05)
+
+
+def events(args):
+    """hc events --json --terminal T 흉내: 처음 한 줄, 그 뒤 상태·turn·제목이 바뀔 때마다 한 줄. 잠금은 볼 때만 잡는다.
+    처음 볼 때 "subscribers" 에 자기 pid 를 올리고, on_clear: event 가 이 구독에 남긴 줄(pending_events)은 때가 되면 낸다."""
+    term = opt(args, "--terminal")
+    end = time.monotonic() + float(os.environ.get("FAKE_HC_EVENTS_MAX", "30"))
+    last = None
+    me = os.getpid()
+    joined = False
+    while True:
+        due = []
+        with open(DIR / "lock", "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            path = DIR / "state.json"
+            st = json.loads(path.read_text())
+            f = st.get("fail", {}).get("events")
+            if f:
+                return fail(f["kind"], f.get("code", 1))
+            t = find(st, term) if term else None
+            if t is None:
+                return fail("not_found", 3) if last is None else 0
+            changed = False
+            if not joined:
+                st.setdefault("subscribers", {}).setdefault(t["address"], []).append(me)
+                joined = changed = True
+            for ev in st.get("pending_events", {}).get(t["address"], []):
+                if me in ev["to"] and ev["at"] <= time.time():
+                    ev["to"].remove(me)
+                    due.append(ev["line"])
+                    changed = True
+            if changed:
+                path.write_text(json.dumps(st))
+        for line in due:
+            print(json.dumps(line), flush=True)
         snap = {"terminal": t["address"], "status": (t.get("status") or {}).get("state"), "turn": t.get("turn", 0),
                 "title": t.get("title", "")}
         if snap != last:
@@ -1812,7 +1891,7 @@ def events(args):
 - [ ] **Step 2: 실패 확인**
 
 Run: `cd herdr-orch && python3 -m unittest tests.test_reset tests.test_mailbox tests.test_hcio tests.test_meta tests.test_cli 2>&1 | tail -5`
-Expected: herdr-orch: `Ran 90 tests` / `FAILED (failures=23, errors=13)`. herdr-team `cd herdr-team && python3 -m unittest tests.test_base tests.test_cli`: `Ran 21 tests` / `FAILED (failures=2)`(`AssertionError: '0.1.' != '0.2.'`, 설치 기록 고르기의 `HteamError not raised`. `test_versions_match` 는 Step 3 이 marketplace·`HORCH_MIN` 을 함께 올리므로 이 단계에서는 통과한다). 대표 메시지: `unrecognized arguments: --keep-open`(16건, Task 1 구현이 없어서), `KeyError: 'duplicate'`, `sqlite3.OperationalError: no such column: send_key`, `AttributeError: module 'horch.hcio' has no attribute 'keys'`·`'events'`, `TypeError: kill() got an unexpected keyword argument 'timeout'`, `Tuples differ: (2, 'usage') != (3, 'send_key_conflict')`. ce3fe82 에 Task 1 블록과 이 태스크 Step 1 블록을 더한 트리(구현 없음)에서 쟀다. Task 1 구현이 있으면 `test_reset` 은 `terminal-close`·`terminal-reset` 이 `invalid choice`(exit 2)로, `SendKeyTest` 는 `unrecognized arguments: --key` 로, 버전 시험은 `'0.1.2' != '0.2.0'` 으로 실패한다. `HcioKeysEventsTest.test_fake_connect_doc_get` 은 가짜 hc 계약 시험이라 이 단계에서도 통과한다.
+Expected: herdr-orch: `Ran 91 tests` / `FAILED (failures=24, errors=13)`. herdr-team `cd herdr-team && python3 -m unittest tests.test_base tests.test_cli`: `Ran 21 tests` / `FAILED (failures=2)`(`AssertionError: '0.1.' != '0.2.'`, 설치 기록 고르기의 `HteamError not raised`. `test_versions_match` 는 Step 3 이 marketplace·`HORCH_MIN` 을 함께 올리므로 이 단계에서는 통과한다). 대표 메시지: `unrecognized arguments: --keep-open`(17건, Task 1 구현이 없어서), `KeyError: 'duplicate'`, `sqlite3.OperationalError: no such column: send_key`, `AttributeError: module 'horch.hcio' has no attribute 'keys'`·`'events'`, `TypeError: kill() got an unexpected keyword argument 'timeout'`, `Tuples differ: (2, 'usage') != (3, 'send_key_conflict')`. ce3fe82 에 Task 1 블록과 이 태스크 Step 1 블록을 더한 트리(구현 없음)에서 쟀다. Task 1 구현이 있으면 `test_reset` 은 `terminal-close`·`terminal-reset` 이 `invalid choice`(exit 2)로, `SendKeyTest` 는 `unrecognized arguments: --key` 로, 버전 시험은 `'0.1.2' != '0.2.0'` 으로 실패한다. `HcioKeysEventsTest.test_fake_connect_doc_get` 은 가짜 hc 계약 시험이라 이 단계에서도 통과한다.
 
 - [ ] **Step 3: 구현**
 
@@ -1838,6 +1917,18 @@ Rules 1–5 와 Interfaces 대로 `persist.py`·`comms.py`·`mailbox.py`·`hcio.
 - 같은 메시지를 한 번만: `horch send --to dispatch:<d> --body=<글> --key <요청 id>`. 같은 key 를 다시 보내면 Dispatch 상태와 상관없이 `duplicate: true` 와 처음 메시지를 돌려준다.
 
 ## 워커 의무
+```
+
+기존 코디네이터 루프의 observed `error` 처리도 고정 Dispatch 를 따로 적는다(고정 Dispatch 에 `--kill` 은 exit 2 라 지금 절차를 따르면 복구가 멈춘다, orch 설계 13.5):
+
+**Edit** `herdr-orch/lib/horch/skill.md`
+
+```markdown
+     - `error`: 화면을 읽고 이어갈 수 있으면 `send --to dispatch:<d>` 로 지시하고, 아니면 `worker-abandon --kill` 뒤 다시 띄운다(abandon 한 Dispatch 는 나중에 `worker-release` 한다).
+```
+
+```markdown
+     - `error`: 화면을 읽고 이어갈 수 있으면 `send --to dispatch:<d>` 로 지시하고, 아니면 `worker-abandon --kill` 뒤 다시 띄운다(abandon 한 Dispatch 는 나중에 `worker-release` 한다). 고정 Dispatch 는 `--kill` 대신 `terminal-close --terminal <t> --abandon` 이 성공한 뒤(`closed: true`, 터미널이 이미 없으면 `closed: false`) 새로 띄운다(고정 Dispatch 에 `--kill` 은 exit 2).
 ```
 
 **Edit** `herdr-orch/lib/horch/skill.md`
@@ -4284,7 +4375,7 @@ git commit -m "feat(herdr-team): 관제(hteam drive) 뼈대와 관제 판별, up
   - `answer` 결과: ask `{"id", "type": "ask", "delivered": "file", "test_confirmed"}`(그대로), question `{"id", "type": "question", "test_confirmed"}`, decide `{"id", "type": "decide", "closed": true, "replied": false}`(회신 없음) / `{…, "replied": true, "reply": <horch reply 의 message id>}` / `{…, "replied": null, "status": "queued", "request": "q-…"}`(큐가 90초 안에 끝나지 않았다). 오류: exit 2 `use_design_decide`(`<id> 은 일괄 승인 질문이다. 태스크별 결정을 \`hteam design-decide <id> --json -\` 으로 넘긴다`, 설계 7.4 원문), exit 2 `not_answerable`(`<id> 은 <type> 항목이라 답하지 않는다`, progress·result·done), exit 3 `already_answered`(지금 그대로), exit 3 `reply_failed`(`워커에게 답을 보내지 못했다(<code>: <message> 앞 300자>). 워커가 끝났으면 답을 지시로 넣어 hteam fix <T> --note "<답>", 아직 일하는 중이면 hteam scope <T> "<답>" 로 전한다. 이 decide 는 닫았다`, `<T>` 는 decide 의 task, 없으면 `T-xxx`), 큐 제출 오류(`drive_down`·`drive_hung`, exit 1)는 그대로.
   - `design-decide`(메인): exit 2 `usage`(`--json` 없음: `--json - 으로 {"answer": "<사용자 답 원문>", "fix": {"T-xxx": "<사용자 요청 원문>"}} 을 준다`), exit 2 `unknown_question`(outbox 에 없음, 지금 `_entry`), exit 2 `not_approval`(`<id> 는 일괄 승인 질문(approval)이 아니다`), exit 2 `bad_decision`(JSON 을 읽지 못함 `결정 JSON 을 읽지 못했다: <오류>` / 모양 `결정은 {"answer": "<사용자 답 원문>", "fix": {태스크: 사용자 요청}} 이다`), exit 2 `empty_answer`(`answer(사용자 답 원문)가 비었다`), exit 2 `unknown_batch`(지금 문구), exit 2 `not_asked`(`묻지 않은 태스크: <정렬한 목록을 ", " 로>`), exit 2 `empty_request`(`사용자 요청이 빈 태스크: <목록>`), exit 3 `already_answered`(`<id> 에는 이미 다른 답·결정을 남겼다`), exit 1 `bad_side_file`(일괄 승인 기록·답 파일을 읽지 못함, 지금 문구). 큐 제출 오류는 그 code 그대로 내고 hint 끝에 ` 결정은 답 파일에 남았다. 관제가 살아나면 이어 한다` 를 붙인다. 성공 결과는 관제의 `approval.decide` 결과, 또는 `queued`.
   - 답 파일(설계 7.4): 일괄 승인 `state/answers/out-0003.json` = `{"id": "out-0003", "answer": "수정 요청: 버튼", "decision": {"fix": {"T-001": "버튼을 크게"}}, "at": "…Z"}`(값은 앞뒤 공백을 뗀다). decide·question·ask 는 지금처럼 `{"id", "answer", "at"}`.
-  - `approval.record_answer(p, oid, text) -> dict`(메인 쪽 검사와 답 파일, 위 오류), `approval.decide(p, oid, text: str | None, request: str | None = None) -> dict`(text 가 None 이고 기록한 결정이 없으면 답 파일의 `decision` 을 입력으로 쓴다. text 는 `{"fix"}` 또는 `{"answer", "fix"}`(answer 는 쓰지 않는다). 결정을 새로 계산할 때 결정 기록에 `"request"` 를 남긴다), `approval.pending_answers(p) -> list[str]`(`decision` 이 적힌 approval 답 파일 가운데 결정 기록이 없거나 `done` 이 아닌 out id, 정렬). 없앤 것: `approval.reply_view`, `approval.reply_hint`, CLI `design-review --decide`·`--json`.
+  - `approval.record_answer(p, oid, text) -> dict`(메인 쪽 검사와 답 파일, 위 오류), `approval.decide(p, oid, text: str | None, request: str | None = None, nowait: bool = False) -> dict`(text 가 None 이고 기록한 결정이 없으면 답 파일의 `decision` 을 입력으로 쓴다. text 는 `{"fix"}` 또는 `{"answer", "fix"}`(answer 는 쓰지 않는다). 결정을 새로 계산할 때 결정 기록에 `"request"` 를 남긴다. `nowait` 는 결정이 안에서 부르는 `tasks.fix`·`tasks.accept` 에 그대로 넘긴다: 관제 안이면 `review_busy` 로 돌아오고 결정 기록이 남아 다음에 이어 한다), `approval.pending_answers(p) -> list[str]`(`decision` 이 적힌 approval 답 파일 가운데 결정 기록이 없거나 `done` 이 아닌 out id, 정렬). 없앤 것: `approval.reply_view`, `approval.reply_hint`, CLI `design-review --decide`·`--json`.
   - `outbox.TYPES = ("progress", "ask", "question", "approval", "decide", "result", "done")`. `open_questions`·`reask` 는 답 파일 없는 `decide` 를 더한다(question·approval 은 답 파일이 있으면 닫힌 것이다. `unsent`·`sent_at`·`hint` 는 없앤다). status 의 열린 질문 항목은 `{id, type, from}` 에 decide 면 `kind`·`task` 를 더한다.
   - `Drive.run_queue() -> list[str]`(`queue.run_pending(self.p, self)`), `Drive.start_ready() -> dict | None`, `Drive.procedure_failed(task: str | None, exc: HteamError, *, note: str | None = None) -> str | None`(decide escalation `관제 절차 실패: <code>: <message>[ (아직 전하지 못한 지시: <note>)]` 을 `(task, 글)` 마다 관제 프로세스 안에서 한 번. Task 6 도 쓴다), `Drive.spawn_review(tid, *, retry, expect_round=None, request=None) -> dict`(이 태스크는 `review.review` 를 바로 부른다. Task 6 이 자식 프로세스로 바꾼다), `Drive.confirm_test(force=False, request=None) -> dict`(이 태스크는 `{"asked": None}` 만 돌려준다. Task 10 이 채운다. Task 6 의 `tests_skipped` 처리도 이 이름을 부른다).
 
@@ -4332,8 +4423,8 @@ git commit -m "feat(herdr-team): 관제(hteam drive) 뼈대와 관제 판별, up
 
 4. 결과 쓰기(`_finish`): `queue.lock` 안에서 `.abandoned` 가 있으면 outbox `result` 줄을 쓰고 표시를 지운다. 없으면 결과 파일을 원자적으로 쓴다. 그다음(잠금 밖) `die_at("queue_result_written")` → 요청 파일을 지운다 → 로그 한 줄. 결과 파일만 남고 메인이 이미 떠났으면(결과를 쓴 뒤 죽고 그 사이 메인이 시간 초과로 `.abandoned` 를 만들지 않은 경우 등) 그 파일은 남는다(한계, 7.1 의 SIGKILL 과 같다).
 5. 기록으로 복구(`recorded`, 7.1): `start`·`fix`·`accept`·`drop`·`scope`·`review` 는 `args.task` 상태의 history 에 `request == 요청 id` 인 사건이 있거나 상태의 `queued_fix.request` 가 그 id(Task 7)이면 `{"recovered": True, "task", "status", "round"}`. `design-decide` 는 그 묶음의 결정 기록 `request` 가 그 id 면 `{"recovered": True, "id"}`. `agent reset`(Task 8 의 crew 리셋 표시)·`test-confirm`(Task 10 의 `test-confirm.json`)은 그 태스크가 `recorded` 에 갈래를 더한다. `start-ready`·`reply` 는 기록이 없다(다시 해도 결과가 같다: `start-ready` 는 띄울 것만 띄우고, `reply` 는 horch 가 같은 본문을 `duplicate` 로 받는다).
-6. 실행 표(`EXECUTORS`, 관제 안이라 모두 `nowait=True`): `start` → `tasks.start(p, task, cli, request=id)`, `start-ready` → `tasks.start_ready(p)`, `fix` → `tasks.fix(p, task, note, supplement, force_round, cli, expect_round=req.expect_round, request=id, nowait=True)`, `accept` → `tasks.accept(p, task, req.expect_round, request=id, nowait=True)`, `drop` → `tasks.drop(p, task, force, req.expect_round, request=id, nowait=True)`, `review` → `d.spawn_review(task, retry=True, expect_round=…, request=id)`, `design-decide` → `approval.decide(p, id, None, request=…)`, `scope` → `tasks.scope(p, task, body, expect_round=…, request=id, target=req.get("target_dispatch"), remember=lambda did: annotate(p, req, target_dispatch=did))`, `agent reset` → Task 8, `test-confirm` → `d.confirm_test(force=True, request=id)`, `reply` → `Horch.call("reply", "--id", str(message_id), f"--body={body}")`: 성공이면 그 결과(`message`·`duplicate`), 거부면 horch 의 `error.code`·`message`·`hint` 와 exit 를 그대로 가진 `HteamError`(메인의 `reply_failed` 문구가 `unknown_question: …` 처럼 horch 의 까닭을 보인다). `args` 에 없는 선택 값은 기본값이다. 큐 `fix` 가 성공하면 관제 로그 `<T> r<n> 수정 시작` 을 남긴다(설계 8.11 "관제 fix·큐 fix·대기열·죽은 작업자 fix 모두". Task 6 의 `Drive.fix_task` 와 같은 줄).
-7. 관제 안의 finish 잠금(8.5): `fix`·`drop` 은 `_close_round` 의 finish 잠금을, `review_finish` 는 처음의 finish 잠금을 `nowait` 로 잡는다. `accept` 는 무엇보다 먼저 `state.finish_probe` 를 한다(잠금 순서상 accept 는 finish 잠금을 쥔 채 프로젝트 잠금을 잡지 않는다. 그래서 탐침만 한다). 못 잡으면 아무것도 바꾸지 않고 `review_busy`. CLI 는 관제 판별이 참이면 `nowait=True` 로 부른다. 관제 판별이 아닌 곳(시험의 함수 직접 호출 등)의 기본은 지금처럼 기다린다. `review`(리뷰 자식)의 finish 잠금은 지금처럼 기다린다(8.8 은 관제가 띄우기 전에 비차단으로 탐침한다, Task 6).
+6. 실행 표(`EXECUTORS`, 관제 안이라 모두 `nowait=True`): `start` → `tasks.start(p, task, cli, request=id)`, `start-ready` → `tasks.start_ready(p)`, `fix` → `tasks.fix(p, task, note, supplement, force_round, cli, expect_round=req.expect_round, request=id, nowait=True)`, `accept` → `tasks.accept(p, task, req.expect_round, request=id, nowait=True)`, `drop` → `tasks.drop(p, task, force, req.expect_round, request=id, nowait=True)`, `review` → `d.spawn_review(task, retry=True, expect_round=…, request=id)`, `design-decide` → `approval.decide(p, id, None, request=…, nowait=True)`, `scope` → `tasks.scope(p, task, body, expect_round=…, request=id, target=req.get("target_dispatch"), remember=lambda did: annotate(p, req, target_dispatch=did))`, `agent reset` → Task 8, `test-confirm` → `d.confirm_test(force=True, request=id)`, `reply` → `Horch.call("reply", "--id", str(message_id), f"--body={body}")`: 성공이면 그 결과(`message`·`duplicate`), 거부면 horch 의 `error.code`·`message`·`hint` 와 exit 를 그대로 가진 `HteamError`(메인의 `reply_failed` 문구가 `unknown_question: …` 처럼 horch 의 까닭을 보인다). `args` 에 없는 선택 값은 기본값이다. 큐 `fix` 가 새 라운드를 열면(결과에 `round` 가 있다) 관제 로그 `<T> r<n> 수정 시작` 을 남긴다(설계 8.11 "관제 fix·큐 fix·대기열·죽은 작업자 fix 모두". Task 6 의 `Drive.fix_task` 와 같은 줄). 라운드를 열지 않은 결과(Task 7 의 수정 대기열 `{"id", "status": "queued", "agent"}`)는 그 줄을 남기지 않는다(대기열에서 꺼낼 때 드레인이 남긴다).
+7. 관제 안의 finish 잠금(8.5): `fix`·`drop` 은 `_close_round` 의 finish 잠금을, `review_finish` 는 처음의 finish 잠금을 `nowait` 로 잡는다. `accept` 는 무엇보다 먼저 `state.finish_probe` 를 한다(잠금 순서상 accept 는 finish 잠금을 쥔 채 프로젝트 잠금을 잡지 않는다. 그래서 탐침만 한다). 못 잡으면 아무것도 바꾸지 않고 `review_busy`. CLI 는 관제 판별이 참이면 `nowait=True` 로 부른다(`design-decide` 는 `approval.decide(…, nowait=True)` 로 결정 안의 fix·accept 까지). 관제 판별이 아닌 곳(시험의 함수 직접 호출 등)의 기본은 지금처럼 기다린다. 관제 객체가 CLI 를 거치지 않고 부르는 곳(Task 6 의 `finish_review`·`accept_task`·`fix_task`, Task 7 의 드레인, Task 10 의 보강 fix·결정 이어 하기)은 늘 `nowait=True` 를 직접 넘긴다(기본값에 기대지 않는다). `review`(리뷰 자식)의 finish 잠금은 지금처럼 기다린다(8.8 은 관제가 띄우기 전에 비차단으로 탐침한다, Task 6).
 8. `scope`(7.1, 핵심 순서): (1) `target` 이 있으면(다시 실행) 지금 상태를 보기 전에 `horch send --to dispatch:<target> --subject 추가 범위 --key <request> --body=<내용>` 을 보낸다. horch 가 key 를 먼저 찾으므로 이미 간 전송이면 Dispatch 상태와 상관없이 `duplicate: true`. 성공(새 전송이든 duplicate 든)이면 (3) 으로. horch 가 key 메시지 없이 `dispatch_not_active` 로 거부하면 `not_working` 으로 끝낸다. (2) `target` 이 없으면 `_expect_round` → 상태가 `working` 이고 지금 라운드의 작업 Dispatch 가 있어야 한다(아니면 `not_working`) → `remember(dispatch)` 로 요청 파일에 먼저 남긴다 → 같은 send(`request` 가 있을 때만 `--key`). (3) `die_at("scope_sent")` → 태스크 잠금 안에서 history 에 같은 `request` 의 scope 사건이 없을 때만 더한다 → `{"id", "sent": True}`.
 9. `answer`(7.4): `require_main` → 항목 찾기 → 종류별. `ask` 는 지금 그대로. `question` 은 이전 답이 다르면 `already_answered`, `_record_confirm` 뒤 답 파일(같은 답이면 그대로 두고 다시 성공), Run 에 보내지 않는다(0.3.0 의 `note_main`·`_send`·`sent_at` 을 지운다). `decide` 는 답 파일이 있으면 `already_answered`. `kind == "worker_question"` 이거나 `message_id` 가 있으면 먼저 `queue.submit(p, "reply", {"message_id", "body": 답, "task"})`: 제출 오류(꺼짐·멈춤)는 그대로 올린다(답 파일 없음, 다시 답할 수 있다). 관제 결과가 실패면 답 파일을 쓰고 `reply_failed`. `queued` 면 답 파일을 쓰고 queued 결과. 성공이면 답 파일을 쓰고 `replied: true`. 회신이 없으면 답 파일만. `approval` 은 `use_design_decide`, 그 밖은 `not_answerable`.
 10. `design-decide`(7.4): 메인은 `record_answer` 의 검사 순서대로(JSON → 항목 → approval → answer → 묶음(`approval.load`, 손상이면 `bad_side_file`) → `not_asked` → `empty_request`) 본 뒤 답 파일을 `os.link` 로 원자적으로 만든다. 이미 있으면 같은 `answer`·`decision` 일 때만 그대로 두고 아니면 `already_answered`. 그다음 `submit("design-decide", {"id"})`. 관제는 11.4 의 결정 규칙(`approval.decide`: 결정 기록 → `fix --round`·`accept --round` → `applied`)을 그대로 한다(관제 직접 호출 `design-decide <id> [--json -]` 은 0.3.0 의 `design-review --decide` 와 같다). 실행한 뒤 start-ready 는 틱 4 가 한다. 0.3.0 의 `[main] reply` 주석·`reply_view`·`reply_hint` 와 그것을 가리키던 hint(`approval._result`·`already_asked`·`_decision_pending`·`_stopped`, `tasks` 의 `decision_pending` 두 곳, `coord._awaiting`)는 `design-decide` 와 "관제가 재확인마다 결정 <id> 을 기록대로 마저 한다" 로 바꾼다. 결정의 fix 가 취소를 저장한 뒤 멈춘 태스크의 status 는 `next: null`, hint `일괄 승인 결정 <id> 이 끝나지 않았다. 관제가 재확인마다 기록대로 마저 한다`. 답이 와 있는데 결정이 없으면 hint 는 `… 결정이 없으면 답을 해석해 .herdr-team/bin/hteam design-decide <id> --json - 로 결정한다`. approval 의 outbox 줄과 stale progress 의 `from` 은 `drive`.
@@ -6614,7 +6705,7 @@ Expected(ce3fe82 에 Task 1–4 블록과 이 태스크 Step 1 블록을 적용�
 
 - [ ] **Step 3: 구현**
 
-Interfaces·Rules 대로 만든다. 순서 권장: (1) `state.finish_lock` 의 `nowait`·`finish_probe`. (2) `queue.py`(경로·제출·실행·복구·결과·`test-confirm` 명령 등록)와 `cli.COMMAND_MODULES` 의 `queue`. (3) `tasks`(큐 경로 CLI, `request`·`nowait`·`expect_round` 인자, `scope` 함수와 CLI), `review`(`--retry` 의 경로·`expect_round`·`request`, `review_finish` 의 `nowait`), `specs`(`task new`). (4) `outbox`(`TYPES`, `answer`, `view`·`_open`, `watch` 의 orphaned, `tell`·`notify`·`applied` 명령·`note_main`·`_send`·`_unsent` 삭제), `approval`(`design-decide` 명령·`record_answer`·`decide` 의 답 파일 결정과 `request`·`pending_answers`, `--decide`·`reply_view`·`reply_hint` 삭제, `from: "drive"`, hint), `coord`(`wait`·`which` 명령과 그것만 쓰던 `annotate`·`_annotate_main`·`_main_sender`·`_design_review`·`_once`·`attention`·`MAIN_REPLY_RE` 삭제, `_question`, `_awaiting` hint, 결정 잇기 next), `testgate`(문구). (5) `drive.Drive.run_queue`·`start_ready`·`procedure_failed`·`spawn_review`·`test_confirm`. 지운 함수를 다른 모듈이 아직 쓰면(`grep -rn` 로 확인) 그 호출도 함께 지운다(관제가 안에서 하는 일은 Task 6). `state/applied.json`·`outbox.mark_applied` 는 일괄 승인 결정이 계속 쓴다(명령만 없앤다).
+Interfaces·Rules 대로 만든다. 순서 권장: (1) `state.finish_lock` 의 `nowait`·`finish_probe`. (2) `queue.py`(경로·제출·실행·복구·결과·`test-confirm` 명령 등록)와 `cli.COMMAND_MODULES` 의 `queue`. (3) `tasks`(큐 경로 CLI, `request`·`nowait`·`expect_round` 인자, `scope` 함수와 CLI), `review`(`--retry` 의 경로·`expect_round`·`request`, `review_finish` 의 `nowait`), `specs`(`task new`). (4) `outbox`(`TYPES`, `answer`, `view`·`_open`, `watch` 의 orphaned, `tell`·`notify`·`applied` 명령·`note_main`·`_send`·`_unsent` 삭제), `approval`(`design-decide` 명령·`record_answer`·`decide` 의 답 파일 결정과 `request`·`nowait`·`pending_answers`, `--decide`·`reply_view`·`reply_hint` 삭제, `from: "drive"`, hint), `coord`(`wait`·`which` 명령과 그것만 쓰던 `annotate`·`_annotate_main`·`_main_sender`·`_design_review`·`_once`·`MAIN_REPLY_RE` 삭제, `_question`, `_awaiting` hint, 결정 잇기 next. `locate`·`_body`·`attention`(과 그것이 쓰는 `_current_slots`·`UNCONFIRMED`)은 지우지 않는다: Task 6 의 관제가 메시지 찾기와 재확인의 `no_status` 에 쓴다), `testgate`(문구). (5) `drive.Drive.run_queue`·`start_ready`·`procedure_failed`·`spawn_review`·`confirm_test`. 지운 함수를 다른 모듈이 아직 쓰면(`grep -rn` 로 확인) 그 호출도 함께 지운다(관제가 안에서 하는 일은 Task 6). `state/applied.json`·`outbox.mark_applied` 는 일괄 승인 결정이 계속 쓴다(명령만 없앤다).
 
 - [ ] **Step 4: 통과 확인**
 
@@ -6656,9 +6747,9 @@ Expected: ast 오류 없음, grep 빈 출력. 구현자는 여기서 멈춘다(�
 이 태스크는 임시 워커 경로다. 고정 에이전트 줄(worker_done 의 `task` 비우기·`since_reset`, exited·lost 의 터미널 잊기, `not_started` 재투입, 인수인계 Dispatch, 재확인의 crew 터미널 확인·끝나지 않은 인수인계 정리)은 Task 7·8 이 이 태스크가 남기는 자리(아래 "자리")를 채운다. 묶음 처리·기획 적용·디자인 단계·결정 이어 하기·마무리·확정 질문은 Task 10 이 자리를 채운다. 리뷰 보기 pane 은 같은 틱의 `view_step`(Task 9)이 연다(자식 결과 처리에서 열지 않는다).
 
 **Files:**
-- Modify: `herdr-team/lib/hteam/drive.py`(`Drive.jobs`·`rows`·`retry_reviews`·`pending_marks`, `spawn`·`running`·`start_review`·`reap_jobs`, `handle` 과 이벤트 처리, `finish_review`·`accept_task`·`fix_task`·`start_ready`·`on_review_result`, `write_workers`·`reconcile`·`reconcile_task`, `progress`, decide 의 `{id}`·표시 미루기·태스크 ID 꼴 검사, 자리 메서드), `herdr-team/lib/hteam/tasks.py`(`start_ready` 의 열린 decide 제외, 시작 예약의 `decide_open`), `herdr-team/lib/hteam/outbox.py`(`open_decide`, `append` 의 `fill`), `herdr-team/lib/hteam/state.py`(`finish_busy`), `herdr-team/lib/hteam/coord.py`(`status` 가 사본을 읽음, `workers_at`, 관제만 하는 next, `no_rows` 문구. `locate`·`attention` 은 관제가 쓰므로 남긴다)
-- Modify(큐 리뷰 재시도): `herdr-team/lib/hteam/review.py`(`review` CLI 의 숨은 `--request`)
-- Test: `herdr-team/tests/test_drive_events.py`(새로), `herdr-team/tests/helpers.py`(`refresh_workers`), `herdr-team/tests/test_coord.py`·`herdr-team/tests/test_approval.py`(status 의 사본·관제만 하는 next)
+- Modify: `herdr-team/lib/hteam/drive.py`(`Drive.jobs`·`rows`·`retry_reviews`·`pending_marks`, `spawn`·`running`·`start_review`·`reap_jobs`, `handle` 과 이벤트 처리, `finish_review`·`accept_task`·`fix_task`·`start_ready`·`on_review_result`, `write_workers`·`reconcile`·`reconcile_task`, `progress`, decide 의 `{id}`·표시 미루기·태스크 ID 꼴 검사, 자리 메서드), `herdr-team/lib/hteam/tasks.py`(`start_ready` 의 열린 decide 제외, 시작 예약의 `decide_open`, 새 라운드 쓰기가 `drive_fix` 를 지움, 죽음 지점 `fix_closed`, `_live_error` hint), `herdr-team/lib/hteam/outbox.py`(`open_decide`, `append` 의 `fill`), `herdr-team/lib/hteam/state.py`(`finish_busy`), `herdr-team/lib/hteam/coord.py`(`status` 가 사본을 읽음, `workers_at`, 관제만 하는 next, `no_rows` 문구, 메인에 가는 hint 에서 horch 명령을 뺀다. `locate`·`attention` 은 관제가 쓰므로 남긴다)
+- Modify(큐 리뷰 재시도·큐 accept): `herdr-team/lib/hteam/review.py`(`review` CLI 의 숨은 `--round`·`--request`, `attempt_error`), `herdr-team/lib/hteam/queue.py`(실행 표의 `accept` 가 accept 뒤 처리를 거친다)
+- Test: `herdr-team/tests/test_drive_events.py`(새로), `herdr-team/tests/helpers.py`(`refresh_workers`), `herdr-team/tests/test_coord.py`·`herdr-team/tests/test_approval.py`(status 의 사본·관제만 하는 next·horch 없는 hint), `herdr-team/tests/test_lifecycle.py`(accept 의 `worker_active` hint)
 
 **Interfaces:**
 - Consumes: Task 4 의 `drive.Drive`(`log`·`heartbeat`·`decide`·`isolated`·`h`(Horch)·`check_mail`·`tick`), 상수(`RECONCILE_S`, `LIVENESS_UNKNOWN_S`, `NO_STATUS_GRACE_S`), `paths.Project.workers_file`·`jobs_dir`, `paths.PLUGIN_ROOT`·`report_rel`·`review_rel`; `coord.locate(p, did, rows)`·`coord._body(m)`·`coord.attention(p, rows, grace, states=…)`; `tasks.fix`·`accept`·`start_ready`·`dropped_blockers`·`_load_quiet`; `review.review_finish`·`GATE_PROBLEM`; `dispatch.slot_row`·`review_ended`·`busy`; `approval.Graph`·`unlaunched`; `globs.matches_any`; `outbox.append`·`answer_of`; `state.load`·`require`·`edit`·`all_states`·`current_round`·`open_attempt`·`ID_RE`·`CLOSED`; Task 5 의 관제 안 `review_busy`(finish 잠금 비차단, exit 3).
@@ -6666,8 +6757,8 @@ Expected: ast 오류 없음, grep 빈 출력. 구현자는 여기서 멈춘다(�
   - `Drive.jobs: dict[str, dict]` — 돌고 있는 자식 `{키: {"proc": Popen, "args": [hteam 인자…], "out": Path, "err": Path}}`. 키는 `review:<T>` 와 `final`(설계 8.8). `Drive.running(key) -> bool`.
   - `Drive.spawn(key, args: list[str]) -> bool`: 그 키의 자식이 있으면 False. 아니면 `[sys.executable, <PLUGIN_ROOT>/bin/hteam, "--root", <루트>, *args]` 를 환경 그대로(관제로 판별된다, 8.2) stdin `/dev/null`, stdout·stderr 를 `state/drive/jobs/<키의 ":" 를 "-" 로>.out`·`.err`(덮어쓴다, 예 `review-T-001.out`)로 띄우고 True.
   - `Drive.start_review(tid) -> bool`(8.8): `review:<T>` 자식이 있거나 `state.finish_busy(p, tid)` 면 False. 아니면 `spawn(f"review:{tid}", ["review", tid])`, 로그 `<T> 리뷰 시작`, True.
-  - `Drive.reap_jobs()`: 끝난 자식마다 먼저 `jobs` 에서 빼고 결과를 처리한다(키마다 `isolated(f"job:{키}", …)`). `review:<T>` 는 그 태스크의 미룬 decide 표시를 먼저 쓴 뒤 `on_review_result(tid, returncode, data)`(data 는 stdout 의 마지막 JSON 객체 줄, 없으면 None). `final` 은 `final_done(returncode, stdout 글, stderr 글)`(Task 10).
-  - `Drive.handle(message)`(8.6 표, 아래 Rules 3), `Drive.finish_review(tid)`(review-finish 결과 표), `Drive.on_review_result(tid, code, data)`(review 자식 결과 표), `Drive.accept_task(tid) -> dict | None`(accept 뒤), `Drive.fix_task(tid, note=None) -> dict | None`(관제의 모든 fix, 로그 `<T> r<n> 수정 시작`), `Drive.start_ready()`(Task 5 Rules 12 그대로 둔다. 열린 decide 의 제외는 `tasks.start_ready` 가 한다), `Drive.progress(body)`(outbox `{"type": "progress", "from": "drive", "body"}`).
+  - `Drive.reap_jobs()`: 끝난 자식마다 먼저 `jobs` 에서 빼고 결과를 처리한다(키마다 `isolated(f"job:{키}", …)`). `review:<T>` 는 그 태스크의 미룬 decide 표시를 먼저 쓴 뒤 `on_review_result(tid, returncode, data)`(data 는 stdout 의 마지막 JSON 객체 줄, 없으면 None). `final` 은 `final_done(returncode, data or {}, stderr 글)`(data 는 같은 stdout 의 마지막 JSON 객체 dict, 없으면 `{}`. Task 10 의 `final_done(code, out: dict, err: str)` 과 같은 계약).
+  - `Drive.handle(message)`(8.6 표, 아래 Rules 3), `Drive.finish_review(tid)`(review-finish 결과 표), `Drive.on_review_result(tid, code, data)`(review 자식 결과 표), `Drive.accept_task(tid) -> dict | None`(accept 뒤), `Drive.after_accept(tid, res: dict) -> None`(accept 결과의 뒤처리: 관제 판정 경로와 큐 accept 가 함께 쓴다, Rules 7), `Drive.fix_task(tid, note=None) -> dict | None`(관제의 모든 fix, 새 라운드를 열었으면 로그 `<T> r<n> 수정 시작`), `Drive.start_ready()`(Task 5 Rules 12 그대로 둔다. 열린 decide 의 제외는 `tasks.start_ready` 가 한다), `Drive.progress(body)`(outbox `{"type": "progress", "from": "drive", "body"}`).
   - `Drive.write_workers() -> list[dict]`(`horch worker-list` 한 번, `state/drive/workers.json` = `{"at": util.now(), "rows": […]}` 원자 쓰기, `self.rows` 갱신), `Drive.reconcile()`(8.7 의 순서, Rules 6), `Drive.reconcile_task(st)`(8.7 표, Rules 7).
   - `Drive.retry_reviews: set[str]`(관문 잠금 대기 초과로 미룬 리뷰, 8.7 의 4), `Drive.pending_marks: dict[str, tuple[str, int]]`(리뷰 자식이 도는 태스크의 미룬 decide 표시 `(out id, 그때 라운드)`, 8.8), `Drive.rows`(마지막 워커 목록. `locate` 가 기록 전 Dispatch 를 제목으로 찾을 때 쓴다).
   - 자리(이 태스크에서는 아무것도 하지 않는다. 뒤 태스크가 채운다): `handoff_message(m) -> bool`(Task 8: 인수인계 Dispatch 메시지면 처리하고 True), `crew_done(tid, did)`·`crew_gone(tid, did)`(Task 7: 고정 에이전트의 worker_done·exited·lost), `on_not_started(tid, did, body)`(Task 8), `crew_check()`(Task 7, 8.7 의 2), `handoff_check()`(Task 8, 8.7 의 3), `apply_plan(tid)`·`batch_done(tid)`·`design_step()`·`unbatched()`·`resume_decisions()`·`finish_step()`·`confirm_test()`·`final_done(code, out, err)`(Task 10).
@@ -6676,8 +6767,12 @@ Expected: ast 오류 없음, grep 빈 출력. 구현자는 여기서 멈춘다(�
   - `outbox.append(p, fields, guard=None, reuse=None, fill=None)`: `fill(oid) -> dict` 가 있으면 잠금 안에서 정한 id 로 부른 결과를 fields 에 합쳐 쓴다.
   - `state.finish_busy(p, tid) -> bool`: 그 태스크의 finish 잠금을 `LOCK_EX | LOCK_NB` 로 잡아 보고 곧 놓는다. 잡지 못하면 True(다른 리뷰 실행자가 쥐었다).
   - `tasks.start_ready`: 후보마다(상태가 `pending`·`launch_failed`) 먼저 `open_decide` 를 보고 있으면 띄우지 않고 `waiting` 에 `{"task", "reason": "decide", "detail": "메인이 답하지 않은 decide <id> 가 있다"}`. 시작 예약(`_prepare_start` 의 `cap` 이 있을 때, 프로젝트 잠금·태스크 잠금 안)에서 다시 보고 있으면 exit 3 `decide_open`(문구 `메인이 답하지 않은 decide <id> 가 있다`), `WAIT_CODES` 에 `"decide_open": "decide"`. `start T`(cap 없음)는 보지 않는다(메인 큐의 `start T`·`fix T` 는 그대로 실행, 5.4).
-  - `hteam status`(8.3): horch 를 부르지 않는다(`Horch(p.horch_home).cmd()` 로 힌트용 명령만 만든다). 워커 행은 `state/drive/workers.json` 의 `rows`(없거나 깨졌으면 행 없음). 출력에 `"workers_at"`(사본의 `at`, 없으면 null). 사본이 없을 때 행이 필요한 태스크의 hint `관제의 워커 목록 사본이 없다(관제가 재확인마다 쓴다)`. next 가 관제만 하는 명령(`review`(`--retry` 없이)·`review-finish`·`design-review`)이면 `next: null`, hint `관제가 한다(hteam <그 명령의 인자>)`(예 `관제가 한다(hteam review T-001)`). 열린 질문의 decide 는 Task 5 다.
-  - 태스크 상태 필드(관제만 쓴다, 설계 5.3): `blocked_decide: {"id": out id, "dispatch": D}`, `liveness_unknown_since`(UTC `util.now`), `liveness_escalated: true`, `launch_failed_asked: [라운드, history 길이]`, `dropped_deps_asked: [dropped 선행 ID…]`. 라운드 기록: 작업 실행 기록 `rounds[-1].work` 의 `idle_nudged`(done 요청 글을 보낸 Dispatch)·`idle_escalated`(두 번째 idle 을 올린 Dispatch), 리뷰 시도 기록의 `idle_nudged`. 일시 거부 표시는 Task 7 이 `rounds[-1].work.transient = true` 로 쓴다(이 태스크는 읽기만 한다).
+  - `hteam status`(8.3): horch 를 부르지 않는다(`Horch(p.horch_home).cmd()` 로 힌트용 명령만 만든다). 워커 행은 `state/drive/workers.json` 의 `rows`(없거나 깨졌으면 행 없음). 출력에 `"workers_at"`(사본의 `at`, 없으면 null). 사본이 없을 때 행이 필요한 태스크의 hint `관제의 워커 목록 사본이 없다(관제가 재확인마다 쓴다)`. next 가 관제만 하는 명령(`review`(`--retry` 없이)·`review-finish`·`design-review`)이면 `next: null`, hint `관제가 한다(hteam <그 명령의 인자>)`(예 `관제가 한다(hteam review T-001)`). 열린 질문의 decide 는 Task 5 다. 메인이 읽는 hint 에는 horch 명령을 넣지 않는다(메인은 horch 를 부르지 않는다, 설계 7.1·9.4. 원문은 Rules 13).
+  - `tasks._live_error`(accept 의 `worker_active`, 큐 결과로 메인에 간다)의 hint: `사용자에게 그 워커 탭을 확인해 달라고 한다(살아 있는 워커가 끝나야 accept 한다). 태스크를 버리려면 .herdr-team/bin/hteam drop <T> --force`(horch 명령 없음).
+  - `review.attempt_error(tid, n, att) -> HteamError | None`: 시도 기록의 `result` 가 `failed` 면 review-finish 가 내는 것과 같은 `review_failed`(`<T> r<n> 리뷰 시도가 실패했다: <reason>`), `tampered` 면 같은 `review_tampered`(`<T> r<n> 리뷰 중 제품이 바뀌었다: <경로들 또는 reason>`), 그 밖은 None. `review_finish` 는 결과를 쓴 뒤 이 함수의 오류를 낸다(문구가 한 곳에서 나온다).
+  - `review` CLI 의 도움말 없는 `--round N`·`--request <id>`(둘 다 관제 판별일 때만 받는다. 아니면 exit 2 `usage`): `review.review(p, tid, retry=…, expect_round=N, request=<id>)`. `expect_round` 는 finish 잠금 안에서 지금 라운드와 견줘 다르면 exit 3 `round_changed`(Task 5 의 큐 명령과 같은 오류).
+  - 죽음 지점 `fix_closed`(`tasks.fix` 가 `_close_round` 를 마친 뒤, 새 라운드를 쓰기 전).
+  - 태스크 상태 필드(관제만 쓴다, 설계 5.3): `blocked_decide: {"id": out id, "dispatch": D}`, `liveness_unknown_since`(UTC `util.now`), `liveness_escalated: true`, `launch_failed_asked: [라운드, history 길이]`, `dropped_deps_asked: [dropped 선행 ID…]`, `drive_fix: {"round", "note", "at"}`(관제 fix 를 시작하기 전에 쓴다. 새 라운드 쓰기와 수정 대기열 표시 쓰기(Task 7)가 같은 상태 쓰기에서 지운다, 설계 8.7), `review_failure_asked: [라운드, 시도]`(실패·변조 decide 를 올린 시도, 설계 8.7). 라운드 기록: 작업 실행 기록 `rounds[-1].work` 의 `idle_nudged`(done 요청 글을 보낸 Dispatch)·`idle_escalated`(두 번째 idle 을 올린 Dispatch), 리뷰 시도 기록의 `idle_nudged`. 일시 거부 표시는 Task 7 이 `rounds[-1].work.transient = true` 로 쓴다(이 태스크는 읽기만 한다).
 - decide 문구와 commands(원문. `<…>` 는 그대로 쓰는 자리표시, 명령은 메인이 실행할 수 있는 것만, 8.10):
   - fix 명령: `hteam fix T-xxx [--force-round] [--force] --note "<지시>"`. `--force-round` 는 지금 라운드가 `max_rounds` 이상일 때만(8.10), `--force` 는 그 줄이 정한 곳만. worker_failed 의 지시 자리는 `<원인과 지시>`.
   - worker_failed(작업 failed): summary 본문 `summary` 앞 300자 또는 `워커가 실패를 보고했다`, files 사양·보고서(있는 것), commands fix(`<원인과 지시>`)·`hteam drop T`.
@@ -6705,7 +6800,7 @@ Expected: ast 오류 없음, grep 빈 출력. 구현자는 여기서 멈춘다(�
 
 1. 모듈 함수는 모듈로 부른다(`tasks.fix`, `tasks.accept`, `review.review_finish` 등. 시험이 모듈 속성을 바꿔 오류를 흉내 낸다). 의존 프로그램 없음(exit 12)은 어디서도 삼키지 않는다(Task 4 의 격리가 관제를 끝낸다).
 2. 자식(8.8): `spawn`·`running`·`start_review`·`reap_jobs` 는 Interfaces 그대로. 리뷰 자식을 띄우기 전의 finish 잠금 확인은 비차단(`state.finish_busy`)이고, 잡히면 놓고 띄운다(리뷰가 다시 잡는다). 잡지 못하면 다른 리뷰 실행자(죽은 관제가 남긴 자식 등)가 있으므로 띄우지 않고 다음 재확인이 다시 본다. 처리 전에 목록에서 빼므로 결과 처리 실패가 같은 결과를 다시 읽지 않는다. `review:<T>` 의 결과를 처리하기 전에 그 태스크의 `pending_marks` 를 상태에 쓴다(그 뒤 결과 처리가 쓰는 새 decide 표시가 이긴다).
-   - 큐 `review --retry`(Task 5 의 `Drive.spawn_review(tid, *, retry, expect_round, request)`)도 자식으로 돌린다(관문을 다시 돌므로, 8.8): `review:<T>` 자식이 이미 있거나 `state.finish_busy` 면 exit 3 `review_busy`(큐가 그 요청을 미룬다, 8.5). 아니면 `spawn(f"review:{tid}", ["review", tid, "--retry", "--round", str(expect_round), "--request", request])`(`expect_round`·`request` 가 없으면 그 인자를 뺀다), 로그 `<T> 리뷰 시작`, 큐 결과 `{"task", "spawned": true}`. 자식의 결과는 다른 리뷰 자식과 같이 `on_review_result` 가 처리한다. `review` CLI 에 도움말 없는 `--request <id>`(관제 판별일 때만 받는다. 아니면 exit 2 `usage`)를 더해 `review.review(..., request=)` 로 넘긴다(Task 5 의 재실행 기록이 history 의 `request` 를 본다).
+   - 큐 `review --retry`(Task 5 의 `Drive.spawn_review(tid, *, retry, expect_round, request)`)도 자식으로 돌린다(관문을 다시 돌므로, 8.8): `review:<T>` 자식이 이미 있거나 `state.finish_busy` 면 exit 3 `review_busy`(큐가 그 요청을 미룬다, 8.5). `expect_round` 가 있으면 띄우기 전에 지금 라운드와 한 번 견준다(다르면 exit 3 `round_changed`, 큐 결과로 메인에 간다). 아니면 `spawn(f"review:{tid}", ["review", tid, "--retry", "--round", str(expect_round), "--request", request])`(`expect_round`·`request` 가 없으면 그 인자를 뺀다), 로그 `<T> 리뷰 시작`, 큐 결과 `{"task", "spawned": true}`. 자식의 결과는 다른 리뷰 자식과 같이 `on_review_result` 가 처리한다(자식의 `round_changed` 는 exit 3 이라 아무것도 하지 않는다). `review` CLI 에 도움말 없는 `--round N`·`--request <id>`(둘 다 관제 판별일 때만 받는다. 아니면 exit 2 `usage`)를 더해 `review.review(..., expect_round=N, request=<id>)` 로 넘긴다. 자식은 finish 잠금 안에서 라운드를 다시 본다(Task 5 의 `expect_round` 검사, 띄운 뒤 라운드가 바뀌었으면 `round_changed`). Task 5 의 재실행 기록이 history 의 `request` 를 본다.
 3. `handle(m)`(8.6): `type == "status"` 면 아무것도 하지 않는다(로그도 없다). `handoff_message(m)` 이 True 면 끝(Task 8). 본문(`coord._body`)과 Dispatch(`m["dispatch"]` 또는 본문의 `dispatch`)로 `coord.locate(p, did, self.rows)`. 없으면 로그 `모르는 Dispatch 의 …`, 태스크가 `done`·`dropped` 면 로그 `… 이미 끝난 태스크(…)…`, `canceled` 이거나 `current` 가 아니면 로그 `… 지난 디스패치의 …` 로 끝. 그다음 종류별:
    - worker_done 작업 → `on_work_done`: `crew_done(tid, did)` → 확인 창 표시 풀기(4) → `liveness_unknown_since`·`liveness_escalated` 지우기 → 상태가 `working` 이 아니면 끝(재확인이 맞춘다) → `outcome == "succeeded"` 면 `start_review(tid)`, 아니면 worker_failed decide.
    - worker_done 리뷰 → 표시 풀기 → `finish_review(tid)`.
@@ -6715,21 +6810,26 @@ Expected: ast 오류 없음, grep 빈 출력. 구현자는 여기서 멈춘다(�
    - observed `exited`·`lost`: 작업이면 `crew_gone(tid, did)` 뒤 최대 라운드면 max_rounds decide, 아니면 `fix_task(tid, <정해진 note>)`. 리뷰면 `finish_review`.
    - observed `not_started` → `on_not_started(tid, did, body)`(Task 8).
 4. 확인 창 표시 풀기(8.6 아래 줄): `blocked_decide.dispatch == did` 일 때만. 한 상태 쓰기에서 `blocked_decide` 를 지우고 `decide` 가 그 id 면 `decide`·`decide_round` 도 지운다(리뷰로 간다). 그 decide 의 답 파일이 없으면 progress 를 한 번 쓴다.
-5. `finish_review(tid)`(review-finish 결과 표): `review.review_finish` 를 이 프로세스에서 부른다(관제 안에서는 finish 잠금이 비차단이다, Task 5). 결과가 `retried` 면 끝. 아니면 로그 `<T> r<n> <판정>` 뒤 `approved` → `accept_task`, `changes` → 최대 라운드면 max_rounds decide, 아니면 결과 `warnings`(리뷰 동안 생긴 추적 안 된 새 파일) 가운데 태스크 owns 에 드는 것이 있으면 그 note, 없으면 note 없이 `fix_task`(P2·P3 와 리뷰 요약은 넣지 않는다, 5.5). 오류: `review_failed`·`review_tampered` → decide, 그 밖의 exit 3(`reviewer_running`, `launching`, `review_busy`, `bad_state`, `no_open_review`, `review_not_launched` 등) → 아무것도 하지 않는다(기다린다·재확인이 맞춘다), 그 밖 → 관제 절차 실패 decide.
+5. `finish_review(tid)`(review-finish 결과 표): `review.review_finish(p, tid, nowait=True)` 를 이 프로세스에서 부른다(CLI 를 거치지 않으므로 `nowait` 를 직접 넘긴다. 다른 리뷰 실행자가 finish 잠금을 쥐었으면 기다리지 않고 `review_busy`, Task 5). 결과가 `retried` 면 끝. 아니면 로그 `<T> r<n> <판정>` 뒤 `approved` → `accept_task`, `changes` → 최대 라운드면 max_rounds decide, 아니면 결과 `warnings`(리뷰 동안 생긴 추적 안 된 새 파일) 가운데 태스크 owns 에 드는 것이 있으면 그 note, 없으면 note 없이 `fix_task`(P2·P3 와 리뷰 요약은 넣지 않는다, 5.5). 오류: `review_failed`·`review_tampered` → decide 뒤 `review_failure_asked = [라운드, 그 시도]`(재확인이 같은 시도로 다시 올리지 않게, 10 의 `reviewing`), 그 밖의 exit 3(`reviewer_running`, `launching`, `review_busy`, `bad_state`, `no_open_review`, `review_not_launched` 등) → 아무것도 하지 않는다(기다린다·재확인이 맞춘다), 그 밖 → 관제 절차 실패 decide.
 6. `on_review_result(tid, code, data)`(review 자식 결과 표): data 가 없으면 출력 없음 decide. exit 0: 결과 `status == "changes"`(사전 검사·관문 반려) → `hteam_changes`: 최근 두 판정 라운드가 모두 `review_source == "hteam"`·`prechecks == [review.GATE_PROBLEM]` 이고 quick tail 이 같으면(숫자를 지운 뒤 견준다, 아래 조각) repeat_test_failure, 아니면 최대 라운드면 max_rounds, 아니면 반려 사유 note 로 `fix_task`. 그 밖의 exit 0(리뷰어를 띄움) → `tests_skipped` 가 있으면 `confirm_test()`(Task 10). 보기 pane 은 `view_step` 이 연다. exit 2 `test_unrunnable`·`bad_test_config`·`plan_unreadable` → test_config, exit 2 `uncommitted_owned` → `fix_task(tid, "커밋 안 된 파일을 커밋하거나 지운다")`, exit 4 `test_lock_timeout` → `retry_reviews.add(tid)`, exit 1 `bad_test_approvals` → escalation, exit 3 → 아무것도 하지 않는다, 그 밖 → `리뷰를 시작하지 못했다` decide.
-7. `accept_task(tid)`(accept 뒤): `tasks.accept`. `review_busy` 면 끝, 그 밖의 오류는 관제 절차 실패 decide. 결과 `warnings` 마다 progress `<T> 워커 해제 실패: …`(고정 Dispatch 의 release 는 상태만 바꾼다, orch 13.5). `done` + planner → `apply_plan(tid)`, `done` + tester → `batch_done(tid)`, `awaiting_user` → `design_step()`. 끝에 `start_ready()`.
-8. `fix_task(tid, note)`: `tasks.fix(p, tid, note=note, supplement=None, force_round=False, cli={})`. 성공하면 로그 `<T> r<n> 수정 시작`. `review_busy` 면 아무것도 하지 않는다(다음 재확인). 태스크가 `launch_failed` 로 남은 `launch_failed` 오류(새 라운드를 열었으나 띄우지 못했다)는 decide 를 올리지 않는다(재확인의 launch_failed decide 하나, 8.5). 그 밖의 오류는 관제 절차 실패 decide(note 가 있으면 "아직 전하지 못한 지시").
+7. `accept_task(tid)`(accept 뒤): `tasks.accept(p, tid, nowait=True)`. `review_busy` 면 끝, 그 밖의 오류는 관제 절차 실패 decide. 성공하면 `after_accept(tid, 결과)`. `after_accept`(설계 8.6 "accept 뒤, 관제 판정 경로와 큐 accept 모두"): 결과 `warnings` 마다 progress `<T> 워커 해제 실패: …`(고정 Dispatch 의 release 는 상태만 바꾼다, orch 13.5). `done` + planner → `apply_plan(tid)`, `done` + tester → `batch_done(tid)`, `awaiting_user` → `design_step()`. 끝에 `start_ready()`. 큐 `accept`(Task 5 의 실행 표)도 이것을 거친다: 실행 표의 `accept` 를 `res = tasks.accept(p, task, req.expect_round, request=id, nowait=True)` 뒤 `d.after_accept(task, res)` 로 바꾸고 `res` 를 큐 결과로 돌려준다(accept 의 오류는 그대로 큐 결과·`review_busy` 미룸이다. 뒤처리의 예외는 `isolated(f"accept:{T}", …)` 로 받아 큐 결과를 바꾸지 않는다).
+8. `fix_task(tid, note)`: 먼저 태스크 상태에 `drive_fix = {"round": <지금 라운드>, "note": note, "at": util.now()}` 를 쓴다(설계 8.7: fix 가 이전 Dispatch 를 정리한 뒤 새 라운드를 쓰기 전에 관제가 죽어도 재확인이 같은 지시로 잇는다). 그다음 `tasks.fix(p, tid, note=note, supplement=None, force_round=False, cli={}, nowait=True)`. `tasks.fix` 가 새 라운드를 쓰는 상태 쓰기(`_closing`)에서 `drive_fix` 를 지운다(Task 7 의 수정 대기열 표시 쓰기도 같다). 새 라운드를 열었으면(결과에 `round` 가 있다) 로그 `<T> r<n> 수정 시작`. 라운드를 열지 않은 결과(Task 7 의 `queued`)는 로그를 남기지 않는다(대기열에서 꺼낼 때 드레인이 남긴다). `review_busy` 면 `drive_fix` 를 두고 끝(다음 재확인이 10 의 처음 줄로 잇는다). 태스크가 `launch_failed` 로 남은 `launch_failed` 오류(새 라운드를 열었으나 띄우지 못했다, `drive_fix` 는 이미 지워졌다)는 decide 를 올리지 않는다(재확인의 launch_failed decide 하나, 8.5). 그 밖의 오류는 `drive_fix` 를 지우고 관제 절차 실패 decide(note 가 있으면 "아직 전하지 못한 지시"). `tasks.fix` 는 `_close_round` 를 마친 뒤 `die_at("fix_closed")` 를 부른다.
 9. `reconcile()`(8.7, 그 순서): (1) `rows = write_workers()`, (2) `crew_check()`, (3) `handoff_check()`, (4) `retry_reviews` 의 태스크마다 `start_review` 가 띄우면 집합에서 뺀다, (5) 열린 decide·자식이 없는 태스크로 `coord.attention(p, rows, NO_STATUS_GRACE_S, states=…)` 를 부르고 `no_status` 항목마다 decide(attention.json 이 한 번만 알린다), 태스크마다 heartbeat 뒤 `isolated(f"reconcile:{T}", lambda: reconcile_task(st))`(한 태스크의 예외가 다른 태스크를 막지 않는다), (6) `unbatched()`, (7) `start_ready()` → `design_step()` → `resume_decisions()` → `finish_step()`.
-10. `reconcile_task(st)`(8.7 표): 상태를 다시 읽는다. `outbox.open_decide` 가 있거나 `review:<T>` 자식이 돌면 끝. 상태별:
+10. `reconcile_task(st)`(8.7 표): 상태를 다시 읽는다. `outbox.open_decide` 가 있거나 `review:<T>` 자식이 돌면 끝. 닫히지 않은 태스크에 `drive_fix` 가 있으면 상태별 처리 대신: `drive_fix.round` 가 지금 라운드면 `fix_task(tid, drive_fix.note)`(관제 fix 를 잇는다. 정리는 다시 불러도 이어 한다, 6.4), 아니면 `drive_fix` 만 지운다. 상태별:
     - `working`(`queued_fix` 없음): 작업 실행 기록의 워커 행(`dispatch.slot_row(rows, rd.work)`). 열린 리뷰 시도 기록이 있거나 행이 `retained` → `start_review`. 행이 `settled` → 8.6 의 worker_done 처리(행의 outcome·summary·report_path). 행이 `active` 이고 판정 `live` → 생존 모름 표시를 지운다. `exited`·`lost` → 8.6 의 exited·lost 처리. `unverifiable` → `liveness_unknown_since` 가 없으면 지금 시각을 쓰고, 있고 `LIVENESS_UNKNOWN_S` 가 지났고 `liveness_escalated` 가 아니면 decide 뒤 `liveness_escalated = true`. 작업자를 죽이지 않는다. 쉬는 고정 에이전트는 Task 7 의 `crew_check` 만 본다.
-    - `reviewing`: 열린 시도가 없으면 끝. 시도에 Dispatch 가 없으면 `start_review`(6.1 0 의 복구). 시도의 행이 끝났으면(`dispatch.review_ended`) `finish_review`.
+    - `reviewing`: 열린 시도가 없으면: 지금 라운드의 마지막 시도가 `review.attempt_error` 로 오류를 주고(`failed`·`tampered`) `review_failure_asked != [라운드, 그 시도]` 면 그 오류로 5 의 `review_failed`·`review_tampered` decide 를 올리고 그 값을 쓴다(review-finish 가 시도 결과를 쓴 뒤 decide 전에 관제가 죽었다, 설계 8.7). 아니면 끝. 시도에 Dispatch 가 없으면 `start_review`(6.1 0 의 복구). 시도의 행이 끝났으면(`dispatch.review_ended`) `finish_review`.
     - `approved` → `accept_task`. `changes`(`queued_fix` 없음) → 지금 라운드 `review_source == "hteam"` 이면 6 의 `hteam_changes`, 아니면 5 의 `changes` 처리(warnings 없음).
     - `pending` → `tasks.dropped_blockers` 가 비지 않았고 `dropped_deps_asked` 와 다르면 decide 뒤 `dropped_deps_asked = sorted(…)`.
     - `launch_failed` → 라운드가 없거나 `approval.unlaunched(st)`(일괄 승인·보강의 대기 라운드)면 끝. `dispatch.busy(st, rd.work)`(실행자·장벽 자식이 살아 있다) 이거나 `rd.work.transient` 면 끝. `launch_failed_asked == [round, len(history)]` 면 끝. 아니면 decide 뒤 그 값을 쓴다.
     - `done` 이고 직무 planner 이고 `plan_applied` 가 아니면 `apply_plan(tid)`.
 11. decide 표시(8.10): Interfaces 의 decide 확장. 열린 decide(지금 라운드, 답 파일 없음)가 있는 태스크는 재확인과 start-ready 가 건드리지 않는다. 메인이 `hteam answer` 로 닫으면 다음 재확인이 이어 간다. 같은 사건은 한 번만(idle 은 Dispatch, 생존 모름은 표시, launch_failed 는 라운드·history 길이, 선행 dropped 는 목록, no_status 는 attention.json, 격리 실패는 문구).
 12. start-ready 의 열린 decide 제외(5.4): Interfaces 그대로. 관제의 자동 `start-ready` 와 메인 큐의 `start-ready` 가 같다. 일시 거부(`transient`)로 남은 `launch_failed` 는 decide 를 올리지 않으므로 그대로 다시 넣는다.
-13. `status`(8.3): Interfaces 그대로. `next_step` 의 판단은 지금 그대로이고 행만 사본에서 온다.
+13. `status`(8.3): Interfaces 그대로. `next_step` 의 판단은 지금 그대로이고 행만 사본에서 온다. 메인이 읽는 hint 에 horch 명령을 넣지 않는다(설계 7.1·8.3·9.4: 메인은 horch 를 부르지 않고 훅이 막는다). 지금 horch 명령을 담은 hint 를 이렇게 바꾼다(원문):
+    - `working` 의 idle: `done 없이 턴을 마쳤다. 관제가 done 을 요구하고 두 번째면 decide 로 올린다`
+    - `working` 의 `blocked`·`error`·`no_status`·`unverifiable`: `<낱말>: 관제가 decide 로 올린다. 사용자에게 그 워커 탭을 보게 한다`
+    - `reviewing` 의 idle: `리뷰어가 done 없이 턴을 마쳤다. 관제가 done 을 요구한다`
+    - `approved` 의 살아 있는 워커(`_live_hint`): `<D>(<제목>)가 아직 active 다. accept 는 exit 3 로 거부한다(살아 있는 워커가 파일을 고칠 수 있다). 사용자에게 그 워커 탭을 확인해 달라고 한다. 태스크를 버리려면 .herdr-team/bin/hteam drop <T> --force`(launching 이면 지금 문구 그대로)
+    - `tasks._live_error` 의 hint 는 Interfaces 의 원문. `horch_cmd` 인자는 더 쓰지 않으면 지운다.
 
 핵심 조각(그대로 옮기지 않아도 된다) — 자식 거두기와 미룬 표시(8.8):
 
@@ -6748,8 +6848,8 @@ def reap_jobs(self):
                     st["decide"], st["decide_round"] = mark
             data = _last_json(out)               # 없으면 None
             self.isolated(f"job:{key}", lambda: self.on_review_result(tid, job["proc"].returncode, data))
-        elif key == "final":
-            self.isolated(f"job:{key}", lambda: self.final_done(job["proc"].returncode, out, err))
+        elif key == "final":                     # final_done 은 dict 를 받는다(Task 10): 마지막 JSON 객체, 없으면 {}
+            self.isolated(f"job:{key}", lambda: self.final_done(job["proc"].returncode, _last_json(out) or {}, err))
 ```
 
 핵심 조각 — 같은 관문 실패 두 라운드(8.6 의 repeat_test_failure):
@@ -6796,7 +6896,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from tests.helpers import BASE_CONFIG, DRIVE, HORCH_BIN, TeamCase
+from tests.helpers import BASE_CONFIG, DRIVE, HORCH_BIN, ROOT, TeamCase
 from hteam import dispatch, outbox, procs, review, state, testgate
 from hteam.errors import HteamError
 from hteam.paths import Project
@@ -6816,6 +6916,12 @@ with open(os.environ["HORCH_CALLS"], "a") as fh:
     fh.write(json.dumps(sys.argv[1:]) + "\\n")
 os.execv(sys.executable, [sys.executable, os.environ["HORCH_REAL"], *sys.argv[1:]])
 """
+# 관제 fix 를 따로 띄운 프로세스에서 한다. HTEAM_TEST_DIE_AT 의 os._exit 가 시험 프로세스를 죽이지 않게(설계 8.7 의 drive_fix)
+FIX_RUNNER = ("import sys; sys.path.insert(0, sys.argv[1]); from hteam import drive; from hteam.paths import Project; "
+              "drive.Drive(Project(sys.argv[2])).fix_task(sys.argv[3], sys.argv[4])")
+# 다른 리뷰 실행자가 finish 잠금을 쥔 것처럼 30초 동안 쥔다(설계 8.5)
+HOLD_FINISH = ("import fcntl, sys, time; fh = open(sys.argv[1], 'a+'); fcntl.flock(fh, fcntl.LOCK_EX); "
+               "print('held', flush=True); time.sleep(30)")
 
 
 def ago(seconds: float) -> str:
@@ -6942,6 +7048,23 @@ class EventCase(TeamCase):
     def sleeper(self) -> subprocess.Popen:
         proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
         self.addCleanup(lambda: (proc.kill(), proc.wait()))
+        return proc
+
+    def hold_finish(self, tid: str = "T-001") -> None:
+        """다른 프로세스가 그 태스크의 finish 잠금을 30초 쥔다(죽은 관제가 남긴 리뷰 자식처럼)."""
+        path = self.state_dir / "tasks" / f"{tid}.finish.lock"
+        proc = subprocess.Popen([sys.executable, "-c", HOLD_FINISH, str(path)], stdout=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: (proc.kill(), proc.wait(), proc.stdout.close()))
+        self.assertEqual(proc.stdout.readline().strip(), "held")
+
+    def main_bg(self, *args: str) -> subprocess.Popen:
+        """메인이 큐 명령을 넣고 결과를 기다린다(설계 7.1). 요청 파일이 생길 때까지 기다린 뒤 돌려준다."""
+        proc = self.hteam_bg(*args, as_="main", env={"HTEAM_QUEUE_WAIT_S": "30", "HTEAM_QUEUE_POLL_S": "0.05"})
+        deadline = time.monotonic() + 20
+        while not list((self.drive_dir / "queue").glob("[0-9][0-9][0-9][0-9][0-9][0-9].json")):
+            self.assertIsNone(proc.poll(), "메인이 큐에 넣기 전에 끝났다")
+            self.assertLess(time.monotonic(), deadline, "요청 파일이 생기지 않았다")
+            time.sleep(0.05)
         return proc
 
 
@@ -7201,6 +7324,52 @@ class GoneTest(EventCase):
         self.assertEqual(self.decides(), [])
 
 
+class NoWaitTest(EventCase):
+    """관제 객체는 함수를 바로 부르므로 nowait 를 직접 넘긴다(설계 8.5, Task 5 Rules 7). 다른 리뷰 실행자가 finish 잠금을
+    쥔 동안 fix·accept·review-finish 는 기다리지 않고 아무것도 바꾸지 않은 채 돌아온다(decide 도 없다)."""
+
+    def test_drive_calls_do_not_wait_for_the_finish_lock(self):
+        self.start()
+        self.update_terminal(self.work_terminal(), state="finished")
+        self.hold_finish()
+        for name, call in (("fix_task", lambda: self.d.fix_task("T-001", GONE_NOTE)),
+                           ("accept_task", lambda: self.d.accept_task("T-001")),
+                           ("finish_review", lambda: self.d.finish_review("T-001"))):
+            with self.subTest(name=name):
+                started = time.monotonic()
+                call()
+                self.assertLess(time.monotonic() - started, 10)
+        st = self.task_state("T-001")
+        self.assertEqual((st["status"], st["round"], self.decides()), ("working", 1, []))
+        self.assertFalse(st["rounds"][0]["work"].get("canceled"))
+        self.assertEqual(st["drive_fix"]["note"], GONE_NOTE)  # review_busy: 표시를 두고 다음 재확인이 잇는다
+
+
+class DriveFixResumeTest(EventCase):
+    """관제 fix 가 이전 Dispatch 를 정리한 뒤 새 라운드를 쓰기 전에 죽으면 재확인이 같은 지시로 잇는다(설계 8.7 의 drive_fix)."""
+
+    def test_fix_interrupted_after_cleanup_resumes_with_the_same_note(self):
+        self.start()
+        did, term = self.work_dispatch("T-001"), self.work_terminal()
+        self.update_terminal(term, state="finished")
+        proc = subprocess.run([sys.executable, "-c", FIX_RUNNER, str(ROOT / "lib"), str(self.proj), "T-001", GONE_NOTE],
+                              capture_output=True, text=True, timeout=60,
+                              env=self._env("drive", None, {"HTEAM_TEST_DIE_AT": "fix_closed"}))
+        self.assertEqual(proc.returncode, 137, proc.stderr)
+        st = self.task_state("T-001")
+        self.assertEqual((st["status"], st["round"], st["drive_fix"]["note"]), ("working", 1, GONE_NOTE))
+        self.assertTrue(st["rounds"][0]["work"]["canceled"])
+        self.assertEqual(self.dispatch_row(did)["state"], "released")  # 정리는 끝났고 새 라운드가 없다
+        self.d.reconcile()
+        st = self.task_state("T-001")
+        self.assertEqual((st["status"], st["round"], st["rounds"][-1]["note"]), ("working", 2, GONE_NOTE))
+        self.assertNotIn("drive_fix", st)
+        self.assertEqual(self.logged("T-001 r2 수정 시작"), 1)
+        self.assertEqual(self.decides(), [])
+        self.d.reconcile()
+        self.assertEqual(self.task_state("T-001")["round"], 2)  # 한 번만 잇는다
+
+
 class IgnoreTest(EventCase):
     def test_status_message_is_only_acked(self):
         self.start()
@@ -7421,6 +7590,38 @@ class ReviewChildMaxRoundTest(EventCase):
         self.assertEqual(e["commands"], [FIX_FORCE_ROUND, "hteam drop T-001"])
 
 
+class ReviewRetryChildTest(EventCase):
+    """큐 review --retry 는 리뷰 자식으로 돈다(설계 8.8, Task 5 의 spawn_review): 자식은 숨은 --round·--request 를 받는다."""
+
+    def failed_review(self) -> None:
+        self.start()
+        self.worked()
+        self.reviewed(verdict=None, write=False)
+        self.reviewed(verdict=None, write=False)  # 두 번 실패: review_failed decide
+        self.assertEqual(self.attempt("T-001")["result"], "failed")
+
+    def test_queue_retry_runs_as_child_with_round_and_request(self):
+        self.failed_review()
+        proc = self.main_bg("review", "T-001", "--retry")
+        self.assertEqual(self.d.run_queue(), ["q-000001"])
+        code, out = self.finish(proc)
+        self.assertEqual((code, out["task"], out["spawned"]), (0, "T-001", True), out)
+        self.assertEqual(self.d.jobs["review:T-001"]["args"],
+                         ["review", "T-001", "--retry", "--round", "1", "--request", "q-000001"])
+        self.wait_jobs()
+        att = self.attempt("T-001")
+        self.assertEqual((att["attempt"], att.get("result")), (3, None))
+        self.assertTrue(any(e.get("request") == "q-000001" for e in self.task_state("T-001")["history"]))
+
+    def test_hidden_flags_are_drive_only_and_round_is_checked(self):
+        self.failed_review()
+        code, out = self.hteam("review", "T-001", "--retry", "--round", "2")  # 관제 안: 라운드가 바뀌었으면 거부
+        self.assertEqual((code, out["error"]["code"]), (3, "round_changed"), out)
+        self.assertEqual(self.attempt("T-001")["attempt"], 2)
+        code, out = self.hteam("review", "T-001", "--retry", "--request", "q-000009", as_="main")
+        self.assertEqual((code, out["error"]["code"]), (2, "usage"), out)
+
+
 class AcceptAfterTest(EventCase):
     """accept 뒤(설계 8.6): 직무·결과별 다음 자리, release 실패 progress, 끝에 start-ready."""
 
@@ -7450,6 +7651,17 @@ class AcceptAfterTest(EventCase):
         batch.assert_called_once_with("T-004")
         plan.assert_not_called()
 
+    def test_queue_accept_goes_through_the_same_after_accept(self):
+        """메인의 큐 accept 도 accept 뒤 처리를 거친다(설계 8.6 "관제 판정 경로와 큐 accept 모두")."""
+        self.approved("T-004", "tester")
+        proc = self.main_bg("accept", "T-004")
+        with mock.patch.object(self.d, "batch_done") as batch, mock.patch.object(self.d, "start_ready") as ready:
+            self.assertEqual(self.d.run_queue(), ["q-000001"])
+        code, out = self.finish(proc)
+        self.assertEqual((code, out["status"]), (0, "done"), out)
+        batch.assert_called_once_with("T-004")
+        ready.assert_called_once_with()
+
     def test_release_failure_is_progress(self):
         self.start()
         self.act_work("T-001")
@@ -7476,6 +7688,7 @@ class AwaitingUserTest(AcceptAfterTest):
 
     test_planner_done_goes_to_apply_plan = None
     test_tester_done_goes_to_batch_done = None
+    test_queue_accept_goes_through_the_same_after_accept = None
     test_release_failure_is_progress = None
 
 
@@ -7595,6 +7808,49 @@ class ReconcileTest(EventCase):
         self.d.reconcile()
         self.assertEqual(self.task_state("T-001")["status"], "done")
 
+    def test_review_failure_saved_before_decide_is_raised_once(self):
+        """review-finish 가 시도 실패를 쓴 뒤 관제가 decide 전에 죽었다(설계 8.7 의 reviewing 줄)."""
+        self.start()
+        self.worked()
+        self.reviewed(verdict=None, write=False)  # 첫 시도 실패: 자동 재시도
+        self.act_review("T-001", None, write=False)
+        code, out = self.hteam("review-finish", "T-001")  # 결과를 쓰고 decide 없이 끝난 실행자
+        self.assertEqual((code, out["error"]["code"]), (1, "review_failed"), out)
+        self.assertEqual(self.decides(), [])
+        self.d.reconcile()
+        (e,) = self.decides()
+        self.assertTrue(e["summary"].startswith("리뷰 실패(review_failed): T-001 r1 리뷰 시도가 실패했다: "), e["summary"])
+        self.assertEqual(e["commands"], ["hteam review T-001 --retry", "hteam drop T-001"])
+        self.assertEqual(self.task_state("T-001")["review_failure_asked"], [1, 2])
+        self.answer(e["id"])
+        self.d.reconcile()
+        self.assertEqual(len(self.decides()), 1)  # 같은 시도로는 다시 올리지 않는다
+
+    def test_tamper_saved_before_decide_is_raised_once(self):
+        self.start()
+        self.worked()
+        self.commit("README.md", "# 바뀜\n", "리뷰 중 다른 커밋")
+        self.act_review("T-001", "APPROVE")
+        code, out = self.hteam("review-finish", "T-001")
+        self.assertEqual((code, out["error"]["code"]), (1, "review_tampered"), out)
+        self.d.reconcile()
+        (e,) = self.decides()
+        self.assertTrue(e["summary"].startswith("리뷰 실패(review_tampered): T-001 r1 리뷰 중 제품이 바뀌었다: README.md"),
+                        e["summary"])
+        self.answer(e["id"])
+        self.d.reconcile()
+        self.assertEqual(len(self.decides()), 1)
+
+    def test_handled_review_failure_is_not_raised_again(self):
+        self.start()
+        self.worked()
+        self.reviewed(verdict=None, write=False)
+        self.reviewed(verdict=None, write=False)  # 관제가 review-finish 결과로 decide 를 올렸다
+        (e,) = self.decides()
+        self.answer(e["id"])
+        self.d.reconcile()
+        self.assertEqual(len(self.decides()), 1)
+
     def test_approved_is_accepted(self):
         self.start()
         self.act_work("T-001")
@@ -7712,14 +7968,16 @@ class ReconcileTest(EventCase):
 
 class FinalJobTest(EventCase):
     def test_final_child_result_goes_to_final_done(self):
-        """마무리 전체 테스트 자식(키 final)의 결과는 final_done(code, stdout, stderr) 이 받는다(Task 10 이 채운다)."""
+        """마무리 전체 테스트 자식(키 final)의 결과는 final_done(code, 마지막 JSON 객체 dict, stderr) 이 받는다(Task 10 이
+        채운다. Task 10 은 out.get("error") 부터 읽는다)."""
         self.assertTrue(self.d.spawn("final", ["version"]))
         self.assertTrue(self.d.running("final"))
         with mock.patch.object(self.d, "final_done") as done:
             self.wait_jobs()
         (code, out, err), _ = done.call_args
         self.assertEqual(code, 0)
-        self.assertIn('"version"', out)
+        self.assertIsInstance(out, dict)
+        self.assertIn("version", out)
         self.assertEqual(err, "")
         self.assertFalse(self.d.running("final"))
 
@@ -7916,34 +8174,49 @@ if __name__ == "__main__":
 ```python
         self.approve()  # review 는 retain 실패를 견디므로 approved 에도 작업 워커가 살아 있을 수 있다
         task = self.task_view()
+        self.assertIsNone(task["next"])
+        self.assertIn(out["dispatch"], task["hint"])
+        self.assertIn("worker-abandon", task["hint"])
 ```
 
 ```python
         self.approve()  # review 는 retain 실패를 견디므로 approved 에도 작업 워커가 살아 있을 수 있다
         self.refresh_workers()
         task = self.task_view()
+        self.assertIsNone(task["next"])
+        self.assertIn(out["dispatch"], task["hint"])
+        self.assertIn("사용자에게 그 워커 탭을 확인해 달라고 한다", task["hint"])  # 메인은 horch 를 부르지 않는다(설계 7.1)
+        self.assertIn(".herdr-team/bin/hteam drop T-001 --force", task["hint"])
+        self.assertNotIn("horch", task["hint"])
 ```
 
 **Edit** `herdr-team/tests/test_coord.py`
 
 ```python
+    def test_status_hints_use_full_horch_command(self):
         out = self.started()  # no_status
         task = self.hteam("status")[1]["tasks"][0]
         self.assertIn(f"--home {self.horch_home} worker-show --dispatch {out['dispatch']}", task["hint"])
         with state.edit(self.p, "T-001") as st:
             state.move(st, "approved", "verdict")
         task = self.hteam("status")[1]["tasks"][0]
+        self.assertIn(f"--home {self.horch_home} worker-abandon --dispatch {out['dispatch']}", task["hint"])
 ```
 
 ```python
+    def test_status_hints_name_no_horch_command(self):
+        """메인이 읽는 hint 에는 horch 명령이 없다(설계 7.1·8.3·9.4: 메인은 horch 를 부르지 않는다)."""
         out = self.started()  # no_status
         self.refresh_workers()
         task = self.hteam("status")[1]["tasks"][0]
-        self.assertIn(f"--home {self.horch_home} worker-show --dispatch {out['dispatch']}", task["hint"])
+        self.assertEqual(task["hint"], "no_status: 관제가 decide 로 올린다. 사용자에게 그 워커 탭을 보게 한다")
         with state.edit(self.p, "T-001") as st:
             state.move(st, "approved", "verdict")
         self.refresh_workers()
         task = self.hteam("status")[1]["tasks"][0]
+        self.assertIn(out["dispatch"], task["hint"])
+        self.assertNotIn("horch", task["hint"])
+        self.assertNotIn("worker-abandon", task["hint"])
 ```
 
 **Edit** `herdr-team/tests/test_coord.py`
@@ -7984,22 +8257,37 @@ if __name__ == "__main__":
         self.assertIn("관제가 한다(hteam design-review)", task["hint"])
 ```
 
+**Edit** `herdr-team/tests/test_lifecycle.py`
+
+```python
+        hint = out["error"]["hint"]  # 그대로 실행할 수 있는 horch 명령(절대 경로와 --home)
+        self.assertIn(f"--home {self.horch_home} worker-abandon --dispatch {did} --kill", hint)
+        self.assertIn(f"--home {self.horch_home} worker-release --dispatch {did}", hint)
+```
+
+```python
+        hint = out["error"]["hint"]  # 큐 결과로 메인에 간다. 메인은 horch 를 부르지 않는다(설계 7.1)
+        self.assertIn("사용자에게 그 워커 탭을 확인해 달라고 한다", hint)
+        self.assertIn(".herdr-team/bin/hteam drop T-001 --force", hint)
+        self.assertNotIn("horch", hint)
+```
+
 
 - [ ] **Step 2: 실패 확인**
 
 Run: `cd herdr-team && python3 -m unittest tests.test_drive_events 2>&1 | tail -3`
-Expected: `Ran 75 tests`, `FAILED (errors=75)`, 모두 `ImportError: cannot import name 'drive' from 'hteam'`. ce3fe82 에 Task 1–5 블록과 이 태스크 Step 1 블록을 더한 트리(구현 없음)에서 쟀다. Task 4 의 관제 뼈대가 있으면 `FAILED (failures=15, errors=131)`(tearDown 의 오류를 함께 센다)이고 대표 메시지는 `AttributeError: 'Drive' object has no attribute 'jobs'`(99), `ValueError: not enough values to unpack (expected 1, got 0)`(decide 가 없다), `AttributeError: 'Drive' object has no attribute 'on_review_result'`, `FileNotFoundError: … state/drive/workers.json` 이다.
+Expected: `Ran 83 tests`, `FAILED (errors=83)`, 모두 `ImportError: cannot import name 'drive' from 'hteam'`. ce3fe82 에 Task 1–5 블록과 이 태스크 Step 1 블록을 더한 트리(구현 없음)에서 쟀다(Codex 계획 리뷰 r1 의 시험 여덟을 더한 뒤 다시 쟀다). Task 4 의 관제 뼈대가 있으면(시험을 더하기 전 75개로 잰 값) `FAILED (failures=15, errors=131)`(tearDown 의 오류를 함께 센다)이고 대표 메시지는 `AttributeError: 'Drive' object has no attribute 'jobs'`(99), `ValueError: not enough values to unpack (expected 1, got 0)`(decide 가 없다), `AttributeError: 'Drive' object has no attribute 'on_review_result'`, `FileNotFoundError: … state/drive/workers.json` 이다.
 
-Run: `cd herdr-team && python3 -m unittest tests.test_coord tests.test_approval.ApprovalFlowTest.test_approve_all_then_dependent_development_starts 2>&1 | tail -3`
-Expected: `Ran 14 tests`, `FAILED (failures=11, errors=1)`. 같은 트리에서 쟀다. 대표 메시지는 `AssertionError: 5 != 0 : {… 'not_coordinator' …}`(관제 판별·큐가 아직 없다), `KeyError: 'drive'`. Task 5 까지 구현한 트리에서는 status 가 아직 관제만 하는 next 를 그대로 내고 사본을 읽지 않으므로 `['.herdr-team/bin/hteam', 'review', 'T-002'] is not None`·`['.herdr-team/bin/hteam', 'design-review'] is not None`, `KeyError: 'workers_at'` 꼴이 된다.
+Run: `cd herdr-team && python3 -m unittest tests.test_coord tests.test_approval.ApprovalFlowTest.test_approve_all_then_dependent_development_starts tests.test_lifecycle.AcceptTest.test_accept_refuses_live_work_worker 2>&1 | tail -3`
+Expected: `Ran 15 tests`, `FAILED (failures=11, errors=2)`. 같은 트리에서 쟀다. 대표 메시지는 `AssertionError: 5 != 0 : {… 'not_coordinator' …}`(관제 판별·큐가 아직 없다), `KeyError: 'drive'`, `KeyError: 'dispatch'`(accept 시험의 start 가 거부된다). Task 5 까지 구현한 트리에서는 status 가 아직 관제만 하는 next 를 그대로 내고 사본을 읽지 않으므로 `['.herdr-team/bin/hteam', 'review', 'T-002'] is not None`·`['.herdr-team/bin/hteam', 'design-review'] is not None`, `KeyError: 'workers_at'` 꼴이 된다.
 
 - [ ] **Step 3: 구현**
 
-Interfaces·Rules 대로 `drive.py`(단계 몸통과 자리), `tasks.py`(start-ready 의 열린 decide 제외), `outbox.py`(`open_decide`, `append` 의 `fill`), `state.py`(`finish_busy`), `coord.py`(`status` 의 사본·`workers_at`·관제만 하는 next)를 고친다.
+Interfaces·Rules 대로 `drive.py`(단계 몸통과 자리), `tasks.py`(start-ready 의 열린 decide 제외, `drive_fix` 지우기, `fix_closed`, `_live_error` hint), `outbox.py`(`open_decide`, `append` 의 `fill`), `state.py`(`finish_busy`), `coord.py`(`status` 의 사본·`workers_at`·관제만 하는 next·horch 없는 hint), `review.py`(숨은 `--round`·`--request`, `attempt_error`), `queue.py`(실행 표의 `accept` 뒤처리)를 고친다.
 
 - [ ] **Step 4: 통과 확인**
 
-Run: `cd herdr-team && python3 -m unittest tests.test_drive_events tests.test_drive 2>&1 | tail -3` 그다음 하나씩 `python3 -m unittest tests.test_start`, `tests.test_review`, `tests.test_lifecycle`, `tests.test_mainlink`, `tests.test_coord`, `tests.test_approval`
+Run: `cd herdr-team && python3 -m unittest tests.test_drive_events tests.test_drive 2>&1 | tail -3` 그다음 하나씩 `python3 -m unittest tests.test_start`, `tests.test_review`, `tests.test_lifecycle`, `tests.test_mainlink`, `tests.test_coord`, `tests.test_approval`, `tests.test_queue`
 Expected: 모두 `OK`.
 
 - [ ] **Step 5: 정적 확인과 커밋**
@@ -8009,17 +8297,19 @@ python3 - <<'PY'
 import ast, pathlib
 for f in ["herdr-team/lib/hteam/drive.py", "herdr-team/lib/hteam/tasks.py", "herdr-team/lib/hteam/outbox.py",
           "herdr-team/lib/hteam/state.py", "herdr-team/lib/hteam/coord.py", "herdr-team/lib/hteam/review.py",
-          "herdr-team/tests/test_drive_events.py",
+          "herdr-team/lib/hteam/queue.py", "herdr-team/tests/test_drive_events.py", "herdr-team/tests/test_lifecycle.py",
           "herdr-team/tests/helpers.py", "herdr-team/tests/test_coord.py", "herdr-team/tests/test_approval.py"]:
     ast.parse(pathlib.Path(f).read_text(encoding="utf-8"), feature_version=(3, 11))
 PY
 git grep -n -I -P '/[U]sers/|/private/[t]mp|~[/]Workspace' -- . ':!.codex-reviews'
 git add -- herdr-team/lib/hteam/drive.py herdr-team/lib/hteam/tasks.py herdr-team/lib/hteam/outbox.py \
-  herdr-team/lib/hteam/state.py herdr-team/lib/hteam/coord.py herdr-team/lib/hteam/review.py herdr-team/tests/test_drive_events.py \
+  herdr-team/lib/hteam/state.py herdr-team/lib/hteam/coord.py herdr-team/lib/hteam/review.py herdr-team/lib/hteam/queue.py \
+  herdr-team/tests/test_drive_events.py herdr-team/tests/test_lifecycle.py \
   herdr-team/tests/helpers.py herdr-team/tests/test_coord.py herdr-team/tests/test_approval.py
 git commit -m "feat(herdr-team): 관제 이벤트 처리·재확인·리뷰 자식, 워커 목록 사본, start-ready 의 열린 decide 제외" -- \
   herdr-team/lib/hteam/drive.py herdr-team/lib/hteam/tasks.py herdr-team/lib/hteam/outbox.py \
-  herdr-team/lib/hteam/state.py herdr-team/lib/hteam/coord.py herdr-team/lib/hteam/review.py herdr-team/tests/test_drive_events.py \
+  herdr-team/lib/hteam/state.py herdr-team/lib/hteam/coord.py herdr-team/lib/hteam/review.py herdr-team/lib/hteam/queue.py \
+  herdr-team/tests/test_drive_events.py herdr-team/tests/test_lifecycle.py \
   herdr-team/tests/helpers.py herdr-team/tests/test_coord.py herdr-team/tests/test_approval.py
 ```
 
@@ -8106,12 +8396,12 @@ Expected: ast 오류 없음, grep 빈 출력. 구현자는 여기서 멈춘다(�
    1. 고정 에이전트 라운드(`crew.round_crew(지금 라운드)` 가 설정에 있는 이름)면 `--worker` 가 지금 라운드의 작업 에이전트와 다를 때 exit 2(위 문구). 설정에서 그 에이전트를 지웠으면 임시 경로. 임시 워커 라운드의 수정은 임시 워커 그대로다(`--force` 는 무시하고 지금처럼 `abandon --kill`).
    2. 입력 검사(`allowed`, owns·잠금) 뒤, 결정의 대기 라운드(`queue=True`)가 아니면 에이전트를 본다. `held` = entry `task` 가 이 태스크.
    3. `--force` 이고 `held` 이고 entry `dispatch` 가 지금 라운드 작업 Dispatch 면(대상 확인, 5.9.6) `crew.close_session`(실패면 `stop_failed` 로 끝, 아무것도 바꾸지 않았다) 뒤 새 라운드를 `fresh` 로 띄우고 라운드에 `forced: true`. 대상 확인을 통과하지 못하면 세션을 건드리지 않고 아래 대기열 규칙대로 한다.
-   4. 바쁨 = (`task` 가 있고 `held` 가 아님) 또는 `resetting` 또는 (`from_queue` 가 아니고 큐에 이 태스크 밖의 태스크가 있음). `from_queue` 는 큐를 세지 않는다(맨 앞을 골랐다). `reset_pending` 은 보지 않는다(리셋 전 같은 세션에서 고친다).
+   4. 바쁨 = `held` 가 아니고, (`task` 가 있음 또는 `resetting` 또는 (`from_queue` 가 아니고 큐에 이 태스크 밖의 태스크가 있음)). `held` 면 바쁨으로 보지 않는다(설계 5.9.5: 자기 태스크를 대기열에 넣으면 그 태스크가 `task` 로 남아 드레인이 영영 꺼내지 않는다. 다른 태스크의 수정이 이미 줄 서 있어도 5 의 정리 규칙대로 떼고 바로 넣는다). `from_queue` 는 큐를 세지 않는다(맨 앞을 골랐다). `reset_pending` 은 보지 않는다(리셋 전 같은 세션에서 고친다).
    5. 바쁘지 않으면 작업 터미널을 `probe`: `gone` → `forget`(새 세션), `unknown` → `held` 면 exit 1 `unverifiable`, 아니면 바쁨, `idle`·`done` → 넣기(`held` 면 먼저 `horch worker-abandon --dispatch <D> --keep-terminal`, release 는 `_close_round` 가 한다), 그 밖 → `held` 면 exit 3 `worker_active`(위 문구), 아니면 바쁨.
-   6. 바쁨이면 `crew.enqueue`(태스크 `queued_fix` 를 먼저 쓰고 그다음 에이전트 `queue` 끝에. 이미 있으면 끝으로 옮긴다. note 는 줄마다 앞 note 뒤에 잇고 같은 줄은 한 번만, supplement 는 이번에 준 값(없으면 앞 값), force_round 는 OR, at 은 지금, request 는 처음 값)를 돌려준다. 라운드는 열지 않는다.
+   6. 바쁨이면 `crew.enqueue`(태스크 `queued_fix` 를 먼저 쓰고 그다음 에이전트 `queue` 끝에. 이미 있으면 끝으로 옮긴다. note 는 줄마다 앞 note 뒤에 잇고 같은 줄은 한 번만, supplement 는 이번에 준 값(없으면 앞 값), force_round 는 OR, at 은 지금, request 는 처음 값)를 돌려준다. `queued_fix` 를 쓰는 같은 상태 쓰기에서 `drive_fix`(Task 6 의 관제 fix 이어 하기 표시)를 지운다(줄을 섰으면 이어 할 것이 없다). 라운드는 열지 않는다. 이 `{"id", "status": "queued", "agent"}` 결과에는 `round` 가 없으므로 Task 5 의 큐 `fix` 실행과 Task 6 의 `Drive.fix_task` 는 `<T> r<n> 수정 시작` 을 남기지 않는다(Task 5 Rules 6·Task 6 Rules 8 의 "새 라운드를 열었을 때만". 그 줄은 드레인이 라운드를 열 때 남긴다, 설계 8.11).
    7. 넣기·새 세션이면 지금 `fix` 의 정리(`_close_round`, 고정 Dispatch 는 `cleanup` 이 `--keep-terminal`)와 `_closing` 의 새 라운드 쓰기를 한다. 그 같은 상태 쓰기에서 `queued_fix` 를 지운다. 그다음 `crew.unqueue`(라운드 전이가 확정된 뒤에 큐에서 뺀다) 뒤 `run_work`.
    8. accept·drop 은 마지막 상태 쓰기에서 `queued_fix` 를 지우고 그 뒤 `crew.unqueue`.
-7. 드레인(`tasks.drain(p, cfg)`, `start_ready` 맨 앞): 설정 순서로 에이전트마다 `task`·`resetting` 이 없고 `queue` 가 비지 않았으면 맨 앞 태스크 하나. `queued_fix` 가 없으면 큐에서 빼고 넘어간다. 작업 터미널이 있으면 `probe`: `unknown` 이거나 `live` 인데 `idle`·`done` 이 아니면 꺼내지 않는다. 그다음 `fix(…, note/supplement/force_round/request = queued_fix 값, from_queue=True)`. 성공하면 관제 로그 `<T> r<n> 수정 시작` 과 `drained` 에 더한다. 거부(HteamError)되면 그 태스크에 아직 `queued_fix` 가 있을 때만 `crew.clear_queued` 뒤 `drive.Drive(p).decide("escalation", T, "관제 절차 실패: …", commands=[fix 명령(code 가 max_rounds 면 --force-round), "hteam drop T"])`. 이미 라운드를 열었으면(`queued_fix` 가 없다) 큐에서만 뺀다.
+7. 드레인(`tasks.drain(p, cfg)`, `start_ready` 맨 앞): 설정 순서로 에이전트마다 `task`·`resetting` 이 없고 `queue` 가 비지 않았으면 맨 앞 태스크 하나. `queued_fix` 가 없으면 큐에서 빼고 넘어간다. 작업 터미널이 있으면 `probe`: `unknown` 이거나 `live` 인데 `idle`·`done` 이 아니면 꺼내지 않는다. 그다음 `fix(…, note/supplement/force_round/request = queued_fix 값, from_queue=True, nowait=True)`(드레인은 관제의 `start_ready` 안에서 돈다. finish 잠금을 기다리지 않는다, Task 5 Rules 7). 성공하면 관제 로그 `<T> r<n> 수정 시작` 과 `drained` 에 더한다. `review_busy` 면 아무것도 지우지 않는다(`queued_fix`·큐 자리를 그대로 두고 다음 `start_ready` 가 다시 꺼낸다). 그 밖의 거부(HteamError)면 그 태스크에 아직 `queued_fix` 가 있을 때만 `crew.clear_queued` 뒤 `drive.Drive(p).decide("escalation", T, "관제 절차 실패: …", commands=[fix 명령(code 가 max_rounds 면 --force-round), "hteam drop T"])`. 이미 라운드를 열었으면(`queued_fix` 가 없다) 큐에서만 뺀다.
 8. 큐 맞추기 `sync_queues`(5.9.5 끝, 재확인마다): `queued_fix` 가 있는 태스크(지금 라운드의 `crew` 가 이름)를 모아 `crew.edit` 안에서 각 큐에서 `queued_fix` 없는 태스크를 빼고, 큐에 없는 것을 `queued_fix.at` 순서로 그 에이전트 큐 끝에 더한다.
 9. `drop`(5.9.6): 고정 에이전트 라운드이고 entry 의 `task`·`dispatch` 가 이 태스크·지금 작업 Dispatch 면: 세션 상태가 `idle`·`done` 이면 그 Dispatch 가 active 일 때 `worker-abandon --keep-terminal`(세션은 둔다. `--force` 와 상관없다). `--force` 이고 `working`·`blocked` 면 `crew.close_session`. 닫지 못하면 entry 의 `terminal`·`terminal_argv`·`work_pane` 을 비우고(그 세션에 다음 태스크를 넣지 않는다), active 면 `worker-abandon --keep-terminal` 을 시도한 뒤 계속하고 결과에 `hint`. `--force` 없이 일하는 세션이면 지금처럼 `_close_round` 가 exit 3 `worker_active`. 끝나면 entry `task` 가 이 태스크일 때 `task`·`dispatch` 를 비운다. 대상 확인을 통과하지 못하면 세션을 건드리지 않는다.
 10. 인수인계 줄(5.5 의 7): `compose.work_spec` 에서 선행 태스크 절 뒤, 작업 규칙(`worker-rules.md`) 앞. `cfg.crew_of(spec.role)` 가 있고 작업 트리에 `docs/handoff/<이름>.md` 가 있으면 빈 줄과 `먼저 \`docs/handoff/<이름>.md\` 를 읽는다. <제목> 에이전트가 이 프로젝트에서 정한 결정과 규칙, 남은 일이 적혀 있다.`(고정 에이전트 태스크와 그 직무의 임시 워커 태스크 모두). 수정 블록 첫 문장("이전 대화가 …")은 Task 11 이 바꾼다.
@@ -8140,8 +8430,10 @@ def drain(p, cfg) -> list[dict]:
                 continue                                   # 확인 불가·일하는 중이면 꺼내지 않는다
         try:
             res = fix(p, tid, note=q["note"], supplement=q["supplement"], force_round=q["force_round"],
-                      cli={}, from_queue=True, request=q["request"])   # 새 라운드 쓰기가 queued_fix 를 지운다
+                      cli={}, from_queue=True, request=q["request"], nowait=True)  # 새 라운드 쓰기가 queued_fix 를 지운다
         except HteamError as exc:
+            if exc.code == "review_busy":                              # 리뷰 관문이 finish 잠금을 쥐었다: 다음 start-ready
+                continue
             if (state.load(p, tid) or {}).get("queued_fix"):          # 라운드를 열기 전에 거부됐다
                 crew.clear_queued(p, tid)
                 Drive(p).decide("escalation", tid, refused_text(exc, q["note"]), commands=fix_commands(tid, exc))
@@ -8181,6 +8473,7 @@ def sync_queues(p) -> None:
 import hashlib
 import json
 import re
+import time
 from datetime import datetime, timedelta
 
 from tests.helpers import BASE_CONFIG, CREW_CONFIG, DRIVE, TeamCase
@@ -8294,6 +8587,16 @@ class CrewCase(TeamCase):
 
     def set_config(self, text) -> None:
         (self.team / "config.toml").write_text(text, encoding="utf-8")
+
+    def main_bg(self, *args):
+        """메인이 큐 명령을 넣고 결과를 기다린다(설계 7.1). 요청 파일이 생길 때까지 기다린 뒤 돌려준다."""
+        proc = self.hteam_bg(*args, as_="main", env={"HTEAM_QUEUE_WAIT_S": "30", "HTEAM_QUEUE_POLL_S": "0.05"})
+        deadline = time.monotonic() + 20
+        while not list((self.drive_dir / "queue").glob("[0-9][0-9][0-9][0-9][0-9][0-9].json")):
+            self.assertIsNone(proc.poll(), "메인이 큐에 넣기 전에 끝났다")
+            self.assertLess(time.monotonic(), deadline, "요청 파일이 생기지 않았다")
+            time.sleep(0.05)
+        return proc
 
 
 class CrewStateTest(CrewCase):
@@ -8682,6 +8985,40 @@ class FixQueueTest(CrewCase):
         self.assertEqual(self.dispatch_row(out["dispatch"])["state"], "released")  # abandon --keep-terminal 뒤 release
         self.assertNotIn("queued_fix", self.task_state("T-001"))
         self.assertEqual(self.entry()["queue"], [])
+
+    def test_own_task_is_not_queued_even_behind_another_queued_fix(self):
+        """자기 태스크는 다른 태스크의 수정이 이미 줄 서 있어도 대기열에 넣지 않는다(설계 5.9.5). 넣으면 그 태스크가 맡은
+        태스크로 남아 드레인이 영영 꺼내지 않는다."""
+        self.first("T-001")
+        out = self.started("T-002")  # 에이전트가 T-002 를 맡는다
+        self.assertEqual(self.hteam("fix", "T-001", "--note=하나")[1]["status"], "queued")
+        self.ready(out["terminal"], status="idle", turn=2)  # T-002 를 done 없이 마쳤다(맡은 태스크는 그대로 T-002)
+        code, res = self.hteam("fix", "T-002", "--note=이어서")
+        self.assertEqual((code, res["round"], res["terminal"]), (0, 2, out["terminal"]), res)
+        self.assertNotIn("queued_fix", self.task_state("T-002"))
+        self.assertEqual((self.entry()["queue"], self.entry()["task"]), (["T-001"], "T-002"))
+        self.assertEqual(self.dispatch_row(out["dispatch"])["state"], "released")
+
+    def test_queued_result_logs_no_round_start(self):
+        """라운드를 열지 않은 queued 결과에는 `<T> r<n> 수정 시작` 을 남기지 않는다(설계 8.11): 관제 fix 와 메인 큐 fix 모두.
+        관제 fix 이어 하기 표시(drive_fix)는 줄을 서는 쓰기가 지운다(설계 8.7)."""
+        self.first("T-001")
+        self.started("T-002")  # 에이전트가 바쁘다
+        with self.in_drive():
+            res = self.make_drive().fix_task("T-001", "관제 지시")
+        self.assertEqual((res["status"], res["agent"]), ("queued", "production"), res)
+        st = self.task_state("T-001")
+        self.assertEqual((st["queued_fix"]["note"], st["round"]), ("관제 지시", 1))
+        self.assertNotIn("drive_fix", st)
+        proc = self.main_bg("fix", "T-001", "--note=메인 지시")
+        with self.in_drive():
+            self.assertEqual(self.make_drive().run_queue(), ["q-000001"])
+        code, out = self.finish(proc)
+        self.assertEqual((code, out["status"]), (0, "queued"), out)
+        self.assertEqual(self.task_state("T-001")["queued_fix"]["note"], "관제 지시\n메인 지시")
+        lines = [line.split(" ", 1)[1] for line in self.log_lines()]
+        self.assertIn("요청 q-000001 fix: 완료", lines)
+        self.assertFalse(any("수정 시작" in line for line in lines), lines)
 
     def test_own_task_still_working_refuses(self):
         out = self.started("T-001")
@@ -9290,7 +9627,7 @@ class StatusCrewTest(CrewCase):
 - [ ] **Step 2: 실패 확인**
 
 Run: `cd herdr-team && python3 -m unittest tests.test_crew 2>&1 | tail -4`
-Expected: `Ran 1 test`, `FAILED (errors=1)`, `ImportError: cannot import name 'crew' from 'hteam'`(새 모듈이 없다). 앞 태스크(1–4) 구현이 있는 트리에서도 같다(시험 파일이 `crew` 를 가져온다).
+Expected: `Ran 1 test`, `FAILED (errors=1)`, `ImportError: cannot import name 'crew' from 'hteam'`(새 모듈이 없다). 앞 태스크(1–4) 구현이 있는 트리에서도 같다(시험 파일이 `crew` 를 가져온다). Codex 계획 리뷰 r1 의 시험 둘(자기 태스크 대기열, queued 결과의 로그)을 더한 뒤 다시 재도 같다.
 
 Run: `cd herdr-team && python3 -m unittest tests.test_start.StartTest.test_owns_lock_and_single_planner tests.test_start.StartTest.test_first_launch_aligns_role_with_spec tests.test_start.StartReadyTest.test_worker_settled_mid_call_frees_slot tests.test_lifecycle.FixTest.test_fix_aligns_role_with_spec 2>&1 | tail -4`
 Expected: `Ran 4 tests`. ce3fe82 에 Task 1–6 블록과 이 태스크 Step 1 블록을 더한 트리(구현 없음)에서 `FAILED (failures=3, errors=1)`(앞 태스크의 관제 판별이 없어 `AssertionError: 5 != 0`, `IndexError`). Task 1–4 구현 위에서는 `FAILED (errors=3)`, `KeyError: 'status'`(아직 exit 3 `owns_locked`·`planner_busy` 오류 JSON 이다). `test_worker_settled_mid_call_frees_slot` 은 Task 1–4 구현 위에서 통과한다(의존을 띄운 뒤에 더하도록 바꾼 준비라 지금 동작에서도 맞다).
@@ -9358,7 +9695,8 @@ Expected: ast 오류 없음, grep 빈 출력, 커밋 하나. 구현자는 여기
   - 상수(설계 8.5): `RESET_BUSY_S = RESET_UNKNOWN_S = RESET_STUCK_S = 1800`, `RESET_FAIL_LIMIT = 3`, 닫기 재시도 상한 3, `RESET_CLEAR_TIMEOUT_MS = 10000`(환경 `HTEAM_RESET_TIMEOUT_MS` 가 있으면 그 값을 `--timeout-ms` 로), `UNKNOWN_START_LIMIT = 3`.
   - 인수인계 사양 `state/crew/<이름>-handoff-s<n>.md`(`util.fill(templates/handoff.md, agent=<이름>, agent_title=<제목>, path=docs/handoff/<이름>.md)`), 제목(실행 키) `[handoff] <이름> s<n>`. n 은 처음 넣을 때 `state/crew/<이름>-handoff-s*.md` 의 가장 큰 번호 + 1(없으면 1), 이어 붙이기·다시 넣기는 `resetting.title` 의 번호를 그대로 쓴다.
   - `resetting` 모양: `{"step": "starting", "title", "at"}` → `{"step": "handoff", "dispatch", "title", "at"[, "idle_asked": true]}` → `{"step": "clear", "dispatch", "title", "at"[, "clear_error": <code>]}`. `at` 은 `util.local_now()`(그 단계에 들어간 시각, `handoff` 의 30분 판정 기준).
-  - 태스크 상태 `unknown_starts`(입력 유실 재투입 수).
+  - 태스크 상태 `unknown_starts`(입력 유실 재투입 수). 작업 실행 기록의 `resend = {"from": <앞 Dispatch>, "n": <이번 재투입 번호>}`(재투입을 시작하기 전에 쓰고, 새 Dispatch 를 기록하는 같은 쓰기에서 지운다. 설계 5.9.8).
+  - 시험 죽음 지점 `resend_started`(재투입의 `worker-start --terminal` 이 돌아온 뒤, 상태 기록 전).
   - 관제 로그 원문(8.11): `<이름> 리셋 시작: skipped`, `<이름> 리셋 시작: handoff`, `<이름> 리셋 시작: failed(<n>/3): <code>: <message>`, `<이름> 리셋 미룸: 작업 세션이 일하는 중(<상태>)`(미룰 때 처음 한 번), `<이름> 리셋: reset(turn <n>, <초>초)`(horch 결과의 `turn`·`seconds`), `<이름> 리셋: new_terminal(<code>)`, `<T> not_started: resent(<n>)`.
   - decide(escalation) 원문(설계 5.9.7·5.9.8·8.6): `<이름> 에이전트의 작업 터미널 상태를 <분>분 넘게 알 수 없어 리셋(인수인계)을 취소했다. 터미널을 확인한 뒤 필요하면 다시 요청한다`, `<이름> 에이전트의 작업 세션이 <분>분 넘게 일하는 중이라 리셋(인수인계)을 취소했다. 그 탭을 확인한 뒤 필요하면 다시 요청한다`, `<이름> 에이전트에 인수인계 태스크를 <n>번 넣지 못해 리셋을 취소했다: <code>: <message>. 작업 세션이 자동 압축 중이거나 다른 일을 하면 실패한다. 화면을 본 뒤 다시 요청한다`, `<이름> 에이전트가 인수인계를 쓰지 못했다: <요약 200자>`(commands `["hteam agent reset <이름>"]`), `<이름> 에이전트 인수인계가 끝나지 않았다`(같은 commands), `<이름> 에이전트 세션을 비우지도 닫지도 못했다: <code>: <message>. 사용자에게 그 에이전트 탭의 작업 pane 을 닫아 달라고 한다`, `<이름> 에이전트가 인수인계 중 <상태> 로 멈췄다(<msg 120자>). 사용자에게 그 탭을 보게 한다`, `<이름> 에이전트가 인수인계 중 끝났다`, `작업자 시작을 <n>번 확인하지 못했다`(task 그 태스크, commands `hteam fix T --note "<지시>"`, `hteam fix T --force --note "<지시>"`, `hteam drop T`). `<분>` 은 경과 분의 내림. 태스크가 없는 decide 는 task null.
   - done 요청 글(8.6, 작업과 같다): `턴을 마쳤는데 done 이 없다. 일이 끝났으면 프리앰블의 done 명령을 부른다. 남았으면 이어서 하고 끝나면 done 을 부른다.`(제목 `done 요청`, `horch send --to dispatch:<D> --subject "done 요청" --body=<글>`).
@@ -9381,7 +9719,9 @@ Expected: ast 오류 없음, grep 빈 출력, 커밋 하나. 구현자는 여기
    - observed exited·lost: 인수인계 실패로 보고 `crew.forget`(terminal-close --abandon), `resetting = None`, `reset_pending = False`, `since_reset = 0`, `reset_tasks = []`(다음 세션은 새로 뜬다), decide(끝났다).
 4. `handoff_check()`(재확인 3): `resetting.step == "handoff"` 인 entry 마다 `worker-list` 의 그 Dispatch 행. `settled`·`retained`(또는 outcome 있는 `released`)면 outcome 대로 2. outcome 없이 `abandoned`·`released`·판정 `exited`·`lost` 면 2 의 실패. 아직 active 이고 `resetting.at` 에서 `RESET_STUCK_S` 가 지났으면 30분 정리.
 5. 리셋 뒤 첫 프리앰블은 비우기가 올린 turn 을 `start_turn` 으로 쓴다(horch 가 보내기 직전 turn 을 다시 읽는다, Task 1). 리셋 동안의 배정 기다림·수정 대기열은 Task 7 규칙 그대로다.
-6. 입력 유실 재투입 `not_started(d, tid, did)`(5.9.8): 지금 라운드의 `crew` 에이전트 작업 터미널을 `probe` 해 `live` 이고 `idle`·`done` 일 때만 한다(`working` 은 입력이 들어간 증거라 아무것도 안 한다, 그 밖도 안 한다). `n = unknown_starts + 1`. `n ≥ UNKNOWN_START_LIMIT` 면 다시 넣지 않고 decide(작업자 시작을 n번 확인하지 못했다). 아니면 `horch worker-abandon --dispatch <D> --keep-terminal` → `horch worker-start --terminal <t> --task <라운드 work.horch_task>`(앞 Dispatch 가 abandoned 라 `--retry` 가 필요 없다. 사양은 그 Task 의 것) → 한 태스크 상태 쓰기에서 `unknown_starts = n`, 라운드 `work.dispatch`·`start_turn`·`delivery` 를 새 값으로, 그다음 entry `dispatch` 를 새 Dispatch 로, 로그 `<T> not_started: resent(<n>)`.
+6. 입력 유실 재투입 `not_started(d, tid, did)`(5.9.8):
+   1. 이어 붙이기가 먼저다: 지금 라운드 작업 기록에 `resend` 가 있으면(앞 재투입이 새 Dispatch 를 띄운 뒤 기록 전에 관제가 죽었다. 처리하던 not_started 는 ack 전이라 다시 온다) `horch worker-list` 에서 `work.horch_task` 의 최신 시도(`dispatch.latest_for_task`)를 본다. `resend.from` 과 다르고 `launch_failed` 가 아니면 그것을 이어 붙인다: 한 태스크 상태 쓰기에서 `work.dispatch`·`start_turn`·`delivery` 를 그 행의 값으로, `unknown_starts = resend.n`, `resend` 를 지운다 → entry `dispatch` 를 그 Dispatch 로 → 로그 `<T> not_started: resent(<n>)` → 끝(다시 넣지 않는다). 최신이 `launch_failed` 면 `resend` 를 지우고 `d.procedure_failed(tid, HteamError("resend_failed", f"{tid} 에 다시 넣은 Dispatch {id} 가 launch_failed 다", 1))`(decide `관제 절차 실패: resend_failed: …`). `resend.from` 과 같으면(띄우기 전에 죽었다) `resend` 만 지우고 2 로 간다(그 행이 이미 `abandoned` 면 2 의 abandon 을 건너뛴다).
+   2. 지금 라운드의 `crew` 에이전트 작업 터미널을 `probe` 해 `live` 이고 `idle`·`done` 일 때만 한다(`working` 은 입력이 들어간 증거라 아무것도 안 한다, 그 밖도 안 한다). `n = unknown_starts + 1`. `n ≥ UNKNOWN_START_LIMIT` 면 다시 넣지 않고 decide(작업자 시작을 n번 확인하지 못했다). 아니면 먼저 작업 기록에 `resend = {"from": D, "n": n}` 를 쓴다 → `horch worker-abandon --dispatch <D> --keep-terminal` → `horch worker-start --terminal <t> --task <라운드 work.horch_task>`(앞 Dispatch 가 abandoned 라 `--retry` 가 필요 없다. 사양은 그 Task 의 것) → `die_at("resend_started")` → 한 태스크 상태 쓰기에서 `unknown_starts = n`, 라운드 `work.dispatch`·`start_turn`·`delivery` 를 새 값으로, `resend` 를 지운다 → entry `dispatch` 를 새 Dispatch 로 → 로그 `<T> not_started: resent(<n>)`. 넣기가 실패하면(horch 오류) `resend` 를 지우고 오류를 그대로 올린다(관제의 격리가 decide 한 번).
 7. `templates/handoff.md` 는 플러그인에서 바로 읽는다(프로젝트에 복사하지 않는다, scaffold `FILES`·upgrade 대상이 아니다). 아래 원문 그대로(설계 5.9.7).
 
 핵심 조각(그대로 옮기지 않아도 된다) — 비우기와 닫기 재시도(`clear` 단계, 어디서 죽어도 이어 한다):
@@ -9421,6 +9761,8 @@ def _clear(d, cfg, name):
 이어 하기, 인수인계 Dispatch 이벤트, 끝나지 않은 인수인계 정리, 입력 유실 재투입, 묶음 끝 리셋 표시."""
 import json
 import sqlite3
+import subprocess
+import sys
 from datetime import datetime, timedelta
 
 from tests.helpers import CREW_CONFIG, ROOT
@@ -9428,6 +9770,9 @@ from tests.test_crew import CrewCase, ago
 from hteam import crew
 
 HANDOFF_TITLE = "[handoff] production s1"
+# 관제의 메시지 처리를 따로 띄운 프로세스에서 한다. HTEAM_TEST_DIE_AT 의 os._exit 가 시험 프로세스를 죽이지 않게
+HANDLE_RUNNER = ("import json, sys; sys.path.insert(0, sys.argv[1]); from hteam import drive; from hteam.paths import Project; "
+                 "drive.Drive(Project(sys.argv[2])).handle(json.loads(sys.argv[3]))")
 CODEX_TEST = CREW_CONFIG.replace('roles = ["tester"]\nagent = "claude"\nmodel = "sonnet"',
                                  'roles = ["tester"]\nagent = "codex"\nmodel = "gpt-6.1-sol"').replace(
     '[roles.tester]\ntitle = "테스트"', '[roles.tester]\ntitle = "테스트"\nworker = "codex"')
@@ -9847,12 +10192,48 @@ class NotStartedTest(CrewCase):
         self.t = self.first("T-001")
         self.out = self.started("T-002")
 
-    def not_started(self, did, status="done"):
+    def not_started_msg(self, did, status="done"):
         self.update_terminal(self.t, status=status)
         body = {"dispatch": did, "kind": "not_started", "key": "1", "terminal": self.t, "status": status,
                 "start_turn": 1, "turn": 1, "delivery": {"attempted": True}}
+        return self.message("observed", did, body, sender="horch")
+
+    def not_started(self, did, status="done"):
+        msg = self.not_started_msg(did, status)
         with self.in_drive():
-            self.make_drive().handle(self.message("observed", did, body, sender="horch"))
+            self.make_drive().handle(msg)
+
+    def task_dispatches(self, horch_task) -> list[dict]:
+        conn = sqlite3.connect(self.horch_home / "orch.db")
+        conn.row_factory = sqlite3.Row
+        try:
+            return [dict(r) for r in conn.execute("SELECT id, state FROM dispatches WHERE task_id=? ORDER BY rowid",
+                                                  (horch_task,))]
+        finally:
+            conn.close()
+
+    def test_death_after_resend_attaches_the_new_dispatch(self):
+        """재투입이 새 Dispatch 를 띄운 뒤 기록 전에 관제가 죽었다(설계 5.9.8 의 resend). ack 전이라 다시 온 not_started 는
+        다시 넣지 않고 그 Dispatch 를 이어 붙인다(그 Dispatch 의 메시지가 지난 것으로 버려지지 않게)."""
+        first = self.out["dispatch"]
+        horch_task = self.dispatch_row(first)["task_id"]
+        msg = self.not_started_msg(first)
+        proc = subprocess.run([sys.executable, "-c", HANDLE_RUNNER, str(ROOT / "lib"), str(self.proj), json.dumps(msg)],
+                              capture_output=True, text=True, timeout=60,
+                              env=self._env("drive", None, {"HTEAM_TEST_DIE_AT": "resend_started"}))
+        self.assertEqual(proc.returncode, 137, proc.stderr)
+        self.assertEqual(self.work_dispatch("T-002"), first)  # 새 Dispatch 를 띄웠지만 기록하지 못했다
+        self.assertEqual(self.task_state("T-002")["rounds"][-1]["work"]["resend"], {"from": first, "n": 1})
+        rows = self.task_dispatches(horch_task)
+        self.assertEqual([r["state"] for r in rows], ["abandoned", "active"])
+        with self.in_drive():
+            self.make_drive().handle(msg)  # 같은 메시지가 다시 온다
+        st = self.task_state("T-002")
+        self.assertEqual((self.work_dispatch("T-002"), self.entry()["dispatch"]), (rows[1]["id"], rows[1]["id"]))
+        self.assertEqual(st["unknown_starts"], 1)
+        self.assertNotIn("resend", st["rounds"][-1]["work"])
+        self.assertEqual(len(self.task_dispatches(horch_task)), 2)  # 다시 넣지 않았다
+        self.assertEqual(sum("T-002 not_started: resent(1)" in x for x in self.log_lines()), 1)
 
     def test_resend_same_round_then_decide_on_third(self):
         first = self.out["dispatch"]
@@ -9900,7 +10281,7 @@ class HandoffTemplateTest(CrewCase):
 - [ ] **Step 2: 실패 확인**
 
 Run: `cd herdr-team && python3 -m unittest tests.test_crew_reset 2>&1 | tail -4`
-Expected: ce3fe82 에 Task 1–7 블록과 이 태스크 Step 1 블록을 더한 트리(구현 없음)에서 `Ran 1 test`, `FAILED (errors=1)`, `ImportError: cannot import name 'crew' from 'hteam'`(가져오는 `tests.test_crew` 가 `crew` 를 쓴다). Task 7 구현 위에서는 `Ran 30 tests`, `FAILED (failures=9, errors=18)`: 대표 `TypeError: 'NoneType' object is not subscriptable`(리셋 단계가 없어 `resetting` 이 비어 있다), `FileNotFoundError: … templates/handoff.md`, `AttributeError: module 'hteam.crew' has no attribute 'mark_batch_reset'`, `agent` 명령이 없어 `usage`. 셋은 그 전에도 통과한다(아무것도 하지 않아야 하는 경우: 맡은 일이 있으면 리셋하지 않음, 연속 구간 끊김, `working` 이면 다시 넣지 않음).
+Expected: ce3fe82 에 Task 1–7 블록과 이 태스크 Step 1 블록을 더한 트리(구현 없음)에서 `Ran 1 test`, `FAILED (errors=1)`, `ImportError: cannot import name 'crew' from 'hteam'`(가져오는 `tests.test_crew` 가 `crew` 를 쓴다). Codex 계획 리뷰 r1 의 시험(재투입 이어 붙이기)을 더한 뒤에도 같은 트리에서 같은 값이다(가져오기 오류). Task 7 구현 위에서는(시험을 더하기 전에 잰 값. 지금은 31개이고 더한 시험도 `resend` 가 없어 실패한다) `Ran 30 tests`, `FAILED (failures=9, errors=18)`: 대표 `TypeError: 'NoneType' object is not subscriptable`(리셋 단계가 없어 `resetting` 이 비어 있다), `FileNotFoundError: … templates/handoff.md`, `AttributeError: module 'hteam.crew' has no attribute 'mark_batch_reset'`, `agent` 명령이 없어 `usage`. 셋은 그 전에도 통과한다(아무것도 하지 않아야 하는 경우: 맡은 일이 있으면 리셋하지 않음, 연속 구간 끊김, `working` 이면 다시 넣지 않음).
 
 - [ ] **Step 3: 구현**
 
@@ -10375,7 +10756,7 @@ Expected: ast 오류 없음, grep 빈 출력. 구현자는 여기서 멈춘다(�
 **Interfaces:**
 - Consumes:
   - Task 4: `drive.Drive`(`p`, `log`, `decide`, `start_ready`, `reconcile`, `isolated`), `util.local_now`, `paths.Project.finish_file`·`supplement_file`·`test_confirm_file`·`drive_dir`. decide 의 태스크 표시는 `task` 가 태스크 ID 꼴(`state.ID_RE`)이고 상태 파일이 있을 때만 쓴다(이 태스크는 `task` 에 `rest` 를 준다. Task 4 Rules 7 이 그렇게 읽힌다).
-  - Task 5: `outbox.TYPES` 의 `decide`(답 파일 `state/answers/<id>.json` 이 없으면 열림), 답 파일의 `decision`(`design-decide` 가 쓴다: `{id, answer, decision: {"fix": {T: 요청}}, at}`, 설계 7.4), `approval.decide(p, oid, text)`(입력 `{"fix": {…}}` JSON 또는 None 이면 기록대로).
+  - Task 5: `outbox.TYPES` 의 `decide`(답 파일 `state/answers/<id>.json` 이 없으면 열림), 답 파일의 `decision`(`design-decide` 가 쓴다: `{id, answer, decision: {"fix": {T: 요청}}, at}`, 설계 7.4), `approval.decide(p, oid, text, nowait=…)`(입력 `{"fix": {…}}` JSON 또는 None 이면 기록대로. 관제는 늘 `nowait=True`: 결정 안의 fix·accept 가 finish 잠금을 기다리지 않고 `review_busy` 로 돌아온다).
   - Task 6: `Drive.progress(body) -> str`(outbox progress 줄, `from: "drive"`. Task 6 이 만들지 않았으면 이 태스크가 만든다), `Drive.spawn(key: str, args: list[str]) -> None`(자식 `[sys.executable, <플러그인>/bin/hteam, --root <루트>, *args]`, 설계 8.8), `Drive.running(key: str) -> bool`, `reap_jobs` 가 키 `final` 의 결과를 `final_done(code, out, err)` 로 넘긴다(`out` 은 자식 stdout 의 마지막 JSON 객체 줄, 없으면 `{}`. `err` 는 stderr 글), accept 뒤 처리와 `reconcile_task` 의 자리(위 문단).
   - Task 7·8: `crew.mark_batch_reset(p) -> list[str]`(설계 5.9.7 "묶음이 끝날 때": `crew.json` 에서 `since_reset ≥ 1` 인 에이전트마다 `reset_pending = true`, 표시한 이름을 설정 순서로. 멱등), 배정이 `reset_pending` 이고 `task` 가 없는 에이전트를 기다리게 하는 것(5.9.4 의 4).
   - 지금 함수: `followups.collect`·`group_members`·`rest_members`·`is_empty`·`SOURCE_RE`·`_section`, `specs.new`·`render`·`check`·`load`·`list_ids`·`owns_of`·`SECTIONS`, `approval.view`·`design_review`·`load`, `tasks.fix`, `testgate.gate_state`·`load_config`·`require_config`·`digest`·`is_approved`·`approvals_path`·`TESTER_ROLE`, `outbox.append`·`read_outbox`·`answer_of`·`answer_strict`·`validate_render`·`test_confirm`, `plan.apply`, `gitio.commit_paths`·`diff_names`·`top_prefix`, `state.*`, `util.read_json`·`write_json`·`write_atomic`·`now`, `paths.review_rel`.
@@ -10398,10 +10779,10 @@ Expected: ast 오류 없음, grep 빈 출력. 구현자는 여기서 멈춘다(�
   - `REGRESSION_RUN = "이 항목의 실패한 테스트(항목에 적힌 이름)를 직접 돌리는 명령이 통과하고 그 명령과 출력 원문이 보고서에 있다"`, 확정한 `[test]` 가 있으면 둘째 줄 ``"`hteam test {tid}` 가 통과한다"``(8.4)
   - `CLEANUP_ACCEPT = "항목마다 고쳤거나 고치지 않은 이유를 보고서에 적었다"`(8.4)
   - `SUPPLEMENT_CHANGE = "화면 디자이너의 시스템 추가 제안이다. 제안마다 받아들일지 정해 디자인 시스템에 더하고, 결정과 이유를 출처(태스크 ID·라운드)와 함께 docs/design/direction.md 에 적는다."`, `SUPPLEMENT_ACCEPT = "제안마다 반영 여부와 이유가 출처와 함께 `docs/design/direction.md` 에 있다"`, `SUPPLEMENT_OWNS = ["docs/design/system/**", "docs/design/direction.md"]`(8.9)
-  - `DESIGN_QUIET = ("approval_not_ready", "already_asked", "nothing_to_approve", "supplement_needed", "decision_pending", "approval_stale")`(8.9 디자인 단계 4), `DECISION_QUIET = ("approval_stale", "decision_conflict", "decision_pending")`(7.4)
+  - `DESIGN_QUIET = ("approval_not_ready", "already_asked", "nothing_to_approve", "supplement_needed", "decision_pending", "approval_stale")`(8.9 디자인 단계 4), `DECISION_QUIET = ("approval_stale", "decision_conflict", "decision_pending", "review_busy")`(7.4. `review_busy` 는 결정의 fix·accept 가 리뷰 관문의 finish 잠금을 만났을 때다. 결정 기록이 남아 다음 재확인이 잇는다)
   - `CONFIRM_RENDER`(8.4 끝 문단 원문): `{"header": "테스트 확정", "question": "커밋된 [test] 명령을 리뷰 전에 자동으로 돌려도 되는가\n예: 확정하면 다음 리뷰부터 quick 이 돌고 묶음 리뷰와 마무리가 full 을 돈다", "options": [{"label": "확정한다 (추천)", "description": "추천 사유: 기획자가 쓴 명령이고 아래에 그대로 보인다"}, {"label": "고친다", "description": "[test] 를 고치는 기획 태스크를 만든다"}]}`
 - 기록 파일(모두 `util.read_json` 으로 읽고, JSON 객체가 아니거나 키의 자료형이 틀리면 그 키를 빈 값으로 본다. 설계 8.9 끝 "깨지면 빈 기록"):
-  - `state/drive/finish.json`: `{"batches": ["T-003"], "rest_done": true, "reported": ["T-001", "T-002", "T-003"], "final_failed": ["T-001", "T-002", "T-003"], "final_decide": "out-0012"}`(`final_*` 은 있을 때만)
+  - `state/drive/finish.json`: `{"batches": ["T-003"], "rest_done": true, "reported": ["T-001", "T-002", "T-003"], "final_ids": ["T-001", "T-002", "T-003"], "final_failed": ["T-001", "T-002", "T-003"], "final_decide": "out-0012"}`(`final_*` 은 있을 때만. `final_ids` 는 마지막 전체 테스트를 띄울 때의 태스크 ID 목록, 설계 8.4 의 6)
   - `state/drive/supplement.json`: `{"supplements": [{"task": "T-005", "from": {"T-002": 1, "T-004": 1}, "handled": false, "token_update": null}]}`
   - `state/drive/test-confirm.json`: `{"asked": [{"digest": "<sha256>", "out_id": "out-0007", "at": "2026-11-10T06:00:00Z"}], "escalated": ["<확정 기록 오류 문구>"]}`(큐 `test-confirm` 이 올린 항목은 `"request": "q-000003"` 를 더 갖는다). Task 5 의 `queue.recorded` 에 `test-confirm` 갈래를 더한다: `asked` 에 그 요청 id 의 항목이 있으면 `{"recovered": True, "asked": <out_id>, "digest"}`(설계 7.1 재실행 막기)
   - 태스크 상태 `plan_applied: true`(planner, 8.9).
@@ -10442,9 +10823,9 @@ Expected: ast 오류 없음, grep 빈 출력. 구현자는 여기서 멈춘다(�
    3. 모든 태스크 ID(번호 순)가 `finish.json.reported` 와 같으면 끝.
    4. `final_decide` 가 있고 그 답 파일이 없으면 끝. 있으면 `final_failed`·`final_decide` 를 지우고 쓴 뒤 이어 한다.
    5. `rest_done` 이 아니고 `출처: rest followups` 태스크가 없으면 `rest_done = true` 를 먼저 쓰고 `followups.collect(p, followups.rest_members(p))` 를 2 의 규칙(source `rest`, key `rest`, decide task `rest`)으로 처리한다. 만든 태스크가 있으면 `start_ready()`. 태스크를 만들었거나 decide 를 올렸으면 끝(설계는 "새 태스크가 생겼으면 끝" 이다. 기획 누락 decide 만 올렸을 때도 끝내 다음 재확인의 2 가 판단을 기다리게 한다).
-   6. `testgate.gate_state(p)["state"]` 가 `approved` 이거나 `error`(형식·확정 기록 오류: 자식이 exit 코드로 알린다)면 `spawn("final", ["test", "--full"])`, 로그 `마지막 전체 테스트 시작`, 끝. `unapproved` 면 `confirm_test()` 뒤 끝. `none` 이면 7.
+   6. `testgate.gate_state(p)["state"]` 가 `approved` 이거나 `error`(형식·확정 기록 오류: 자식이 exit 코드로 알린다)면 `finish.json` 에 `final_ids = <모든 태스크 ID 번호 순>` 을 먼저 쓰고 `spawn("final", ["test", "--full"])`, 로그 `마지막 전체 테스트 시작`, 끝. `unapproved` 면 `confirm_test()` 뒤 끝. `none` 이면 7.
    7. done 을 쓴다(아래 8).
-6. `final_done(code, out, err)`(8.4 의 6, `error = out.get("error") or {}`, ids = 모든 태스크 ID 번호 순):
+6. `final_done(code, out, err)`(8.4 의 6, `error = out.get("error") or {}`): 먼저 테스트 도중 태스크가 바뀌었는지 본다(설계 8.4 의 6, Codex 계획 리뷰 r1). `done`·`dropped` 아닌 태스크가 있거나, `finish.json.final_ids` 가 있고 지금 모든 태스크 ID(번호 순)와 다르면 결과를 쓰지 않는다: `final_ids` 를 지우고 로그 `마지막 전체 테스트 결과를 버린다(그 사이 태스크가 바뀌었다)` 뒤 끝(done·`reported`·`final_failed`·decide 없음. 다음 마무리가 늘어난 묶음으로 다시 돈다). 아니면 ids = `final_ids`(없으면 지금 모든 태스크 ID)로 아래를 하고 `final_ids` 가 있으면 지운다:
    - 0: done(아래 8, 마지막 줄 `마지막 전체 테스트: <out.status> (<out.seconds:g>초)`).
    - 4: 로그 `전체 테스트 잠금 대기 초과. 다음 확인 때 다시 한다`(기록하지 않는다).
    - 2 이고 code `test_unapproved`: `confirm_test()`.
@@ -10482,7 +10863,13 @@ Expected: ast 오류 없음, grep 빈 출력. 구현자는 여기서 멈춘다(�
             for screen, rnd in rec["from"].items():             # 화면을 먼저 고치고
                 cur = state.load(self.p, screen)
                 if cur and cur["status"] == "awaiting_user" and cur["round"] == rnd:
-                    tasks.fix(self.p, screen, note=None, supplement=rec["task"], force_round=False, cli={})
+                    try:
+                        tasks.fix(self.p, screen, note=None, supplement=rec["task"], force_round=False, cli={},
+                                  nowait=True)                  # 관제는 finish 잠금을 기다리지 않는다(Task 5 Rules 7)
+                    except HteamError as exc:
+                        if exc.code == "review_busy":
+                            return None                         # 기록하지 않고 다음 재확인에(고친 화면은 라운드가 올라 건너뛴다)
+                        raise
             rec["handled"] = True                               # 기록은 나중(orca 449e56f)
             self._write_supplement(data)
             self.start_ready()
@@ -10499,8 +10886,8 @@ Expected: ast 오류 없음, grep 빈 출력. 구현자는 여기서 멈춘다(�
     - U 가 `pending`: `specs.add_depends(p, U, <보강>)` 이 True 면 그 사양을 `spec: U` 로 경로 지정 커밋.
     - U 가 `dropped` 이거나 직접 의존 가운데 시작한 것이 있음: 사양을 바꾸지 않고 decide `token_update`(task U, summary `디자인 시스템 보강 <S> 을 시작한다. UI 기반 개발 태스크에 바뀔 토큰을 반영할지 정한다`, files `["docs/design/direction.md"]`, commands `['hteam task new --role developer --title "토큰 갱신 반영: <요약>"', 'hteam scope <U> "<바뀐 토큰>"']`). 기록의 `token_update` 에 그 id(같은 보강으로 다시 올리지 않는다). task 를 보강 태스크가 아니라 U 로 둔다: 열린 decide 가 있는 태스크는 start-ready 가 띄우지 않으므로(5.4) 보강이 멈추지 않게 한다.
     - 그 밖(U 가 시작했고 직접 의존이 모두 시작 전): 토큰 갱신 태스크 `create_task(role="developer", title="토큰 갱신: <S> 반영", target=", ".join(U owns), change="디자인 시스템 보강 <S> 의 결정(docs/design/direction.md)에 따라 바뀐 토큰·컴포넌트를 UI 기반 코드에 반영한다.\n" + 보강 사양의 제안 줄들, acceptance=["보강 <S> 의 결정 가운데 반영한 토큰과 반영하지 않은 이유가 보고서에 있다"], owns=U owns, depends=[S, U])`(U owns 는 상태의 owns, 없으면 `specs.owns_of`). 직접 의존 사양마다(토큰 갱신 태스크 자신은 앞에서 센 목록에 없다) `add_depends(…, <토큰>)`, 바뀐 사양들을 한 커밋 `spec: <ID 들을 ", " 로>`.
-13. 결정 이어 하기 `resume_decisions()`(11.4, 7.4, 8.7 의 7): `approval.load(p)["batches"]` 의 id 가 있는 묶음마다, 결정이 기록돼 있고 `done` 이 없으면 `approval.decide(p, id, None)`(기록대로 이어 한다). 결정이 없고 답 파일(`outbox.answer_strict`)에 `decision` dict 가 있으면 `approval.decide(p, id, json.dumps({"fix": decision.get("fix") or {}}, ensure_ascii=False))`(답 파일에만 있는 결정, 큐 제출이 실패했거나 메인이 그 사이 죽었다). 결정 없는 답(옛 형식이나 메인이 아직 `design-decide` 를 부르지 않음)은 두고 넘어간다. `HteamError` 가 exit 3 이고 code 가 `DECISION_QUIET` 면 그 묶음을 넘어간다(다음 재확인이 다시 본다). 그 밖은 올린다.
-14. 중복 방지(8.9 표): 위 규칙이 그 표를 그대로 쓴다(출처 줄, `batches`, `rest_done`, `reported`, `final_failed`·`final_decide`, `supplement.json` 의 `handled`·`token_update`, `direction.md` 의 `<T> r<n>`, `plan_applied`, `test-confirm.json`).
+13. 결정 이어 하기 `resume_decisions()`(11.4, 7.4, 8.7 의 7): `approval.load(p)["batches"]` 의 id 가 있는 묶음마다, 결정이 기록돼 있고 `done` 이 없으면 `approval.decide(p, id, None, nowait=True)`(기록대로 이어 한다). 결정이 없고 답 파일(`outbox.answer_strict`)에 `decision` dict 가 있으면 `approval.decide(p, id, json.dumps({"fix": decision.get("fix") or {}}, ensure_ascii=False), nowait=True)`(답 파일에만 있는 결정, 큐 제출이 실패했거나 메인이 그 사이 죽었다). 결정 없는 답(옛 형식이나 메인이 아직 `design-decide` 를 부르지 않음)은 두고 넘어간다. `HteamError` 가 exit 3 이고 code 가 `DECISION_QUIET` 면 그 묶음을 넘어간다(다음 재확인이 다시 본다). 그 밖은 올린다.
+14. 중복 방지(8.9 표): 위 규칙이 그 표를 그대로 쓴다(출처 줄, `batches`, `rest_done`, `reported`, `final_ids`, `final_failed`·`final_decide`, `supplement.json` 의 `handled`·`token_update`, `direction.md` 의 `<T> r<n>`, `plan_applied`, `test-confirm.json`).
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
@@ -10997,6 +11384,39 @@ class FinishTest(FlowCase):
         self.assertEqual(done["body"].splitlines()[-1], "마지막 전체 테스트: passed (12.5초)")
         self.assertEqual(self.finish()["reported"], ["T-001", "T-002"])
 
+    def test_full_result_is_dropped_when_tasks_changed_during_the_run(self):
+        """마지막 전체 테스트가 도는 동안 새 태스크가 생기면 그 결과로 done 을 쓰지 않는다(설계 8.4 의 6, final_ids)."""
+        self.use_gate()
+        self.all_done()
+        self.d.finish_step()
+        self.assertEqual(self.finish()["final_ids"], ["T-001", "T-002"])
+        self.task("T-003", status="working")  # 테스트 중 메인이 새 태스크를 만들어 시작했다
+        passed = {"ok": True, "task": None, "kind": "full", "status": "passed", "exit": 0, "seconds": 1.0, "tail": "",
+                  "log": ".herdr-team/state/tests/logs/final-full-x.log"}
+        self.d.final_done(0, passed, "")
+        self.assertEqual((self.done_items(), self.decides()), ([], []))
+        self.assertFalse(self.finish().get("reported"))
+        self.assertNotIn("final_ids", self.finish())
+        self.assertRegex(self.log_lines()[-1], rf"^{LOCAL_ISO} 마지막 전체 테스트 결과를 버린다\(그 사이 태스크가 바뀌었다\)$")
+        self.set_state("T-003", status="done")  # 새 태스크도 끝났다: 늘어난 묶음으로 다시 돈다
+        self.d.finish_step()
+        self.assertEqual(self.spawn.call_count, 2)
+        self.assertEqual(self.finish()["final_ids"], ["T-001", "T-002", "T-003"])
+        self.d.final_done(0, passed, "")
+        [done] = self.done_items()
+        self.assertIn("- T-003 [developer] T-003 일: done, r1 APPROVE", done["body"])
+        self.assertEqual(self.finish()["reported"], ["T-001", "T-002", "T-003"])
+
+    def test_full_result_is_dropped_when_a_task_was_added_and_finished_during_the_run(self):
+        self.use_gate()
+        self.all_done()
+        self.d.finish_step()
+        self.task("T-003")  # 테스트 중 생겨서 이미 끝났다(목록만 다르다)
+        self.d.final_done(1, {"ok": True, "task": None, "kind": "full", "status": "failed", "exit": 1, "seconds": 3.0,
+                              "tail": "AssertionError", "log": ".herdr-team/state/tests/logs/final-full-x.log"}, "")
+        self.assertEqual((self.decides(), self.done_items()), ([], []))
+        self.assertNotIn("final_failed", self.finish())
+
     def test_failed_full_test_is_decide_then_runs_again_after_answer(self):
         self.use_gate()
         self.all_done()
@@ -11491,7 +11911,7 @@ if __name__ == "__main__":
 - [ ] **Step 2: 실패 확인**
 
 Run: `cd herdr-team && python3 -m unittest tests.test_drive_flows 2>&1 | tail -3`
-Expected: `Ran 59 tests`, `FAILED (errors=59)`. 대표 메시지: `ImportError: cannot import name 'drive' from 'hteam'`(모두. 관제 객체를 만드는 `make_drive` 에서). ce3fe82 에 Task 1–9 블록과 이 태스크 Step 1 블록을 적용한 트리(구현 없음)에서 쟀다. Task 4–9 구현이 있으면 `AttributeError: … 'Drive' object has no attribute 'batch_done'`(그 밖의 새 메서드도) 와 `TypeError: design_review() got an unexpected keyword argument 'skip'`·`render() got an unexpected keyword argument 'front'` 로 실패한다.
+Expected: `Ran 61 tests`, `FAILED (errors=61)`. 대표 메시지: `ImportError: cannot import name 'drive' from 'hteam'`(모두. 관제 객체를 만드는 `make_drive` 에서). ce3fe82 에 Task 1–9 블록과 이 태스크 Step 1 블록을 적용한 트리(구현 없음)에서 쟀다(Codex 계획 리뷰 r1 의 마지막 전체 테스트 시험 둘을 더한 뒤 다시 쟀다). Task 4–9 구현이 있으면 `AttributeError: … 'Drive' object has no attribute 'batch_done'`(그 밖의 새 메서드도) 와 `TypeError: design_review() got an unexpected keyword argument 'skip'`·`render() got an unexpected keyword argument 'front'` 로 실패한다.
 
 - [ ] **Step 3: 구현**
 
@@ -13038,7 +13458,7 @@ Expected: ast 오류 없음, grep 빈 출력. `git rm` 은 따로 하지 않는�
 
 ### Task 12: 실환경 확인 — 실제 Claude·Codex 고정 에이전트로 기획 → 개발 → 묶음 테스트 → 리셋 → 복구, 결과 기록, 전체 시험, 브랜치 리뷰
 
-설계 15.2 의 6단계(사용자 결정 2026-11-10): 버리는 시험 프로젝트에서 실제 Claude 메인·실제 Claude·Codex 고정 에이전트로 한 바퀴 돌린다. 설계가 "실환경에서 확인" 으로 표시한 것(6.5 의 3·9: split pane 안 일반 `hc attach`·떼기 키·보기 pane 크기·끝난 split pane 이 저절로 닫히는지와 `pane.close`·`hc rm` 순서, 5.9.7: 자동 압축 동안 7501 상태, 15.2: 플러그인 환경 상속, 5.9.2: Codex 첫 세션 제목, orch 13.8: `hc keys` 의 빈칸 키 이름)과 이 계획이 가짜로만 본 형식(`herdr-app ls` 출력, `hc connect` 의 `doc.get` 트리, Task 4·7·9)을 그 단계에서 본다. 결과는 설계 15.4 에 `#### 6단계` 로 적고, 마지막에 두 전체 시험 모음과 브랜치 전체 Codex 리뷰(main 병합 전, CLAUDE.md)를 한다. 코드는 결함을 고칠 때만 바꾼다(고치면 그 결함을 재현하는 시험을 먼저 더하고, 고친 커밋마다 `scripts/codex-review.sh commit HEAD`). 가짜와 실제가 다른 형식(위 셋)이면 `herdr.py` 의 해석과 가짜(`herdr-team/tests/fakes/herdr-app`, `herdr-orch/tests/fakes/hc`)를 함께 실제에 맞추고 그 시험을 고친 뒤 같은 절차로 커밋·리뷰한다. main 병합은 하지 않는다(컨트롤러가 한다).
+설계 15.2 의 6단계(사용자 결정 2026-11-10): 버리는 시험 프로젝트에서 실제 Claude 메인·실제 Claude·Codex 고정 에이전트로 한 바퀴 돌린다. 설계가 "실환경에서 확인" 으로 표시한 것(6.5 의 3·9: split pane 안 일반 `hc attach`·떼기 키·보기 pane 크기·끝난 split pane 이 저절로 닫히는지와 `pane.close`·`hc rm` 순서, 5.9.7: 자동 압축 동안 7501 상태, 15.2: 플러그인 환경 상속, 5.9.2: Codex 첫 세션 제목, orch 13.8: `hc keys` 의 빈칸 키 이름(`space` 는 계획 리뷰 때 실제 hc 로 확인했다. 여기서는 Codex 제목으로 한 번 더 본다))과 이 계획이 가짜로만 본 형식(`herdr-app ls` 출력, `hc connect` 의 `doc.get` 트리, Task 4·7·9)을 그 단계에서 본다. 결과는 설계 15.4 에 `#### 6단계` 로 적고, 마지막에 두 전체 시험 모음과 브랜치 전체 Codex 리뷰(main 병합 전, CLAUDE.md)를 한다. 코드는 결함을 고칠 때만 바꾼다(고치면 그 결함을 재현하는 시험을 먼저 더하고, 고친 커밋마다 `scripts/codex-review.sh commit HEAD`). 가짜와 실제가 다른 형식(위 셋)이면 `herdr.py` 의 해석과 가짜(`herdr-team/tests/fakes/herdr-app`, `herdr-orch/tests/fakes/hc`)를 함께 실제에 맞추고 그 시험을 고친 뒤 같은 절차로 커밋·리뷰한다. main 병합은 하지 않는다(컨트롤러가 한다).
 
 보지 않는 것(설계 15.2): hc core 재시작(X7), 디자인 직무의 고정 에이전트 흐름(단위 시험으로만), 생산 에이전트 여러 개, 리뷰 보기 pane 에 사람이 키를 치는 경우.
 
@@ -13052,7 +13472,7 @@ Expected: ast 오류 없음, grep 빈 출력. `git rm` 은 따로 하지 않는�
 
 안전 규칙(이 태스크 내내):
 - 시험 폴더는 컨트롤러가 준 세션 스크래치패드 아래(`<세션 스크래치패드>/hteam-e2e-p6`, 이하 `$E2E`)에만 만든다. 이 저장소와 사용자의 다른 프로젝트는 건드리지 않는다.
-- **플러그인을 설치하지 않는다.** `claude plugin …` 을 쓰지 않는다. 시험 메인 Claude 는 `claude --plugin-dir "$REPO_ROOT/herdr-team"` 로 연다(설계 15.2). 시험 터미널 환경에 `HERDR_TEAM_PLUGIN_ROOT="$REPO_ROOT/herdr-team"`, `HERDR_ORCH_BIN="$REPO_ROOT/herdr-orch/bin/horch"`, `DISABLE_AUTOUPDATER=1` 을 준다.
+- **플러그인을 설치하지 않는다.** `claude plugin …` 을 쓰지 않는다. 시험 메인 Claude 는 `claude --plugin-dir "$REPO_ROOT/herdr-team"` 로 연다(설계 15.2). Claude 워커·리뷰어도 같은 플러그인을 싣도록 시험 프로젝트 설정 `[agents.claude].args` 에 `--plugin-dir` 를 넣는다(Step 5, 환경 상속과 상관없다). 시험 터미널 환경에 `HERDR_TEAM_PLUGIN_ROOT="$REPO_ROOT/herdr-team"`, `HERDR_ORCH_BIN="$REPO_ROOT/herdr-orch/bin/horch"`, `DISABLE_AUTOUPDATER=1` 을 준다.
 - 전역 파일: Step 1 이 `~/.claude/settings.json`, `~/.claude/plugins/*.json` 전체(`installed_plugins.json` 포함), `~/.codex/config.toml` 의 sha256 과 사본을 남기고(읽기만 한다) Step 11 이 견주고 `installed_plugins.json` 은 사본과 diff 를 남긴다. 바뀌어도 되는 것은 시험 폴더의 신뢰 항목뿐이다(Codex `~/.codex/config.toml` 의 `[projects."<시험 경로>"]`·`trust_level`. Claude 의 폴더 신뢰 `hasTrustDialogAccepted` 는 `~/.claude.json` 에 쓰이며, 이 파일은 Claude 가 실행마다 고치므로 비교 대상이 아니다). 그 밖의 생성·삭제·수정은 실패로 적고 사용자에게 알린다. 스냅숏으로 덮어쓰지 않는다.
 - 사용자의 hc core 를 멈추거나 다시 띄우지 않는다(`hc server stop`·`restart`·`hc update` 금지). 새 `HC_SESSION` 금지. 시험이 만든 터미널·탭·space 만 kill·rm·닫는다. 시험용 `hc run` 은 늘 `--no-notify`.
 - 폴더 신뢰 창: Claude 는 "Yes, I trust this folder", Codex 는 "Trust and continue"(이 폴더만). **"Trust all" 류는 절대 고르지 않는다.** 키는 운영자(이 태스크를 하는 에이전트)만 누른다.
@@ -13165,7 +13585,7 @@ env -u HC_TERMINAL_ID hc send "$M" "cd '$E2E/conv' && export HERDR_TEAM_PLUGIN_R
 env -u HC_TERMINAL_ID hc send "$M" "hc run --bg --json --no-parent --no-notify --keep --name hteam-e6-envcheck --cwd '$E2E/conv' -- sh '$E2E/envcheck.sh'"
 ```
 
-Expected: `$E2E/envcheck.txt` 의 두 줄. 둘 다 경로면 상속된다(대체 길 없음). `없음` 이면 Step 5 의 승인 표에서 시험 프로젝트 설정에만 대체 인자를 넣는다: `[agents.claude].args` 에 `"--plugin-dir=<REPO_ROOT>/herdr-team"`, `"--settings=<E2E>/claude-settings.json"`, `[agents.codex].args` 에 `"-c", "shell_environment_policy.set.HERDR_TEAM_PLUGIN_ROOT=\"<REPO_ROOT>/herdr-team\""` 와 `HERDR_ORCH_BIN` 같은 줄. 그래도 워커의 shim 이 exit 12 면 멈추고 사용자에게 실환경 확인 방법을 묻는다(설계 열린 질문 1). `hteam-e6-envcheck` 터미널은 `hc rm` 한다.
+Expected: `$E2E/envcheck.txt` 의 두 줄. 둘 다 경로면 상속된다(shim 이 이 브랜치의 hteam·horch 를 찾는다). 환경 상속은 shim 의 실행 경로만 정하고 Claude 워커 프로세스가 이 브랜치의 플러그인 훅을 싣는다는 근거는 아니다(플러그인은 설치하지 않는다). 그래서 상속 결과와 상관없이 Step 5 뒤 시험 프로젝트 설정의 `[agents.claude].args` 에 `"--plugin-dir=<REPO_ROOT>/herdr-team"` 를 넣는다(Step 5 의 마지막 줄). 상속이 `없음` 이면 시험 프로젝트 설정에만 대체 인자를 더 넣는다: `[agents.claude].args` 에 `"--settings=<E2E>/claude-settings.json"`, `[agents.codex].args` 에 `"-c", "shell_environment_policy.set.HERDR_TEAM_PLUGIN_ROOT=\"<REPO_ROOT>/herdr-team\""` 와 `HERDR_ORCH_BIN` 같은 줄. 그래도 워커의 shim 이 exit 12 면 멈추고 사용자에게 실환경 확인 방법을 묻는다(설계 열린 질문 1). `hteam-e6-envcheck` 터미널은 `hc rm` 한다.
 
 그다음 시험 메인 Claude 를 띄운다:
 
@@ -13183,6 +13603,7 @@ env -u HC_TERMINAL_ID hc send "$M" "claude --plugin-dir '$REPO_ROOT/herdr-team'"
 - 관제 탭(`herdr-team 관제`)에 `hteam-drive-*` 터미널, `.herdr-team/state/drive/drive.pid`·`heartbeat`, `status` 의 `drive.alive: true`, `drive.log` 첫 줄 `관제 시작(<터미널>): created`.
 - 메인 터미널이 Run 에 묶이지 않았다: `HC_TERMINAL_ID="$M" "$REPO_ROOT/herdr-orch/bin/horch" --home "$E2E/conv/.herdr-team/state/horch" status` 의 `run` 이 null.
 - `config.toml` 의 `[crew.*]`·`[overflow]`·`[drive]`, 모든 `codex_effort = "xhigh"`, `[coordinator]` 없음. `status` 의 `crew` 두 항목, `warnings` 에 crew 경고 없음.
+- 그다음 운영자가 시험 프로젝트의 `.herdr-team/config.toml` 에서 `[agents.claude].args` 에 `"--plugin-dir=<REPO_ROOT>/herdr-team"`(실제 절대 경로)를 더한다(시험 프로젝트 파일만 고친다. 전역 설정·플러그인 설치는 하지 않는다). 첫 Claude 워커(Step 6 의 생산 에이전트)의 `hc get <작업 터미널>` argv 에 그 인자가 있는지 본다. 없으면 여기서 멈춘다(그 워커에는 Task 11 의 훅이 걸리지 않는다).
 
 - [ ] **Step 6: 기획(설계 15.2 의 2)**
 
@@ -13197,7 +13618,7 @@ env -u HC_TERMINAL_ID hc send "$M" "claude --plugin-dir '$REPO_ROOT/herdr-team'"
 - [ ] **Step 7: 개발과 overflow·수정 라운드(설계 15.2 의 3)**
 
 확인:
-- 의존 없는 developer 태스크가 생산 에이전트가 바쁜 동안 임시 워커(관제 탭 pane, 라운드 기록 `agent: "temp"`)로 뜬다. 의존 이어진 태스크는 생산 에이전트에서 차례로 돈다(`agent: "production"`, 같은 `terminal`).
+- 의존 없는 developer 태스크가 생산 에이전트가 바쁜 동안 임시 워커(관제 탭 pane, 라운드 기록 `crew: "temp"`)로 뜬다. 의존 이어진 태스크는 생산 에이전트에서 차례로 돈다(라운드 기록 `crew: "production"`, 같은 `terminal`). 라운드 기록의 `agent` 는 작업 에이전트(`claude`·`codex`) 그대로다(계획 끝 "설계에서 정하지 않아 계획이 정한 것"의 첫 줄, Task 7).
 - 수정 라운드가 생기면(리뷰 REQUEST_CHANGES) 같은 에이전트의 같은 세션으로 간다: 같은 터미널 주소, 라운드 기록의 `start_turn` 이 앞 라운드보다 크다, 사양에 이어 받기 줄. 수정 라운드가 자연히 생기지 않으면 메인에 "T-00x 의 출력 형식을 바꿔 달라" 같은 요청으로 `hteam fix` 를 큐로 넣게 해 본다(에이전트가 일하는 중이면 `status: queued`, `queued_fix`, 비면 드레인 `T-00x r2 수정 시작`).
 - 리뷰어 effort: Codex 리뷰어 argv 에 `xhigh`(`hc get` 의 argv).
 
@@ -13205,9 +13626,10 @@ env -u HC_TERMINAL_ID hc send "$M" "claude --plugin-dir '$REPO_ROOT/herdr-team'"
 
 확인:
 - `herdr-team 테스트` 탭(Codex)이 뜨고 tester 태스크를 한다. Codex 첫 세션 제목은 Codex 가 정한 것(5.9.2). Claude 리뷰어가 그 탭 오른쪽 보기 pane 에 보이는지와 크기(6.5 의 9)를 본다.
-- 묶음이 끝나면(tester accept) `crew.json` 의 두 에이전트 `reset_pending: true`(묶음 처리가 후속 태스크보다 먼저), progress `묶음 완료: <key>. 리셋할 에이전트: production, test`. 후속 태스크(있으면)는 리셋 뒤 새 세션이 받는다.
+- 묶음이 끝나면(tester accept) `crew.json` 의 두 에이전트 `reset_pending: true`(묶음 처리가 후속 태스크보다 먼저), progress `묶음 완료: <tester 태스크 ID>. 리셋할 에이전트: production, test`(Task 10 Rules 3 은 묶음 key 가 아니라 tester 태스크 ID 를 쓴다). 후속 태스크(있으면)는 리셋 뒤 새 세션이 받는다.
 - 리셋: 두 에이전트 모두 인수인계(`[handoff] <이름> s1` Dispatch, `docs/handoff/production.md`·`test.md` 커밋 `[handoff] <이름>: 인수인계`) → `terminal-reset`. drive.log `production 리셋: reset(turn <n>, <초>초)`(Claude 0.1–0.3초 근처), `test 리셋: reset(…)`(Codex 1.5–1.8초 근처). 같은 터미널 주소, Codex 제목 `test | conv`(`/clear test` 가 이름을 붙였다. orch 13.8 의 빈칸 키가 실제로 맞는지 여기서 본다).
 - 리셋 뒤 첫 태스크 사양에 `먼저 \`docs/handoff/<이름>.md\` 를 읽는다` 줄이 있고 세션이 그 파일을 읽는다(그 워커의 보고서·화면). 리뷰 중 인수인계 커밋이 판정을 무효로 하지 않는다(`review_tampered` 없음).
+- 생산 에이전트(Claude)의 `/clear` 뒤 새 세션에 이 브랜치의 훅이 걸린다(설계 9.4 의 6단계 줄): 리셋 뒤 첫 프롬프트가 들어간 다음 `.herdr-team/state/sessions/` 에 리셋 전과 다른 session id 의 캐시 파일이 생기고 그 역할이 워커다. 생기지 않으면 멈추고 그 터미널 argv 의 `--plugin-dir`(Step 5)과 `.herdr-team/state/hook-errors.log` 를 본다.
 - 자동 압축이 일어나면 그동안 `hc get` 의 status 가 `working` 인지 적는다(5.9.7. 일어나지 않으면 "보지 못함" 으로 적는다).
 
 - [ ] **Step 9: 복구(설계 15.2 의 6)**
@@ -13223,7 +13645,7 @@ env -u HC_TERMINAL_ID hc send "$M" "claude --plugin-dir '$REPO_ROOT/herdr-team'"
 ```markdown
 #### 6단계 (2026-11-xx)
 
-환경: hc <버전>, herdr-app <버전>, Claude Code <버전>, codex-cli <버전>(리뷰 모델 gpt-6.1-sol xhigh), Python <버전>. 버리는 시험 프로젝트(단위 변환기) 하나. 플러그인은 설치하지 않았고 시험 메인 Claude 를 `--plugin-dir` 로 열었다. 환경 상속: <상속됨 | 대체 길(인자)>. 전역 파일 비교: <결과>. `installed_plugins.json` diff: <없음 | 내용>.
+환경: hc <버전>, herdr-app <버전>, Claude Code <버전>, codex-cli <버전>(리뷰 모델 gpt-6.1-sol xhigh), Python <버전>. 버리는 시험 프로젝트(단위 변환기) 하나. 플러그인은 설치하지 않았고 시험 메인 Claude 와 Claude 워커(`[agents.claude].args`)를 `--plugin-dir` 로 열었다. 환경 상속: <상속됨 | 대체 길(인자)>. 전역 파일 비교: <결과>. `installed_plugins.json` diff: <없음 | 내용>.
 
 - 시작: 관제 <터미널>, drive.pid·heartbeat, 메인 터미널의 horch `run` null. crew 두 에이전트, 경고 <없음>.
 - 기획: 생산 탭·작업 pane 제목, 인터뷰 질문 <n>개, 확정 질문, 보기 pane 트리 `row[작업, 보기]` → `row[작업]`, 보기 pane 크기 <cols×rows | 잘림>, 끝난 split pane 이 저절로 닫힘 <예 | 아니오>, `pane.close`·`hc rm` 순서 <결과>.
@@ -13300,11 +13722,12 @@ Expected: 커밋 하나, grep 빈 출력, 리뷰 pane 주소. `hc wait <주소> 
 설계와 다르게 한 것(이유와 함께, 구현 전에 사용자·리뷰가 볼 수 있게):
 
 - 라운드 기록의 고정 에이전트 이름은 키 `crew` 다(설계 5.3·5.9.1 은 `agent`). 지금 코드의 라운드 `agent` 는 작업 에이전트(claude·codex)이고 리뷰어 결정(`config.resolve(…, {"worker": rd["agent"]})`)이 그것을 쓴다. 값은 설계대로 고정 에이전트 이름 또는 `"temp"`. `crew.round_crew(rd)` 로 읽는다(Task 7·9).
-- `hc keys` 는 `--json` 을 키 앞에 둔다(`hc keys --json T / c l e a r enter`, 실험 X2·X3b 기록의 꼴. 설계 13.7 표는 뒤). 빈칸 키 이름은 `space` 로 두고 구현자가 `hc keys --help` 로 확인한다(열린 질문 7, Task 2).
+- `hc keys` 는 `--json` 을 키 앞에 둔다(`hc keys --json T / c l e a r enter`, 실험 X2·X3b 기록의 꼴. 설계 13.7 표는 뒤). 빈칸 키 이름은 `space` 다(실제 hc 로 확인: `hc keys --json <T> a space b enter` 가 동작하고 `spc` 는 `invalid_params`, 결과 `{"status": null, "turn": 0}`. 열린 질문 7, Task 2).
 - `HORCH_MIN` 0.2.0 을 Task 2(herdr-orch 0.2.0 과 같은 커밋)로 옮겼다. herdr-team 의 `test_versions_match` 가 함께 배포하는 버전과 같기를 요구하기 때문이다(설계 15.3 개요는 버전을 10 에 모았다).
 - 재확인의 태스크마다 격리 키 `reconcile:<T>`(설계 8.5 표는 `reconcile` 하나). 한 태스크의 예외가 다른 태스크·start-ready·마무리를 매분 막지 않게 한다(Task 6).
 - 자식 출력 파일 이름은 키의 `:` 를 `-` 로(`jobs/review-T-001.out`, 설계 8.8 은 `jobs/<키>.out`). 파일 이름에 `:` 를 쓰지 않는다(Task 6).
-- 큐 `review --retry` 는 리뷰 자식으로 돌리고, `review` CLI 에 관제 안에서만 받는 숨은 `--request` 를 더해 재실행 기록을 남긴다(Task 6).
+- 큐 `review --retry` 는 리뷰 자식으로 돌리고, `review` CLI 에 관제 안에서만 받는 숨은 `--round`·`--request` 를 더해 라운드 재검사(finish 잠금 안)와 재실행 기록을 남긴다(Task 6).
+- 큐 `accept` 는 `tasks.accept` 뒤 관제의 `after_accept` 를 거친다(설계 8.6 "accept 뒤, 큐 accept 모두"). 메인이 읽는 status hint·accept 의 `worker_active` hint 에는 horch 명령을 넣지 않는다(설계 7.1·9.4, Task 6).
 - 보기 pane 은 리뷰 자식 결과 처리가 아니라 같은 틱 8 단계 `view_step` 이 연다. 열기 실패는 `view` 에 `pane`·`terminal` null 과 `error` 로 남겨 그 시도 동안 다시 열지 않는다(설계 "로그 한 줄" 을 틱마다 되풀이하지 않게, Task 9).
 - 묶음 밖 후속이 decide 만 올렸을 때도 마무리를 그 재확인에서 끝낸다(열린 판단과 done 이 함께 나가지 않게, Task 10). 확정 질문은 `force` 여도 같은 식별값의 열린 질문이 있으면 새로 올리지 않는다(8.4 "같은 질문이 열려 있지 않을 때", Task 10).
 - 관제가 처리한 보강 제안을 `approval.design_review(p, skip=…)` 로 넘긴다(그러지 않으면 dropped 보강·기록된 제안 때문에 `supplement_needed` 로 영영 묻지 못한다, Task 10).
@@ -13317,10 +13740,10 @@ Expected: 커밋 하나, grep 빈 출력, 리뷰 pane 주소. `hc wait <주소> 
 - herdr-team 설정: 검사 순서와 오류 목록의 차례, effort 문구의 조사, Task 3 동안 `up` 의 코디네이터 인자에서 모델·effort 를 뺀다(Task 3).
 - 관제 뼈대: pid 파일을 잡은 직후 heartbeat 한 번, `up` 의 starting 은 "묶이지 않았고 180초 안", Run 연결 재시도 로그는 앞 두 실패 뒤에만, pid 를 잡기 전 거부는 drive.log 를 남기지 않는다, 틱 수 제한 종료 로그 `관제 종료: ticks: <N>`(Task 4).
 - 큐: `not_answerable`·`not_approval`·`empty_answer`·`empty_request`·`review_busy`·`already_answered`(design-decide)·usage 문구, reply 거부는 horch 의 code 를 그대로 보인다, watch 의 orphaned 는 alive·hung·starting 이 모두 아닐 때, `accept` 는 finish 잠금 대신 탐침(Task 5).
-- 이벤트: 모르는 Dispatch 로그, 반려 사유 note 둘, "리뷰를 시작하지 못했다(exit <n>): 출력이 없다", start-ready 대기 사유 `decide`, "같은 테스트 실패" 는 최근 두 판정 라운드가 모두 hteam 관문 반려이고 quick tail 이 숫자만 빼고 같을 때, question 은 작업·리뷰 모두 worker_question, decide files 는 있는 파일만, status hint `관제가 한다(hteam <인자>)`(Task 6).
-- 고정 에이전트: waiting 의 deps·lock 문구, 배치 실패 로그 `<이름> 배치 실패: <오류>`, 쉬는 에이전트 60초 기준(`status_ms` 없으면 `launched_at`), 이 태스크를 맡은 세션이 확인 불가인 fix 는 exit 1 `unverifiable`, 배정은 `_prepare_start` 의 프로젝트 잠금 안(Task 7). 인수인계 사양 번호(가장 큰 번호 + 1), 닫기 실패 셋째의 잊기, 인수인계 두 번째 idle 의 summary, `not_started` 재투입은 작업 터미널이 live 이고 idle·done 일 때만, `unknown_starts` 는 새 라운드에서 지우지 않는다(Task 8).
+- 이벤트: 모르는 Dispatch 로그, 반려 사유 note 둘, "리뷰를 시작하지 못했다(exit <n>): 출력이 없다", start-ready 대기 사유 `decide`, "같은 테스트 실패" 는 최근 두 판정 라운드가 모두 hteam 관문 반려이고 quick tail 이 숫자만 빼고 같을 때, question 은 작업·리뷰 모두 worker_question, decide files 는 있는 파일만, status hint `관제가 한다(hteam <인자>)`, 메인에 가는 hint 의 horch 없는 문구 넷과 accept `worker_active` hint, 실패·변조 문구를 한 곳에서 내는 `review.attempt_error`, 죽음 지점 `fix_closed`(Task 6).
+- 고정 에이전트: waiting 의 deps·lock 문구, 배치 실패 로그 `<이름> 배치 실패: <오류>`, 쉬는 에이전트 60초 기준(`status_ms` 없으면 `launched_at`), 이 태스크를 맡은 세션이 확인 불가인 fix 는 exit 1 `unverifiable`, 배정은 `_prepare_start` 의 프로젝트 잠금 안(Task 7). 인수인계 사양 번호(가장 큰 번호 + 1), 닫기 실패 셋째의 잊기, 인수인계 두 번째 idle 의 summary, `not_started` 재투입은 작업 터미널이 live 이고 idle·done 일 때만, `unknown_starts` 는 새 라운드에서 지우지 않는다, 죽음 지점 `resend_started`(Task 8).
 - 리뷰 보기: "가장 먼저 시작한 리뷰" 는 시도 기준점 시각 → 태스크 번호, 리뷰어 터미널은 실행 기록의 `terminal` 로 안다, 닫기 오류는 view 를 남겨 다음 틱에 다시(Task 9).
-- 자동화: 토큰 갱신·보강·정리 태스크의 Target·Change·Acceptance 문구 일부, 바뀐 파일의 "처음 시작한 태스크" 는 history 첫 `start` 사건 시각, `create_task` 의 `{tid}` 치환, `token_update` decide 의 task 는 UI 기반 태스크(Task 10).
+- 자동화: 토큰 갱신·보강·정리 태스크의 Target·Change·Acceptance 문구 일부, 바뀐 파일의 "처음 시작한 태스크" 는 history 첫 `start` 사건 시각, `create_task` 의 `{tid}` 치환, `token_update` decide 의 task 는 UI 기반 태스크, 마지막 전체 테스트 결과를 버릴 때의 로그, `DECISION_QUIET` 의 `review_busy`(Task 10).
 - 문구: decide 판단 기준 표의 `unknown_regression` 은 8.4 의 두 줄을 풀어 적었다, watch 처리 목록에 `approval`·`decide`·`result`, "다른 워커·관제·메인의 커밋", init·up 스킬과 README 전문(Task 11).
 
-확인하지 못한 것(실환경 Task 12 에서 본다): 실제 `herdr-app ls` 출력 모양과 `hc connect` 의 `doc.get` JSON-RPC 꼴(가짜는 Task 2·4 가 herdr.d.ts 를 본떠 정했다), `hc events --json` 줄 모양, `hc keys` 의 빈칸 키 이름, `hc label`·`hc send` 결과의 키, split pane 안 일반 `hc attach`·떼기 키·보기 pane 크기·끝난 split pane 이 저절로 닫히는지, 자동 압축 중 7501 상태, 플러그인 환경 상속, Codex 첫 세션 제목, `/clear` 뒤 Claude SessionStart 가 새 session id 로 오는지.
+확인하지 못한 것(실환경 Task 12 에서 본다): 실제 `herdr-app ls` 출력 모양과 `hc connect` 의 `doc.get` JSON-RPC 꼴(가짜는 Task 2·4 가 herdr.d.ts 를 본떠 정했다), `hc events --json` 줄 모양, `hc label`·`hc send` 결과의 키, split pane 안 일반 `hc attach`·떼기 키·보기 pane 크기·끝난 split pane 이 저절로 닫히는지, 자동 압축 중 7501 상태, 플러그인 환경 상속, Codex 첫 세션 제목, `/clear` 뒤 Claude SessionStart 가 새 session id 로 오는지.
