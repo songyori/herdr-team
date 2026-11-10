@@ -43,7 +43,7 @@ argument-hint: "[--n <1..8>] [--out <폴더>] [--ar <w:h>] [--transparent] [--re
 
 오류 `image_interrupted` 는 중단됐다는 뜻이다. `images` 에 끝낸 것까지 있다. 남은 수만큼 다시 부를지 정한다. 실행 중에 나온 `codex_missing` 에도 `images` 가 붙는다(그때까지 만든 것).
 
-exit 12(`codex_missing`·`no_image_generation`·`wrapper_missing`)면 이미지를 만들 수 없다. 프리앰블의 ask 명령으로 코디네이터에게 알린다(사용자가 `codex features enable image_generation` 등을 한다). 시험 생성을 하지 않는다(쿼터를 쓴다).
+exit 12(`codex_missing`·`no_image_generation`·`wrapper_missing`)면 이미지를 만들 수 없다. 프리앰블의 ask 명령으로 메인에게 알린다(사용자가 `codex features enable image_generation` 등을 한다). 시험 생성을 하지 않는다(쿼터를 쓴다).
 
 ## 4. 검토와 커밋
 - 만든 PNG 를 Read 로 하나씩 직접 연다. 요청과 맞는지, 잘린 곳·글자 깨짐·워터마크·AI 티(`.herdr-team/design-rules.md`)가 없는지 본다. "예쁜가" 는 사용자가 일괄 승인에서 본다.

@@ -340,7 +340,7 @@ class StopTest(HookCase):
         self.assertIn("Herdr 터미널이 아니다", out["hookSpecificOutput"]["additionalContext"])
         self.assertEqual(self.hook("stop", {"session_id": "in1"}, terminal=MAIN)["decision"], "block")
 
-    def test_live_watch_or_dead_coordinator_passes(self):
+    def test_live_watch_passes(self):
         proc = self.hteam_bg("watch", as_="main")
         deadline = __import__("time").monotonic() + 10
         while not (self.state_dir / "watch.pid").exists():
@@ -349,8 +349,8 @@ class StopTest(HookCase):
         self.assertIsNone(self.hook("stop", terminal=MAIN))
         proc.kill()
         proc.communicate()
-        self.update_terminal(DRIVE, state="finished")
-        self.assertIsNone(self.hook("stop", {"session_id": "s2"}, terminal=MAIN))
+        # watch 가 끝나면 다시 막는다. 관제 생사는 보지 않는다(설계 9.4, StopRunTest)
+        self.assertEqual(self.hook("stop", {"session_id": "s2"}, terminal=MAIN)["decision"], "block")
 
     def test_stale_watch_pid_is_not_a_watch(self):
         """watch.pid 는 기록일 뿐이다. 죽은 pid, 다른 프로세스(시작 시각이 다름)를 가리키는 pid 는 watch 가 아니다."""
@@ -620,3 +620,172 @@ class HookImportTest(TeamCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+import re  # noqa: E402  (6단계 훅 시험이 쓴다)
+
+
+# --- 6단계 훅(설계 9.4): 고정 에이전트 터미널, 메인의 hteam drive 차단, Stop 조건, 코디네이터 규칙 없음 ---
+
+
+class CrewRoleTest(HookCase):
+    """고정 에이전트 작업 터미널은 진행 중 Dispatch 가 없어도 워커다. 태스크마다 직무가 바뀌므로 UserPromptSubmit 마다 다시
+    판별해 캐시를 덮어쓴다. 인수인계 Dispatch(`[handoff] …`)는 직무 없는 워커다."""
+
+    def crew_file(self, terminal):
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "crew.json").write_text(json.dumps({"production": {"terminal": terminal, "agent": "claude"}}))
+
+    def keep_open(self, title, spec="일한다"):
+        code, out = self.horch("worker-start", "--keep-open", "--agent", "claude", "--title", title, "--spec", spec,
+                               "--cwd", str(self.proj))
+        self.assertEqual(code, 0, out)
+        return out
+
+    def test_crew_terminal_without_dispatch_is_worker(self):
+        self.add_terminal("t60")  # 라벨이 없다: crew.json 에 없으면 메인으로 보인다
+        self.assertIsNotNone(self.hook("session-start", {"session_id": "m60"}, terminal="t60"))
+        self.assertEqual(self.cached("m60"), "main")
+        self.crew_file("t60")
+        # /clear 뒤 SessionStart 는 새 session id 로 오고 진행 중 Dispatch 가 없다(orca 0.7.0 env_agent)
+        self.assertIsNone(self.hook("session-start", {"session_id": "w60"}, terminal="t60"))
+        self.assertEqual(self.cached("w60"), "worker")
+        out = self.hook("guard", {"session_id": "w60", "tool_name": "Write",
+                                  "tool_input": {"file_path": str(self.proj / "src/app.py")}}, terminal="t60")
+        self.assertIsNone(out)  # 메인의 제품 파일 거부가 걸리지 않는다
+        self.assertIsNone(self.hook("stop", {"session_id": "w60"}, terminal="t60"))
+
+    def test_crew_terminal_redetects_every_prompt(self):
+        for tid, role in (("T-001", "planner"), ("T-002", "developer")):
+            self.write_spec(tid, role)
+            state.create(self.p, tid, role)
+        first = self.keep_open("T-001 r1 작업")
+        term = first["terminal"]
+        self.crew_file(term)
+        self.assertIsNone(self.hook("role-mark", {"session_id": "c1"}, terminal=term))
+        self.assertEqual(self.cached("c1"), "worker:planner")
+        code, out = self.horch("done", "--dispatch", first["dispatch"], "--outcome", "succeeded", "--summary", "끝",
+                               terminal=term)
+        self.assertEqual(code, 0, out)
+        self.hook("role-mark", {"session_id": "c1"}, terminal=term)
+        self.assertEqual(self.cached("c1"), "worker")  # 진행 중 Dispatch 가 없다: 직무 캐시를 덮어쓴다
+        self.update_terminal(term, status="done", turn=2)
+        code, second = self.horch("worker-start", "--terminal", term, "--title", "T-002 r1 작업", "--spec", "다음 일")
+        self.assertEqual(code, 0, second)
+        self.hook("role-mark", {"session_id": "c1"}, terminal=term)
+        self.assertEqual(self.cached("c1"), "worker:developer")
+        out = self.hook("guard", {"session_id": "c1", "tool_name": "AskUserQuestion", "tool_input": {"questions": []}},
+                        terminal=term)
+        self.assertIn("horch ask", out["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_handoff_dispatch_is_worker_without_role(self):
+        out = self.keep_open("[handoff] production s1", "인수인계를 쓴다")
+        self.crew_file(out["terminal"])
+        self.assertIsNone(self.hook("role-mark", {"session_id": "h1"}, terminal=out["terminal"]))
+        self.assertEqual(self.cached("h1"), "worker")
+        ask = self.hook("guard", {"session_id": "h1", "tool_name": "AskUserQuestion", "tool_input": {"questions": []}},
+                        terminal=out["terminal"])
+        self.assertIn("horch ask", ask["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_any_hteam_role_session_is_unknown(self):
+        # 관제는 Claude 세션이 아니다. HTEAM_ROLE 이 있는 Claude 세션은(어떤 값이든, 메인 터미널이어도) 역할을 모른다
+        for sid, value in (("x1", "drive"), ("x2", "anything")):
+            env = {"HTEAM_ROLE": value}
+            self.assertIsNone(self.hook("session-start", {"session_id": sid}, terminal=MAIN, env=env), sid)
+            self.assertIsNone(self.cached(sid), sid)
+            out = self.hook("guard", {"session_id": sid, "tool_name": "Write",
+                                      "tool_input": {"file_path": str(self.proj / "src/app.py")}}, terminal=MAIN, env=env)
+            self.assertIsNone(out, sid)
+
+
+DRIVE_DENY = ("hteam drive", ".herdr-team/bin/hteam drive", '"/abs/x/.herdr-team/bin/hteam" drive', "'hteam' drive",
+              "hteam --root . drive", "hteam --root=/x drive", "python3 /p/herdr-team/bin/hteam --root /x drive",
+              "cd /x && hteam drive", "hteam drive &", 'bash -c "hteam drive"', "hteam drive; echo done",
+              "HTEAM_ROLE=drive hteam drive")
+DRIVE_ALLOW = ("hteam drive-x", "hteam status", ".herdr-team/bin/hteam --root . status", "hteam up --wait-run 180",
+               '.herdr-team/bin/hteam answer out-0001 "hteam drive 는 관제 탭에서 돈다"',
+               "hteam scope T-001 '관제(hteam drive)를 다시 띄운다'", "echo drive", "ls drive/", "hteamdrive")
+
+
+class DriveRuleTest(unittest.TestCase):
+    """메인 Bash 의 `hteam drive` 판별(설계 9.4): hteam 낱말은 horch 와 같은 경계 규칙, 앞 옵션(--root …)을 건너뛴 하위 명령이
+    정확히 drive 일 때만. hteam 한 번 호출이면 그 하위 명령만 본다(글 안의 낱말은 실행이 아니다)."""
+
+    def test_rule(self):
+        hook = load_hook()
+        for cmd in DRIVE_DENY:
+            self.assertTrue(hook.drive_denied(cmd), cmd)
+        for cmd in DRIVE_ALLOW:
+            self.assertFalse(hook.drive_denied(cmd), cmd)
+
+
+class DriveGuardTest(HookCase):
+    def test_main_bash_hteam_drive_denied(self):
+        for cmd in DRIVE_DENY[:4]:
+            out = self.hook("guard", {"tool_name": "Bash", "tool_input": {"command": cmd}}, terminal=MAIN)
+            self.assertEqual(self.decision(out), "deny", cmd)
+            self.assertEqual(out["hookSpecificOutput"]["permissionDecisionReason"],
+                             "hteam drive 는 관제 탭에서만 돈다. 메인 터미널이 관제가 되면 horch 깨우기 글이 사용자 입력란에 "
+                             "들어온다. 관제를 띄우려면 /herdr-team:up 을 쓴다")
+        for cmd in DRIVE_ALLOW[:4]:
+            self.assertIsNone(self.hook("guard", {"tool_name": "Bash", "tool_input": {"command": cmd}}, terminal=MAIN), cmd)
+        # 워커는 막지 않는다(메인 규칙이다)
+        self.assertIsNone(self.hook("guard", {"session_id": "w", "tool_name": "Bash",
+                                              "tool_input": {"command": "hteam drive"}}, terminal=self.worker()))
+
+    def test_main_denials_point_to_task_flow(self):
+        reason = self.edit("src/app.py", terminal=MAIN)["hookSpecificOutput"]["permissionDecisionReason"]
+        for needle in ("task new", "start", "메인 규칙"):
+            self.assertIn(needle, reason)
+        out = self.hook("guard", {"tool_name": "Bash", "tool_input": {"command": "horch status"}}, terminal=MAIN)
+        reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+        for needle in ("answer", "scope", "한 번"):
+            self.assertIn(needle, reason)
+        dev = self.worker_terminal("T-002", "developer")
+        out = self.hook("guard", {"session_id": "d", "tool_name": "AskUserQuestion", "tool_input": {"questions": []}},
+                        terminal=dev)
+        self.assertEqual(out["hookSpecificOutput"]["permissionDecisionReason"],
+                         "워커는 사용자에게 직접 묻지 않는다. 프리앰블의 ask 명령(horch ask)으로 묻는다(메인이 답한다).")
+
+
+class StopRunTest(HookCase):
+    """Stop(설계 9.4): 메인이고 run.json 에 run_id 가 있는데 watch 가 없으면 막는다. 관제 생사는 보지 않는다."""
+
+    def test_dead_drive_still_needs_watch(self):
+        (self.drive_dir / "drive.pid").unlink()
+        self.update_terminal(DRIVE, state="finished")
+        out = self.hook("stop", terminal=MAIN)
+        self.assertEqual(out and out["decision"], "block")
+        self.assertIn("watch", out["reason"])
+
+    def test_run_without_run_id_does_not_block(self):
+        run = json.loads((self.state_dir / "run.json").read_text())
+        run.pop("run_id")
+        (self.state_dir / "run.json").write_text(json.dumps(run))
+        self.assertIsNone(self.hook("stop", terminal=MAIN))
+
+
+class SessionTextTest(HookCase):
+    def test_main_session_text_names_drive_and_decide(self):
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        decide = {"id": "out-0001", "type": "decide", "at": "2026-11-10T00:00:00Z", "from": "drive", "kind": "escalation",
+                  "task": "T-001", "summary": "멈춤", "files": [], "commands": [], "body": "[escalation] T-001: 멈춤",
+                  "answered": False}
+        (self.state_dir / "outbox.jsonl").write_text(json.dumps(decide, ensure_ascii=False) + "\n")
+        ctx = self.hook("session-start", terminal=MAIN)["hookSpecificOutput"]["additionalContext"]
+        self.assertTrue(ctx.startswith("herdr-team 프로젝트다. 너는 메인이다(사용자와 대화하는 세션). 첫 지시가 워커 지시"
+                                       "(\"너는 herdr-orch 워커다\")면 이 안내를 무시한다.\n"), ctx)
+        self.assertIn("- 답하지 않은 질문이 1건 있다(decide 포함). `/herdr-team:up` 이 `hteam reask` 로 다시 보여 준다.", ctx)
+        self.assertNotIn("코디네이터", ctx)
+        out = self.hook("session-start", {"session_id": "o1"})  # Herdr 터미널 밖의 메인
+        text = out["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("- 이 세션은 Herdr 터미널이 아니다($HC_TERMINAL_ID 없음). watch·answer·큐 명령은 Herdr 터미널의 메인 "
+                      "세션에서만 된다. 사용자에게 Herdr 안에서 다시 열라고 알린다.", text)
+        self.assertNotIn("tell", text)
+
+
+class HookSourceTest(unittest.TestCase):
+    def test_no_coordinator_rules_in_hook(self):
+        text = HOOK.read_text(encoding="utf-8")
+        self.assertNotIn("coordinator", text)
+        self.assertNotIn("코디네이터", text)
+        self.assertIsNone(re.search(r"\btell\b", text))

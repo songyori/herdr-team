@@ -209,7 +209,7 @@ class FixTest(LifeCase):
         self.assertEqual(st["rounds"][1]["work"]["title"], "T-001 r2 작업")
         self.assertEqual(self.dispatch_row(old)["state"], "released")
         spec = (self.state_dir / "tasks/T-001/r2-work.md").read_text()
-        for needle in ("## 수정 라운드 r2", "`docs/reviews/T-001/r1.md` 리뷰를 읽고 막는 지적", "코디네이터 메모: 리뷰 지적 반영"):
+        for needle in ("## 수정 라운드 r2", "`docs/reviews/T-001/r1.md` 리뷰를 읽고 막는 지적", "지시: 리뷰 지적 반영"):
             self.assertIn(needle, spec)
         self.act_work("T-001")
         code, out = self.hteam("review", "T-001")

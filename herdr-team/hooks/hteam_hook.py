@@ -19,7 +19,7 @@ from pathlib import Path
 HOOK_START = time.monotonic()  # 자동 부활의 4초 규칙과 마감은 훅이 시작한 때부터 잰다(설계 9.5)
 LIB = Path(__file__).resolve().parents[1] / "lib"
 # hteam 모듈. _load() 가 herdr-team 프로젝트에서만 채운다
-herdr = outbox = roles = HteamError = PLUGIN_ROOT = SHIM = Project = None
+outbox = roles = HteamError = PLUGIN_ROOT = SHIM = Project = None
 die_at = flock = read_json = write_atomic = write_json = None
 
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
@@ -27,7 +27,7 @@ SETUP_PREFIXES = (".herdr-team/", ".claude/", "docs/superpowers/")
 SETUP_FILES = {"CLAUDE.md", "AGENTS.md", ".gitignore"}
 STATE_DIR = ".herdr-team/state"
 SESSION_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-# 캐시하는 역할. 관제 환경은 캐시하지 않는다(늘 환경 변수와 run.json 으로 본다)
+# 캐시하는 역할. 관제는 Claude 세션이 아니다(관제 환경의 세션은 캐시하지 않고 늘 환경 변수와 run.json 으로 본다)
 CACHED_RE = re.compile(r"^(main|reviewer|worker(:[a-z][a-z0-9-]*)?)$")
 NOISE_RE = re.compile(r"[\s#*_>|\-`]+")
 FINGERPRINT = 80  # 정규화한 render.context 앞 80자가 메인 텍스트에 있으면 보여 준 것으로 본다
@@ -36,15 +36,19 @@ TAIL_BYTES = 1 << 20
 
 # 메인 Bash 의 horch 거부(horch_denied). brief 의 낱말 규칙 그대로다
 HORCH_RE = re.compile(r"(^|[\s;&|(`'\"/<>])horch(?=$|[\s;&|)`'\"<>])")
+# 메인 Bash 의 hteam drive 거부(drive_denied, 설계 9.4): hteam 낱말은 HORCH_RE 와 같은 경계, 앞 옵션 --root 를 건너뛴
+# 하위 명령이 정확히 drive 일 때
+DRIVE_RE = re.compile(r"(^|[\s;&|(`'\"/<>])hteam['\"]?(?:\s+--root(?:=\S+|\s+\S+))*\s+['\"]?drive['\"]?"
+                      r"(?=$|[\s;&|)`'\"<>])")
 
 
 def _load() -> None:
     """hteam 모듈을 가져온다. herdr-team 프로젝트를 찾은 뒤에만 부른다. 실패는 main() 이 오류 기록으로 남긴다."""
-    global herdr, outbox, roles, HteamError, PLUGIN_ROOT, SHIM, Project
+    global outbox, roles, HteamError, PLUGIN_ROOT, SHIM, Project
     global die_at, flock, read_json, write_atomic, write_json
     if str(LIB) not in sys.path:
         sys.path.insert(0, str(LIB))
-    from hteam import herdr, outbox, roles
+    from hteam import outbox, roles
     from hteam.errors import HteamError
     from hteam.paths import PLUGIN_ROOT, SHIM, Project
     from hteam.util import die_at, flock, read_json, write_atomic, write_json
@@ -183,7 +187,7 @@ def _plain(cmd: str) -> bool:
 
 def hteam_only(cmd: str) -> bool:
     """명령 전체가 hteam 한 번 호출인가(첫 단어의 basename 이 hteam 이고 연산자·치환·heredoc 이 없다).
-    이때 horch 낱말은 tell·answer 의 글일 뿐 실행이 아니다."""
+    이때 horch 낱말은 answer·scope 의 글일 뿐 실행이 아니다."""
     if not _plain(cmd):
         return False
     try:
@@ -199,6 +203,19 @@ def horch_denied(cmd: str) -> bool:
     return not hteam_only(cmd) and bool(HORCH_RE.search(cmd))
 
 
+def drive_denied(cmd: str) -> bool:
+    """메인 Bash 명령을 관제 실행(`hteam drive`)으로 보고 거부하는가(설계 9.4). hteam 한 번 호출이면 앞 옵션(`--root` 는
+    다음 단어까지, `--root=…` 와 그 밖의 `-…` 는 한 단어)을 건너뛴 하위 명령이 정확히 drive 일 때만(글 안의 `hteam drive`
+    낱말은 실행이 아니다). 아니면 DRIVE_RE 가 어디서든 맞으면 거부한다(닫힌 쪽, horch 규칙과 같다)."""
+    if hteam_only(cmd):
+        words = shlex.split(cmd)
+        i = 1
+        while i < len(words) and words[i].startswith("-"):
+            i += 2 if words[i] == "--root" else 1
+        return i < len(words) and words[i] == "drive"
+    return bool(DRIVE_RE.search(cmd))
+
+
 def deny(reason: str) -> dict:
     return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                    "permissionDecisionReason": reason}}
@@ -210,8 +227,7 @@ def _transcript_text(path) -> str | None:
         return None
     try:
         with open(path, "rb") as fh:
-            fh.seek(0, os.SEEK_END)
-            size = fh.tell()
+            size = fh.seek(0, os.SEEK_END)
             fh.seek(max(0, size - TAIL_BYTES))
             data = fh.read()
     except OSError:
@@ -304,7 +320,7 @@ def guard(p, payload: dict):
         if role == "reviewer":
             return deny("리뷰어는 묻지 않는다. 판단할 수 없는 것은 리뷰 파일에 적고 판정을 마친다.")
         if role.startswith("worker"):
-            return deny("워커는 사용자에게 직접 묻지 않는다. 프리앰블의 ask 명령(horch ask)으로 코디네이터에게 묻는다.")
+            return deny("워커는 사용자에게 직접 묻지 않는다. 프리앰블의 ask 명령(horch ask)으로 묻는다(메인이 답한다).")
         return None
     if tool in EDIT_TOOLS:
         raw = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
@@ -318,14 +334,20 @@ def guard(p, payload: dict):
             # 프로젝트 밖(스크래치 파일 등)은 이 프로젝트의 제품 파일이 아니므로 막지 않는다
             setup = in_team or rel in SETUP_FILES or (rel or "").startswith(SETUP_PREFIXES)
             if kind == "inside" and not setup and not p.setup_mode.exists():
-                return deny(f"메인은 제품 파일({rel})을 고치지 않는다. `{SHIM} tell \"<요청>\"` 으로 코디네이터에게 넘긴다.")
+                return deny(f"메인은 제품 파일({rel})을 고치지 않는다. 태스크로 맡긴다(`{SHIM} task new` → 사양 커밋 → "
+                            f"`{SHIM} start`, CLAUDE.md \"메인 규칙\").")
         return None
     command = tool_input.get("command")
-    if tool == "Bash" and role == "main" and isinstance(command, str) and horch_denied(command):
-        return deny(f"메인은 horch 를 직접 부르지 않는다(Run 에 묶이면 깨우기 글이 사용자 입력란에 들어온다). horch 가 나오는 "
-                    f"글은 `{SHIM} tell \"<글>\"` 이나 `{SHIM} answer <out-id> \"<답>\"` 한 번의 호출 안에만 둔다: 다른 "
-                    "명령과 잇지 않고(; && | 없이) 리다이렉션·$(…)·백틱·heredoc 도 쓰지 않는다. 그 밖의 명령은 horch 라는 "
-                    "낱말만 나와도 거부한다(ls·grep 포함).")
+    if tool != "Bash" or role != "main" or not isinstance(command, str):
+        return None
+    if horch_denied(command):
+        return deny(f"메인은 horch 를 직접 부르지 않는다(Run 에 묶이면 깨우기 글이 사용자 입력란에 들어온다). 같은 일은 hteam "
+                    f"큐 명령으로 한다. horch 가 나오는 글은 `{SHIM} answer <out-id> \"<답>\"` 이나 "
+                    f"`{SHIM} scope T-xxx \"<내용>\"` 한 번의 호출 안에만 둔다: 다른 명령과 잇지 않고(; && | 없이) "
+                    "리다이렉션·$(…)·백틱·heredoc 도 쓰지 않는다. 그 밖의 명령은 horch 라는 낱말만 나와도 거부한다(ls·grep 포함).")
+    if drive_denied(command):
+        return deny("hteam drive 는 관제 탭에서만 돈다. 메인 터미널이 관제가 되면 horch 깨우기 글이 사용자 입력란에 들어온다. "
+                    "관제를 띄우려면 /herdr-team:up 을 쓴다")
     return None
 
 
@@ -349,7 +371,8 @@ def session_start(p, payload: dict):
     if role_of(p, payload, fresh=True) != "main":
         return None
     notice = auto_up(p, force=True)
-    lines = ["herdr-team 프로젝트다. 너는 메인이다(사용자와 대화하는 세션). 첫 지시가 코디네이터나 워커 지시면 이 안내를 무시한다.",
+    lines = ["herdr-team 프로젝트다. 너는 메인이다(사용자와 대화하는 세션). 첫 지시가 워커 지시(\"너는 herdr-orch 워커다\")면 "
+             "이 안내를 무시한다.",
              f"- {notice}" if notice else
              "- 관제(hteam drive)는 훅이 확인하고 꺼져 있으면 자동으로 다시 띄운다(config.toml [drive] auto_up). watch 가 꺼져 "
              f"있으면 Bash `run_in_background: true` 로 `{SHIM} watch` 를 띄운다. 관제 상태가 의심되면 "
@@ -357,17 +380,26 @@ def session_start(p, payload: dict):
              "- 메인은 사용자와 대화하고 판단한다. 산출물은 태스크로 맡기고, 관제가 올린 decide 를 처리한다"
              "(CLAUDE.md \"메인 규칙\")."]
     if not os.environ.get("HC_TERMINAL_ID", "").strip():
-        lines.append("- 이 세션은 Herdr 터미널이 아니다($HC_TERMINAL_ID 없음). tell·watch·answer 는 Herdr 터미널의 메인 "
+        lines.append("- 이 세션은 Herdr 터미널이 아니다($HC_TERMINAL_ID 없음). watch·answer·큐 명령은 Herdr 터미널의 메인 "
                      "세션에서만 된다. 사용자에게 Herdr 안에서 다시 열라고 알린다.")
     asked = len(outbox.open_questions(p))
     if asked:
-        lines.append(f"- 답하지 않은 질문이 {asked}건 있다. `/herdr-team:up` 이 `hteam reask` 로 다시 보여 준다.")
+        lines.append(f"- 답하지 않은 질문이 {asked}건 있다(decide 포함). `/herdr-team:up` 이 `hteam reask` 로 다시 보여 준다.")
     return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "\n".join(lines)}}
 
 
 def role_mark(p, payload: dict):
-    """아직 캐시가 없으면 이번 프롬프트에서 다시 판별한다. 메인이면 매 프롬프트 자동 부활을 확인한다(60초 간격)."""
-    if role_of(p, payload) != "main":
+    """아직 캐시가 없으면 이번 프롬프트에서 다시 판별한다. 고정 에이전트 작업 터미널(state/crew.json)이면 늘 캐시를 지우고
+    다시 판별한다(태스크마다 직무가 바뀐다, 설계 9.4 6단계). crew.json 을 읽지 못하면 오류를 남기고 캐시를 쓴다.
+    메인이면 매 프롬프트 자동 부활을 확인한다(60초 간격)."""
+    term = os.environ.get("HC_TERMINAL_ID", "").strip()
+    fresh = False
+    if term:
+        try:
+            fresh = roles.crew_terminal(p, term)
+        except HteamError as exc:
+            log_error(p.root, f"역할 판별: {exc.code}: {exc.message}")
+    if role_of(p, payload, fresh=fresh) != "main":
         return None
     notice = auto_up(p, force=False)
     if not notice:
@@ -376,8 +408,9 @@ def role_mark(p, payload: dict):
 
 
 def stop(p, payload: dict):
-    """메인이고 관제 터미널이 살아 있는데 watch 가 없으면 턴을 끝내지 못하게 한다. stop_hook_active 면 다시 막지 않는다.
-    Herdr 터미널 밖($HC_TERMINAL_ID 없음)의 메인은 watch 를 띄울 수 없으므로(require_main 이 exit 5) 막지 않는다.
+    """메인이고 run.json 에 run_id 가 있는데 watch 가 없으면 턴을 끝내지 못하게 한다(설계 9.4). 관제 생사는 보지 않는다.
+    stop_hook_active 면 다시 막지 않는다. Herdr 터미널 밖($HC_TERMINAL_ID 없음)의 메인은 watch 를 띄울 수 없으므로
+    (require_main 이 exit 5) 막지 않는다.
 
     watch 생존은 watch.pid 기록(pid + 시작 시각)으로 본다. 죽었거나 pid 가 다른 프로세스에 다시 쓰였으면 watch 가 없다.
     run.json 을 읽지 못하면 bad_run_file 이 오류 기록으로 남고 막지 않는다."""
@@ -385,10 +418,9 @@ def stop(p, payload: dict):
         return None
     if not os.environ.get("HC_TERMINAL_ID", "").strip():
         return None
-    if outbox.watch_alive(p):
+    if not outbox._run(p).get("run_id"):
         return None
-    run = outbox._run(p)
-    if not run.get("drive_terminal") or herdr.probe(run["drive_terminal"], run.get("drive_argv")) != "live":
+    if outbox.watch_alive(p):
         return None
     return {"decision": "block",
             "reason": f"herdr-team: watch 가 꺼져 있다. Bash `run_in_background: true` 로 `{SHIM} watch` 를 띄우고 턴을 "

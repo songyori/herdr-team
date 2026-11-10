@@ -320,12 +320,12 @@ def _awaiting(cfg, st: dict, appr: dict | None) -> tuple[list[str] | None, str |
         busy = ", ".join(f"{d['task']}({d['status']})" for d in dirs if d["status"] != "pending")
         if waiting and not busy:
             first = (f"만들어 둔 보강 태스크 {', '.join(d['task'] for d in waiting)} 는 아직 시작하지 않았다. "
-                     "coordinator.md \"디자인 시스템 보강\" 3–4 를 마저 하고(UI 기반 의존 정리, 사양 커밋, hteam start), 끝나면")
+                     "관제가 의존이 풀리면 시작한다. 끝나면")
         else:
             first = (f"보강 중인 director 태스크 {busy} 가 끝나기를 기다린다. 끝나면" if busy else
-                     "디렉터 보강 태스크를 만들고(task new --role director), 끝나면")
-        return None, (f"시스템 추가 제안({names})이 있어 묻기 전에 디자인 시스템을 보강한다. {first} 제안한 태스크마다 "
-                      f"{SHIM} fix <T> --supplement <보강 태스크>(coordinator.md \"디자인 시스템 보강\")")
+                     "관제가 디렉터 보강 태스크를 만든다. 끝나면")
+        return None, (f"시스템 추가 제안({names})이 있어 묻기 전에 디자인 시스템을 보강한다. {first} 관제가 제안한 "
+                      "태스크마다 fix --supplement 로 다시 고치게 한다(설계 8.9)")
     return H("design-review"), None
 
 

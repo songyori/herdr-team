@@ -101,8 +101,8 @@ def probe(terminal: str | None, argv: list[str] | None, timeout: float = 10) -> 
 
 
 def run_bg(name: str, cwd: str, labels: dict[str, str], argv: list[str]) -> dict:
-    """코디네이터를 띄운다. --keep: Herdr 재시작 등으로 잃은 프로그램을 원래 명령으로 다시 실행하지 않고 셸로 바꾼다
-    (같은 nonce 의 코디네이터가 저절로 되살아나지 않게. 터미널은 남아 원인을 볼 수 있다)."""
+    """관제를 띄운다. --keep: Herdr 재시작 등으로 잃은 프로그램을 원래 명령으로 다시 실행하지 않고 셸로 바꾼다
+    (같은 nonce 의 관제가 저절로 되살아나지 않게. 터미널은 남아 원인을 볼 수 있다)."""
     args = ["run", "--bg", "--no-parent", "--no-notify", "--keep", "--name", name, "--cwd", cwd]
     for key, value in labels.items():
         args += ["--label", f"{key}={value}"]

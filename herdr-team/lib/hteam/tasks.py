@@ -116,8 +116,8 @@ def _begin(p, st: dict, rd: dict, text: str, event: str, **info) -> None:
 
 
 def _new_round(st: dict, n: int, head: str, choice, note=None, supplement=None, coord_note=None) -> dict:
-    """note 는 사용자 요청 라운드(from_user)면 사용자 요청, 아니면 코디네이터 메모다. coord_note 는 사용자 요청 라운드를
-    잇는 일반 fix 의 코디네이터 메모다(사용자 요청과 섞지 않는다)."""
+    """note 는 사용자 요청 라운드(from_user)면 사용자 요청, 아니면 지시다. coord_note 는 사용자 요청 라운드를
+    잇는 일반 fix 의 지시다(사용자 요청과 섞지 않는다)."""
     rd = {"round": n, "round_base": head, "agent": choice.worker, "model": choice.model, "effort": choice.effort,
           "note": note, "supplement": supplement, "work": dispatch.new_slot(roles.work_title(st["id"], n)),
           "reviews": [], "verdict": None}
@@ -890,8 +890,8 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
         coord_note = None
         if not from_user and prior.get("from_user") and prior.get("note") and old != "awaiting_user":
             # 결정이 연 사용자 요청 라운드가 사용자에게 다시 보이지 못한 채 닫힌다(워커 실패, 리뷰 수정 요청 뒤 changes 등).
-            # 그 요청을 그대로 잇고 코디네이터 메모는 따로 적는다(워커·리뷰어가 메모를 사용자 요청으로 읽지 않게)
-            # 이미 그 라운드에 적힌 코디네이터 메모는 새 메모와 함께 잇는다(같은 메모는 쌓지 않는다)
+            # 그 요청을 그대로 잇고 지시는 따로 적는다(워커·리뷰어가 지시를 사용자 요청으로 읽지 않게)
+            # 이미 그 라운드에 적힌 지시는 새 지시와 함께 잇는다(같은 지시는 쌓지 않는다)
             kept = (prior["coord_note"].split(" / ") if prior.get("coord_note") else []) + ([note] if note else [])
             coord_note = " / ".join(dict.fromkeys(kept)) if kept else None
             note, from_user = prior["note"], True

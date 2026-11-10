@@ -200,6 +200,6 @@ class Horch:
         return data
 
     def workers(self, states=None) -> list[dict]:
-        """worker-list 행. 코디네이터(Run 소유자) 터미널에서만 된다. states 를 주면 그 상태만(--state 반복)."""
+        """worker-list 행. 관제(Run 소유자) 환경에서만 된다. states 를 주면 그 상태만(--state 반복)."""
         flags = [x for s in states or () for x in ("--state", s)]
         return list(self.ok("worker-list", *flags).get("workers") or [])

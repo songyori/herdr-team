@@ -85,7 +85,7 @@ class ReviewTest(ReviewCase):
                        "VERDICT: REQUEST_CHANGES", "--report-path docs/reviews/T-001/r1-a1.md", "이전 리뷰: 없음",
                        # 실환경(1단계): 병렬 커밋으로 HEAD 가 움직일 때마다 리뷰어가 멈추고 물었다
                        "네가 추적 파일 내용을 바꾸거나 HEAD 를 움직이면 판정이 무효가 된다",
-                       "리뷰 동안 다른 워커와 코디네이터의 커밋으로 HEAD 가 움직이는 것은 정상이다"):
+                       "리뷰 동안 다른 워커·관제·메인의 커밋으로 HEAD 가 움직이는 것은 정상이다"):
             self.assertIn(needle, prompt)
         code, res = self.act_review("T-001", "APPROVE")
         self.assertEqual(code, 0, res)
@@ -120,9 +120,9 @@ class ReviewTest(ReviewCase):
         self.act_work("T-001", {"src/app.py": "print('blue')\n"})
         self.assertEqual(self.hteam("review", "T-001")[0], 0)
         prompt = (self.state_dir / "tasks/T-001/r2-review-a1.md").read_text()
-        self.assertIn("- 이번 라운드 코디네이터 메모: 버튼 색을 파랑으로\n"
+        self.assertIn("- 이번 라운드 지시: 버튼 색을 파랑으로\n"
                       "- 이번 라운드 작업 사양: `.herdr-team/state/tasks/T-001/r2-work.md`\n", prompt)
-        self.assertIn("5. 이번 라운드 요청(위 코디네이터 메모)을 반영했는가. 요청이 사양의 Acceptance 를 바꾸면 요청을 "
+        self.assertIn("5. 이번 라운드 요청(위 지시)을 반영했는가. 요청이 사양의 Acceptance 를 바꾸면 요청을 "
                       "따른 쪽을 맞는 것으로 본다.", prompt)
         self.assertNotIn("사용자 요청", prompt)
         self.assertTrue((self.proj / ".herdr-team/state/tasks/T-001/r2-work.md").is_file())
@@ -133,15 +133,15 @@ class ReviewTest(ReviewCase):
                                      st["rounds"][-1]["reviews"][0])
         self.assertIn("- 이번 라운드 사용자 요청: 글꼴을 키운다\n", text)
         self.assertIn("5. 이번 라운드 요청(위 사용자 요청)을 반영했는가.", text)
-        self.assertNotIn("코디네이터 메모", text)
+        self.assertNotIn("이번 라운드 지시", text)
         # 사용자 요청 라운드를 잇는 fix 의 코디네이터 메모와 디렉터 보강도 따로 보인다
         rd.update(coord_note="이전 워커가 실패했다", supplement="T-009")
         text = compose.review_prompt(self.p, config.load(self.p), specs.load(self.p, "T-001"), rd,
                                      st["rounds"][-1]["reviews"][0])
-        self.assertIn("- 이번 라운드 사용자 요청: 글꼴을 키운다\n- 이번 라운드 코디네이터 메모: 이전 워커가 실패했다\n"
+        self.assertIn("- 이번 라운드 사용자 요청: 글꼴을 키운다\n- 이번 라운드 지시: 이전 워커가 실패했다\n"
                       "- 이번 라운드 디렉터 보강: T-009 의 결과(`docs/tasks/T-009/report.md`, `docs/design/system/`)를 반영한다\n"
                       "- 이번 라운드 작업 사양: `.herdr-team/state/tasks/T-001/r2-work.md`\n", text)
-        self.assertIn("5. 이번 라운드 요청(위 사용자 요청·코디네이터 메모·디렉터 보강)을 반영했는가.", text)
+        self.assertIn("5. 이번 라운드 요청(위 사용자 요청·지시·디렉터 보강)을 반영했는가.", text)
 
     def test_codex_worker_gets_claude_reviewer(self):
         self.write_spec("T-001", front={"worker": "codex"})
@@ -1411,7 +1411,7 @@ class ReviewGateTest(GateCase):
                        ', exit 1)\n- quick 명령: "fake-test src/app.py"\n- quick 로그: .herdr-team/state/tests/logs/T-001-r1-quick-a2-',
                        "\n\n출력 끝:\n```\n", "FAIL tests/a.test.ts > 더하기\n```\n\n고친 뒤 `.herdr-team/bin/hteam test T-001` 로 "
                        "다시 확인한다.\n실패가 이 태스크 탓이 아니면(소유 경로 밖 코드, 위의 커밋 안 된 다른 파일)",
-                       "코디네이터에게 묻는다.\n\nVERDICT: REQUEST_CHANGES\n"):
+                       "프리앰블의 ask 명령으로 묻는다(메인이 답한다).\n\nVERDICT: REQUEST_CHANGES\n"):
             self.assertIn(needle, text)
         self.assertEqual(self.git("log", "-1", "--format=%s").strip(), "[T-001] review r1: REQUEST_CHANGES")
         st = self.task_state("T-001")
@@ -1747,7 +1747,7 @@ class ReviewRoundTest(ReviewCase):
         work = (self.state_dir / "tasks/T-001/r2-work.md").read_text(encoding="utf-8")
         self.assertIn("`docs/reviews/T-001/r1.md` 리뷰를 읽고 막는 지적(`## 지적 사항` 의 P1, `## 이전 지적 확인` 의 미해결, "
                       "hteam 사전 검사·테스트 관문 사유)을 모두 고친다. 고치지 않는 항목은 보고서 `## r2` 절에 이유를 적는다. "
-                      "`## 후속`·`## 기획 누락`·`## 회귀` 는 고치지 않는다(코디네이터가 따로 태스크로 만든다).", work)
+                      "`## 후속`·`## 기획 누락`·`## 회귀` 는 고치지 않는다(관제가 따로 태스크나 decide 로 만든다).", work)
 
     def test_request_round_adds_line_four(self):
         self.second_round(note="버튼 색을 파랑으로")

@@ -52,10 +52,18 @@ def require_drive(p) -> None:
 LABEL_BUDGET = 5.0  # 훅 시간 안에 끝나게 hc 라벨 확인(조상 포함)에 쓰는 전체 시간(초)
 
 
+def crew_terminal(p, term: str) -> bool:
+    """term 이 state/crew.json 의 고정 에이전트 작업 터미널인가(설계 9.4 6단계). crew.json 을 읽지 못하면 HteamError 를
+    그대로 올린다(호출자가 정한다)."""
+    from .crew import load  # crew 가 가져오는 queue 등이 이 모듈을 import 하므로 여기서 가져온다
+    return any(isinstance(entry, dict) and entry.get("terminal") == term for entry in load(p).values())
+
+
 def detect(p) -> tuple[str | None, bool]:
     """(역할, 확실한가). 역할: main·reviewer·worker:<직무>·worker(hteam 제목이 아닌 horch 워커).
 
     워커는 $HC_TERMINAL_ID 가 horch 의 launching·active Dispatch 터미널인 것으로 안다(`horch status` 의 dispatch).
+    고정 에이전트 작업 터미널(state/crew.json)은 진행 중 Dispatch 가 없어도 직무 없는 워커다(6단계, /clear 뒤 새 세션).
     horch 를 부르지 못하거나 태스크를 모르면 (None, False): 캐시하지 않고 다음에 다시 본다.
     관제는 Claude 세션이 아니다(설계 9.4): HTEAM_ROLE 이 있는 세션(어떤 값이든)과 run.json 의 관제 터미널은 모름이다.
     메인은 require_main 과 같은 근거로 가린다: horch Run 소유자는 메인이 아니고(모름), 끝난 Dispatch 의 워커처럼 horch
@@ -87,6 +95,11 @@ def detect(p) -> tuple[str | None, bool]:
         task = read_json(p.state_path(info["task"]), None)
         role = task.get("role") if isinstance(task, dict) else None
         return (f"worker:{role}", True) if isinstance(role, str) and role else (None, False)
+    try:
+        if crew_terminal(p, term):  # 메인 판별보다 먼저 본다: crew 터미널은 메인이 아니다
+            return "worker", True
+    except HteamError:
+        return None, False  # crew.json 을 읽지 못했다: 캐시하지 않고 다음에 다시 본다
     if dispatch or data.get("run"):
         return None, False  # 모르는 모양이거나 Run 소유자(관제 환경 없이 Run 에 묶인 터미널)
     labeled = _label_role(term)

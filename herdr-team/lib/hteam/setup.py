@@ -23,7 +23,6 @@ MARK = "<!-- herdr-team -->"
 # 템플릿 → 프로젝트 경로. 있는 파일은 덮어쓰지 않는다.
 FILES = {
     "config.toml": ".herdr-team/config.toml",
-    "coordinator.md": ".herdr-team/coordinator.md",
     "design-rules.md": ".herdr-team/design-rules.md",
     "text-rules.md": ".herdr-team/text-rules.md",
     "roles/planner.md": ".herdr-team/roles/planner.md",
@@ -36,10 +35,9 @@ FILES = {
 # upgrade 가 템플릿으로 바꾸는 복사한 규칙 파일(설계 9.6): config.toml 은 사용자 설정이라 뺀다(출력에도 없다)
 UPGRADE = {src: rel for src, rel in FILES.items() if src != "config.toml"}
 SECTIONS = (("CLAUDE.md", "CLAUDE.section.md"), ("AGENTS.md", "AGENTS.section.md"))  # 덧붙인 절은 바꾸지 않고 알린다
-UPGRADE_NEXT = ("바뀐 파일을 확인하고(git diff -- .herdr-team) 커밋한다. manual 의 절은 템플릿과 견줘 직접 고친다. 코디네이터는 "
-                "시작할 때만 지침을 읽으므로 커밋한 뒤 코디네이터 터미널을 끝낸다(메인 세션 훅이 다시 띄운다. auto_up = false "
-                "면 메인에서 /herdr-team:up). 테스트 관문을 쓰려면 docs/planning/tasks.toml 에 [test] 를 넣고 커밋한다"
-                "(README \"묶음 검증\").")
+UPGRADE_NEXT = ("바뀐 파일을 확인하고(git diff -- .herdr-team) 커밋한다. manual 의 절은 템플릿과 견줘 직접 고친다. 직무 문서는 "
+                "워커 사양에 라운드마다 들어가므로 커밋하면 다음 라운드부터 적용된다. 테스트 관문을 쓰려면 "
+                "docs/planning/tasks.toml 에 [test] 를 넣고 커밋한다(README \"묶음 검증\").")
 # up 이 띄울 때 바꾸는 run.json 키. 띄우기가 확실히 실패하면 이것만 되돌린다(main_terminals 등 다른 키는 그대로 둔다).
 LAUNCH_KEYS = ("pending_launch", "team_space", "team_tab", "launched_at", "drive_terminal", "drive_argv")
 # up 이 판정한 뒤 이 키가 바뀌었으면 판정이 낡았다(다른 up 이 띄웠거나 관제가 Run 에 묶였다): launch_raced.

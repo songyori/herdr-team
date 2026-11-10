@@ -173,7 +173,7 @@ class DesignRulesTest(unittest.TestCase):
                        "§7 에서 확인한 상태와 확인 방법", "`hteam review`", "판정은 리뷰어가 한다"):
             self.assertIn(needle, head)
         self.assertIn("디렉터가 없는 프로젝트는 화면 `notes.md` 의 `## 확정 값`", section(self.rules, "§0 범위"))
-        self.assertIn("developer 는 프리앰블의 ask 명령으로 코디네이터에게 묻는다", section(self.rules, "§0 범위"))
+        self.assertIn("developer 는 프리앰블의 ask 명령으로 메인에게 묻는다", section(self.rules, "§0 범위"))
         self.assertIn("Tailwind 조합은 한 줄 또는 한 클래스 목록 안에서 본다", section(self.rules, "자동 검사"))
         self.assertIn("herdr-team 은 orca-team 0.5.2 에서 옮겼다", section(self.rules, "출처"))
         self.assertIn("jakubkrehel/skills", section(self.rules, "출처"))
@@ -271,10 +271,7 @@ class TextRulesDocTest(unittest.TestCase):
         for role in ("director", "tester", "planner"):  # E5: 문구 점검 대상이 아니다
             self.assertNotIn("문구 점검", self.read(f"roles/{role}.md"), role)
 
-    def test_coordinator_and_main_rules_name_voice(self):
-        coord = self.read("coordinator.md")
-        self.assertIn("`docs/planning/`(spec.md, contracts.md, interview.md, voice.md) 과 사양·직무 문서로 답한다", coord)
-        self.assertIn("문구 기준(`docs/planning/voice.md`)", coord)
+    def test_main_rules_name_voice(self):
         main = self.read("CLAUDE.section.md")
         self.assertIn("기획 `docs/planning/`(spec.md, contracts.md, tasks.toml, interview.md, voice.md)", main)
         self.assertIn("- 문구: `.herdr-team/text-rules.md`(작성·리뷰 공통 규칙), `docs/planning/voice.md`(planner 가 정한 "

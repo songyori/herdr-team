@@ -104,7 +104,7 @@ def prechecks(p, cfg, st: dict, spec, commits: list[dict], files: list[str]) -> 
         try:
             plan.check(p, cfg, p.root / plan.PLAN_FILE)
         except HteamError as exc:
-            if exc.code == "plan_incomplete":  # 앞선 plan apply(코디네이터)가 남긴 일이다. 기획자가 고칠 수 없다
+            if exc.code == "plan_incomplete":  # 앞선 plan apply(관제)가 남긴 일이다. 기획자가 고칠 수 없다
                 raise HteamError("plan_incomplete", f"{tid} 를 리뷰하기 전에 앞선 plan apply 를 정리해야 한다: {exc.message}",
                                  CONFLICT, f"{exc.hint}. 순서: 메인에 알려 사용자가 사양을 정리한다 → 앞선 것과 같은 "
                                  f"`{SHIM} plan apply`(앞선 것이 --append 였으면 --append)로 plan 을 끝낸다 → 그 뒤 같은 "
@@ -130,7 +130,7 @@ def _gate_text(tid: str, n: int, tests: dict) -> str:
             f"## 지적 사항\n- [P1] {GATE_PROBLEM}\n\n## 테스트 관문\n"
             + "".join(f"- {x}\n" for x in testgate.describe(quick, "quick")) + tail
             + f"\n고친 뒤 `{SHIM} test {tid}` 로 다시 확인한다.\n실패가 이 태스크 탓이 아니면(소유 경로 밖 코드, 위의 커밋 안 된 "
-            "다른 파일) 코드를 고치지 말고 근거를 보고서에 적은 뒤 프리앰블의 ask 명령으로 코디네이터에게 묻는다.\n\n"
+            "다른 파일) 코드를 고치지 말고 근거를 보고서에 적은 뒤 프리앰블의 ask 명령으로 묻는다(메인이 답한다).\n\n"
             "VERDICT: REQUEST_CHANGES\n")
 
 

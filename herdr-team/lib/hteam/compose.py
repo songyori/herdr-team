@@ -36,7 +36,7 @@ DEVELOPER_TEST_BLOCK = f"""## 테스트
 TESTER_TEST_BLOCK = f"""## 테스트
 - 이 태스크는 묶음 테스트다. 선행 태스크(묶음 개발 태스크)의 기능을 잇는 묶음 통합 테스트를 소유 경로에 쓰고 커밋한다.
 - 커밋한 뒤 `{SHIM} test {{task_id}} --full` 로 전체 테스트를 한 번 돌린다. 다시 돌리지 않는다. 리뷰는 같은 라운드에 보고서 밖 파일이 그대로면 이 결과를 다시 쓴다. 오래 걸리므로 Bash `run_in_background: true` 로 돌리고 끝났다는 알림에서 출력을 읽는다.
-- 실패는 QA 보고서에서 둘로 나눈다. 테스트 코드의 잘못은 고친다(고친 테스트를 커밋한 뒤 `{SHIM} test {{task_id}}` 로 확인할 수 있다). 제품 회귀는 실패한 테스트 이름, 원인으로 보이는 선행 태스크 ID, 근거를 적는다. 제품 회귀는 리뷰가 `## 회귀` 로 넘기고 코디네이터가 회귀 수정 태스크로 만든다.
+- 실패는 QA 보고서에서 둘로 나눈다. 테스트 코드의 잘못은 고친다(고친 테스트를 커밋한 뒤 `{SHIM} test {{task_id}}` 로 확인할 수 있다). 제품 회귀는 실패한 테스트 이름, 원인으로 보이는 선행 태스크 ID, 근거를 적는다. 제품 회귀는 리뷰가 `## 회귀` 로 넘기고 관제가 회귀 수정 태스크로 만든다(원인을 정하지 못하면 메인이 정한다).
 - 테스트를 통과시키려고 테스트를 약하게 만들거나 건너뛰거나 지우지 않는다. 제품 코드는 고치지 않는다."""
 PENDING_TEST_BLOCK = f"""## 테스트(확정 대기)
 - `docs/planning/tasks.toml` 의 `[test]` 를 사용자가 아직 확정하지 않았다. 그 quick·full 명령과 `{SHIM} test` 는 돌리지 않는다(확정 뒤에 리뷰하는 태스크는 관문이, 이미 관문 없이 리뷰한 태스크는 마무리의 마지막 full 이 돌린다).
@@ -69,9 +69,9 @@ def work_spec(p, cfg, spec, rd: dict, owns: list[str]) -> str:
     tid, n = spec.id, rd["round"]
     if spec.role in ASK_ROLES:
         ask_rule = (f"사용자에게 물어야 하면 `{SHIM} ask-user --task {tid} --json -` 로 묻는다(Bash `timeout: 600000`, "
-                    "직무 문서의 질문 형식). 코디네이터에게 물을 것은 프리앰블의 ask 명령을 쓴다.")
+                    "직무 문서의 질문 형식). 메인에게 물을 것은 프리앰블의 ask 명령을 쓴다.")
     else:
-        ask_rule = "막히면 프리앰블의 ask 명령으로 코디네이터에게 묻고 답을 기다린다."
+        ask_rule = "막히면 프리앰블의 ask 명령으로 메인에게 묻고 답을 기다린다."
     parts = [role_doc(p, spec.role), "---", "",
              f"# 태스크 {tid} · 라운드 {n} — [{cfg.role_title(spec.role)}] {spec.title}", "", spec.body.strip(), ""]
     parts.append("## 선행 태스크")
@@ -91,7 +91,8 @@ def work_spec(p, cfg, spec, rd: dict, owns: list[str]) -> str:
         parts += ["", block]
     if n > 1:
         parts += ["", f"## 수정 라운드 r{n}",
-                  f"이전 대화는 없다. 먼저 `{report_rel(tid)}` 와 `git log --grep '^\\[{tid}\\]'` 를 읽는다."]
+                  f"이전 대화가 없을 수 있다(고정 에이전트면 같은 세션일 수 있다). 먼저 `{report_rel(tid)}` 와 "
+                  f"`git log --grep '^\\[{tid}\\]'` 를 읽는다."]
         prior = review_rel(tid, rd.get("prior_review_round") or n - 1)  # 사용자 요청 라운드는 기록한 리뷰 라운드
         verdict = rd.get("prior_verdict")
         if rd.get("from_user"):
@@ -103,8 +104,8 @@ def work_spec(p, cfg, spec, rd: dict, owns: list[str]) -> str:
             # 설계 5.5): P2 까지 고치면 새 diff 가 생겨 다음 라운드가 다시 넓어진다
             parts.append(f"`{prior}` 리뷰를 읽고 막는 지적(`## 지적 사항` 의 P1, `## 이전 지적 확인` 의 미해결, hteam 사전 "
                          "검사·테스트 관문 사유)을 모두 고친다. 고치지 않는 항목은 보고서 "
-                         f"`## r{n}` 절에 이유를 적는다. `## 후속`·`## 기획 누락`·`## 회귀` 는 고치지 않는다(코디네이터가 "
-                         "따로 태스크로 만든다).")
+                         f"`## r{n}` 절에 이유를 적는다. `## 후속`·`## 기획 누락`·`## 회귀` 는 고치지 않는다(관제가 따로 "
+                         "태스크나 decide 로 만든다).")
         if spec.role in ASK_ROLES:
             parts.append(f"먼저 `{SHIM} ask-user --task {tid} --pending` 과 `--history` 로 이전 질문과 답을 확인한다. "
                          f"답이 없는 질문이 있으면 새로 묻지 않고 `{SHIM} ask-user --task {tid} --wait <id>` 로 그 답을 "
@@ -113,20 +114,20 @@ def work_spec(p, cfg, spec, rd: dict, owns: list[str]) -> str:
             sup = rd["supplement"]
             parts.append(f"디렉터 보강 태스크 {sup} 의 결과(`{report_rel(sup)}`, `docs/design/system/`)를 반영한다.")
         if rd.get("note"):
-            parts.append(f"{'사용자 요청' if rd.get('from_user') else '코디네이터 메모'}: {rd['note']}")
-        if rd.get("coord_note"):  # 사용자 요청 라운드를 잇는 fix 의 코디네이터 메모(사용자 요청과 섞지 않는다)
-            parts.append(f"코디네이터 메모: {rd['coord_note']}")
+            parts.append(f"{'사용자 요청' if rd.get('from_user') else '지시'}: {rd['note']}")
+        if rd.get("coord_note"):  # 사용자 요청 라운드를 잇는 fix 의 지시(사용자 요청과 섞지 않는다)
+            parts.append(f"지시: {rd['coord_note']}")
     return "\n".join(parts).rstrip() + "\n"
 
 
 def round_requests(p, rd: dict) -> list[tuple[str, str]]:
-    """이번 라운드의 요청 (이름, 글): 사용자 요청 또는 코디네이터 메모(note), 따로 적은 코디네이터 메모(coord_note),
+    """이번 라운드의 요청 (이름, 글): 사용자 요청 또는 지시(note), 따로 적은 지시(coord_note),
     디렉터 보강(supplement). work_spec 의 수정 블록과 같은 이름이다."""
     found = []
     if rd.get("note"):
-        found.append(("사용자 요청" if rd.get("from_user") else "코디네이터 메모", rd["note"]))
+        found.append(("사용자 요청" if rd.get("from_user") else "지시", rd["note"]))
     if rd.get("coord_note"):
-        found.append(("코디네이터 메모", rd["coord_note"]))
+        found.append(("지시", rd["coord_note"]))
     if rd.get("supplement"):
         sup = rd["supplement"]
         found.append(("디렉터 보강", f"{sup} 의 결과(`{report_rel(sup)}`, `docs/design/system/`)를 반영한다"))
@@ -301,7 +302,7 @@ def round_section(p, tid: str, rd: dict, rounds: list[dict], commits: list[dict]
 
 def review_prompt(p, cfg, spec, rd: dict, att: dict, rounds: list[dict] | None = None) -> str:
     """리뷰 프롬프트(설계 6.2). 입력(대상 커밋, 바뀐 파일)은 시도 기록에 저장된 것을 쓴다. 이번 라운드에 요청(사용자
-    요청·코디네이터 메모·디렉터 보강, round_requests)이 있으면 그 요청과 그 라운드 작업 사양을 보이고 기준에 한 줄을 더한다
+    요청·지시·디렉터 보강, round_requests)이 있으면 그 요청과 그 라운드 작업 사양을 보이고 기준에 한 줄을 더한다
     (없으면 그대로).
     기준 뒤에 테스트 절(tests_section), 묶음 절(group_section), 디자인 절(design_section), 문구 절(text_section) 순서로
     붙인다. 없는 절은 빈 문자열이다. 관문 결과는 시도 기록 inputs.tests 를 쓴다(관문을 다시 돌리지 않는다). 라운드 2 부터는

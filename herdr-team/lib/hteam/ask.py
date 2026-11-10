@@ -64,7 +64,7 @@ def ask(p, tid: str, text: str, confirm: bool = False) -> dict:
     st = state.require(p, tid)
     if st.get("role") not in ASK_ROLES:
         raise HteamError("not_ask_role", f"{tid} 는 {st.get('role')} 직무다(ask-user 는 planner·director 만)", CONFLICT,
-                         "다른 직무는 프리앰블의 horch ask 로 코디네이터에게 묻는다")
+                         "다른 직무는 프리앰블의 horch ask 로 메인에게 묻는다")
     if st["status"] != "working":
         raise HteamError("bad_state", f"{tid} 는 {st['status']} 다(ask-user 는 working 에서)", CONFLICT)
     _check_caller(p, st)

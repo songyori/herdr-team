@@ -2,7 +2,7 @@
 중단·tail·exclusive 잠금), 기록, `hteam test`. 리뷰 관문(6.1 4a)도 이 모듈을 쓴다(gate_results).
 
 git 은 gitio 로만 부른다. 테스트 명령은 이 모듈이 `/bin/sh -c` 로 직접 돌린다(horch·hc 를 거치지 않는다, 설계 3.3).
-`hteam test` 는 역할을 확인하지 않고 config.toml 을 읽지 않는다(워커·코디네이터·메인 누구나 부른다, 설계 8.3).
+`hteam test` 는 역할을 확인하지 않고 config.toml 을 읽지 않는다(워커·관제·메인 누구나 부른다, 설계 8.3).
 """
 from __future__ import annotations
 
@@ -37,10 +37,10 @@ TAIL_LINES, TAIL_WIDTH, TAIL_BYTES = 60, 300, 65536
 KILL_GRACE_S = 5.0
 LOCK_POLL_S = 0.2
 DIRTY_SHOWN = 20
-DROP_ENV = ("HTEAM_ROLE", "HTEAM_LAUNCH", "HC_TERMINAL_ID")  # 테스트 명령이 코디네이터·워커 터미널로 보이지 않게(14장)
+DROP_ENV = ("HTEAM_ROLE", "HTEAM_LAUNCH", "HC_TERMINAL_ID")  # 테스트 명령이 관제·워커 터미널로 보이지 않게(14장)
 STATUS_TEXT = {"passed": "통과", "flaky": "통과(불안정 의심: 첫 실행은 실패했고 다시 실행해 통과했다)",
                "skipped": "돌리지 않음(관련 파일 없음)", "failed": "실패", "timeout": "시간 초과"}
-CONFIRM_LINE = ("이 명령은 리뷰 전에 코디네이터 환경에서 자동으로 돈다(Codex 샌드박스 밖, 사용자 권한). "
+CONFIRM_LINE = ("이 명령은 리뷰 전에 관제 환경에서 자동으로 돈다(Codex 샌드박스 밖, 사용자 권한). "
                 "워커도 자기 환경에서 돌린다.")
 CONFIRM_HINT = (f"커밋된 `[test]` 를 사용자가 확정하지 않았다. 관제가 확정 질문을 올린다. 확정 기록이 빠졌으면 "
                 f"`{SHIM} test-confirm`")

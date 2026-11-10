@@ -519,8 +519,8 @@ def design_review(p, skip=frozenset()) -> dict:
         if v["supplement"]:  # 묻기 전에 디렉터 보강(설계 11.4). 보강 라운드가 다시 승인되면 그때 함께 묻는다
             names = ", ".join(f"{s['task']} r{s['round']}" for s in v["supplement"])
             raise HteamError("supplement_needed", f"시스템 추가 제안이 있어 디렉터 보강이 먼저다: {names}", CONFLICT,
-                             "coordinator.md 의 \"디자인 시스템 보강\" 대로 보강 태스크(director)를 만들거나(끝나지 않은 "
-                             "director 태스크가 있으면 끝나기를 기다린다) 끝난 뒤 제안한 태스크마다 fix --supplement",
+                             "관제의 디자인 단계가 보강 태스크(director)를 만든다(끝나지 않은 director 태스크가 있으면 "
+                             "끝나기를 기다린다). 끝난 뒤 제안한 태스크마다 fix --supplement",
                              data={"proposals": v["supplement"], "directors": v["directors"]})
         b = {"batch": _next_batch(p, data), "at": now(), "id": None,
              "tasks": [{"task": s["id"], "round": s["round"]} for s in v["fresh"]], "render": render(p, cfg, v["fresh"])}
