@@ -1650,6 +1650,36 @@ class DesignDecideTest(DecisionCase):
         req = json.loads((self.state_dir / "drive" / "queue" / "000001.json").read_text(encoding="utf-8"))
         self.assertEqual((req["command"], req["args"]), ("design-decide", {"id": "out-0001"}))
 
+    def test_refused_decision_can_be_corrected_until_recorded(self):
+        # 설계 11.4: 지목한 태스크가 끝나 결정이 아무것도 기록하지 못했으면(decision_conflict) 메인은 그 태스크를 뺀 결정을
+        # 다시 넘긴다. 같은 답 원문이면 답 파일의 결정을 바꿔 쓴다. 결정 기록이 생긴 뒤의 다른 결정은 already_answered 다
+        from hteam.errors import HteamError
+        self.task("T-001", "awaiting_user")
+        self.task("T-002", "awaiting_user")
+        self.review()
+        answer = "수정 요청: T-001 버튼"
+        code, out = self.main("out-0001", {"answer": answer, "fix": {"T-001": "버튼을 크게"}})
+        self.assertEqual((code, out.get("status")), (0, "queued"), out)
+        with state.edit(self.p, "T-001") as st:
+            state.move(st, "dropped", "drop")  # 질문 뒤 지목한 태스크가 끝났다
+        with self.in_drive():
+            with self.assertRaises(HteamError) as ctx:
+                approval.decide(self.p, "out-0001", None)
+        self.assertEqual(ctx.exception.code, "decision_conflict")
+        self.assertNotIn("decision", self.record()["batches"][0])
+        code, out = self.main("out-0001", {"answer": "다른 답", "fix": {}})  # 답 원문이 다르면 받지 않는다
+        self.assertEqual((code, out["error"]["code"]), (3, "already_answered"), out)
+        code, out = self.main("out-0001", {"answer": answer, "fix": {}})  # 끝난 태스크를 뺀 결정
+        self.assertEqual((code, out.get("status")), (0, "queued"), out)
+        self.assertEqual((self.answer_file()["answer"], self.answer_file()["decision"]), (answer, {"fix": {}}))
+        with self.in_drive():
+            self.assertEqual(approval.pending_answers(self.p), ["out-0001"])
+            res = approval.decide(self.p, "out-0001", None)
+        self.assertEqual(res["accepted"], ["T-002"])
+        self.assertEqual(self.task_state("T-002")["status"], "done")
+        code, out = self.main("out-0001", {"answer": answer, "fix": {"T-002": "다른 요청"}})  # 결정 기록이 있다
+        self.assertEqual((code, out["error"]["code"]), (3, "already_answered"), out)
+
 
 class ApprovalDocsTest(unittest.TestCase):
     def test_coordinator_and_main_docs(self):

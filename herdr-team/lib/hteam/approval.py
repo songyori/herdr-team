@@ -802,7 +802,8 @@ NEED_JSON = '--json - 으로 {"answer": "<사용자 답 원문>", "fix": {"T-xxx
 
 def record_answer(p, oid: str, text: str) -> dict:
     """메인의 design-decide(설계 7.4): 입력을 검사하고 사용자 답과 결정을 한 답 파일에 원자적으로 쓴다. 검사 순서는 JSON →
-    항목 → approval → answer → 묶음 → 묻지 않은 태스크 → 빈 요청. 이미 같은 답·결정이면 그대로, 다르면 already_answered.
+    항목 → approval → answer → 묶음 → 묻지 않은 태스크 → 빈 요청. 이미 같은 답·결정이면 그대로, 다르면 already_answered
+    (결정 기록이 아직 없으면 같은 답 원문의 새 결정으로 바꿔 쓴다, _replace_decision).
     값은 앞뒤 공백을 뗀다. 답 파일 기록을 돌려준다."""
     try:
         obj = json.loads(text)
@@ -829,10 +830,22 @@ def record_answer(p, oid: str, text: str) -> dict:
         raise HteamError("empty_request", f"사용자 요청이 빈 태스크: {', '.join(empty)}", USAGE)
     decision = {"fix": {k: v.strip() for k, v in obj["fix"].items()}}
     if not outbox._link_answer(p, oid, answer, decision=decision):
-        prev = outbox.answer_strict(p, oid) or {}
-        if prev.get("answer") != answer or prev.get("decision") != decision:
-            raise HteamError("already_answered", f"{oid} 에는 이미 다른 답·결정을 남겼다", CONFLICT)
+        _replace_decision(p, oid, answer, decision)
     return outbox.answer_strict(p, oid)
+
+
+def _replace_decision(p, oid: str, answer: str, decision: dict) -> None:
+    """답 파일이 이미 있다. 같은 답·결정이면 그대로 둔다. 답 원문이 같고 결정만 다르면, 그 묶음에 결정 기록이 아직 없을 때만
+    (결정이 decision_conflict 등으로 아무것도 기록하지 못하고 끝났다, 설계 11.4) 새 결정으로 바꿔 쓴다. 관제의 결정 계산과
+    겹치지 않게 프로젝트 잠금 안에서 다시 본다. 그 밖은 already_answered."""
+    with state.project_lock(p):
+        prev = outbox.answer_strict(p, oid) or {}
+        if prev.get("answer") == answer and prev.get("decision") == decision:
+            return
+        b = next((x for x in load(p)["batches"] if x.get("id") == oid), None)
+        if prev.get("answer") != answer or b is None or b.get("decision") is not None:
+            raise HteamError("already_answered", f"{oid} 에는 이미 다른 답·결정을 남겼다", CONFLICT)
+        write_json(p.answers / f"{oid}.json", {**prev, "decision": decision, "at": now()})
 
 
 def _cmd(args) -> dict:
