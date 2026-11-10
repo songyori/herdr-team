@@ -719,12 +719,13 @@ class Drive:
         if key in self.jobs:
             raise state._review_busy(tid)
         state.finish_probe(self.p, tid)
+        st = state.require(self.p, tid)
         if expect_round is not None:
-            tasks._expect_round(tid, state.require(self.p, tid), expect_round)
+            tasks._expect_round(tid, st, expect_round)
         args = ["review", tid, *(["--retry"] if retry else []),
                 *(["--round", str(expect_round)] if expect_round is not None else []),
                 *(["--request", request] if request else [])]
-        self.spawn(key, args)
+        self.spawn(key, args, rnd=st["round"])
         self.log(f"{tid} 리뷰 시작")
         return {"task": tid, "spawned": True}
 
@@ -774,9 +775,10 @@ class Drive:
         """그 키의 자식이 아직 거두어지지 않았다(돌고 있거나 끝났지만 이번 틱의 reap_jobs 전)."""
         return key in self.jobs
 
-    def spawn(self, key: str, args: list[str]) -> bool:
+    def spawn(self, key: str, args: list[str], *, rnd: int | None = None) -> bool:
         """`hteam --root <루트> <args>` 자식을 환경 그대로(관제로 판별된다, 8.2) 띄운다. stdin 은 /dev/null, stdout·stderr 는
-        state/drive/jobs/<키의 ":" 를 "-" 로>.out·.err(덮어쓴다). 그 키의 자식이 있으면 띄우지 않고 False."""
+        state/drive/jobs/<키의 ":" 를 "-" 로>.out·.err(덮어쓴다). 그 키의 자식이 있으면 띄우지 않고 False. rnd 는 리뷰 자식을
+        띄울 때의 태스크 라운드(거둘 때 라운드가 바뀌었으면 결과를 적용하지 않는다, _review_done)."""
         if key in self.jobs:
             return False
         self.p.jobs_dir.mkdir(parents=True, exist_ok=True)
@@ -785,7 +787,7 @@ class Drive:
         argv = [sys.executable, str(PLUGIN_ROOT / "bin" / "hteam"), "--root", str(self.p.root), *args]
         with open(out, "w", encoding="utf-8") as fo, open(err, "w", encoding="utf-8") as fe:
             proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=fo, stderr=fe)
-        self.jobs[key] = {"proc": proc, "args": list(args), "out": out, "err": err}
+        self.jobs[key] = {"proc": proc, "args": list(args), "out": out, "err": err, "round": rnd}
         return True
 
     def start_review(self, tid: str, args: list[str] | None = None) -> bool:
@@ -795,7 +797,7 @@ class Drive:
         key = f"review:{tid}"
         if key in self.jobs or state.finish_busy(self.p, tid):
             return False
-        self.spawn(key, args or ["review", tid])
+        self.spawn(key, args or ["review", tid], rnd=state.require(self.p, tid)["round"])
         self.log(f"{tid} 리뷰 시작")
         return True
 
@@ -809,19 +811,23 @@ class Drive:
             out, err = _read(job.get("out")), _read(job.get("err"))
             if key.startswith("review:"):
                 tid = key.split(":", 1)[1]
-                self.isolated(f"job:{key}", lambda tid=tid, code=code, out=out, args=job.get("args"):
-                              self._review_done(tid, code, out, args))
+                self.isolated(f"job:{key}", lambda tid=tid, code=code, out=out, args=job.get("args"),
+                              rnd=job.get("round"): self._review_done(tid, code, out, args, rnd))
             elif key == "final":
                 self.isolated(f"job:{key}",
                               lambda code=code, out=out, err=err: self.final_done(code, _last_json(out) or {}, err))
 
-    def _review_done(self, tid: str, code: int, out: str, args: list[str] | None = None) -> None:
+    def _review_done(self, tid: str, code: int, out: str, args: list[str] | None = None, rnd: int | None = None) -> None:
         """리뷰 자식이 끝났다: 도는 동안 올린 decide 의 표시를 먼저 쓰고(그 뒤 결과 처리가 쓰는 새 표시가 이긴다) 결과를 처리한다.
-        args(그 자식의 인자)는 잠금 대기 초과로 다시 띄울 때 쓴다."""
+        args(그 자식의 인자)는 잠금 대기 초과로 다시 띄울 때 쓴다. rnd(띄울 때의 라운드)와 지금 라운드가 다르면 결과를 적용하지
+        않고 로그만 남긴다: 자식이 끝난 뒤 거두기 전에 큐 fix 가 새 라운드를 열었다(지난 결과가 새 워커를 죽이지 않게)."""
         mark = self.pending_marks.pop(tid, None)
         if mark:
             with state.edit(self.p, tid) as st:
                 st["decide"], st["decide_round"] = mark
+        if rnd is not None and state.require(self.p, tid)["round"] != rnd:
+            self.log(f"{tid} 지난 라운드의 리뷰 결과 무시: r{rnd}")
+            return
         self._job_args[tid] = list(args or [])
         try:
             self.on_review_result(tid, code, _last_json(out))
@@ -1772,7 +1778,7 @@ def main(p) -> dict:
     signal.signal(signal.SIGHUP, _hangup)  # 탭이 닫히면 exit 129(SIGTERM 143 은 cli 가 SystemExit 로 바꾼다)
     try:
         d = Drive(p)
-        d.heartbeat()  # Run 연결 동안 hung 으로 보이지 않게(8.2 의 "오래 걸리는 단계 사이")
+        d.heartbeat()  # Run 연결 동안 hung 으로 보이지 않게(8.2 의 "Run 연결 앞과 재시도 앞뒤")
         mode, run_id = _connect(p, d, term, nonce)
         tab = outbox._run(p).get("team_tab")
         if tab:

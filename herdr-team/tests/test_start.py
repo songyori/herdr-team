@@ -117,6 +117,33 @@ class StartTest(StartCase):
         self.assertEqual((code, out["status"], out["reason"]), (0, "waiting", "lock"), out)
         self.assertIn("진행 중인 기획 태스크가 있다: T-004", out["message"])
 
+    def test_waiting_start_keeps_cli_options_for_start_ready(self):
+        """waiting 이 된 start 의 --worker·--model·--effort 를 start-ready 가 띄울 때 쓴다(Codex 브랜치 리뷰 p6r1 P2).
+        명시한 옵션이 다시 오면 새 값이다."""
+        self.make_task("T-001")
+        self.make_task("T-002", owns="src/auth/**")
+        self.assertEqual(self.hteam("start", "T-001")[0], 0)
+        code, out = self.hteam("start", "T-002", "--worker", "codex", "--model", "special-model", "--effort", "low")
+        self.assertEqual((code, out["status"], out["reason"]), (0, "waiting", "lock"), out)
+        code, out = self.hteam("start", "T-002")  # 옵션 없이 다시 와도 앞서 받은 옵션을 잃지 않는다
+        self.assertEqual((code, out["status"]), (0, "waiting"), out)
+        with state.edit(self.p, "T-001") as st:
+            state.move(st, "dropped", "drop")
+        code, out = self.hteam("start-ready")
+        self.assertEqual((code, [s["task"] for s in out["started"]]), (0, ["T-002"]), out)
+        rd = self.task_state("T-002")["rounds"][-1]
+        self.assertEqual((rd["agent"], rd["model"], rd["effort"]), ("codex", "special-model", "low"))
+        self.make_task("T-003", owns="src/auth/**")  # T-002 가 잠금을 쥐었다
+        self.assertEqual(self.hteam("start", "T-003", "--model", "m1")[1]["status"], "waiting")
+        self.assertEqual(self.hteam("start", "T-003", "--effort", "high")[1]["status"], "waiting")  # 새 값
+        with state.edit(self.p, "T-002") as st:
+            state.move(st, "dropped", "drop")
+        code, out = self.hteam("start-ready")
+        self.assertEqual((code, [s["task"] for s in out["started"]]), (0, ["T-003"]), out)
+        rd = self.task_state("T-003")["rounds"][-1]
+        self.assertEqual((rd["agent"], rd["model"], rd["effort"]),
+                         ("claude", config.resolve(config.load(self.p), "developer").model, "high"))
+
     def test_owns_lock_ignores_case(self):
         # 대소문자를 구분하지 않는 파일시스템(macOS 기본)에서 src/Foo 와 src/foo 는 같은 디렉터리다
         self.make_task("T-001", owns="src/Foo/**")

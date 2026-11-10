@@ -408,9 +408,11 @@ def role_mark(p, payload: dict):
 
 
 def stop(p, payload: dict):
-    """메인이고 run.json 에 run_id 가 있는데 watch 가 없으면 턴을 끝내지 못하게 한다(설계 9.4). 관제 생사는 보지 않는다.
-    stop_hook_active 면 다시 막지 않는다. Herdr 터미널 밖($HC_TERMINAL_ID 없음)의 메인은 watch 를 띄울 수 없으므로
-    (require_main 이 exit 5) 막지 않는다.
+    """메인이고 run.json 에 run_id 가 있고 관제가 꺼지지 않았는데(8.2 의 alive·hung·starting) watch 가 없으면 턴을 끝내지
+    못하게 한다(설계 9.4). 관제가 꺼졌으면 watch 가 곧바로 orphaned 로 끝나므로 막지 않는다(막으면 watch → orphaned → up
+    실패 → Stop 이 사용자 입력 없이 되풀이된다. 꺼진 관제는 다음 프롬프트의 자동 부활 확인이 알린다, 9.5). 관제 판정은
+    pid·heartbeat 만 본다(hc 를 부르지 않는다). stop_hook_active 면 다시 막지 않는다. Herdr 터미널 밖($HC_TERMINAL_ID
+    없음)의 메인은 watch 를 띄울 수 없으므로(require_main 이 exit 5) 막지 않는다.
 
     watch 생존은 watch.pid 기록(pid + 시작 시각)으로 본다. 죽었거나 pid 가 다른 프로세스에 다시 쓰였으면 watch 가 없다.
     run.json 을 읽지 못하면 bad_run_file 이 오류 기록으로 남고 막지 않는다."""
@@ -419,6 +421,8 @@ def stop(p, payload: dict):
     if not os.environ.get("HC_TERMINAL_ID", "").strip():
         return None
     if not outbox._run(p).get("run_id"):
+        return None
+    if outbox._orphaned(p):
         return None
     if outbox.watch_alive(p):
         return None

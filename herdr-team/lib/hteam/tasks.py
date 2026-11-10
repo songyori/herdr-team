@@ -136,7 +136,7 @@ def _crew_choice(cfg, spec, cli: dict, plc: dict):
 
 
 def _crew_round(rd: dict, plc: dict, ignored, forced: bool = False) -> None:
-    """라운드 기록의 고정 에이전트 이름(설계 5.3·5.9.1 의 agent 를 키 crew 로 둔다) 또는 temp, model_ignored, forced."""
+    """라운드 기록의 고정 에이전트 이름(설계 5.3·5.9.1 의 crew) 또는 temp, model_ignored, forced."""
     rd["crew"] = plc["crew"].name if plc["kind"] == "crew" else "temp"
     if plc["kind"] == "crew":
         rd["model_ignored"] = bool(ignored)
@@ -248,6 +248,7 @@ def _prepare_start(p, cfg, spec, choice, cli: dict, cap: Capacity | None = None,
                 raise _agent_busy(plc["reason"])
             if not recovering:
                 st["role"] = spec.role  # 워커는 이 사양의 직무로 뜬다. planner 하나 검사가 저장된 직무를 본다
+                st.pop("start_cli", None)  # 기다리게 둔 start 의 옵션은 이 라운드로 끝난다(start_command)
                 head = gitio.head(p.root)
                 ch, ignored = _crew_choice(cfg, spec, cli, plc) if plc["kind"] == "crew" else (choice, None)
                 rd = _new_round(st, st["round"] + 1, head, ch)
@@ -329,7 +330,7 @@ def run_work(p, cfg, h, tid: str, plc: dict | None = None) -> dict:
 def fix_next(cfg, tid: str, rnd: int, note: str | None) -> tuple[list[str] | None, str | None]:
     """다음 명령으로 fix 를 권하되 라운드 상한(max_rounds)에 닿았으면 권하지 않고 그 까닭을 준다: fix 가 --force-round 없이
     exit 3 로 거부하고 상한은 사용자가 정한다(설계 13장). cfg 가 None(설정을 읽지 못했다)이면 상한을 보지 않는다.
-    coord 의 wait 주석·status next 와 이어 붙인 작업 워커의 next(_adopted_next)가 같이 쓴다."""
+    status 의 next(coord)와 이어 붙인 작업 워커의 next(_adopted_next)가 같이 쓴다."""
     limit = cfg.max_rounds if cfg else None
     if limit is not None and rnd >= limit:
         return None, (f"max_rounds({limit}) 에 닿았다. fix 는 --force-round 없이 exit 3 로 거부한다. 메인에 묻고, 사용자가 "
@@ -339,7 +340,7 @@ def fix_next(cfg, tid: str, rnd: int, note: str | None) -> tuple[list[str] | Non
 
 def _adopted_next(cfg, tid: str, rnd: int, res: dict) -> tuple[list[str] | None, str | None]:
     """이어 붙인 작업 Dispatch 가 이미 끝났으면(done 뒤 settled·retained·released) 다음 명령. 그 worker_done 은 태스크가
-    launch_failed 일 때 와서(그때 next 는 start) 다시 오지 않으므로 여기서 준다(아니면 wait 가 시간 초과까지 기다린다)."""
+    launch_failed 일 때 와서(그때 next 는 start) 다시 오지 않으므로 여기서 준다."""
     if res.get("mode") != "adopt" or res.get("state") not in ("settled", "retained", "released"):
         return None, None
     if res.get("outcome") == "succeeded":
@@ -363,25 +364,34 @@ START_WAIT = {"deps_unmet": "deps", "owns_locked": "lock", "planner_busy": "lock
 WAIT_TAIL = {"deps": "선행이 끝나면 관제가 띄운다", "lock": "잠금이 풀리면 관제가 띄운다", "agent": "에이전트가 비면 관제가 띄운다"}
 
 
-def _waiting(tid: str, reason: str, said: str) -> dict:
+def _waiting(p, tid: str, reason: str, said: str, cli: dict) -> dict:
+    """기다림 결과. 받은 --worker·--model·--effort 는 상태의 start_cli 에 남긴다: start-ready 가 이 태스크를 띄울 때 쓴다
+    (Codex 브랜치 리뷰 p6r1). 새 라운드를 쓰는 시작 예약이 지운다(_prepare_start)."""
+    if cli:
+        with state.edit(p, tid) as st:
+            if st["status"] == "pending":
+                st["start_cli"] = dict(cli)
     return {"id": tid, "status": "waiting", "reason": reason,
             "message": f"{tid}: {said}. pending 으로 두었다. {WAIT_TAIL[reason]}"}
 
 
 def start_command(p, tid: str, cli: dict, *, request: str | None = None) -> dict:
     """`hteam start T` 와 큐 요청 start 의 명령 의미(설계 5.4 의 6단계 문단). 처음 시작(상태 없음·pending)이면 먼저 의존을
-    보고(끝나지 않았으면 기다린다), 잠금·에이전트 거부를 exit 0 waiting 으로 바꾼다. 같은 라운드 복구는 그 오류 그대로다."""
+    보고(끝나지 않았으면 기다린다), 잠금·에이전트 거부를 exit 0 waiting 으로 바꾼다. 같은 라운드 복구는 그 오류 그대로다.
+    처음 시작인데 옵션이 없으면 앞서 기다리게 둔 start 의 옵션(start_cli)을 쓴다. 옵션을 명시하면 그 값이 새 기준이다."""
     cfg = config.load(p)
     spec = specs.check(p, cfg, tid)
     st = state.load(p, tid) or state.create(p, tid, spec.role)  # 기다리게 둬도 start-ready 가 볼 상태가 있어야 한다
     first = st["status"] == "pending"
+    if first and not cli:
+        cli = st.get("start_cli") or {}
     if first and not deps_met(p, cfg, spec):
-        return _waiting(tid, "deps", f"선행이 끝나지 않았다({_unmet_text(unmet_deps(p, cfg, spec), spec)})")
+        return _waiting(p, tid, "deps", f"선행이 끝나지 않았다({_unmet_text(unmet_deps(p, cfg, spec), spec)})", cli)
     try:
         return start(p, tid, cli, cfg=cfg, request=request)
     except HteamError as exc:
         if first and exc.code in START_WAIT:
-            return _waiting(tid, START_WAIT[exc.code], exc.message)
+            return _waiting(p, tid, START_WAIT[exc.code], exc.message, cli)
         raise
 
 
@@ -561,7 +571,7 @@ def start_ready(p) -> dict:
                 waiting.append(item)
                 continue
             die_at("start_ready_checked")  # 테스트: 의존을 본 뒤 시작 전에 결정이 끼는 순서를 재현한다
-            res = start(p, tid, {}, cfg=cfg, h=h, cap=cap)
+            res = start(p, tid, st.get("start_cli") or {}, cfg=cfg, h=h, cap=cap)  # 기다리게 둔 start 의 옵션
             started.append({"task": tid, "round": res["round"], "dispatch": res["dispatch"],
                             "warnings": res["warnings"], **{k: res[k] for k in ("next", "hint") if res.get(k)}})
         except Exception as exc:

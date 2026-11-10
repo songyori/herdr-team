@@ -1189,6 +1189,31 @@ class DecideMarkTest(EventCase):
         self.assertEqual((st["status"], st.get("decide"), st.get("blocked_decide")), ("reviewing", None, None))
 
 
+class ReviewChildRoundTest(EventCase):
+    """리뷰 자식의 결과는 띄울 때의 라운드에만 적용한다(Codex 브랜치 리뷰 p6r1 P1). 자식이 r1 결과로 끝난 뒤 거두기 전에
+    큐 fix 가 r2 를 열면(틱의 큐가 reap_jobs 보다 먼저 돈다, 8.5) 그 결과를 r2 에 적용하지 않는다: 새 워커를 죽이고 r3 를
+    열지 않는다."""
+
+    def test_result_of_previous_round_is_ignored(self):
+        from hteam import tasks
+        self.start()
+        did = self.work_dispatch("T-001")
+        self.act_work("T-001", files={"README.md": "# 밖\n"})  # owns 밖 파일: hteam 사전 검사가 반려한다
+        self.d.handle(self.done_msg(did))
+        self.d.jobs["review:T-001"]["proc"].wait(timeout=60)  # 끝났지만 아직 거두지 않았다
+        self.assertEqual(self.task_state("T-001")["status"], "changes")
+        res = tasks.fix(self.p, "T-001", note="메인 지시", supplement=None, force_round=False, cli={}, expect_round=1,
+                        nowait=True)  # 큐 fix(queue._x_fix 와 같은 호출)
+        self.assertEqual(res["round"], 2)
+        did2 = self.work_dispatch("T-001")
+        self.d.reap_jobs()
+        st = self.task_state("T-001")
+        self.assertEqual((st["round"], st["status"], st["rounds"][-1]["work"]["dispatch"]), (2, "working", did2))
+        self.assertEqual(self.dispatch_row(did2)["state"], "active")
+        self.assertEqual(self.logged("T-001 지난 라운드의 리뷰 결과 무시: r1"), 1)
+        self.assertEqual(self.decides(), [])
+
+
 class UnrecordedDispatchTest(EventCase):
     """상태 파일에 아직 기록되지 않은 Dispatch 의 메시지(설계 8.6 "모르는 Dispatch", Codex 커밋 리뷰 75a6612): 워커 목록을
     새로 받아 이 Run 의 진행 중 워커면 ack 하지 않고 미뤘다가 상태가 기록된 다음 틱에 처리한다."""

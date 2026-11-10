@@ -137,6 +137,8 @@ class SkillWordingTest(unittest.TestCase):
         self.assertNotIn("--force", up)
         self.assertNotIn("coordinator_unverifiable", up)
         self.assertIn("`[coordinator]` 가 있으면 0.3.0 설정이다", up)  # 다시 세팅을 안내한다(설계 4.2)
+        # 관제를 띄우지 못했으면 watch 를 띄우지 않는다(최종 리뷰 I1: watch → orphaned → up 실패가 되풀이되지 않게)
+        self.assertIn("3 이 관제를 띄우지 못했으면(exit 4·1, 그 밖의 오류) watch 를 띄우지 않고 사용자에게 알린다", up)
 
     def test_init_skill(self):
         init = read("skills/init/SKILL.md")

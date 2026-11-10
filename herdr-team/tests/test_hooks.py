@@ -349,7 +349,7 @@ class StopTest(HookCase):
         self.assertIsNone(self.hook("stop", terminal=MAIN))
         proc.kill()
         proc.communicate()
-        # watch 가 끝나면 다시 막는다. 관제 생사는 보지 않는다(설계 9.4, StopRunTest)
+        # watch 가 끝나면 다시 막는다(관제가 살아 있다. 꺼졌으면 막지 않는다, 설계 9.4, StopRunTest)
         self.assertEqual(self.hook("stop", {"session_id": "s2"}, terminal=MAIN)["decision"], "block")
 
     def test_stale_watch_pid_is_not_a_watch(self):
@@ -748,11 +748,16 @@ class DriveGuardTest(HookCase):
 
 
 class StopRunTest(HookCase):
-    """Stop(설계 9.4): 메인이고 run.json 에 run_id 가 있는데 watch 가 없으면 막는다. 관제 생사는 보지 않는다."""
+    """Stop(설계 9.4): 메인이고 run.json 에 run_id 가 있고 관제가 꺼지지 않았는데(8.2 의 alive·hung·starting) watch 가
+    없으면 막는다. 관제가 꺼졌으면 watch 가 곧바로 orphaned 로 끝나므로 막지 않는다(최종 리뷰 I1: watch → orphaned → up 실패
+    → Stop 이 되풀이되지 않게. 꺼진 관제는 다음 프롬프트의 자동 부활 확인이 알린다, 9.5)."""
 
-    def test_dead_drive_still_needs_watch(self):
+    def test_dead_drive_does_not_block(self):
         (self.drive_dir / "drive.pid").unlink()
         self.update_terminal(DRIVE, state="finished")
+        self.assertIsNone(self.hook("stop", terminal=MAIN))
+
+    def test_live_drive_without_watch_blocks(self):
         out = self.hook("stop", terminal=MAIN)
         self.assertEqual(out and out["decision"], "block")
         self.assertIn("watch", out["reason"])
