@@ -384,11 +384,8 @@ def _clear(terminal: str, agent: str, name: str | None, timeout_ms: int, warning
                                          time.monotonic() - start, "poll", warnings)
             next_poll = time.monotonic() + RESET_POLL_S
         # 시간 초과로 정하기 전에 이미 온 사건을 기다리지 않고 다 읽는다. 느린 폴링 hc get 이 마감을 넘기는 동안 온
-        # 신호를 놓치지 않는다(Codex 커밋 리뷰 c6d82d2)
-        while stream is not None:
-            event = stream.read(0)
-            if event is None:
-                break
+        # 신호를 놓치지 않는다(Codex 커밋 리뷰 c6d82d2). 마감을 지키는 read 가 아니라 drain 으로 읽는다(2cd720c)
+        for event in stream.drain() if stream is not None else []:
             done = on_event(event)
             if done:
                 return done

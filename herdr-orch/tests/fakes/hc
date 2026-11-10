@@ -10,7 +10,9 @@ turn+1·idle 의 turn 알림(이름이 있으면 title 알림도)을 준다. key
 value 그대로). events 는 실제 hc 꼴이다: 처음 스냅숏 한 줄 {"channel", "seq", "terminals": [get 꼴]}, 그 뒤 0.05초마다
 상태를 보고 바뀐 것마다 JSON-RPC 알림 한 줄 {"jsonrpc", "method": "event", "params": {"type": status|turn|title, "terminal",
 "seq", "data"}}(FAKE_HC_EVENTS_MAX 초 뒤 끝). 구독은 "subscribers": {주소: [pid…]} 에 이름을 올린다.
-"noise": {주소: 초} 면 스냅숏 뒤 그 초 동안 heartbeat 알림을 쉬지 않고 낸다(건너뛸 알림이 이어지는 구독 흉내)."""
+"noise": {주소: 초} 면 스냅숏 뒤 그 초 동안 heartbeat 알림을 쉬지 않고 낸다(건너뛸 알림이 이어지는 구독 흉내).
+"burst": {주소: 줄 수} 면 on_clear: event 의 늦은 알림 앞에 그만큼의 heartbeat 알림을 붙여 한 번에 쓴다(파이프 한 조각을
+넘는 건너뛸 알림 뒤에 완료 사건이 오는 흉내)."""
 import fcntl
 import json
 import os
@@ -323,10 +325,18 @@ def events(args):
             if cur["title"] != last["title"]:
                 seq += 1
                 out_lines.append(notice("title", addr, seq, {"title": cur["title"]}))
+        burst = int(st.get("burst", {}).get(addr, 0)) if due else 0
+        if burst:
+            # 건너뛸 알림과 늦은 알림을 한 번에 쓴다(쓰기 하나라 그 사이에 끊기지 않는다)
+            out_lines += [notice("heartbeat", addr, 0, {}) for _ in range(burst)]
         for line in due:
             seq += 1
             line["params"]["seq"] = seq
             out_lines.append(line)
+        if burst:
+            sys.stdout.write("".join(json.dumps(line) + "\n" for line in out_lines))
+            sys.stdout.flush()
+            out_lines = []
         for line in out_lines:
             print(json.dumps(line), flush=True)
         if last is None and noise:

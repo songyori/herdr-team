@@ -10,6 +10,7 @@ import time
 from .errors import MISSING, HorchError
 
 TIMEOUT_S = 30
+DRAIN_BYTES = 1 << 20  # EventStream.drain 이 한 번에 읽는 상한(바이트). 끝없이 이어지는 알림에도 돌아온다
 
 
 class HcFailure(Exception):
@@ -169,6 +170,31 @@ class EventStream:
                 self.closed = True  # 줄바꿈 없이 끝난 마지막 줄도 본다
                 tail, self._buf = self._buf, b""
                 return self._event(tail) if tail else None
+            self._buf += chunk
+
+    def drain(self, limit: int = DRAIN_BYTES) -> list[dict]:
+        """기다리지 않고 지금 와 있는 것을 다 읽어 맞는 사건을 차례로 돌려준다(마감 전 사건 비우기). read 의 마감 규칙과
+        따로다: 파이프가 읽을 것이 있다고 하는 동안(select 0) 읽고, 줄바꿈 없는 끝 줄은 EOF 에서 본다. 끝없이 이어지는
+        알림에도 limit 바이트를 읽으면 돌아온다(Codex 커밋 리뷰 2cd720c)."""
+        events: list[dict] = []
+        taken = 0
+        while True:
+            event = self._next_event()
+            if event is not None:
+                events.append(event)
+                continue
+            if self.closed or taken >= limit:
+                return events
+            ready, _, _ = select.select([self._fd], [], [], 0)
+            if not ready:
+                return events
+            chunk = os.read(self._fd, 65536)
+            if not chunk:
+                self.closed = True
+                tail, self._buf = self._buf, b""
+                event = self._event(tail) if tail else None
+                return events + [event] if event is not None else events
+            taken += len(chunk)
             self._buf += chunk
 
     def close(self) -> None:

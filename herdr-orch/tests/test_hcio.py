@@ -1,5 +1,6 @@
 import json
 import os
+import select
 import subprocess
 import sys
 import time
@@ -239,9 +240,39 @@ class HcioKeysEventsTest(HorchCase):
                     t0 = time.monotonic()
                     self.assertIsNone(stream.read(timeout))
                     self.assertLess(time.monotonic() - t0, 0.3)
+            t0 = time.monotonic()
+            self.assertEqual(stream.drain(), [])  # drain 도 읽는 상한(DRAIN_BYTES)에서 돌아온다(2cd720c)
+            self.assertLess(time.monotonic() - t0, 0.3)
             self.assertFalse(stream.closed)  # 알림은 아직 이어진다
         finally:
             stream.close()
+
+    def test_drain_reads_past_first_piece_and_eof_tail(self):
+        """drain 은 지금 와 있는 것을 다 읽는다: 읽기 한 조각(64KB)을 넘는 건너뛸 알림 뒤의 사건과, EOF 의 줄바꿈 없는 끝
+        줄까지(Codex 커밋 리뷰 2cd720c). read(0) 은 한 조각만 보므로 그 사건을 아직 주지 않는다."""
+        def note(kind, data):
+            return json.dumps({"jsonrpc": "2.0", "method": "event",
+                               "params": {"type": kind, "terminal": "t7", "seq": 0, "data": data}})
+
+        def stream_of(text):
+            proc = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdout.write(sys.argv[1])", text],
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE)
+            stream = hcio.EventStream(proc, "t7")
+            self.addCleanup(stream.close)
+            return proc, stream
+
+        turn, title = note("turn", {"state": "idle", "turn": 4}), note("title", {"title": "끝"})
+        # 큰 묶음: 쓰는 쪽은 파이프가 차서 쓰는 중이다. 읽기 한 조각에는 heartbeat 만 있다
+        proc, stream = stream_of("\n".join([note("heartbeat", {})] * 3000 + [turn]) + "\n")
+        self.assertTrue(select.select([proc.stdout], [], [], 10)[0], "쓰는 쪽이 아무것도 쓰지 않았다")
+        self.assertIsNone(stream.read(0))
+        self.assertEqual([(e["type"], e.get("turn")) for e in stream.drain()], [("turn", 4)])
+        # 작은 묶음: 쓰는 쪽이 끝났다. 줄바꿈 없는 끝 줄은 EOF 에서 본다
+        proc, stream = stream_of(turn + "\n" + title)
+        proc.wait(timeout=10)
+        self.assertEqual([(e["type"], e.get("turn"), e.get("title")) for e in stream.drain()],
+                         [("turn", 4, None), ("title", None, "끝")])
+        self.assertTrue(stream.closed)
 
     def test_events_failure_ends_stream(self):
         self.add_terminal("t3", status="done", turn=2)

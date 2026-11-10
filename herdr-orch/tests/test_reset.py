@@ -223,6 +223,19 @@ class TerminalResetTest(PersistCase):
         self.assertEqual((out["signal"], out["turn"], out["status"]), ("event", 4, "idle"))
         self.assertIsNone(self.reservation_row(term))
 
+    def test_drain_finds_turn_after_skipped_burst(self):
+        """마감 전 비우기는 지금 와 있는 알림을 다 읽는다: 완료 turn 사건이 읽기 한 조각을 넘는 건너뛸 알림 뒤에 와 있어도
+        찾는다(Codex 커밋 리뷰 2cd720c. on_clear event, burst 3000줄, get 지연 0.7초, --timeout-ms 500)."""
+        _, term = self.first()
+        with self._hc_locked() as st:
+            st["on_clear"] = {term: "event"}
+            st["burst"] = {term: 3000}
+            st.setdefault("delay", {})["get"] = 0.7
+        code, out = self.o("terminal-reset", "--terminal", term, "--timeout-ms", "500")
+        self.assertEqual(code, 0, out)
+        self.assertEqual((out["signal"], out["turn"], out["status"]), ("event", 4, "idle"))
+        self.assertIsNone(self.reservation_row(term))
+
     def reset_then(self, term, *, status, turn, timeout_ms):
         """on_clear none 으로 리셋을 띄우고 keys 가 온 뒤(turn_before 를 읽은 뒤) 터미널을 status·turn 으로 바꾼다.
         가짜 events 는 그 변화를 turn 알림(data.state = status)으로, hc get 은 같은 값으로 준다."""
