@@ -640,7 +640,7 @@ herdr-team 0.4.0 의 고정 에이전트(같은 세션이 여러 태스크를 �
 | `terminal-close` | `--terminal`, `--abandon` | `{terminal, closed, abandoned, released}` |
 | `terminal-reset` | `--terminal`, `--name`, `--timeout-ms` | `{terminal, agent, turn, status, title, seconds, signal}` |
 
-`send --key <K>`(0.2.0, 선택): 같은 메일함·같은 key 의 메시지가 이미 있으면 새로 쓰지 않고 그 메시지와 `duplicate: true` 를 돌려준다(깨우지도 않는다). 본문·제목이 다르면 exit 3 `send_key_conflict`. key 는 1–64자 `[A-Za-z0-9._:-]`(아니면 exit 2 `usage`). 저장은 `messages.send_key` 열과 부분 유일 인덱스 `send_key_once ON messages(mailbox, send_key) WHERE send_key IS NOT NULL`(13.3 의 v3 에 더한다). 호출자가 요청 id 로 같은 전송을 다시 해도 한 번만 간다(herdr-team 의 `scope`).
+`send --key <K>`(0.2.0, 선택): 검사 순서는 소유자 확인(`dispatch:` 는 D 가 소유자 Run 의 Dispatch 인지) → key 조회 → 나머지 검사다. 같은 메일함·같은 key 의 메시지가 이미 있으면 D 의 지금 상태(`active` 가 아니어도)와 상관없이 새로 쓰지 않고 그 메시지와 `duplicate: true` 를 돌려준다(깨우지도 않는다). 본문·제목이 다르면 exit 3 `send_key_conflict`. key 의 메시지가 없을 때만 `active` 검사(exit 3)와 쓰기를 한다. key 는 1–64자 `[A-Za-z0-9._:-]`(아니면 exit 2 `usage`). 저장은 `messages.send_key` 열과 부분 유일 인덱스 `send_key_once ON messages(mailbox, send_key) WHERE send_key IS NOT NULL`(13.3 의 v3 에 더한다). 호출자가 요청 id 로 같은 전송을 다시 해도 한 번만 간다(herdr-team 의 `scope`).
 
 6장 권한 표: `terminal-close`·`terminal-reset` 은 그 Run 의 소유자다. `worker-list`·`worker-show` 행에 `persistent`, `start_turn`, `delivery`, `seen_at` 을 더한다(`worker-list --state` 의 선택지는 그대로 7개).
 
@@ -665,7 +665,7 @@ exit 코드 표(7장)는 그대로다(새 값 없음).
 - `--terminal`: 옵션 충돌(exit 2), 2 의 거부 표 전부, 5 의 다시 보기가 자기 Dispatch 를 빼고 정상 재투입이 통과함, 리셋 예약과 Dispatch 예약의 배제(한쪽만 성공), `idle` 이면 `--if idle`·`done` 이면 조건 없음(가짜 hc 가 받은 인자), 감싸지 않음(환경에 `HC_TERMINAL_ID` 없음), `start_turn` 이 보내기 직전 turn, `status_mismatch` 면 `launch_failed`, 응답 유실이면 `active` 와 `delivery_uncertain`, 라벨 갱신, 프리앰블의 이어 받기 줄.
 - 실행자 사망: 보내기 전(`launch_failed`), `attempted` 뒤 결과 기록 전(`active` 와 `uncertain`, 그 뒤 turn 이 오르면 관찰 없음·그대로면 60초 뒤 `not_started`), 결과와 `active` 를 함께 쓴 뒤(`active` 그대로).
 - 판정: 고정 Dispatch 의 생존을 `terminal_argv` 로, `idle_turn` 이 `start_turn` 기준(다시 넣자마자 거짓 idle 이 나오지 않음), `not_started` 의 조건(60초, turn 그대로, `seen_at` 없음, 메시지 없음)과 `working` 이면 관찰 없음.
-- `send --key`: 같은 key 두 번은 메시지 하나와 `duplicate: true`, 본문이 다르면 `send_key_conflict`, key 없는 send 는 지금 그대로.
+- `send --key`: 같은 key 두 번은 메시지 하나와 `duplicate: true`(두 번째 때 D 가 `settled`·`retained` 여도), 본문이 다르면 `send_key_conflict`, key 의 메시지가 없고 D 가 `active` 가 아니면 지금처럼 exit 3, key 없는 send 는 지금 그대로.
 - release·abandon·terminal-close: 고정 Dispatch 의 release 가 hc 를 부르지 않음, abandon 의 `--keep-terminal`·`--kill` 규칙, terminal-close 의 `--abandon`·`not_found`·kill 실패 재시도.
 - terminal-reset: keys 인자(`/clear`, Codex 이름), turn 사건 대기, 대체 신호(`hc get` 폴링), 마감 exit 4, 진행 중 표시가 `--terminal` 을 막음, 진행 중 Dispatch·`working` 이면 거부.
 - 0.1.x 테스트는 그대로 통과한다(고정이 아닌 Dispatch 의 release 가 kill·rm).
