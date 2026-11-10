@@ -44,16 +44,22 @@ def is_empty(item: str) -> bool:
     return not ITEM_ID_RE.match(item) and bool(EMPTY_RE.match(item))
 
 
-def _from_followups(p, tid: str) -> bool:
-    """후속 처리로 만든 태스크: 사양의 `## Change` 절 첫 비지 않은 줄이 `출처: T-xxx|rest|final followups`. 사양을 읽지 못하면
-    아니다."""
+def source_of(p, tid: str) -> str | None:
+    """후속 처리로 만든 태스크의 출처: 사양의 `## Change` 절 첫 비지 않은 줄이 `출처: T-xxx|rest|final followups` 면 그
+    그룹(`T-xxx`·`rest`·`final`). 아니거나 사양을 읽지 못하면 None(관제의 중복 방지, 설계 8.9)."""
     try:
         body = specs.load(p, tid).body
     except (HteamError, OSError, UnicodeDecodeError):
-        return False
+        return None
     change = _section(body, "Change") or ""
     first = next((line for line in change.splitlines() if line.strip()), "")
-    return bool(SOURCE_RE.match(first))
+    found = SOURCE_RE.match(first)
+    return found.group(1) if found else None
+
+
+def _from_followups(p, tid: str) -> bool:
+    """후속 처리로 만든 태스크(source_of 가 있다). 사양을 읽지 못하면 아니다."""
+    return source_of(p, tid) is not None
 
 
 def latest_review(p, st: dict) -> tuple[int, str] | None:

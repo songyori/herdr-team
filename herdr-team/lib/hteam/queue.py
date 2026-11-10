@@ -193,7 +193,8 @@ def recorded(p, req: dict) -> dict | None:
     """started_at 은 있는데 결과가 없는 요청(실행 중 관제가 죽었다)의 기록. 있으면 복구 결과, 없으면 None(다시 실행한다).
 
     start·fix·accept·drop·scope·review 는 그 태스크 history 에 이 요청 id 의 사건이 있거나 queued_fix.request 가 이 id,
-    design-decide 는 그 묶음의 결정 기록 request 가 이 id. start-ready·reply 는 기록이 없다(다시 해도 결과가 같다)."""
+    design-decide 는 그 묶음의 결정 기록 request 가 이 id, test-confirm 은 test-confirm.json 의 asked 에 이 id 의 항목이
+    있다. start-ready·reply 는 기록이 없다(다시 해도 결과가 같다)."""
     rid, cmd, args = req.get("id"), req.get("command"), req.get("args") or {}
     if cmd in ("start", "fix", "accept", "drop", "scope", "review"):
         st = state.load(p, args.get("task"))
@@ -208,6 +209,10 @@ def recorded(p, req: dict) -> dict | None:
         b = next((x for x in approval.load(p)["batches"] if x.get("id") == args.get("id")), None)
         if b is not None and (b.get("decision") or {}).get("request") == rid:
             return {"recovered": True, "id": args["id"]}
+    if cmd == "test-confirm":
+        hit = next((a for a in drive.confirm_record(p)["asked"] if a.get("request") == rid), None)
+        if hit is not None:
+            return {"recovered": True, "asked": hit.get("out_id"), "digest": hit.get("digest")}
     return None
 
 

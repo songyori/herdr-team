@@ -474,7 +474,9 @@ def _result(b: dict, resumed: bool) -> dict:
             "hint": f"메인이 사용자 답과 결정을 `hteam design-decide {b['id']} --json -` 으로 넘기기를 기다린다"}
 
 
-def design_review(p) -> dict:
+def design_review(p, skip=frozenset()) -> dict:
+    """skip 의 (태스크, 라운드)는 supplement_needed 판정에서 뺀다(관제가 처리한 것으로 본 보강 제안: 기록된 제안, dropped
+    보강, 빈 제안, 설계 8.9)."""
     cfg = config.load(p)
     if not cfg.user_approval_roles:
         raise HteamError("no_approval_roles", "user_approval_roles 가 비었다(승인 직무가 없다)", USAGE,
@@ -492,6 +494,7 @@ def design_review(p) -> dict:
         if bad:  # 그 태스크가 진행 중인 승인 태스크인지 알 수 없다. 묶음을 잘못 나누지 않게 묻지 않는다
             raise tasks._unreadable(p, bad)
         v = view(p, cfg, data=data)
+        v["supplement"] = [s for s in v["supplement"] if (s["task"], s["round"]) not in skip]
         if not v["waiting"]:
             raise HteamError("nothing_to_approve", "awaiting_user 인 승인 직무 태스크가 없다", CONFLICT)
         if v["stale"]:  # 읽기만 한다. 일괄 승인 결정은 의존 태스크를 함께 고치므로 이것은 결정 밖에서 선행을 고친 경우다

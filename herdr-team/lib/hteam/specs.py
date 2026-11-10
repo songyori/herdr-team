@@ -8,7 +8,7 @@ from . import config, outbox, roles, state
 from .errors import CONFLICT, USAGE, HteamError
 from .globs import owns_problem, within
 from .paths import find_project
-from .util import read_json
+from .util import read_json, write_atomic
 
 ID_RE = re.compile(r"T-\d{3,}")
 SECTIONS = ("Target", "Change", "Constraints", "Acceptance")
@@ -173,7 +173,8 @@ def next_id(p) -> str:
 
 
 def render(tid: str, role: str, title: str, body: str, *, owns: list[str] | None = None,
-           depends: list[str] | None = None, plan_key: str | None = None) -> str:
+           depends: list[str] | None = None, plan_key: str | None = None, front: dict | None = None) -> str:
+    """front 의 키·값은 plan_key 줄 뒤에 `key: value` 로 더한다(관제가 만드는 기획 수정 태스크의 `plan: append`, 설계 8.9)."""
     lines = ["---", f"id: {tid}", f"role: {role}", f"title: {title}"]
     if owns:
         lines.append(f"owns: {', '.join(owns)}")
@@ -181,8 +182,28 @@ def render(tid: str, role: str, title: str, body: str, *, owns: list[str] | None
         lines.append(f"depends_on: {', '.join(depends)}")
     if plan_key:
         lines.append(f"plan_key: {plan_key}")
+    lines += [f"{key}: {value}" for key, value in (front or {}).items()]
     lines.append("---")
     return "\n".join(lines) + "\n" + body
+
+
+def add_depends(p, tid: str, dep: str) -> bool:
+    """사양 front matter 의 depends_on 끝에 dep 을 더해 쓴다(줄이 없으면 닫는 `---` 앞에 `depends_on: <dep>`). 이미 있으면
+    False(쓰지 않는다). 커밋은 부르는 쪽이 한다(관제의 UI 기반 처리, 설계 8.9)."""
+    if dep in load(p, tid).depends_on:
+        return False
+    path = p.spec_path(tid)
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    end = next(i for i in range(1, len(lines)) if lines[i].strip() == "---")  # load 가 front matter 를 이미 검사했다
+    at = next((i for i in range(1, end) if lines[i].partition(":")[0].strip() == "depends_on"), None)
+    if at is None:
+        lines.insert(end, f"depends_on: {dep}\n")
+    else:
+        old = lines[at].rstrip("\r\n")
+        values = [v.strip() for v in old.partition(":")[2].split(",") if v.strip()]
+        lines[at] = f"depends_on: {', '.join([*values, dep])}" + lines[at][len(old):]
+    write_atomic(path, "".join(lines))
+    return True
 
 
 def new(p, cfg, role: str, title: str, owns: list[str] | None = None, depends: list[str] | None = None) -> dict:
