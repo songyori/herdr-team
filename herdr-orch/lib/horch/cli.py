@@ -4,11 +4,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import sys
 from pathlib import Path
 
-from . import agents, auth, comms, doctor, guard, runs, workers
+from . import agents, auth, comms, doctor, guard, persist, runs, workers
 from .errors import FAIL, USAGE, HorchError
 from .paths import VERSION, horch_cmd, resolve_home
 from .store import Store
@@ -44,13 +45,17 @@ def build_parser() -> Parser:
     spec.add_argument("--spec")
     spec.add_argument("--spec-file")
     s.add_argument("--title")
-    s.add_argument("--agent", required=True, choices=sorted(agents.AGENTS))
+    s.add_argument("--agent", choices=sorted(agents.AGENTS))  # --terminal 이 없을 때만 필수(_check_worker_start)
     s.add_argument("--model")
     s.add_argument("--effort")
     s.add_argument("--cwd")
     s.add_argument("--agent-arg", action="append", default=[])
     s.add_argument("--task")
     s.add_argument("--retry", action="store_true")
+    s.add_argument("--keep-open", action="store_true")
+    s.add_argument("--terminal")
+    s.add_argument("--tab")
+    s.add_argument("--hidden", action="store_true")
     s = sub.add_parser("reply")
     s.add_argument("--id", type=int, required=True)
     s.add_argument("--body", required=True)
@@ -74,20 +79,47 @@ def build_parser() -> Parser:
     s = sub.add_parser("worker-show")
     s.add_argument("--dispatch", required=True)
     s.add_argument("--lines", type=int, default=40)
-    for name in ("worker-release", "worker-retain"):
-        s = sub.add_parser(name)
-        s.add_argument("--dispatch", required=True)
+    s = sub.add_parser("worker-release")
+    s.add_argument("--dispatch", required=True)
+    s.add_argument("--keep-terminal", action="store_true")
+    s = sub.add_parser("worker-retain")
+    s.add_argument("--dispatch", required=True)
     s = sub.add_parser("worker-abandon")
     s.add_argument("--dispatch", required=True)
     s.add_argument("--kill", action="store_true")
+    s.add_argument("--keep-terminal", action="store_true")
     sub.add_parser("doctor")
     sub.add_parser("skill")
     # --- 명령 파서 끝 ---
     return p
 
 
+TAB_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def _check_worker_start(args) -> None:
+    """worker-start 의 옵션 충돌·형식(설계 13.4 표). 아무것도 만들기 전에 exit 2 usage."""
+    if args.keep_open and args.terminal:
+        raise HorchError("usage", "--keep-open 과 --terminal 은 같이 쓸 수 없다", USAGE)
+    if args.tab is not None and args.hidden:
+        raise HorchError("usage", "--tab 과 --hidden 은 같이 쓸 수 없다", USAGE)
+    if args.terminal:
+        given = [name for name, value in (("--agent", args.agent), ("--model", args.model), ("--effort", args.effort),
+                                          ("--agent-arg", args.agent_arg), ("--cwd", args.cwd), ("--tab", args.tab),
+                                          ("--hidden", args.hidden)) if value not in (None, False, [])]
+        if given:
+            raise HorchError("usage", f"--terminal 과 {', '.join(given)} 은 같이 쓸 수 없다"
+                                      "(그 터미널에 떠 있는 세션의 값을 그대로 쓴다)", USAGE)
+    elif not args.agent:
+        raise HorchError("usage", "--terminal 이 없으면 --agent 가 필요하다", USAGE)
+    if args.tab is not None and not TAB_RE.fullmatch(args.tab):
+        raise HorchError("usage", "--tab 은 영문자·숫자·_·- 로 된 1–64자다", USAGE)
+
+
 def _dispatch(args) -> dict:
     home = resolve_home(args.home)
+    if args.cmd == "worker-start":
+        _check_worker_start(args)
     if args.cmd == "version":
         return {"version": VERSION}
     if args.cmd == "doctor":
@@ -119,9 +151,13 @@ def _with_store(args, store: Store) -> dict:
                 spec = Path(args.spec_file).read_text(encoding="utf-8")
             except OSError as exc:
                 raise HorchError("bad_spec_file", f"spec 파일을 읽지 못했다: {exc}", USAGE) from exc
+        if args.terminal:
+            return persist.start_on(store, run_id, args.terminal, spec=spec, title=args.title, task_id=args.task,
+                                    retry=args.retry)
         return workers.start(store, run_id, spec=spec, title=args.title, agent=args.agent, model=args.model,
                              effort=args.effort, cwd=args.cwd or os.getcwd(), extra=args.agent_arg,
-                             task_id=args.task, retry=args.retry)
+                             task_id=args.task, retry=args.retry, keep_open=args.keep_open, tab=args.tab,
+                             hidden=args.hidden)
     if args.cmd == "reply":
         return comms.reply(store, args.id, args.body)
     if args.cmd == "ask":
@@ -135,11 +171,11 @@ def _with_store(args, store: Store) -> dict:
     if args.cmd == "worker-show":
         return workers.show(store, auth.owner_run_id(store), args.dispatch, args.lines)
     if args.cmd == "worker-release":
-        return workers.release(store, auth.owner_run_id(store), args.dispatch)
+        return workers.release(store, auth.owner_run_id(store), args.dispatch, args.keep_terminal)
     if args.cmd == "worker-retain":
         return workers.retain(store, auth.owner_run_id(store), args.dispatch)
     if args.cmd == "worker-abandon":
-        return workers.abandon(store, auth.owner_run_id(store), args.dispatch, args.kill)
+        return workers.abandon(store, auth.owner_run_id(store), args.dispatch, args.kill, args.keep_terminal)
     # --- 저장소 명령 끝 ---
     raise HorchError("usage", f"알 수 없는 명령: {args.cmd}", USAGE)
 

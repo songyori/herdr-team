@@ -50,7 +50,7 @@ class HcioTest(HorchCase):
         self.assertEqual(cm.exception.kind, "status_mismatch")
         self.update_terminal("t3", status="idle")
         hcio.send("t3", "hi", if_status="idle")
-        self.assertEqual(self.hc_sent(), [{"terminal": "t3", "text": "hi", "if": "idle"}])
+        self.assertEqual(self.hc_sent(), [{"terminal": "t3", "text": "hi", "if": "idle", "tagged": False}])
 
     def test_kill_rm(self):
         self.add_terminal("t4")
@@ -127,6 +127,48 @@ class VerdictTest(unittest.TestCase):
     def test_loads_argv(self):
         self.assertEqual(liveness.loads_argv('["a", "b"]'), ["a", "b"])
         self.assertIsNone(liveness.loads_argv(None))
+
+
+class HcioPersistTest(HorchCase):
+    """0.2.0 hcio: 감싸지 않은 send 와 결과, label(herdr-orch 설계 13.7)."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.dict(os.environ, {**self.env, "HC_TERMINAL_ID": "t9"}, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_send_untagged_and_result(self):
+        self.add_terminal("t3", status="done", turn=4)
+        res = hcio.send("t3", "hi")
+        self.assertEqual((res["sent"], res["started"], res["status"], res["turn"]), (True, True, "done", 4))
+        hcio.send("t3", "plain", untagged=True)
+        self.assertEqual([(s["text"], s["tagged"]) for s in self.hc_sent()], [("hi", True), ("plain", False)])
+        self.assertEqual(os.environ["HC_TERMINAL_ID"], "t9")  # 호출자 환경은 그대로다
+
+    def test_send_modes(self):
+        self.add_terminal("t3", status="idle", turn=2)
+        with self._hc_locked() as st:
+            st["on_send"] = {"t3": "working"}
+        res = hcio.send("t3", "go", if_status="idle")
+        self.assertEqual(res["status"], "working")
+        with self._hc_locked() as st:
+            st["on_send"] = {"t3": "mismatch"}
+        with self.assertRaises(hcio.HcFailure) as cm:
+            hcio.send("t3", "go")
+        self.assertEqual(cm.exception.kind, "status_mismatch")
+
+    def test_label_sets_and_removes(self):
+        self.add_terminal("t5", labels={"a": "1", "b": "2"})
+        hcio.label("t5", {"b": "3", "a": ""})
+        self.assertEqual(self.hc_state()["terminals"]["t5"]["labels"], {"b": "3"})
+        call = self.hc_calls()[-1]
+        self.assertEqual(call[:2], ["label", "t5"])
+        self.assertIn("b=3", call)
+        self.assertIn("a=", call)
+        with self.assertRaises(hcio.HcFailure) as cm:
+            hcio.label("t404", {"x": "1"})
+        self.assertEqual(cm.exception.kind, "not_found")
 
 
 if __name__ == "__main__":

@@ -90,10 +90,31 @@ def handle(st, argv):
         if not t:
             return fail("not_found", 3)
         want = opt(args, "--if")
-        if want and (t.get("status") or {}).get("state") != want:
+        # on_send(0.2.0): accept·drop 은 상태를 바꾸지 않는다(유실은 시험이 turn 을 그대로 두어 흉내 낸다),
+        # working 은 일을 시작한 것으로, mismatch 는 그 사이 상태가 바뀐 것으로 거부한다
+        mode = st.get("on_send", {}).get(t["address"], "accept")
+        if mode == "mismatch" or (want and (t.get("status") or {}).get("state") != want):
             return fail("status_mismatch", 10)
-        st.setdefault("sent", []).append({"terminal": t["address"], "text": args[1], "if": want})
-        out({"sent": True})
+        # tagged: 받은 환경에 HC_TERMINAL_ID 가 있었나(실제 hc 는 그때 <hc from=…> 로 감싼다, herdr-orch 설계 13.1)
+        st.setdefault("sent", []).append({"terminal": t["address"], "text": args[1], "if": want,
+                                          "tagged": bool(os.environ.get("HC_TERMINAL_ID"))})
+        if mode == "working":
+            t["status"] = {"app": "claude-code", "msg": "", **(t.get("status") or {}), "state": "working"}
+        out({"sent": True, "started": True, "status": (t.get("status") or {}).get("state"), "turn": t.get("turn", 0)})
+        return 0
+    if cmd == "label":
+        t = find(st, args[0])
+        if not t:
+            return fail("not_found", 3)
+        for pair in args[1:]:
+            if pair == "--json":
+                continue
+            key, _, value = pair.partition("=")
+            if value:
+                t["labels"][key] = value
+            else:
+                t["labels"].pop(key, None)
+        out({"address": t["address"], "labels": t["labels"]})
         return 0
     if cmd == "kill":
         t = find(st, args[0])

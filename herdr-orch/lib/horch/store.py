@@ -10,7 +10,19 @@ from typing import Iterator
 
 from .errors import FAIL, HorchError
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+# v3(설계 13.3) 열과 인덱스. 새 DB 의 DDL 과 v2 → v3 마이그레이션이 함께 쓴다
+V3_COLUMNS = {
+    "dispatches": [("persistent", "INTEGER NOT NULL DEFAULT 0"), ("terminal_argv", "TEXT"), ("start_turn", "INTEGER"),
+                   ("delivery", "TEXT"), ("seen_at", "TEXT")],
+    "messages": [("send_key", "TEXT")],
+}
+V3_INDEXES = [
+    "CREATE UNIQUE INDEX IF NOT EXISTS dispatch_one_per_terminal ON dispatches(terminal) "
+    "WHERE state IN ('launching','active') AND terminal IS NOT NULL",
+    "CREATE UNIQUE INDEX IF NOT EXISTS send_key_once ON messages(mailbox, send_key) WHERE send_key IS NOT NULL",
+]
 
 DDL = [
     "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -25,13 +37,17 @@ DDL = [
         run_id TEXT NOT NULL REFERENCES runs(id), attempt INTEGER NOT NULL, agent TEXT NOT NULL, model TEXT,
         effort TEXT, agent_args TEXT, cwd TEXT NOT NULL, terminal TEXT, state TEXT NOT NULL, outcome TEXT, summary TEXT,
         report_path TEXT, files_modified TEXT, launch_argv TEXT, launcher_pid INTEGER, launcher_started TEXT,
-        created_at TEXT NOT NULL, settled_at TEXT, closed_at TEXT)""",
+        created_at TEXT NOT NULL, settled_at TEXT, closed_at TEXT, persistent INTEGER NOT NULL DEFAULT 0,
+        terminal_argv TEXT, start_turn INTEGER, delivery TEXT, seen_at TEXT)""",
     "CREATE UNIQUE INDEX dispatch_one_running ON dispatches(task_id) WHERE state IN ('launching','active')",
+    # 0.2.0 고정 터미널(설계 13.3): 한 터미널에 진행 중 Dispatch 는 하나다
+    V3_INDEXES[0],
     "CREATE INDEX dispatch_terminal ON dispatches(terminal)",
     "CREATE INDEX dispatch_task_attempt ON dispatches(task_id, attempt)",
     """CREATE TABLE messages(id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, mailbox TEXT NOT NULL,
         sender TEXT NOT NULL, type TEXT NOT NULL, subject TEXT, body TEXT NOT NULL, reply_to INTEGER,
-        dispatch_id TEXT, ask_key TEXT, created_at TEXT NOT NULL, delivery_id INTEGER)""",
+        dispatch_id TEXT, ask_key TEXT, created_at TEXT NOT NULL, delivery_id INTEGER, send_key TEXT)""",
+    V3_INDEXES[1],
     "CREATE UNIQUE INDEX question_key ON messages(dispatch_id, ask_key) WHERE ask_key IS NOT NULL",
     "CREATE UNIQUE INDEX one_reply ON messages(reply_to) WHERE type = 'reply'",
     "CREATE INDEX messages_mailbox ON messages(mailbox, delivery_id, id)",
@@ -107,13 +123,25 @@ class Store:
                 for stmt in DDL:
                     self.conn.execute(stmt)
                 self.conn.execute("INSERT INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
-            elif version < 2:
+                return
+            # 누적 마이그레이션: 옛 버전은 다음 단계를 모두 차례로 거친다
+            if version < 2:
                 # v1 -> v2: dispatches.agent_args 열과 (task_id, attempt) 인덱스
                 cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(dispatches)")}
                 if "agent_args" not in cols:
                     self.conn.execute("ALTER TABLE dispatches ADD COLUMN agent_args TEXT")
                 self.conn.execute("CREATE INDEX IF NOT EXISTS dispatch_task_attempt ON dispatches(task_id, attempt)")
                 self.conn.execute("UPDATE meta SET value='2' WHERE key='schema_version'")
+            if version < 3:
+                # v2 -> v3: 고정 터미널(설계 13.3). 없는 열만 더한다(v1 로 되돌린 DB 에는 이미 있을 수 있다)
+                for table, columns in V3_COLUMNS.items():
+                    have = {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+                    for name, decl in columns:
+                        if name not in have:
+                            self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+                for stmt in V3_INDEXES:
+                    self.conn.execute(stmt)
+                self.conn.execute("UPDATE meta SET value='3' WHERE key='schema_version'")
 
     @contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:

@@ -30,11 +30,15 @@ def _expired(deadline: float | None) -> bool:
 
 
 def reconcile_launching(store, run_id: str) -> list[str]:
-    """실행자가 죽은 launching Dispatch 를 launch_failed 로 바꾼다(조건부 쓰기)."""
+    """실행자가 죽은 launching Dispatch 를 launch_failed 로 바꾼다(조건부 쓰기).
+    보내기 표시(delivery.attempted)가 있는 고정 Dispatch 는 보냈을 수 있으므로 불확실한 active 로 둔다(설계 13.4 끝)."""
+    from . import persist  # persist 가 이 모듈을 import 하므로 여기서 가져온다
     changed = []
-    for row in store.all("SELECT id, launcher_pid, launcher_started FROM dispatches WHERE run_id=? AND state='launching'",
-                         (run_id,)):
+    for row in store.all("SELECT * FROM dispatches WHERE run_id=? AND state='launching'", (run_id,)):
         if procs.alive(row["launcher_pid"], row["launcher_started"]):
+            continue
+        if row["persistent"] and json.loads(row["delivery"] or "{}").get("attempted"):
+            persist.settle_dead(store, row)
             continue
         with store.tx():
             cur = store.run("UPDATE dispatches SET state='launch_failed' WHERE id=? AND state='launching'", (row["id"],))
@@ -109,46 +113,54 @@ def cleanup_refused(store, run_id: str, deadline: float | None = None, until: fl
     return removed
 
 
+def _require_owner(store, run_id: str) -> None:
+    """첫 소유 확인과 쓰기 트랜잭션 사이에 run-use 로 바인딩이 옮겨졌을 수 있다. 만들기 직전에 트랜잭션 안에서 다시 확인한다."""
+    if auth.owner_run_id(store) != run_id:
+        raise HorchError("not_owner", f"이 터미널은 더는 Run {run_id} 의 소유자가 아니다", DENIED,
+                         "run-create 또는 run-use 를 먼저 한다")
+
+
+def _task_for(store, run_id: str, task_id: str | None, title, spec, retry: bool, ts: str) -> tuple[str, int, str, str]:
+    """트랜잭션 안에서 부른다. --task 면 재시도 허용 검사(설계 5장) 뒤 (Task, 다음 시도 번호, 제목, spec), 아니면 새 Task."""
+    if task_id:
+        task = store.one("SELECT * FROM tasks WHERE id=? AND run_id=?", (task_id, run_id))
+        if not task:
+            raise HorchError("unknown_task", f"이 Run 에 Task {task_id} 가 없다", USAGE)
+        if task["status"] != "open":
+            raise HorchError("task_settled", f"Task {task_id} 는 이미 끝났다. 새 Task 로 만든다", CONFLICT)
+        last = store.one("SELECT id, state FROM dispatches WHERE task_id=? ORDER BY attempt DESC LIMIT 1",
+                         (task_id,))
+        if last and last["state"] == "launch_failed" and not retry:
+            raise HorchError("retry_required", f"Task {task_id} 의 직전 실행 {last['id']} 이 launch_failed 다",
+                             CONFLICT, "--retry 로 다시 띄운다")
+        if last and last["state"] not in ("launch_failed", "abandoned", "released"):
+            raise HorchError("task_busy", f"Task {task_id} 의 최근 Dispatch {last['id']} 가 {last['state']} 다",
+                             CONFLICT)
+        attempt = store.one("SELECT COALESCE(MAX(attempt), 0) + 1 AS a FROM dispatches WHERE task_id=?",
+                            (task_id,))["a"]
+        return task_id, attempt, task["title"], task["spec"]
+    task_id = new_id("task")
+    store.run("INSERT INTO tasks(id, run_id, title, spec, status, created_at) VALUES (?,?,?,?,'open',?)",
+              (task_id, run_id, title, spec, ts))
+    return task_id, 1, title, spec
+
+
 def _create(store, run_id: str, *, spec, title, agent, model, effort, extra, cwd, task_id,
-            retry) -> tuple[str, str, str, str]:
+            retry, keep_open=False) -> tuple[str, str, str, str]:
     """Task·Dispatch 를 한 트랜잭션에서 만든다. 재시도 허용 검사도 이 안에서 다시 한다."""
     pid, started = procs.me()
     given_task = bool(task_id)
     dispatch_id, ts = new_id("dsp"), now()
     try:
         with store.tx():
-            # 첫 소유 확인과 이 트랜잭션 사이에 run-use 로 바인딩이 옮겨졌을 수 있다. 만들기 직전에 다시 확인한다.
-            if auth.owner_run_id(store) != run_id:
-                raise HorchError("not_owner", f"이 터미널은 더는 Run {run_id} 의 소유자가 아니다", DENIED,
-                                 "run-create 또는 run-use 를 먼저 한다")
-            if task_id:
-                task = store.one("SELECT * FROM tasks WHERE id=? AND run_id=?", (task_id, run_id))
-                if not task:
-                    raise HorchError("unknown_task", f"이 Run 에 Task {task_id} 가 없다", USAGE)
-                if task["status"] != "open":
-                    raise HorchError("task_settled", f"Task {task_id} 는 이미 끝났다. 새 Task 로 만든다", CONFLICT)
-                last = store.one("SELECT id, state FROM dispatches WHERE task_id=? ORDER BY attempt DESC LIMIT 1",
-                                 (task_id,))
-                if last and last["state"] == "launch_failed" and not retry:
-                    raise HorchError("retry_required", f"Task {task_id} 의 직전 실행 {last['id']} 이 launch_failed 다",
-                                     CONFLICT, "--retry 로 다시 띄운다")
-                if last and last["state"] not in ("launch_failed", "abandoned", "released"):
-                    raise HorchError("task_busy", f"Task {task_id} 의 최근 Dispatch {last['id']} 가 {last['state']} 다",
-                                     CONFLICT)
-                attempt = store.one("SELECT COALESCE(MAX(attempt), 0) + 1 AS a FROM dispatches WHERE task_id=?",
-                                    (task_id,))["a"]
-                title, spec = task["title"], task["spec"]
-            else:
-                task_id = new_id("task")
-                store.run("INSERT INTO tasks(id, run_id, title, spec, status, created_at) VALUES (?,?,?,?,'open',?)",
-                          (task_id, run_id, title, spec, ts))
-                attempt = 1
+            _require_owner(store, run_id)
+            task_id, attempt, title, spec = _task_for(store, run_id, task_id, title, spec, retry, ts)
             # agent_args: 재시도 안내(worker-list next)가 같은 모델·인자로 다시 띄우도록 남긴다
             store.run("INSERT INTO dispatches(id, task_id, run_id, attempt, agent, model, effort, agent_args, cwd, "
-                      "state, launcher_pid, launcher_started, created_at) "
-                      "VALUES (?,?,?,?,?,?,?,?,?,'launching',?,?,?)",
+                      "state, persistent, launcher_pid, launcher_started, created_at) "
+                      "VALUES (?,?,?,?,?,?,?,?,?,'launching',?,?,?,?)",
                       (dispatch_id, task_id, run_id, attempt, agent, model, effort,
-                       json.dumps(list(extra), ensure_ascii=False), cwd, pid, started, ts))
+                       json.dumps(list(extra), ensure_ascii=False), cwd, 1 if keep_open else 0, pid, started, ts))
     except sqlite3.IntegrityError as exc:
         # 한 Task 에 실행 중 Dispatch 는 하나뿐이라는 부분 유일 인덱스 위반(또는 --task 지정)만 task_busy 다. 나머지는 버그라 그대로 올린다
         if not (given_task or "dispatches.task_id" in str(exc)):
@@ -176,26 +188,34 @@ def _record_active(store, dispatch_id: str, address: str) -> None:
                   (address, dispatch_id))
 
 
-def start(store, run_id: str, *, spec, title, agent, model, effort, cwd, extra, task_id, retry) -> dict:
-    exe = agents.executable(agent)
+def _check_task_args(task_id, spec, title) -> None:
     if task_id and (spec is not None or title is not None):
         raise HorchError("usage", "--task 와 spec·--title 을 같이 줄 수 없다", USAGE)
     if not task_id and (not spec or not title):
         raise HorchError("usage", "--task 가 없으면 spec 과 --title 이 필요하다", USAGE)
+
+
+def start(store, run_id: str, *, spec, title, agent, model, effort, cwd, extra, task_id, retry,
+          keep_open: bool = False, tab: str | None = None, hidden: bool = False) -> dict:
+    """keep_open 은 고정 터미널로 띄운다(설계 13.4). tab 은 소유 space 의 그 탭에, hidden 은 herdr 라벨 없이 띄운다."""
+    exe = agents.executable(agent)
+    _check_task_args(task_id, spec, title)
     cwd_path = Path(cwd).expanduser().resolve()
     if not cwd_path.is_dir():
         raise HorchError("bad_cwd", f"작업 폴더가 없다: {cwd_path}", USAGE)
+    if tab and not store.one("SELECT owner_space FROM runs WHERE id=?", (run_id,))["owner_space"]:
+        raise HorchError("no_owner_space", "소유 Run 에 owner_space 가 없어 --tab 으로 붙일 수 없다", USAGE)
     if task_id:
         reconcile_launching(store, run_id)
     task_id, dispatch_id, title, spec = _create(store, run_id, spec=spec, title=title, agent=agent, model=model,
                                                 effort=effort, extra=extra, cwd=str(cwd_path), task_id=task_id,
-                                                retry=retry)
+                                                retry=retry, keep_open=keep_open)
     _die_at("after_create")
     base = {"task": task_id, "dispatch": dispatch_id}
     progress: dict = {"ran": False, "terminal": None}  # hc run 이 성공했는지(성공 뒤에는 실패로 바꾸지 않는다)
     try:
         return _launch(store, run_id, exe, base, progress, spec=spec, agent=agent, model=model, effort=effort,
-                       extra=extra, cwd_path=cwd_path)
+                       extra=extra, cwd_path=cwd_path, keep_open=keep_open, tab=tab, hidden=hidden)
     except Exception as exc:
         # 생성 뒤 어떤 오류든 호출자가 task·dispatch 를 알 수 있어야 한다(모르면 --task 없이 재시도해 워커가 중복된다)
         data = {**base, **({"terminal": progress["terminal"]} if progress["terminal"] else {})}
@@ -224,7 +244,8 @@ def _best_effort_receipt(path: Path, receipt: dict, warnings: list[str]) -> None
         warnings.append(f"receipt.json 을 쓰지 못했다: {exc}")
 
 
-def _launch(store, run_id, exe, base, progress, *, spec, agent, model, effort, extra, cwd_path) -> dict:
+def _launch(store, run_id, exe, base, progress, *, spec, agent, model, effort, extra, cwd_path,
+            keep_open=False, tab=None, hidden=False) -> dict:
     dispatch_id = base["dispatch"]
     ddir = store.dispatch_dir(run_id, dispatch_id)
     spec_path = ddir / "spec.md"
@@ -240,12 +261,21 @@ def _launch(store, run_id, exe, base, progress, *, spec, agent, model, effort, e
     run = store.one("SELECT owner_space, owner_tab FROM runs WHERE id=?", (run_id,))
     labels: dict[str, str] = {}
     placement = "none"
-    if run["owner_space"] and run["owner_tab"]:
+    if hidden:
+        placement = "hidden"  # herdr 라벨이 없으면 화면에 나오지 않는다(설계 13.4)
+    elif tab:
+        labels = {"herdr.space": run["owner_space"], "herdr.tab": tab}
+        placement = "pane"
+    elif run["owner_space"] and run["owner_tab"]:
         labels = {"herdr.space": run["owner_space"], "herdr.tab": run["owner_tab"]}
         placement = "pane"
     labels.update({"horch.run": run_id, "horch.dispatch": dispatch_id})
+    if keep_open:
+        labels["horch.persistent"] = "1"
     with store.tx():
-        store.run("UPDATE dispatches SET launch_argv=? WHERE id=?", (json.dumps(launch_argv), dispatch_id))
+        # 고정 터미널의 생존 판정은 terminal_argv 와 견준다(설계 13.3). 첫 Dispatch 는 launch_argv 그대로다
+        store.run("UPDATE dispatches SET launch_argv=?, terminal_argv=? WHERE id=?",
+                  (json.dumps(launch_argv), json.dumps(launch_argv) if keep_open else None, dispatch_id))
     receipt = {"dispatch": dispatch_id, "argv": launch_argv, "labels": labels, "cwd": str(cwd_path)}
     warnings: list[str] = []
     address = None
@@ -277,7 +307,7 @@ def _launch(store, run_id, exe, base, progress, *, spec, agent, model, effort, e
         raise HorchError("terminal_mismatch", f"가드가 등록한 터미널 {row['terminal']} 와 hc 주소 {address} 가 다르다",
                          FAIL, data=base)
     return {**base, "terminal": row["terminal"], "state": row["state"], "placement": placement,
-            "warning": None if placement == "pane" else "소유자 탭을 몰라 pane 없이 띄웠다(herdr 라벨 없음)",
+            "warning": "소유자 탭을 몰라 pane 없이 띄웠다(herdr 라벨 없음)" if placement == "none" else None,
             "warnings": warnings}
 
 
@@ -341,7 +371,9 @@ def _row_json(r) -> dict:
             "terminal": r["terminal"], "state": r["state"],
             "outcome": r["outcome"], "summary": r["summary"], "report_path": r["report_path"],
             "files_modified": json.loads(r["files_modified"] or "[]"), "created_at": r["created_at"],
-            "settled_at": r["settled_at"], "closed_at": r["closed_at"]}
+            "settled_at": r["settled_at"], "closed_at": r["closed_at"], "persistent": bool(r["persistent"]),
+            "start_turn": r["start_turn"], "delivery": json.loads(r["delivery"]) if r["delivery"] else None,
+            "seen_at": r["seen_at"]}
 
 
 def _attention(home, r, verdict: str | None, info: dict | None) -> tuple[str | None, list[str] | None]:
@@ -366,7 +398,7 @@ def _attention(home, r, verdict: str | None, info: dict | None) -> tuple[str | N
             return "unverifiable", [*base, "worker-show", "--dispatch", d]
         if word in ("blocked", "error"):
             return word, [*base, "worker-show", "--dispatch", d, "--lines", "80"]
-        if verdict == "live" and liveness.idle_turn(info) is not None:
+        if verdict == "live" and liveness.idle_turn(info, r["start_turn"]) is not None:
             # done 없이 턴을 마쳤다(설계 10장). 화면을 보고 이어가게 하거나 사용자에게 알린다
             return "idle", [*base, "worker-show", "--dispatch", d, "--lines", "40"]
         if verdict == "live" and word is None:
@@ -382,7 +414,7 @@ def _describe(store, r) -> tuple[dict, dict | None]:
     item = _row_json(r)
     verdict, info = None, None
     if r["state"] in ("active", "settled", "retained", "abandoned") and r["terminal"]:
-        verdict, info = liveness.probe(r["terminal"], liveness.loads_argv(r["launch_argv"]))
+        verdict, info = liveness.probe(r["terminal"], liveness.expected_argv(r))
     word = liveness.status_word(info)
     item["verdict"], item["status"] = verdict, word
     item["attention"], item["next"] = _attention(store.home, r, verdict, info)
@@ -454,13 +486,17 @@ def _fetch(store, dispatch_id: str) -> dict:
     return _row_json(store.one("SELECT * FROM dispatches WHERE id=?", (dispatch_id,)))
 
 
-def release(store, run_id: str, dispatch_id: str) -> dict:
+def release(store, run_id: str, dispatch_id: str, keep_terminal: bool = False) -> dict:
+    """고정 Dispatch 는 터미널을 남기고 상태만 released 로 쓴다(hc 를 부르지 않는다, 설계 13.5)."""
     r = auth.owned_dispatch(store, run_id, dispatch_id)
+    if keep_terminal and not r["persistent"]:
+        raise HorchError("usage", f"Dispatch {dispatch_id} 는 고정 Dispatch 가 아니다. --keep-terminal 은 고정 Dispatch 에만 "
+                                  "쓴다(남긴 터미널을 닫을 길이 없어진다)", USAGE)
     if r["state"] == "released":
         return {"dispatch": _row_json(r)}
     if r["state"] not in ("settled", "retained", "abandoned"):
         raise HorchError("not_releasable", f"Dispatch {dispatch_id} 는 {r['state']} 라 정리할 수 없다", CONFLICT)
-    if r["terminal"]:
+    if r["terminal"] and not r["persistent"]:
         try:
             info = hcio.get(r["terminal"])
         except hcio.HcFailure as exc:
@@ -494,16 +530,24 @@ def retain(store, run_id: str, dispatch_id: str) -> dict:
     return {"dispatch": _fetch(store, dispatch_id)}
 
 
-def abandon(store, run_id: str, dispatch_id: str, kill: bool) -> dict:
+def abandon(store, run_id: str, dispatch_id: str, kill: bool, keep_terminal: bool = False) -> dict:
+    """고정 Dispatch 는 --kill 을 받지 않고, 살아 있으면 --keep-terminal 로 터미널을 둔 채 abandoned 만 쓴다(설계 13.5)."""
     r = auth.owned_dispatch(store, run_id, dispatch_id)
+    if r["persistent"] and kill:
+        raise HorchError("usage", f"Dispatch {dispatch_id} 는 고정 Dispatch 다. --kill 대신 terminal-close 로 터미널을 닫는다",
+                         USAGE)
     if r["state"] == "abandoned":
         return {"dispatch": _row_json(r), "verdict": None}
     if r["state"] != "active":
         raise HorchError("not_active", f"Dispatch {dispatch_id} 는 {r['state']} 다", CONFLICT)
-    verdict, _ = liveness.probe(r["terminal"], liveness.loads_argv(r["launch_argv"]))
+    verdict, _ = liveness.probe(r["terminal"], liveness.expected_argv(r))
     if verdict == "unverifiable":
         raise HorchError("unverifiable", f"워커 터미널 {r['terminal']} 의 상태를 확인할 수 없다", FAIL)
-    if verdict == "live":
+    if verdict == "live" and r["persistent"]:
+        if not keep_terminal:
+            raise HorchError("worker_alive", f"워커 {r['terminal']} 가 살아 있다", CONFLICT,
+                             "세션을 살려 두려면 --keep-terminal, 터미널을 닫으려면 terminal-close --abandon")
+    elif verdict == "live":
         if not kill:
             raise HorchError("worker_alive", f"워커 {r['terminal']} 가 살아 있다", CONFLICT, "끝내려면 --kill")
         _kill_ok(r["terminal"])

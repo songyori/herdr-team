@@ -45,6 +45,8 @@ def send(store, to: str, subject: str | None, body: str) -> dict:
             auth.require_active(store.one("SELECT id, state FROM dispatches WHERE id=?", (ident,)))
         mid = mailbox.post(store, run_id=run_id, mailbox=box, sender=sender, type="status", subject=subject,
                            body=body, dispatch_id=dispatch_id)
+    if kind == "run" and dispatch_id:
+        auth.mark_seen(store, dispatch_id)  # 진행 중 Dispatch 의 워커가 보냈다(설계 13.6 seen_at)
     return {"message": mid, "wake": mailbox.wake(store, box)}
 
 

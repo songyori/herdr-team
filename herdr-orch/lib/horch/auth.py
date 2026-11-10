@@ -5,6 +5,7 @@ import os
 import sqlite3
 
 from .errors import CONFLICT, DENIED, USAGE, HorchError
+from .ids import now
 
 
 def caller() -> str | None:
@@ -49,7 +50,15 @@ def worker_dispatch(store, dispatch_id: str) -> sqlite3.Row:
         raise HorchError("not_this_worker", f"Dispatch {dispatch_id} 는 이 터미널({term or '없음'})의 것이 아니다", DENIED,
                          "이 명령은 그 Dispatch 의 워커 터미널에서만 한다. Codex 는 셸 명령으로 부른다"
                          "(node_repl 등 다른 도구에는 HC_TERMINAL_ID 가 없다)")
+    if row["seen_at"] is None:
+        mark_seen(store, dispatch_id)
     return row
+
+
+def mark_seen(store, dispatch_id: str) -> None:
+    """이 Dispatch 로 워커 명령이 처음 신원 확인을 통과한 시각(설계 13.6). 비어 있을 때만 쓴다."""
+    with store.tx():
+        store.run("UPDATE dispatches SET seen_at=? WHERE id=? AND seen_at IS NULL", (now(), dispatch_id))
 
 
 def require_active(row) -> None:

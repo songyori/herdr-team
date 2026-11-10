@@ -42,7 +42,8 @@ class StoreTest(HorchCase):
         s2 = self.open()
         cols = {r["name"] for r in s2.all("PRAGMA table_info(dispatches)")}
         self.assertIn("agent_args", cols)
-        self.assertEqual(s2.one("SELECT value FROM meta WHERE key='schema_version'")["value"], "2")
+        # 누적 마이그레이션(v1 → v2 → v3, herdr-orch 설계 13.3): v1 로 되돌린 DB 도 지금 버전까지 오른다
+        self.assertEqual(s2.one("SELECT value FROM meta WHERE key='schema_version'")["value"], str(SCHEMA_VERSION))
         self.assertEqual(s2.one("SELECT id, agent_args FROM dispatches")["id"], "dsp-1")
         idx = {r["name"] for r in s2.all("PRAGMA index_list(dispatches)")}
         self.assertIn("dispatch_task_attempt", idx)

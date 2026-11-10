@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 
 from .errors import MISSING, HorchError
@@ -18,11 +19,12 @@ class HcFailure(Exception):
         self.message = message
 
 
-def _call(args: list[str], timeout: float | None = None) -> subprocess.CompletedProcess:
-    """timeout 은 초. None 이면 TIMEOUT_S. 시간을 넘기면 hc 를 죽이고 HcFailure("timeout")."""
+def _call(args: list[str], timeout: float | None = None, env: dict | None = None) -> subprocess.CompletedProcess:
+    """timeout 은 초. None 이면 TIMEOUT_S. 시간을 넘기면 hc 를 죽이고 HcFailure("timeout").
+    env 가 있으면 hc 를 그 환경으로 부른다(None 이면 이 프로세스의 환경)."""
     limit = TIMEOUT_S if timeout is None else timeout
     try:
-        return subprocess.run(["hc", *args], capture_output=True, text=True, timeout=limit)
+        return subprocess.run(["hc", *args], capture_output=True, text=True, timeout=limit, env=env)
     except FileNotFoundError as exc:
         raise HorchError("hc_missing", "hc 실행 파일을 찾지 못했다", MISSING,
                          "herdr-core 를 설치하고 PATH 에 hc 를 둔다") from exc
@@ -59,8 +61,9 @@ def _parse(text: str) -> dict:
     raise HcFailure("bad_output", text[-500:])
 
 
-def _json(args: list[str], tail: list[str] | None = None, timeout: float | None = None) -> dict:
-    proc = _call([*args, "--json", *(tail or [])], timeout)
+def _json(args: list[str], tail: list[str] | None = None, timeout: float | None = None,
+          env: dict | None = None) -> dict:
+    proc = _call([*args, "--json", *(tail or [])], timeout, env)
     if proc.returncode != 0:
         raise _failure(proc)
     return _parse(proc.stdout)
@@ -88,11 +91,19 @@ def run_bg(name: str, cwd: str, labels: dict[str, str], argv: list[str]) -> dict
     return _json(args, ["--", *argv])
 
 
-def send(terminal: str, text: str, if_status: str | None = None) -> dict:
+def send(terminal: str, text: str, if_status: str | None = None, untagged: bool = False, timeout: float = 30) -> dict:
+    """hc send 의 결과(sent·started·status·turn)를 그대로 돌려준다.
+    untagged 면 HC_TERMINAL_ID 를 뺀 환경으로 보낸다. hc 가 글을 <hc from=…> 로 감싸지 않는다(설계 13.1)."""
     args = ["send", terminal, text]
     if if_status:
         args += ["--if", if_status]
-    return _json(args)
+    env = {k: v for k, v in os.environ.items() if k != "HC_TERMINAL_ID"} if untagged else None
+    return _json(args, timeout=timeout, env=env)
+
+
+def label(terminal: str, pairs: dict[str, str], timeout: float = 10) -> dict:
+    """hc label T k=v …. 빈 값은 k= 로 그 라벨을 지운다."""
+    return _json(["label", terminal, *(f"{k}={v}" for k, v in pairs.items())], timeout=timeout)
 
 
 def kill(terminal: str) -> dict:
