@@ -783,7 +783,7 @@ worker_done 이 오면 관제가 `task = null` 로 비우고(entry 의 `task` �
 | 관제가 죽었다 | 메인 훅(9.5) | 새 관제가 시작 재확인에서 `crew.json` 의 터미널을 하나씩 확인해 죽은 것을 잊고 이어 간다(8.7) |
 | hc core 재시작 | 확인하지 않았다(X7) | 복구 셸로 바뀐 터미널은 lost 로 보고 잊는다(herdr-orch 10장 판정). 실제 동작은 한계(13장) |
 
-재투입 이어 붙이기(Codex 계획 리뷰 r1): 재투입은 앞 Dispatch 를 abandon 하기 전에 라운드 작업 기록에 `resend = {from: <앞 Dispatch>, n}` 를 쓰고, 새 Dispatch 를 띄운 뒤 같은 상태 쓰기에서 `dispatch`·`start_turn`·`delivery`·`unknown_starts = n` 을 쓰고 `resend` 를 지운다. 띄운 뒤 기록 전에 관제가 죽으면 처리하던 not_started 는 ack 전이라 다시 온다. 그때 `resend` 가 남아 있으면 먼저 그 horch Task 의 최신 시도를 본다: `from` 과 다르고 `launch_failed` 가 아니면 그것을 작업 Dispatch 로 이어 붙이고(crew entry `dispatch` 도, 로그 `<T> not_started: resent(<n>)`) 다시 넣지 않는다. 그러지 않으면 새 Dispatch 의 메시지가 기록된 Dispatch 와 달라 지난 것으로 버려진다(8.6). 최신이 `from` 이면(띄우기 전에 죽었다) `resend` 만 지우고 보통 처리로 가고(앞 Dispatch 가 이미 abandoned 면 abandon 을 건너뛴다), `launch_failed` 면 `resend` 를 지우고 관제 절차 실패 decide(8.5).
+재투입 이어 붙이기(Codex 계획 리뷰 r1): 재투입은 앞 Dispatch 를 abandon 하기 전에 라운드 작업 기록에 `resend = {from: <앞 Dispatch>, n}` 를 쓰고, 새 Dispatch 를 띄운 뒤 같은 상태 쓰기에서 `dispatch`·`start_turn`·`delivery`·`unknown_starts = n` 을 쓰고 `resend` 를 지운다. 띄운 뒤 기록 전에 관제가 죽으면 처리하던 not_started 는 ack 전이라 다시 온다. 그때 `resend` 가 남아 있으면 먼저 그 horch Task 의 최신 시도를 본다: `from` 과 다르고 `launch_failed` 가 아니면 그것을 작업 Dispatch 로 이어 붙이고(crew entry `dispatch` 도, 로그 `<T> not_started: resent(<n>)`) 다시 넣지 않는다. 그러지 않으면 새 Dispatch 의 메시지가 기록된 Dispatch 와 달라 지난 것으로 버려진다(8.6). `resend` 는 새 Dispatch 를 기록하거나 실패 decide 를 남길 때까지 지우지 않는다(Codex 계획 리뷰 r2): 최신이 `from` 이면(abandon 전이나 뒤, 띄우기 전에 죽었다) `resend` 를 둔 채 그 `n` 으로 재투입을 다시 하고(앞 Dispatch 가 이미 abandoned 면 abandon 을 건너뛴다), 작업 터미널이 `idle`·`done` 이 아니거나 확인할 수 없으면 아무것도 하지 않고 `resend` 를 남긴다. `launch_failed` 거나 넣기가 거부되면 관제 절차 실패 decide(8.5)를 올린 뒤 지운다. 남은 `resend` 는 재확인(8.7 의 `working`)도 잇는다. 그 not_started 메시지가 그새 ack 됐으면 horch 는 active 가 아닌 앞 Dispatch 에 새 관찰을 만들지 않으므로, 재확인이 잇지 않으면 태스크가 `working` 과 abandoned Dispatch 로 멈춘다.
 
 이중 디스패치를 막는 장치: horch 는 한 터미널에 진행 중 Dispatch 를 하나만 허락하고(herdr-orch 13.3), `working`·`blocked` 세션에는 보내지 않는다(13.4). 관제는 `terminal-close` 가 성공한 뒤에만 새 세션을 띄운다. orca 는 `--keep-open` 탭이 `worker-release` 로 닫히지 않아 두 세션이 같은 체크아웃에서 같은 태스크를 했다(§17 P1-2).
 
@@ -1437,7 +1437,7 @@ accept 뒤(`accepted`, 관제 판정 경로와 큐 accept 모두):
 
 | 상태 | 조건 | 동작 |
 |---|---|---|
-| `working` | `queued_fix` 없음 | 작업자 확인(아래) |
+| `working` | `queued_fix` 없음 | 작업자 확인(아래). 지금 라운드 작업 기록에 `resend` 가 남았으면 그 대신 5.9.8 의 재투입을 잇는다(Codex 계획 리뷰 r2) |
 | `reviewing` | 리뷰 자식이 없다 | 리뷰어 Dispatch 가 끝났으면 `review-finish`. 시도 기록만 있고 리뷰어가 없으면 `review`(6.1 0 의 복구). 열린 시도가 없고 지금 라운드의 마지막 시도가 실패·변조(`result` 가 `failed`·`tampered`)인데 `review_failure_asked` 가 그 `[라운드, 시도]` 가 아니면 8.6 의 `review_failed`·`review_tampered` decide 를 그 시도 기록(이유·변조 경로)으로 올리고 그 값을 쓴다(review-finish 가 시도 결과를 쓴 뒤 decide 전에 관제가 죽었다. 다시 온 worker_done 은 `no_open_review` 라 아무것도 하지 않는다, Codex 계획 리뷰 r1) |
 | `approved` | | accept |
 | `changes` | `queued_fix` 없음 | 8.6 의 review-finish `changes` 처리 |
@@ -2006,6 +2006,7 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
 - 숨은 리뷰어의 시작 확인 창은 보기 pane 이 열리기 전에는 사람이 볼 수 없다(6.5).
 - 쉬는 고정 에이전트 pane 에 사람이 글을 치면 세션 상태가 바뀐다. 다음 태스크는 넣기 전 상태 확인(`working` 이면 기다림)만 거친다.
 - 관제가 멈추면(heartbeat 만 끊김) 아무도 다시 띄우지 않는다(9.5).
+- 관제 안의 `fix --supplement`(보강이 끝난 뒤 화면 고치기, 메인 큐의 fix)가 보강 후행 태스크의 대기 라운드를 만드는 안쪽 fix 는 finish 잠금을 비차단으로 잡지 않는다(8.5 의 비차단은 바깥 fix 까지만). 그 후행 태스크의 리뷰 관문이 finish 잠금을 쥐고 있으면 관문이 끝날 때까지 관제 틱이 멈춘다(Codex 계획 리뷰 r2, 기록만).
 - 리뷰 보기 pane 의 크기는 실환경에서 확인한다(6.5 의 9).
 
 ## 14. 보안

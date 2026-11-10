@@ -4424,7 +4424,7 @@ git commit -m "feat(herdr-team): 관제(hteam drive) 뼈대와 관제 판별, up
 4. 결과 쓰기(`_finish`): `queue.lock` 안에서 `.abandoned` 가 있으면 outbox `result` 줄을 쓰고 표시를 지운다. 없으면 결과 파일을 원자적으로 쓴다. 그다음(잠금 밖) `die_at("queue_result_written")` → 요청 파일을 지운다 → 로그 한 줄. 결과 파일만 남고 메인이 이미 떠났으면(결과를 쓴 뒤 죽고 그 사이 메인이 시간 초과로 `.abandoned` 를 만들지 않은 경우 등) 그 파일은 남는다(한계, 7.1 의 SIGKILL 과 같다).
 5. 기록으로 복구(`recorded`, 7.1): `start`·`fix`·`accept`·`drop`·`scope`·`review` 는 `args.task` 상태의 history 에 `request == 요청 id` 인 사건이 있거나 상태의 `queued_fix.request` 가 그 id(Task 7)이면 `{"recovered": True, "task", "status", "round"}`. `design-decide` 는 그 묶음의 결정 기록 `request` 가 그 id 면 `{"recovered": True, "id"}`. `agent reset`(Task 8 의 crew 리셋 표시)·`test-confirm`(Task 10 의 `test-confirm.json`)은 그 태스크가 `recorded` 에 갈래를 더한다. `start-ready`·`reply` 는 기록이 없다(다시 해도 결과가 같다: `start-ready` 는 띄울 것만 띄우고, `reply` 는 horch 가 같은 본문을 `duplicate` 로 받는다).
 6. 실행 표(`EXECUTORS`, 관제 안이라 모두 `nowait=True`): `start` → `tasks.start(p, task, cli, request=id)`, `start-ready` → `tasks.start_ready(p)`, `fix` → `tasks.fix(p, task, note, supplement, force_round, cli, expect_round=req.expect_round, request=id, nowait=True)`, `accept` → `tasks.accept(p, task, req.expect_round, request=id, nowait=True)`, `drop` → `tasks.drop(p, task, force, req.expect_round, request=id, nowait=True)`, `review` → `d.spawn_review(task, retry=True, expect_round=…, request=id)`, `design-decide` → `approval.decide(p, id, None, request=…, nowait=True)`, `scope` → `tasks.scope(p, task, body, expect_round=…, request=id, target=req.get("target_dispatch"), remember=lambda did: annotate(p, req, target_dispatch=did))`, `agent reset` → Task 8, `test-confirm` → `d.confirm_test(force=True, request=id)`, `reply` → `Horch.call("reply", "--id", str(message_id), f"--body={body}")`: 성공이면 그 결과(`message`·`duplicate`), 거부면 horch 의 `error.code`·`message`·`hint` 와 exit 를 그대로 가진 `HteamError`(메인의 `reply_failed` 문구가 `unknown_question: …` 처럼 horch 의 까닭을 보인다). `args` 에 없는 선택 값은 기본값이다. 큐 `fix` 가 새 라운드를 열면(결과에 `round` 가 있다) 관제 로그 `<T> r<n> 수정 시작` 을 남긴다(설계 8.11 "관제 fix·큐 fix·대기열·죽은 작업자 fix 모두". Task 6 의 `Drive.fix_task` 와 같은 줄). 라운드를 열지 않은 결과(Task 7 의 수정 대기열 `{"id", "status": "queued", "agent"}`)는 그 줄을 남기지 않는다(대기열에서 꺼낼 때 드레인이 남긴다).
-7. 관제 안의 finish 잠금(8.5): `fix`·`drop` 은 `_close_round` 의 finish 잠금을, `review_finish` 는 처음의 finish 잠금을 `nowait` 로 잡는다. `accept` 는 무엇보다 먼저 `state.finish_probe` 를 한다(잠금 순서상 accept 는 finish 잠금을 쥔 채 프로젝트 잠금을 잡지 않는다. 그래서 탐침만 한다). 못 잡으면 아무것도 바꾸지 않고 `review_busy`. CLI 는 관제 판별이 참이면 `nowait=True` 로 부른다(`design-decide` 는 `approval.decide(…, nowait=True)` 로 결정 안의 fix·accept 까지). 관제 판별이 아닌 곳(시험의 함수 직접 호출 등)의 기본은 지금처럼 기다린다. 관제 객체가 CLI 를 거치지 않고 부르는 곳(Task 6 의 `finish_review`·`accept_task`·`fix_task`, Task 7 의 드레인, Task 10 의 보강 fix·결정 이어 하기)은 늘 `nowait=True` 를 직접 넘긴다(기본값에 기대지 않는다). `review`(리뷰 자식)의 finish 잠금은 지금처럼 기다린다(8.8 은 관제가 띄우기 전에 비차단으로 탐침한다, Task 6).
+7. 관제 안의 finish 잠금(8.5): `fix`·`drop` 은 `_close_round` 의 finish 잠금을, `review_finish` 는 처음의 finish 잠금을 `nowait` 로 잡는다. `accept` 는 무엇보다 먼저 `state.finish_probe` 를 한다(잠금 순서상 accept 는 finish 잠금을 쥔 채 프로젝트 잠금을 잡지 않는다. 그래서 탐침만 한다). 못 잡으면 아무것도 바꾸지 않고 `review_busy`. CLI 는 관제 판별이 참이면 `nowait=True` 로 부른다(`design-decide` 는 `approval.decide(…, nowait=True)` 로 결정 안의 fix·accept 까지). 관제 판별이 아닌 곳(시험의 함수 직접 호출 등)의 기본은 지금처럼 기다린다. 관제 객체가 CLI 를 거치지 않고 부르는 곳(Task 6 의 `finish_review`·`accept_task`·`fix_task`, Task 7 의 드레인, Task 10 의 보강 fix·결정 이어 하기)은 늘 `nowait=True` 를 직접 넘긴다(기본값에 기대지 않는다). 예외(알려진 한계, 설계 13장): `fix --supplement` 가 보강 후행 태스크마다 부르는 안쪽 `fix`(`_queue_followers`)에는 `nowait` 를 잇지 않는다(후행 태스크의 리뷰 관문과 겹칠 때만 기다린다). `review`(리뷰 자식)의 finish 잠금은 지금처럼 기다린다(8.8 은 관제가 띄우기 전에 비차단으로 탐침한다, Task 6).
 8. `scope`(7.1, 핵심 순서): (1) `target` 이 있으면(다시 실행) 지금 상태를 보기 전에 `horch send --to dispatch:<target> --subject 추가 범위 --key <request> --body=<내용>` 을 보낸다. horch 가 key 를 먼저 찾으므로 이미 간 전송이면 Dispatch 상태와 상관없이 `duplicate: true`. 성공(새 전송이든 duplicate 든)이면 (3) 으로. horch 가 key 메시지 없이 `dispatch_not_active` 로 거부하면 `not_working` 으로 끝낸다. (2) `target` 이 없으면 `_expect_round` → 상태가 `working` 이고 지금 라운드의 작업 Dispatch 가 있어야 한다(아니면 `not_working`) → `remember(dispatch)` 로 요청 파일에 먼저 남긴다 → 같은 send(`request` 가 있을 때만 `--key`). (3) `die_at("scope_sent")` → 태스크 잠금 안에서 history 에 같은 `request` 의 scope 사건이 없을 때만 더한다 → `{"id", "sent": True}`.
 9. `answer`(7.4): `require_main` → 항목 찾기 → 종류별. `ask` 는 지금 그대로. `question` 은 이전 답이 다르면 `already_answered`, `_record_confirm` 뒤 답 파일(같은 답이면 그대로 두고 다시 성공), Run 에 보내지 않는다(0.3.0 의 `note_main`·`_send`·`sent_at` 을 지운다). `decide` 는 답 파일이 있으면 `already_answered`. `kind == "worker_question"` 이거나 `message_id` 가 있으면 먼저 `queue.submit(p, "reply", {"message_id", "body": 답, "task"})`: 제출 오류(꺼짐·멈춤)는 그대로 올린다(답 파일 없음, 다시 답할 수 있다). 관제 결과가 실패면 답 파일을 쓰고 `reply_failed`. `queued` 면 답 파일을 쓰고 queued 결과. 성공이면 답 파일을 쓰고 `replied: true`. 회신이 없으면 답 파일만. `approval` 은 `use_design_decide`, 그 밖은 `not_answerable`.
 10. `design-decide`(7.4): 메인은 `record_answer` 의 검사 순서대로(JSON → 항목 → approval → answer → 묶음(`approval.load`, 손상이면 `bad_side_file`) → `not_asked` → `empty_request`) 본 뒤 답 파일을 `os.link` 로 원자적으로 만든다. 이미 있으면 같은 `answer`·`decision` 일 때만 그대로 두고 아니면 `already_answered`. 그다음 `submit("design-decide", {"id"})`. 관제는 11.4 의 결정 규칙(`approval.decide`: 결정 기록 → `fix --round`·`accept --round` → `applied`)을 그대로 한다(관제 직접 호출 `design-decide <id> [--json -]` 은 0.3.0 의 `design-review --decide` 와 같다). 실행한 뒤 start-ready 는 틱 4 가 한다. 0.3.0 의 `[main] reply` 주석·`reply_view`·`reply_hint` 와 그것을 가리키던 hint(`approval._result`·`already_asked`·`_decision_pending`·`_stopped`, `tasks` 의 `decision_pending` 두 곳, `coord._awaiting`)는 `design-decide` 와 "관제가 재확인마다 결정 <id> 을 기록대로 마저 한다" 로 바꾼다. 결정의 fix 가 취소를 저장한 뒤 멈춘 태스크의 status 는 `next: null`, hint `일괄 승인 결정 <id> 이 끝나지 않았다. 관제가 재확인마다 기록대로 마저 한다`. 답이 와 있는데 결정이 없으면 hint 는 `… 결정이 없으면 답을 해석해 .herdr-team/bin/hteam design-decide <id> --json - 로 결정한다`. approval 의 outbox 줄과 stale progress 의 `from` 은 `drive`.
@@ -6816,7 +6816,7 @@ Expected: ast 오류 없음, grep 빈 출력. 구현자는 여기서 멈춘다(�
 8. `fix_task(tid, note)`: 먼저 태스크 상태에 `drive_fix = {"round": <지금 라운드>, "note": note, "at": util.now()}` 를 쓴다(설계 8.7: fix 가 이전 Dispatch 를 정리한 뒤 새 라운드를 쓰기 전에 관제가 죽어도 재확인이 같은 지시로 잇는다). 그다음 `tasks.fix(p, tid, note=note, supplement=None, force_round=False, cli={}, nowait=True)`. `tasks.fix` 가 새 라운드를 쓰는 상태 쓰기(`_closing`)에서 `drive_fix` 를 지운다(Task 7 의 수정 대기열 표시 쓰기도 같다). 새 라운드를 열었으면(결과에 `round` 가 있다) 로그 `<T> r<n> 수정 시작`. 라운드를 열지 않은 결과(Task 7 의 `queued`)는 로그를 남기지 않는다(대기열에서 꺼낼 때 드레인이 남긴다). `review_busy` 면 `drive_fix` 를 두고 끝(다음 재확인이 10 의 처음 줄로 잇는다). 태스크가 `launch_failed` 로 남은 `launch_failed` 오류(새 라운드를 열었으나 띄우지 못했다, `drive_fix` 는 이미 지워졌다)는 decide 를 올리지 않는다(재확인의 launch_failed decide 하나, 8.5). 그 밖의 오류는 `drive_fix` 를 지우고 관제 절차 실패 decide(note 가 있으면 "아직 전하지 못한 지시"). `tasks.fix` 는 `_close_round` 를 마친 뒤 `die_at("fix_closed")` 를 부른다.
 9. `reconcile()`(8.7, 그 순서): (1) `rows = write_workers()`, (2) `crew_check()`, (3) `handoff_check()`, (4) `retry_reviews` 의 태스크마다 `start_review` 가 띄우면 집합에서 뺀다, (5) 열린 decide·자식이 없는 태스크로 `coord.attention(p, rows, NO_STATUS_GRACE_S, states=…)` 를 부르고 `no_status` 항목마다 decide(attention.json 이 한 번만 알린다), 태스크마다 heartbeat 뒤 `isolated(f"reconcile:{T}", lambda: reconcile_task(st))`(한 태스크의 예외가 다른 태스크를 막지 않는다), (6) `unbatched()`, (7) `start_ready()` → `design_step()` → `resume_decisions()` → `finish_step()`.
 10. `reconcile_task(st)`(8.7 표): 상태를 다시 읽는다. `outbox.open_decide` 가 있거나 `review:<T>` 자식이 돌면 끝. 닫히지 않은 태스크에 `drive_fix` 가 있으면 상태별 처리 대신: `drive_fix.round` 가 지금 라운드면 `fix_task(tid, drive_fix.note)`(관제 fix 를 잇는다. 정리는 다시 불러도 이어 한다, 6.4), 아니면 `drive_fix` 만 지운다. 상태별:
-    - `working`(`queued_fix` 없음): 작업 실행 기록의 워커 행(`dispatch.slot_row(rows, rd.work)`). 열린 리뷰 시도 기록이 있거나 행이 `retained` → `start_review`. 행이 `settled` → 8.6 의 worker_done 처리(행의 outcome·summary·report_path). 행이 `active` 이고 판정 `live` → 생존 모름 표시를 지운다. `exited`·`lost` → 8.6 의 exited·lost 처리. `unverifiable` → `liveness_unknown_since` 가 없으면 지금 시각을 쓰고, 있고 `LIVENESS_UNKNOWN_S` 가 지났고 `liveness_escalated` 가 아니면 decide 뒤 `liveness_escalated = true`. 작업자를 죽이지 않는다. 쉬는 고정 에이전트는 Task 7 의 `crew_check` 만 본다.
+    - `working`(`queued_fix` 없음): 작업 실행 기록의 워커 행(`dispatch.slot_row(rows, rd.work)`). 열린 리뷰 시도 기록이 있거나 행이 `retained` → `start_review`. 행이 `settled` → 8.6 의 worker_done 처리(행의 outcome·summary·report_path). 행이 `active` 이고 판정 `live` → 생존 모름 표시를 지운다. `exited`·`lost` → 8.6 의 exited·lost 처리. `unverifiable` → `liveness_unknown_since` 가 없으면 지금 시각을 쓰고, 있고 `LIVENESS_UNKNOWN_S` 가 지났고 `liveness_escalated` 가 아니면 decide 뒤 `liveness_escalated = true`. 작업자를 죽이지 않는다. 쉬는 고정 에이전트는 Task 7 의 `crew_check` 만 본다. 남은 재투입 예약(`work.resend`)을 잇는 줄은 Task 8 이 이 갈래 맨 앞에 더한다.
     - `reviewing`: 열린 시도가 없으면: 지금 라운드의 마지막 시도가 `review.attempt_error` 로 오류를 주고(`failed`·`tampered`) `review_failure_asked != [라운드, 그 시도]` 면 그 오류로 5 의 `review_failed`·`review_tampered` decide 를 올리고 그 값을 쓴다(review-finish 가 시도 결과를 쓴 뒤 decide 전에 관제가 죽었다, 설계 8.7). 아니면 끝. 시도에 Dispatch 가 없으면 `start_review`(6.1 0 의 복구). 시도의 행이 끝났으면(`dispatch.review_ended`) `finish_review`.
     - `approved` → `accept_task`. `changes`(`queued_fix` 없음) → 지금 라운드 `review_source == "hteam"` 이면 6 의 `hteam_changes`, 아니면 5 의 `changes` 처리(warnings 없음).
     - `pending` → `tasks.dropped_blockers` 가 비지 않았고 `dropped_deps_asked` 와 다르면 decide 뒤 `dropped_deps_asked = sorted(…)`.
@@ -6891,6 +6891,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -6919,14 +6920,22 @@ os.execv(sys.executable, [sys.executable, os.environ["HORCH_REAL"], *sys.argv[1:
 # 관제 fix 를 따로 띄운 프로세스에서 한다. HTEAM_TEST_DIE_AT 의 os._exit 가 시험 프로세스를 죽이지 않게(설계 8.7 의 drive_fix)
 FIX_RUNNER = ("import sys; sys.path.insert(0, sys.argv[1]); from hteam import drive; from hteam.paths import Project; "
               "drive.Drive(Project(sys.argv[2])).fix_task(sys.argv[3], sys.argv[4])")
-# 다른 리뷰 실행자가 finish 잠금을 쥔 것처럼 30초 동안 쥔다(설계 8.5)
-HOLD_FINISH = ("import fcntl, sys, time; fh = open(sys.argv[1], 'a+'); fcntl.flock(fh, fcntl.LOCK_EX); "
-               "print('held', flush=True); time.sleep(30)")
+# 다른 리뷰 실행자가 finish 잠금을 쥔 것처럼 쥔다(설계 8.5). 시간으로 풀리지 않고 시험이 표준 입력을 닫을 때 놓는다
+HOLD_FINISH = ("import fcntl, sys; fh = open(sys.argv[1], 'a+'); fcntl.flock(fh, fcntl.LOCK_EX); "
+               "print('held', flush=True); sys.stdin.read()")
 
 
 def ago(seconds: float) -> str:
     """seconds 초 전 UTC 시각(util.now 꼴)."""
     return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _record(errors: list, call) -> None:
+    """다른 스레드에서 부른 call 의 예외를 errors 에 남긴다(스레드의 예외는 시험에 오르지 않는다)."""
+    try:
+        call()
+    except BaseException as exc:  # noqa: BLE001 — 시험이 그대로 보인다
+        errors.append(f"{type(exc).__name__}: {exc}")
 
 
 class EventCase(TeamCase):
@@ -7050,12 +7059,23 @@ class EventCase(TeamCase):
         self.addCleanup(lambda: (proc.kill(), proc.wait()))
         return proc
 
-    def hold_finish(self, tid: str = "T-001") -> None:
-        """다른 프로세스가 그 태스크의 finish 잠금을 30초 쥔다(죽은 관제가 남긴 리뷰 자식처럼)."""
+    def hold_finish(self, tid: str = "T-001"):
+        """다른 프로세스가 그 태스크의 finish 잠금을 쥔다(죽은 관제가 남긴 리뷰 자식처럼). 보유자는 시험이 돌려받은 release()
+        를 부를 때(표준 입력을 닫을 때)까지 쥔다. 시험이 그 전에 끝나면 정리가 놓는다. (보유자 프로세스, release) 를 돌려준다."""
         path = self.state_dir / "tasks" / f"{tid}.finish.lock"
-        proc = subprocess.Popen([sys.executable, "-c", HOLD_FINISH, str(path)], stdout=subprocess.PIPE, text=True)
-        self.addCleanup(lambda: (proc.kill(), proc.wait(), proc.stdout.close()))
+        proc = subprocess.Popen([sys.executable, "-c", HOLD_FINISH, str(path)], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, text=True)
+
+        def release() -> None:
+            if not proc.stdin.closed:
+                proc.stdin.close()
+            proc.wait(timeout=30)
+            if not proc.stdout.closed:
+                proc.stdout.close()
+
+        self.addCleanup(release)
         self.assertEqual(proc.stdout.readline().strip(), "held")
+        return proc, release
 
     def main_bg(self, *args: str) -> subprocess.Popen:
         """메인이 큐 명령을 넣고 결과를 기다린다(설계 7.1). 요청 파일이 생길 때까지 기다린 뒤 돌려준다."""
@@ -7331,14 +7351,21 @@ class NoWaitTest(EventCase):
     def test_drive_calls_do_not_wait_for_the_finish_lock(self):
         self.start()
         self.update_terminal(self.work_terminal(), state="finished")
-        self.hold_finish()
+        holder, release = self.hold_finish()
         for name, call in (("fix_task", lambda: self.d.fix_task("T-001", GONE_NOTE)),
                            ("accept_task", lambda: self.d.accept_task("T-001")),
                            ("finish_review", lambda: self.d.finish_review("T-001"))):
-            with self.subTest(name=name):
-                started = time.monotonic()
-                call()
-                self.assertLess(time.monotonic() - started, 10)
+            errors = []
+            worker = threading.Thread(target=lambda: _record(errors, call), daemon=True)
+            worker.start()
+            worker.join(10)  # 호출마다 따로 제한 시간을 둔다. 보유자는 시험이 놓기 전에는 풀리지 않는다
+            if worker.is_alive():  # 기다리는 구현: 잠금을 놓아 그 호출을 끝내고 실패로 본다
+                release()
+                worker.join(60)
+                self.fail(f"{name} 가 finish 잠금을 기다렸다")
+            self.assertEqual(errors, [], name)
+        self.assertIsNone(holder.poll())  # 세 호출 내내 보유자가 잠금을 쥐고 있었다
+        release()
         st = self.task_state("T-001")
         self.assertEqual((st["status"], st["round"], self.decides()), ("working", 1, []))
         self.assertFalse(st["rounds"][0]["work"].get("canceled"))
@@ -9683,7 +9710,7 @@ Expected: ast 오류 없음, grep 빈 출력, 커밋 하나. 구현자는 여기
 
 **Files:**
 - Create: `herdr-team/templates/handoff.md`, `herdr-team/tests/test_crew_reset.py`
-- Modify: `herdr-team/lib/hteam/crew.py`(리셋·인수인계·재투입·`agent reset`), `herdr-team/lib/hteam/drive.py`(`reset_step`·`handoff_message`·`handoff_check`·`on_not_started`), `herdr-team/lib/hteam/cli.py`(`COMMAND_MODULES` 에 `crew`), `herdr-team/lib/hteam/queue.py`(실행 표의 `agent reset`)
+- Modify: `herdr-team/lib/hteam/crew.py`(리셋·인수인계·재투입·`agent reset`), `herdr-team/lib/hteam/drive.py`(`reset_step`·`handoff_message`·`handoff_check`·`on_not_started`, `reconcile_task` 의 `working` 갈래에서 남은 `resend` 잇기), `herdr-team/lib/hteam/cli.py`(`COMMAND_MODULES` 에 `crew`), `herdr-team/lib/hteam/queue.py`(실행 표의 `agent reset`)
 - Test: `herdr-team/tests/test_crew_reset.py`(새로)
 
 **Interfaces:**
@@ -9695,8 +9722,8 @@ Expected: ast 오류 없음, grep 빈 출력, 커밋 하나. 구현자는 여기
   - 상수(설계 8.5): `RESET_BUSY_S = RESET_UNKNOWN_S = RESET_STUCK_S = 1800`, `RESET_FAIL_LIMIT = 3`, 닫기 재시도 상한 3, `RESET_CLEAR_TIMEOUT_MS = 10000`(환경 `HTEAM_RESET_TIMEOUT_MS` 가 있으면 그 값을 `--timeout-ms` 로), `UNKNOWN_START_LIMIT = 3`.
   - 인수인계 사양 `state/crew/<이름>-handoff-s<n>.md`(`util.fill(templates/handoff.md, agent=<이름>, agent_title=<제목>, path=docs/handoff/<이름>.md)`), 제목(실행 키) `[handoff] <이름> s<n>`. n 은 처음 넣을 때 `state/crew/<이름>-handoff-s*.md` 의 가장 큰 번호 + 1(없으면 1), 이어 붙이기·다시 넣기는 `resetting.title` 의 번호를 그대로 쓴다.
   - `resetting` 모양: `{"step": "starting", "title", "at"}` → `{"step": "handoff", "dispatch", "title", "at"[, "idle_asked": true]}` → `{"step": "clear", "dispatch", "title", "at"[, "clear_error": <code>]}`. `at` 은 `util.local_now()`(그 단계에 들어간 시각, `handoff` 의 30분 판정 기준).
-  - 태스크 상태 `unknown_starts`(입력 유실 재투입 수). 작업 실행 기록의 `resend = {"from": <앞 Dispatch>, "n": <이번 재투입 번호>}`(재투입을 시작하기 전에 쓰고, 새 Dispatch 를 기록하는 같은 쓰기에서 지운다. 설계 5.9.8).
-  - 시험 죽음 지점 `resend_started`(재투입의 `worker-start --terminal` 이 돌아온 뒤, 상태 기록 전).
+  - 태스크 상태 `unknown_starts`(입력 유실 재투입 수). 작업 실행 기록의 `resend = {"from": <앞 Dispatch>, "n": <이번 재투입 번호>}`(재투입을 시작하기 전에 쓰고, 새 Dispatch 를 기록하는 같은 쓰기에서 지우거나 실패 decide 를 올린 뒤 지운다. 설계 5.9.8).
+  - 시험 죽음 지점 `resend_abandoned`(재투입의 `worker-abandon --keep-terminal` 이 돌아온 뒤, `worker-start` 전), `resend_started`(재투입의 `worker-start --terminal` 이 돌아온 뒤, 상태 기록 전).
   - 관제 로그 원문(8.11): `<이름> 리셋 시작: skipped`, `<이름> 리셋 시작: handoff`, `<이름> 리셋 시작: failed(<n>/3): <code>: <message>`, `<이름> 리셋 미룸: 작업 세션이 일하는 중(<상태>)`(미룰 때 처음 한 번), `<이름> 리셋: reset(turn <n>, <초>초)`(horch 결과의 `turn`·`seconds`), `<이름> 리셋: new_terminal(<code>)`, `<T> not_started: resent(<n>)`.
   - decide(escalation) 원문(설계 5.9.7·5.9.8·8.6): `<이름> 에이전트의 작업 터미널 상태를 <분>분 넘게 알 수 없어 리셋(인수인계)을 취소했다. 터미널을 확인한 뒤 필요하면 다시 요청한다`, `<이름> 에이전트의 작업 세션이 <분>분 넘게 일하는 중이라 리셋(인수인계)을 취소했다. 그 탭을 확인한 뒤 필요하면 다시 요청한다`, `<이름> 에이전트에 인수인계 태스크를 <n>번 넣지 못해 리셋을 취소했다: <code>: <message>. 작업 세션이 자동 압축 중이거나 다른 일을 하면 실패한다. 화면을 본 뒤 다시 요청한다`, `<이름> 에이전트가 인수인계를 쓰지 못했다: <요약 200자>`(commands `["hteam agent reset <이름>"]`), `<이름> 에이전트 인수인계가 끝나지 않았다`(같은 commands), `<이름> 에이전트 세션을 비우지도 닫지도 못했다: <code>: <message>. 사용자에게 그 에이전트 탭의 작업 pane 을 닫아 달라고 한다`, `<이름> 에이전트가 인수인계 중 <상태> 로 멈췄다(<msg 120자>). 사용자에게 그 탭을 보게 한다`, `<이름> 에이전트가 인수인계 중 끝났다`, `작업자 시작을 <n>번 확인하지 못했다`(task 그 태스크, commands `hteam fix T --note "<지시>"`, `hteam fix T --force --note "<지시>"`, `hteam drop T`). `<분>` 은 경과 분의 내림. 태스크가 없는 decide 는 task null.
   - done 요청 글(8.6, 작업과 같다): `턴을 마쳤는데 done 이 없다. 일이 끝났으면 프리앰블의 done 명령을 부른다. 남았으면 이어서 하고 끝나면 done 을 부른다.`(제목 `done 요청`, `horch send --to dispatch:<D> --subject "done 요청" --body=<글>`).
@@ -9719,9 +9746,13 @@ Expected: ast 오류 없음, grep 빈 출력, 커밋 하나. 구현자는 여기
    - observed exited·lost: 인수인계 실패로 보고 `crew.forget`(terminal-close --abandon), `resetting = None`, `reset_pending = False`, `since_reset = 0`, `reset_tasks = []`(다음 세션은 새로 뜬다), decide(끝났다).
 4. `handoff_check()`(재확인 3): `resetting.step == "handoff"` 인 entry 마다 `worker-list` 의 그 Dispatch 행. `settled`·`retained`(또는 outcome 있는 `released`)면 outcome 대로 2. outcome 없이 `abandoned`·`released`·판정 `exited`·`lost` 면 2 의 실패. 아직 active 이고 `resetting.at` 에서 `RESET_STUCK_S` 가 지났으면 30분 정리.
 5. 리셋 뒤 첫 프리앰블은 비우기가 올린 turn 을 `start_turn` 으로 쓴다(horch 가 보내기 직전 turn 을 다시 읽는다, Task 1). 리셋 동안의 배정 기다림·수정 대기열은 Task 7 규칙 그대로다.
-6. 입력 유실 재투입 `not_started(d, tid, did)`(5.9.8):
-   1. 이어 붙이기가 먼저다: 지금 라운드 작업 기록에 `resend` 가 있으면(앞 재투입이 새 Dispatch 를 띄운 뒤 기록 전에 관제가 죽었다. 처리하던 not_started 는 ack 전이라 다시 온다) `horch worker-list` 에서 `work.horch_task` 의 최신 시도(`dispatch.latest_for_task`)를 본다. `resend.from` 과 다르고 `launch_failed` 가 아니면 그것을 이어 붙인다: 한 태스크 상태 쓰기에서 `work.dispatch`·`start_turn`·`delivery` 를 그 행의 값으로, `unknown_starts = resend.n`, `resend` 를 지운다 → entry `dispatch` 를 그 Dispatch 로 → 로그 `<T> not_started: resent(<n>)` → 끝(다시 넣지 않는다). 최신이 `launch_failed` 면 `resend` 를 지우고 `d.procedure_failed(tid, HteamError("resend_failed", f"{tid} 에 다시 넣은 Dispatch {id} 가 launch_failed 다", 1))`(decide `관제 절차 실패: resend_failed: …`). `resend.from` 과 같으면(띄우기 전에 죽었다) `resend` 만 지우고 2 로 간다(그 행이 이미 `abandoned` 면 2 의 abandon 을 건너뛴다).
-   2. 지금 라운드의 `crew` 에이전트 작업 터미널을 `probe` 해 `live` 이고 `idle`·`done` 일 때만 한다(`working` 은 입력이 들어간 증거라 아무것도 안 한다, 그 밖도 안 한다). `n = unknown_starts + 1`. `n ≥ UNKNOWN_START_LIMIT` 면 다시 넣지 않고 decide(작업자 시작을 n번 확인하지 못했다). 아니면 먼저 작업 기록에 `resend = {"from": D, "n": n}` 를 쓴다 → `horch worker-abandon --dispatch <D> --keep-terminal` → `horch worker-start --terminal <t> --task <라운드 work.horch_task>`(앞 Dispatch 가 abandoned 라 `--retry` 가 필요 없다. 사양은 그 Task 의 것) → `die_at("resend_started")` → 한 태스크 상태 쓰기에서 `unknown_starts = n`, 라운드 `work.dispatch`·`start_turn`·`delivery` 를 새 값으로, `resend` 를 지운다 → entry `dispatch` 를 새 Dispatch 로 → 로그 `<T> not_started: resent(<n>)`. 넣기가 실패하면(horch 오류) `resend` 를 지우고 오류를 그대로 올린다(관제의 격리가 decide 한 번).
+6. 입력 유실 재투입 `not_started(d, tid, did)`(5.9.8). 재투입 예약 `resend` 는 새 Dispatch 를 기록하거나 실패 decide 를 남길 때까지 지우지 않는다(그 사이 어디서 죽거나 터미널 조회가 실패해도 다음 not_started 처리나 재확인이 잇는다, Codex 계획 리뷰 r2):
+   1. 잇기가 먼저다: 지금 라운드 작업 기록에 `resend` 가 있으면(앞 재투입이 끝나기 전에 관제가 죽었거나 터미널을 확인하지 못했다) `horch worker-list` 에서 `work.horch_task` 의 최신 시도(`dispatch.latest_for_task`)를 본다.
+      - `resend.from` 과 다르고 `launch_failed` 가 아니면(새 Dispatch 를 띄운 뒤 기록 전에 죽었다) 이어 붙인다: 한 태스크 상태 쓰기에서 `work.dispatch`·`start_turn`·`delivery` 를 그 행의 값으로, `unknown_starts = resend.n`, `resend` 를 지운다 → entry `dispatch` 를 그 Dispatch 로 → 로그 `<T> not_started: resent(<n>)` → 끝(다시 넣지 않는다).
+      - `launch_failed` 면 `d.procedure_failed(tid, HteamError("resend_failed", f"{tid} 에 다시 넣은 Dispatch {id} 가 launch_failed 다", 1))`(decide `관제 절차 실패: resend_failed: …`)를 올린 뒤 `resend` 를 지우고 끝.
+      - `resend.from` 이면(abandon 전이나 뒤, 새 Dispatch 를 띄우기 전에 죽었다) `resend` 를 그대로 두고 2 를 `n = resend.n` 으로 한다(그 행이 이미 `abandoned` 면 2 의 abandon 을 건너뛴다).
+   2. 지금 라운드의 `crew` 에이전트 작업 터미널을 `probe` 해 `live` 이고 `idle`·`done` 일 때만 넣는다. 그 밖(`working`·`blocked`·확인 불가·보고 없음)은 아무것도 하지 않는다(`resend` 가 있으면 그대로 두어 다음 재확인이 다시 본다. 없으면 지금처럼 `working` 은 입력이 들어간 증거다). 새 재투입이면 `n = unknown_starts + 1` 이고 `n ≥ UNKNOWN_START_LIMIT` 면 다시 넣지 않고 decide(작업자 시작을 n번 확인하지 못했다), 아니면 먼저 작업 기록에 `resend = {"from": D, "n": n}` 를 쓴다. 그다음 `horch worker-abandon --dispatch <D> --keep-terminal` → `die_at("resend_abandoned")` → `horch worker-start --terminal <t> --task <라운드 work.horch_task>`(앞 Dispatch 가 abandoned 라 `--retry` 가 필요 없다. 사양은 그 Task 의 것) → `die_at("resend_started")` → 한 태스크 상태 쓰기에서 `unknown_starts = n`, 라운드 `work.dispatch`·`start_turn`·`delivery` 를 새 값으로, `resend` 를 지운다 → entry `dispatch` 를 새 Dispatch 로 → 로그 `<T> not_started: resent(<n>)`. 넣기가 실패하면(horch 오류) `d.procedure_failed(tid, 그 오류)` 를 올린 뒤 `resend` 를 지운다(오류는 올리지 않는다).
+   3. 재확인이 잇는다(설계 8.7): Task 6 의 `reconcile_task` 의 `working` 갈래는 지금 라운드 작업 기록에 `resend` 가 있으면 작업자 확인 대신 `self.on_not_started(tid, resend["from"], None)` 을 부른다(처리하던 not_started 메시지가 그새 ack 됐어도 멈추지 않는다: horch 는 active 가 아닌 Dispatch 에 새 관찰을 만들지 않는다).
 7. `templates/handoff.md` 는 플러그인에서 바로 읽는다(프로젝트에 복사하지 않는다, scaffold `FILES`·upgrade 대상이 아니다). 아래 원문 그대로(설계 5.9.7).
 
 핵심 조각(그대로 옮기지 않아도 된다) — 비우기와 닫기 재시도(`clear` 단계, 어디서 죽어도 이어 한다):
@@ -10235,6 +10266,38 @@ class NotStartedTest(CrewCase):
         self.assertEqual(len(self.task_dispatches(horch_task)), 2)  # 다시 넣지 않았다
         self.assertEqual(sum("T-002 not_started: resent(1)" in x for x in self.log_lines()), 1)
 
+    def test_death_after_abandon_and_unknown_terminal_is_resumed_by_reconcile(self):
+        """재투입이 앞 Dispatch 를 abandon 한 뒤 새 Dispatch 를 띄우기 전에 관제가 죽었다. 다시 온 not_started 를 처리할 때
+        작업 터미널 상태를 알 수 없으면 resend 를 남기고, 그 메시지가 ack 된 뒤에도 재확인이 이어서 다시 넣는다(설계 5.9.8,
+        8.7)."""
+        first = self.out["dispatch"]
+        horch_task = self.dispatch_row(first)["task_id"]
+        msg = self.not_started_msg(first)
+        proc = subprocess.run([sys.executable, "-c", HANDLE_RUNNER, str(ROOT / "lib"), str(self.proj), json.dumps(msg)],
+                              capture_output=True, text=True, timeout=60,
+                              env=self._env("drive", None, {"HTEAM_TEST_DIE_AT": "resend_abandoned"}))
+        self.assertEqual(proc.returncode, 137, proc.stderr)
+        self.assertEqual([r["state"] for r in self.task_dispatches(horch_task)], ["abandoned"])
+        self.assertEqual(self.task_state("T-002")["rounds"][-1]["work"]["resend"], {"from": first, "n": 1})
+        self.delay_get(self.t, 4.0)  # 작업 터미널의 hc get 이 3초 확인을 넘긴다: 상태를 알 수 없다
+        with self.in_drive():
+            self.make_drive().handle(msg)  # 같은 메시지가 다시 온다(이 처리 뒤 ack 된다)
+        self.assertEqual(self.task_state("T-002")["rounds"][-1]["work"]["resend"], {"from": first, "n": 1})  # 남긴다
+        self.assertEqual(len(self.task_dispatches(horch_task)), 1)
+        self.undelay()
+        with self.in_drive():
+            d = self.make_drive()
+            d.write_workers()
+            d.reconcile_task(self.task_state("T-002"))  # 메시지 없이 재확인이 잇는다
+        rows = self.task_dispatches(horch_task)
+        self.assertEqual([r["state"] for r in rows], ["abandoned", "active"])
+        st = self.task_state("T-002")
+        self.assertEqual((self.work_dispatch("T-002"), self.entry()["dispatch"], st["unknown_starts"]),
+                         (rows[1]["id"], rows[1]["id"], 1))
+        self.assertNotIn("resend", st["rounds"][-1]["work"])
+        self.assertEqual(sum("T-002 not_started: resent(1)" in x for x in self.log_lines()), 1)
+        self.assertEqual([x for x in self.decides() if x["task"] == "T-002"], [])
+
     def test_resend_same_round_then_decide_on_third(self):
         first = self.out["dispatch"]
         horch_task = self.dispatch_row(first)["task_id"]
@@ -10281,7 +10344,7 @@ class HandoffTemplateTest(CrewCase):
 - [ ] **Step 2: 실패 확인**
 
 Run: `cd herdr-team && python3 -m unittest tests.test_crew_reset 2>&1 | tail -4`
-Expected: ce3fe82 에 Task 1–7 블록과 이 태스크 Step 1 블록을 더한 트리(구현 없음)에서 `Ran 1 test`, `FAILED (errors=1)`, `ImportError: cannot import name 'crew' from 'hteam'`(가져오는 `tests.test_crew` 가 `crew` 를 쓴다). Codex 계획 리뷰 r1 의 시험(재투입 이어 붙이기)을 더한 뒤에도 같은 트리에서 같은 값이다(가져오기 오류). Task 7 구현 위에서는(시험을 더하기 전에 잰 값. 지금은 31개이고 더한 시험도 `resend` 가 없어 실패한다) `Ran 30 tests`, `FAILED (failures=9, errors=18)`: 대표 `TypeError: 'NoneType' object is not subscriptable`(리셋 단계가 없어 `resetting` 이 비어 있다), `FileNotFoundError: … templates/handoff.md`, `AttributeError: module 'hteam.crew' has no attribute 'mark_batch_reset'`, `agent` 명령이 없어 `usage`. 셋은 그 전에도 통과한다(아무것도 하지 않아야 하는 경우: 맡은 일이 있으면 리셋하지 않음, 연속 구간 끊김, `working` 이면 다시 넣지 않음).
+Expected: ce3fe82 에 Task 1–7 블록과 이 태스크 Step 1 블록을 더한 트리(구현 없음)에서 `Ran 1 test`, `FAILED (errors=1)`, `ImportError: cannot import name 'crew' from 'hteam'`(가져오는 `tests.test_crew` 가 `crew` 를 쓴다). Codex 계획 리뷰 r1·r2 의 시험(재투입 이어 붙이기 둘)을 더한 뒤에도 같은 트리에서 같은 값이다(가져오기 오류). Task 7 구현 위에서는(시험을 더하기 전에 잰 값. 지금은 32개이고 더한 둘도 `resend` 가 없어 실패한다) `Ran 30 tests`, `FAILED (failures=9, errors=18)`: 대표 `TypeError: 'NoneType' object is not subscriptable`(리셋 단계가 없어 `resetting` 이 비어 있다), `FileNotFoundError: … templates/handoff.md`, `AttributeError: module 'hteam.crew' has no attribute 'mark_batch_reset'`, `agent` 명령이 없어 `usage`. 셋은 그 전에도 통과한다(아무것도 하지 않아야 하는 경우: 맡은 일이 있으면 리셋하지 않음, 연속 구간 끊김, `working` 이면 다시 넣지 않음).
 
 - [ ] **Step 3: 구현**
 
@@ -10851,7 +10914,7 @@ Expected: ast 오류 없음, grep 빈 출력. 구현자는 여기서 멈춘다(�
     2. `approval.view(p, cfg, 상태들)["blockers"]` 가 있거나 승인 직무 태스크에 `queued_fix`(고정 에이전트 대기열의 수정)가 있으면 끝.
     3. 보강(아래 11). 기다리거나 방금 무언가를 했으면 끝. 아니면 처리한 것으로 본 제안의 `(태스크, 라운드)` 집합 `skip` 을 받는다.
     4. `approval.design_review(p, skip=skip)`. `HteamError` 가 exit 3 이고 code 가 `DESIGN_QUIET` 면 조용히 끝. 성공이면 로그 `디자인 승인 질문 <id>: <tasks 의 태스크를 ", " 로>`.
-11. 보강(8.9 "보강 진행", `supplement.json`). 핵심 조각:
+11. 보강(8.9 "보강 진행", `supplement.json`). 아래 화면 fix 는 `nowait=True` 다. 그러나 그 fix 가 보강 후행 태스크의 대기 라운드를 만드는 안쪽 fix(`tasks._queue_followers` 의 재귀 `fix`)에는 `nowait` 를 잇지 않는다: 후행 태스크의 리뷰 관문이 finish 잠금을 쥐면 관제가 그동안 기다린다(설계 13장의 알려진 한계, Codex 계획 리뷰 r2. 드문 경우라 고치지 않는다). 핵심 조각:
 
     ```python
     data = self._supplement()                                   # {"supplements": [...]}
@@ -13731,6 +13794,7 @@ Expected: 커밋 하나, grep 빈 출력, 리뷰 pane 주소. `hc wait <주소> 
 - 보기 pane 은 리뷰 자식 결과 처리가 아니라 같은 틱 8 단계 `view_step` 이 연다. 열기 실패는 `view` 에 `pane`·`terminal` null 과 `error` 로 남겨 그 시도 동안 다시 열지 않는다(설계 "로그 한 줄" 을 틱마다 되풀이하지 않게, Task 9).
 - 묶음 밖 후속이 decide 만 올렸을 때도 마무리를 그 재확인에서 끝낸다(열린 판단과 done 이 함께 나가지 않게, Task 10). 확정 질문은 `force` 여도 같은 식별값의 열린 질문이 있으면 새로 올리지 않는다(8.4 "같은 질문이 열려 있지 않을 때", Task 10).
 - 관제가 처리한 보강 제안을 `approval.design_review(p, skip=…)` 로 넘긴다(그러지 않으면 dropped 보강·기록된 제안 때문에 `supplement_needed` 로 영영 묻지 못한다, Task 10).
+- 알려진 한계(Codex 계획 리뷰 r2, 설계 13장): 관제 안 `fix --supplement` 의 보강 후행 태스크 대기 라운드(`tasks._queue_followers` 의 재귀 `fix`)에는 `nowait` 를 잇지 않는다. 후행 태스크의 리뷰 관문과 겹칠 때만 관제 틱이 그 관문이 끝날 때까지 멈춘다(Task 5 Rules 7, Task 10 Rules 11).
 - `design-decide` 를 관제에서 직접 부르면(입력 없이) 답 파일의 결정이나 결정 기록을 잇는다(0.3.0 `design-review --decide` 의 자리, Task 5). 시험 위치는 일괄 승인 도구가 있는 `test_approval.py`.
 - 테스트 파일 이름: 설계 15.1 의 `tests/test_drive.py` 를 셋으로 나눴다(`test_drive.py` 관제 뼈대, `test_drive_events.py` 이벤트·재확인, `test_drive_flows.py` 자동화). 문구 계약 시험은 새 `tests/test_wording.py`(Task 11). 리셋 시험은 `tests/test_crew_reset.py`(Task 8).
 
