@@ -730,51 +730,57 @@ def _check_handoff(d, name: str, res: dict, rows: list[dict]) -> None:
 
 
 # --- 입력 유실 재투입(5.9.8) ---
-def not_started(d, tid: str, did: str) -> None:
+def not_started(d, tid: str, did: str) -> bool:
     """observed not_started(넣은 입력이 들어가지 않았다): 작업 터미널이 live 이고 idle·done 일 때만 같은 라운드를 같은 터미널에
-    다시 넣는다. 재투입 예약 resend 를 터미널 확인보다 먼저 쓰고, 새 Dispatch 를 기록하거나 실패 decide 를 올리거나 입력이
+    다시 넣는다. 재투입 예약 resend 를 어떤 조회(horch·hc)보다 먼저 쓰고, 새 Dispatch 를 기록하거나 실패 decide 를 올리거나 입력이
     들어간 증거를 볼 때까지 지우지 않는다. 남은 resend 는 이 처리(다시 온 메시지)와 재확인이 잇는다. 세 번째면 다시 넣지 않고
-    decide."""
+    decide. 입력이 들어간 증거로 예약을 지웠으면 True(재확인은 보통 작업자 확인으로 돌아간다)."""
     p = d.p
     st = state.require(p, tid)
     rd = state.current_round(st)
     if rd is None:
-        return
+        return False
     work = rd["work"]
-    rows = d.horch().workers()
     resend = work.get("resend")
-    if resend:  # 앞 재투입이 끝나기 전에 관제가 죽었거나 터미널을 확인하지 못했다
+    if resend:  # 앞 재투입이 끝나기 전에 관제가 죽었거나 조회가 실패했다
+        did, n = resend["from"], resend["n"]
+    else:  # 상태 파일의 값만으로 먼저 쓴다. 뒤 조회가 실패해도(그 메시지는 ack 된다) 재확인이 잇는다
+        n = (st.get("unknown_starts") or 0) + 1
+        with state.edit(p, tid) as cur:
+            state.current_round(cur)["work"]["resend"] = {"from": did, "n": n}
+    rows = d.horch().workers()
+    if resend:
         latest = dispatch.latest_for_task(rows, work.get("horch_task"))
-        if latest is not None and latest["id"] != resend["from"]:
+        if latest is not None and latest["id"] != did:
             if latest["state"] == "launch_failed":
                 d.procedure_failed(tid, HteamError("resend_failed", f"{tid} 에 다시 넣은 Dispatch {latest['id']} 가 "
                                                                     "launch_failed 다", FAIL))
-                return _drop_resend(p, tid)
-            return _resent(d, tid, latest, resend["n"])  # 새 Dispatch 를 띄운 뒤 기록 전에 죽었다: 이어 붙인다
-        did, n = resend["from"], resend["n"]
-    else:
-        n = (st.get("unknown_starts") or 0) + 1
-        with state.edit(p, tid) as cur:  # 터미널을 확인하지 못해도(메시지는 ack 된다) 재확인이 잇게 먼저 쓴다
-            state.current_round(cur)["work"]["resend"] = {"from": did, "n": n}
+                _drop_resend(p, tid)
+                return False
+            _resent(d, tid, latest, n)  # 새 Dispatch 를 띄운 뒤 기록 전에 죽었다: 이어 붙인다
+            return False
     row = dispatch.row_by_id(rows, did)
     abandon = row is None or row["state"] != "abandoned"
+    # 이미 버린 앞 Dispatch 는 증거를 보지 않는다(재투입을 마쳐야 한다). hc 없이 아는 증거(워커 명령·메시지, 끝남)를 먼저 본다
+    if abandon and row is not None and (row.get("seen_at") or row["state"] not in drive.LIVE):
+        return _went_in(d, tid, did)
     name = round_crew(rd)
     e = entry(p, name) if name else None
     if not e or not e["terminal"]:
-        return
+        return False
     verdict, info = probe(e["terminal"], e["terminal_argv"])
     if verdict != "live":
-        return  # 확인 불가는 resend 를 두어 다음 재확인이 다시 본다(끝났으면 재확인의 터미널 확인이 맡은 태스크를 처리한다)
+        return False  # 확인 불가는 resend 를 두어 다음 재확인이 다시 본다(끝났으면 재확인의 터미널 확인이 맡은 태스크를 처리한다)
     w = word(info)
-    if abandon and _started(row, rd, info, w):  # 이미 버린 앞 Dispatch 는 증거를 보지 않는다(재투입을 마쳐야 한다)
-        d.log(f"{tid} not_started 지난 관찰 무시: {did}")
-        return _drop_resend(p, tid)
+    if abandon and _started(row, rd, info, w):
+        return _went_in(d, tid, did)
     if w not in READY:
-        return  # blocked·error·보고 없음은 resend 를 두어 다음 재확인이 다시 본다
+        return False  # blocked·error·보고 없음은 resend 를 두어 다음 재확인이 다시 본다
     if n >= drive.UNKNOWN_START_LIMIT:
         d.decide("escalation", tid, NOT_STARTED_LIMIT.format(n=n),
                  commands=[d._fix_cmd(st), d._fix_cmd(st, force=True), f"hteam drop {tid}"])
-        return _drop_resend(p, tid)
+        _drop_resend(p, tid)
+        return False
     try:
         if abandon:
             d.horch().ok("worker-abandon", "--dispatch", did, "--keep-terminal")
@@ -785,17 +791,26 @@ def not_started(d, tid: str, did: str) -> None:
         if exc.exit_code == MISSING:
             raise
         d.procedure_failed(tid, exc)
-        return _drop_resend(p, tid)
+        _drop_resend(p, tid)
+        return False
     _resent(d, tid, {"id": res["dispatch"], "start_turn": res.get("start_turn"), "delivery": res.get("delivery")}, n)
+    return False
+
+
+def _went_in(d, tid: str, did: str) -> bool:
+    """앞 Dispatch 에 넣은 입력이 들어간 증거를 봤다: 다시 넣지 않고 예약을 지운다."""
+    d.log(f"{tid} not_started 지난 관찰 무시: {did}")
+    _drop_resend(d.p, tid)
+    return True
 
 
 def _started(row: dict | None, rd: dict, info: dict, w: str | None) -> bool:
-    """앞 Dispatch 에 넣은 입력이 그새 들어갔다(orch 13.6 의 전달 판정과 같은 기준, 5.9.8 의 working): turn 이 그 Dispatch 의
-    start_turn(없으면 0)보다 크거나, 그 Dispatch 의 워커 명령·보낸 메시지가 있거나(seen_at. 워커의 send 도 seen_at 을 쓴다),
-    세션이 일하는 중이다."""
+    """hc 로 아는, 앞 Dispatch 에 넣은 입력이 그새 들어간 증거(orch 13.6 의 전달 판정과 같은 기준, 5.9.8 의 working): turn 이
+    그 Dispatch 의 start_turn(없으면 0)보다 크거나 세션이 일하는 중이다. hc 없이 아는 증거(seen_at: 워커 명령과 워커의 send,
+    끝난 Dispatch)는 not_started 가 터미널 확인 전에 본다."""
     start = (row.get("start_turn") if row else rd.get("start_turn")) or 0
     turn = info.get("turn")
-    return (isinstance(turn, int) and turn > start) or bool((row or {}).get("seen_at")) or w == "working"
+    return (isinstance(turn, int) and turn > start) or w == "working"
 
 
 def _resent(d, tid: str, row: dict, n: int) -> None:

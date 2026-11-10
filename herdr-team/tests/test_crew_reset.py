@@ -615,3 +615,60 @@ class ReviewFixTest(ResetCase):
         self.step()  # 터미널이 끝나 skipped 로 끝난다
         e = self.entry()
         self.assertEqual((e["reset_pending"], e["reset_failures"]), (False, 0))
+
+
+from unittest import mock  # noqa: E402  (리뷰 고치기 둘째의 시험 도구)
+
+from hteam.errors import HteamError  # noqa: E402
+
+
+class ReviewFix2Test(ResetCase):
+    """Task 8 리뷰 고치기 둘째(Codex 커밋 리뷰 ad508b6)."""
+
+    def not_started_msg(self, did, status="done"):
+        return NotStartedTest.not_started_msg(self, did, status)
+
+    def test_worker_list_failure_on_first_not_started_keeps_resend(self):
+        """첫 not_started 처리의 worker-list 가 실패해도 재투입 예약은 이미 남았다. 메시지는 처리 실패로 ack 되고 재확인이 잇는다."""
+        first = self.started("T-002")["dispatch"]
+        msg = self.not_started_msg(first)
+        with self.in_drive():
+            d = self.make_drive()
+            fail = HteamError("horch_failed", "worker-list 시간 초과", 1)
+            with mock.patch.object(d.horch(), "workers", side_effect=fail), self.assertRaises(HteamError):
+                d.handle(msg)
+        self.assertEqual(self.rnd("T-002")["work"]["resend"], {"from": first, "n": 1})
+        self.assertEqual(self.dispatch_row(first)["state"], "active")
+        with self.in_drive():
+            d = self.make_drive()
+            d.write_workers()
+            d.reconcile_task(self.task_state("T-002"))
+        did2 = self.work_dispatch("T-002")
+        self.assertNotEqual(did2, first)
+        self.assertEqual((self.dispatch_row(first)["state"], self.task_state("T-002")["unknown_starts"]),
+                         ("abandoned", 1))
+        self.assertNotIn("resend", self.rnd("T-002")["work"])
+
+    def test_finished_dispatch_clears_resend_without_hc_and_goes_to_review(self):
+        """예약이 남은 뒤 hc 확인이 계속 실패해도, 워커가 끝낸 Dispatch(settled·seen_at)를 보면 예약을 지우고 보통 재확인
+        (놓친 worker_done → 리뷰)으로 간다."""
+        first = self.started("T-002")["dispatch"]
+        msg = self.not_started_msg(first)
+        self.delay_get(self.t, 4.0)
+        with self.in_drive():
+            self.make_drive().handle(msg)
+        self.assertEqual(self.rnd("T-002")["work"]["resend"], {"from": first, "n": 1})
+        code, out = self.act_work("T-002", {"src/t-002/a.py": "T-002\n"})  # 입력은 들어갔고 워커가 끝냈다(worker_done 은 놓쳤다)
+        self.assertEqual(code, 0, out)
+        row = self.dispatch_row(first)
+        self.assertEqual(row["state"], "settled")
+        self.assertTrue(row["seen_at"])
+        with self.in_drive():
+            d = self.make_drive()
+            d.write_workers()
+            with mock.patch.object(d, "start_review") as review:
+                d.reconcile_task(self.task_state("T-002"))  # hc get 은 여전히 3초를 넘긴다
+        review.assert_called_once_with("T-002")
+        self.assertNotIn("resend", self.rnd("T-002")["work"])
+        self.assertEqual(self.work_dispatch("T-002"), first)
+        self.assertTrue(any(f"T-002 not_started 지난 관찰 무시: {first}" in x for x in self.log_lines()), self.log_lines())

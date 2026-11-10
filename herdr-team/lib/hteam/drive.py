@@ -799,10 +799,13 @@ class Drive:
         if status == "working":
             if not st.get("queued_fix"):
                 resend = rd["work"].get("resend")
-                if resend:  # 재투입이 끝나기 전에 관제가 죽었거나 터미널을 확인하지 못했다: 작업자 확인 대신 잇는다(5.9.8)
-                    self.on_not_started(tid, resend["from"], None)
-                else:
+                if not resend:
                     self._check_work(st, rd)
+                elif self.on_not_started(tid, resend["from"], None):
+                    # 재투입 예약은 작업자 확인 대신 잇는다(5.9.8). 입력이 들어간 증거로 지웠으면 같은 재확인에서 작업자
+                    # 확인으로 돌아간다(놓친 worker_done 등)
+                    st = state.require(self.p, tid)
+                    self._check_work(st, state.current_round(st))
         elif status == "reviewing":
             self._check_review(st, rd)
         elif status == "approved":
@@ -935,10 +938,11 @@ class Drive:
         if name:
             crew.forget(self.p, name)
 
-    def on_not_started(self, tid: str, did: str, body: dict | None) -> None:
-        """observed not_started(입력 유실 재투입, 5.9.8). 재확인이 남은 resend 를 이을 때는 body 가 None 이다."""
+    def on_not_started(self, tid: str, did: str, body: dict | None) -> bool:
+        """observed not_started(입력 유실 재투입, 5.9.8). 재확인이 남은 resend 를 이을 때는 body 가 None 이다. 입력이 들어간
+        증거로 예약을 지웠으면 True."""
         from . import crew
-        crew.not_started(self, tid, did)
+        return crew.not_started(self, tid, did)
 
     def crew_check(self) -> None:
         """고정 에이전트 터미널 확인(8.7 의 2) 뒤 큐 맞추기(5.9.5). 잊은 에이전트가 맡고 있던 태스크마다 그 Dispatch 의 observed
