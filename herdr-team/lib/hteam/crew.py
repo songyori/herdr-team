@@ -542,14 +542,14 @@ def begin_reset(d, cfg, name: str) -> None:
     age = local_age(since)
     if age is None or age < limit:
         return None
-    _set(p, name, reset_pending=False, reset_busy_since=None, reset_unknown_since=None)
+    _set(p, name, reset_pending=False, reset_failures=0, reset_busy_since=None, reset_unknown_since=None)
     d.decide("escalation", None, (BUSY_CANCEL if busy else UNKNOWN_CANCEL).format(name=name, minutes=int(age // 60)))
 
 
 def _skip(d, name: str) -> None:
     """비울 세션이 없다(터미널 없음·끝남·lost·terminal_gone): 리셋을 마친 것으로 둔다."""
-    _set(d.p, name, reset_pending=False, since_reset=0, reset_tasks=[], terminal=None, terminal_argv=None,
-         work_pane=None, resetting=None, reset_busy_since=None, reset_unknown_since=None)
+    _set(d.p, name, reset_pending=False, reset_failures=0, since_reset=0, reset_tasks=[], terminal=None,
+         terminal_argv=None, work_pane=None, resetting=None, reset_busy_since=None, reset_unknown_since=None)
     d.log(f"{name} 리셋 시작: skipped")
 
 
@@ -639,8 +639,8 @@ def _clear(d, name: str) -> None:
     err = data.get("error") or {}
     d.decide("escalation", None, CLEAR_FAILED.format(name=name, code=err.get("code") or f"exit_{code}",
                                                      message=err.get("message") or ""))
-    _set(p, name, resetting=None, reset_pending=False, close_failures=0, terminal=None, terminal_argv=None,
-         work_pane=None)
+    _set(p, name, resetting=None, reset_pending=False, reset_failures=0, close_failures=0, terminal=None,
+         terminal_argv=None, work_pane=None)
 
 
 # --- 인수인계 끝(5.9.7 의 4, 8.6 의 인수인계 줄, 8.7 의 3) ---
@@ -658,7 +658,7 @@ def _handoff_end(d, name: str, did: str, outcome, summary) -> None:
 def _handoff_failed(d, name: str, did: str, text: str) -> None:
     """인수인계 실패 정리: 아직 active 면 --keep-terminal 로 버린 뒤 release. 세션은 비우지 않는다(since_reset 그대로)."""
     dispatch.cleanup(d.horch(), did, kill=True)
-    _set(d.p, name, resetting=None, reset_pending=False)
+    _set(d.p, name, resetting=None, reset_pending=False, reset_failures=0)
     d.decide("escalation", None, text, commands=[f"hteam agent reset {name}"])
 
 
@@ -690,10 +690,11 @@ def handoff_message(d, m: dict) -> bool:
                          f"--body={drive.IDLE_TEXT}")
             _set(d.p, name, resetting={**res, "idle_asked": True})
     elif kind == "observed" and what in ("blocked", "error"):
-        d.decide("escalation", None, HANDOFF_PAUSED.format(name=name, word=what, msg=str(body.get("msg") or "")[:120]))
+        msg = str(d.hc_status(did).get("msg") or "")  # observed 본문에는 상태 낱말만 있다(작업 _stuck 과 같다)
+        d.decide("escalation", None, HANDOFF_PAUSED.format(name=name, word=what, msg=msg[:120]))
     elif kind == "observed" and what in ("exited", "lost"):
         forget(d.p, name)  # terminal-close --abandon 으로 남은 기록 정리. 다음 세션은 새로 뜬다
-        _set(d.p, name, resetting=None, reset_pending=False, since_reset=0, reset_tasks=[])
+        _set(d.p, name, resetting=None, reset_pending=False, reset_failures=0, since_reset=0, reset_tasks=[])
         d.decide("escalation", None, HANDOFF_GONE.format(name=name))
     else:
         d.log(f"{name} 인수인계 Dispatch 의 {kind} 무시: {did}")
@@ -731,41 +732,49 @@ def _check_handoff(d, name: str, res: dict, rows: list[dict]) -> None:
 # --- 입력 유실 재투입(5.9.8) ---
 def not_started(d, tid: str, did: str) -> None:
     """observed not_started(넣은 입력이 들어가지 않았다): 작업 터미널이 live 이고 idle·done 일 때만 같은 라운드를 같은 터미널에
-    다시 넣는다. 재투입 예약 resend 를 먼저 쓰고, 새 Dispatch 를 기록하거나 실패 decide 를 올릴 때까지 지우지 않는다. 남은
-    resend 는 이 처리(다시 온 메시지)와 재확인이 잇는다. 세 번째면 다시 넣지 않고 decide."""
+    다시 넣는다. 재투입 예약 resend 를 터미널 확인보다 먼저 쓰고, 새 Dispatch 를 기록하거나 실패 decide 를 올리거나 입력이
+    들어간 증거를 볼 때까지 지우지 않는다. 남은 resend 는 이 처리(다시 온 메시지)와 재확인이 잇는다. 세 번째면 다시 넣지 않고
+    decide."""
     p = d.p
     st = state.require(p, tid)
     rd = state.current_round(st)
     if rd is None:
         return
     work = rd["work"]
+    rows = d.horch().workers()
     resend = work.get("resend")
-    abandon = True
     if resend:  # 앞 재투입이 끝나기 전에 관제가 죽었거나 터미널을 확인하지 못했다
-        row = dispatch.latest_for_task(d.horch().workers(), work.get("horch_task"))
-        if row is not None and row["id"] != resend["from"]:
-            if row["state"] == "launch_failed":
-                d.procedure_failed(tid, HteamError("resend_failed", f"{tid} 에 다시 넣은 Dispatch {row['id']} 가 "
+        latest = dispatch.latest_for_task(rows, work.get("horch_task"))
+        if latest is not None and latest["id"] != resend["from"]:
+            if latest["state"] == "launch_failed":
+                d.procedure_failed(tid, HteamError("resend_failed", f"{tid} 에 다시 넣은 Dispatch {latest['id']} 가 "
                                                                     "launch_failed 다", FAIL))
                 return _drop_resend(p, tid)
-            return _resent(d, tid, row, resend["n"])  # 새 Dispatch 를 띄운 뒤 기록 전에 죽었다: 이어 붙인다
+            return _resent(d, tid, latest, resend["n"])  # 새 Dispatch 를 띄운 뒤 기록 전에 죽었다: 이어 붙인다
         did, n = resend["from"], resend["n"]
-        abandon = row is None or row["state"] != "abandoned"
+    else:
+        n = (st.get("unknown_starts") or 0) + 1
+        with state.edit(p, tid) as cur:  # 터미널을 확인하지 못해도(메시지는 ack 된다) 재확인이 잇게 먼저 쓴다
+            state.current_round(cur)["work"]["resend"] = {"from": did, "n": n}
+    row = dispatch.row_by_id(rows, did)
+    abandon = row is None or row["state"] != "abandoned"
     name = round_crew(rd)
     e = entry(p, name) if name else None
     if not e or not e["terminal"]:
         return
     verdict, info = probe(e["terminal"], e["terminal_argv"])
-    if verdict != "live" or word(info) not in READY:
-        return  # 일하는 중은 입력이 들어간 증거다. 확인 불가·보고 없음은 resend 를 두어 다음 재확인이 다시 본다
-    if not resend:
-        n = (st.get("unknown_starts") or 0) + 1
-        if n >= drive.UNKNOWN_START_LIMIT:
-            d.decide("escalation", tid, NOT_STARTED_LIMIT.format(n=n),
-                     commands=[d._fix_cmd(st), d._fix_cmd(st, force=True), f"hteam drop {tid}"])
-            return
-        with state.edit(p, tid) as cur:
-            state.current_round(cur)["work"]["resend"] = {"from": did, "n": n}
+    if verdict != "live":
+        return  # 확인 불가는 resend 를 두어 다음 재확인이 다시 본다(끝났으면 재확인의 터미널 확인이 맡은 태스크를 처리한다)
+    w = word(info)
+    if abandon and _started(row, rd, info, w):  # 이미 버린 앞 Dispatch 는 증거를 보지 않는다(재투입을 마쳐야 한다)
+        d.log(f"{tid} not_started 지난 관찰 무시: {did}")
+        return _drop_resend(p, tid)
+    if w not in READY:
+        return  # blocked·error·보고 없음은 resend 를 두어 다음 재확인이 다시 본다
+    if n >= drive.UNKNOWN_START_LIMIT:
+        d.decide("escalation", tid, NOT_STARTED_LIMIT.format(n=n),
+                 commands=[d._fix_cmd(st), d._fix_cmd(st, force=True), f"hteam drop {tid}"])
+        return _drop_resend(p, tid)
     try:
         if abandon:
             d.horch().ok("worker-abandon", "--dispatch", did, "--keep-terminal")
@@ -778,6 +787,15 @@ def not_started(d, tid: str, did: str) -> None:
         d.procedure_failed(tid, exc)
         return _drop_resend(p, tid)
     _resent(d, tid, {"id": res["dispatch"], "start_turn": res.get("start_turn"), "delivery": res.get("delivery")}, n)
+
+
+def _started(row: dict | None, rd: dict, info: dict, w: str | None) -> bool:
+    """앞 Dispatch 에 넣은 입력이 그새 들어갔다(orch 13.6 의 전달 판정과 같은 기준, 5.9.8 의 working): turn 이 그 Dispatch 의
+    start_turn(없으면 0)보다 크거나, 그 Dispatch 의 워커 명령·보낸 메시지가 있거나(seen_at. 워커의 send 도 seen_at 을 쓴다),
+    세션이 일하는 중이다."""
+    start = (row.get("start_turn") if row else rd.get("start_turn")) or 0
+    turn = info.get("turn")
+    return (isinstance(turn, int) and turn > start) or bool((row or {}).get("seen_at")) or w == "working"
 
 
 def _resent(d, tid: str, row: dict, n: int) -> None:

@@ -379,11 +379,16 @@ class Drive:
                         commands=[self._fix_cmd(st), f"hteam drop {tid}"])
             self._mark(tid, rnd, work, idle_escalated=did)
 
-    def _stuck(self, tid: str, did: str, word: str) -> None:
-        """observed blocked·error: hc 7501 상태(kind·msg)로 decide. 화면은 읽지 않는다(--lines 0, orch 13.1)."""
+    def hc_status(self, did: str) -> dict:
+        """그 Dispatch 터미널의 hc 7501 상태(kind·state·msg, 없으면 {}). observed 본문에는 상태 낱말만 있다. 화면은 읽지
+        않는다(--lines 0, orch 13.1)."""
         data = self.horch().ok("worker-show", "--dispatch", did, "--lines", "0")
         status = ((data.get("worker") or {}).get("hc") or {}).get("status")
-        status = status if isinstance(status, dict) else {}
+        return status if isinstance(status, dict) else {}
+
+    def _stuck(self, tid: str, did: str, word: str) -> None:
+        """observed blocked·error: hc 7501 상태(kind·msg)로 decide."""
+        status = self.hc_status(did)
         msg = str(status.get("msg") or "")
         if word == "error":
             self.decide("escalation", tid, f"{tid} 작업자가 오류 상태다({msg[:120]})", detail=msg)

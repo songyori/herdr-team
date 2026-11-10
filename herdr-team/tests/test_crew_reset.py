@@ -549,3 +549,69 @@ class HandoffTemplateTest(CrewCase):
                        "`--outcome failed` 와 이유를 보낸다."):
             self.assertIn(needle, text)
         self.assertEqual(sorted(set(__import__("re").findall(r"\{\{(\w+)\}\}", text))), ["agent", "agent_title", "path"])
+
+
+class ReviewFixTest(ResetCase):
+    """Task 8 리뷰 고치기(Codex 커밋 리뷰 fe8770f, 태스크 리뷰 Minor 1)."""
+
+    def not_started_msg(self, did, status="done"):
+        return NotStartedTest.not_started_msg(self, did, status)
+
+    def test_unknown_terminal_on_first_not_started_keeps_resend_for_reconcile(self):
+        """첫 not_started 처리에서 작업 터미널을 확인하지 못해도 재투입 예약을 남겨 재확인이 잇는다(설계 5.9.8, 8.7)."""
+        first = self.started("T-002")["dispatch"]
+        msg = self.not_started_msg(first)
+        self.delay_get(self.t, 4.0)  # hc get 이 3초 확인을 넘긴다
+        with self.in_drive():
+            self.make_drive().handle(msg)  # 이 처리 뒤 메시지는 ack 되고 horch 는 같은 관찰을 다시 내지 않는다
+        self.assertEqual(self.rnd("T-002")["work"]["resend"], {"from": first, "n": 1})
+        self.assertEqual(self.dispatch_row(first)["state"], "active")  # 아직 버리지 않았다
+        self.undelay()
+        with self.in_drive():
+            d = self.make_drive()
+            d.write_workers()
+            d.reconcile_task(self.task_state("T-002"))
+        did2 = self.work_dispatch("T-002")
+        self.assertNotEqual(did2, first)
+        self.assertEqual(self.dispatch_row(first)["state"], "abandoned")
+        st = self.task_state("T-002")
+        self.assertEqual((st["unknown_starts"], self.entry()["dispatch"]), (1, did2))
+        self.assertNotIn("resend", st["rounds"][-1]["work"])
+
+    def test_not_started_after_turn_rose_is_not_resent(self):
+        """not_started 가 기다리는 사이 워커가 시작해 done 없이 턴을 마쳤다(turn 이 올랐다): 다시 넣지 않는다(orch 13.6)."""
+        first = self.started("T-002")["dispatch"]
+        msg = self.not_started_msg(first)
+        self.update_terminal(self.t, turn=self.terminals()[self.t]["turn"] + 1)
+        with self.in_drive():
+            self.make_drive().handle(msg)
+        st = self.task_state("T-002")
+        self.assertEqual((self.work_dispatch("T-002"), self.dispatch_row(first)["state"]), (first, "active"))
+        self.assertNotIn("unknown_starts", st)
+        self.assertNotIn("resend", st["rounds"][-1]["work"])
+        self.assertTrue(any(f"T-002 not_started 지난 관찰 무시: {first}" in x for x in self.log_lines()), self.log_lines())
+
+    def test_handoff_blocked_reads_hc_status_msg(self):
+        """horch 의 observed blocked 본문에는 status 만 있다. 원인 글은 worker-show 의 hc 상태 msg 에서 읽는다(8.6)."""
+        self.mark()
+        self.step()
+        did = self.handoff_did()
+        with self._hc_locked() as st:
+            st["terminals"][self.t]["status"] = {"app": "claude-code", "state": "blocked", "msg": "Bash 실행을 허락할까?"}
+        self.handle("observed", did, self.observed(did, "blocked", "2", "blocked"), sender="horch")
+        d = self.decides()
+        self.assertEqual(len(d), 1, d)
+        self.assertEqual(d[0]["summary"], "production 에이전트가 인수인계 중 blocked 로 멈췄다(Bash 실행을 허락할까?). "
+                                          "사용자에게 그 탭을 보게 한다")
+
+    def test_reset_failures_cleared_when_reset_ends(self):
+        """넣기 실패 수는 한 리셋 안의 횟수다. 리셋이 어떻게 끝나든 지운다(태스크 리뷰 Minor 1)."""
+        self.mark()
+        with self._hc_locked() as st:
+            st["on_send"] = {self.t: "mismatch"}
+        self.step(2)
+        self.assertEqual(self.entry()["reset_failures"], 2)
+        self.update_terminal(self.t, state="finished")
+        self.step()  # 터미널이 끝나 skipped 로 끝난다
+        e = self.entry()
+        self.assertEqual((e["reset_pending"], e["reset_failures"]), (False, 0))
