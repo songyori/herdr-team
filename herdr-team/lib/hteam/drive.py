@@ -4,9 +4,10 @@
 시작 순서(8.2 의 1–7: 실행 거부, drive.pid 단일 인스턴스, Run 연결, 탭 이름, 시작 재확인), heartbeat 와 생존 판정
 (liveness·view), 틱 순서와 단계마다 격리(8.5), decide 쓰기와 표시(8.10), drive.log(8.11), 요청 큐(7.1, queue.run_pending)와
 그 틱의 start-ready, 메시지 처리(8.6 의 이벤트 표·review-finish 결과 표·review 자식 결과 표·accept 뒤), 자식 프로세스(8.8),
-재확인(8.7, reconcile_task·워커 목록 사본). 고정 에이전트의 worker_done·exited 정리와 재확인의 터미널 확인·큐 맞추기는
-crew 모듈에 맡긴다(5.9.3·5.9.5·8.7 의 2). 인수인계(5.9.7)·묶음·마무리·기획 적용·디자인 단계(8.4·8.9)는 자리 메서드로 두고
-뒤 단계가 채운다. 리셋(5.9.7)·보기(6.5) 단계도 뒤 단계가 채운다.
+재확인(8.7, reconcile_task·워커 목록 사본). 고정 에이전트의 worker_done·exited 정리와 재확인의 터미널 확인·큐 맞추기,
+리셋 단계·인수인계 Dispatch 메시지·끝나지 않은 인수인계 정리(5.9.7), 입력 유실 재투입(5.9.8)은 crew 모듈에 맡긴다
+(5.9.3·5.9.5·8.7 의 2·3). 묶음·마무리·기획 적용·디자인 단계(8.4·8.9)는 자리 메서드로 두고 뒤 단계가 채운다. 보기(6.5)
+단계도 뒤 단계가 채운다.
 """
 from __future__ import annotations
 
@@ -730,7 +731,13 @@ class Drive:
             self._job_args.pop(tid, None)
 
     def reset_step(self) -> None:
-        """고정 에이전트마다 리셋 단계(설계 5.9.7, 에이전트마다 reset:<이름> 격리). Task 8 이 채운다."""
+        """고정 에이전트마다 리셋 단계(설계 5.9.7). 설정 순서로, 에이전트마다 reset:<이름> 격리."""
+        from . import crew  # crew 가 이 모듈을 쓴다
+        cfg = self.isolated("reset", lambda: config.load(self.p))
+        if cfg is None:
+            return
+        for name in cfg.crew:
+            self.isolated(f"reset:{name}", lambda name=name: crew.begin_reset(self, cfg, name))
 
     def view_step(self) -> None:
         """리뷰 보기 pane 닫기·열기(설계 6.5, 에이전트마다 view:<이름> 격리). Task 9 가 채운다."""
@@ -786,7 +793,11 @@ class Drive:
         rd = state.current_round(st)
         if status == "working":
             if not st.get("queued_fix"):
-                self._check_work(st, rd)
+                resend = rd["work"].get("resend")
+                if resend:  # 재투입이 끝나기 전에 관제가 죽었거나 터미널을 확인하지 못했다: 작업자 확인 대신 잇는다(5.9.8)
+                    self.on_not_started(tid, resend["from"], None)
+                else:
+                    self._check_work(st, rd)
         elif status == "reviewing":
             self._check_review(st, rd)
         elif status == "approved":
@@ -902,8 +913,9 @@ class Drive:
 
     # --- 자리(뒤 단계가 채운다) ---
     def handoff_message(self, m: dict) -> bool:
-        """인수인계 Dispatch 메시지면 처리하고 True(설계 8.6 의 인수인계 줄). Task 8 이 채운다."""
-        return False
+        """인수인계 Dispatch 메시지면 처리하고 True(설계 8.6 의 인수인계 줄). 메시지를 태스크로 찾기 전에 부른다."""
+        from . import crew
+        return crew.handoff_message(self, m)
 
     def crew_done(self, tid: str, did: str) -> None:
         """고정 에이전트의 작업 worker_done(5.9.3 끝): 그 태스크를 맡은 에이전트를 비우고 since_reset 을 센다."""
@@ -918,8 +930,10 @@ class Drive:
         if name:
             crew.forget(self.p, name)
 
-    def on_not_started(self, tid: str, did: str, body: dict) -> None:
-        """observed not_started(입력 유실 재투입, 5.9.8). Task 8 이 채운다."""
+    def on_not_started(self, tid: str, did: str, body: dict | None) -> None:
+        """observed not_started(입력 유실 재투입, 5.9.8). 재확인이 남은 resend 를 이을 때는 body 가 None 이다."""
+        from . import crew
+        crew.not_started(self, tid, did)
 
     def crew_check(self) -> None:
         """고정 에이전트 터미널 확인(8.7 의 2) 뒤 큐 맞추기(5.9.5). 잊은 에이전트가 맡고 있던 태스크마다 그 Dispatch 의 observed
@@ -934,7 +948,9 @@ class Drive:
             self.isolated(f"reconcile:{tid}", lambda m=m: self.handle(m))
 
     def handoff_check(self) -> None:
-        """끝나지 않은 인수인계 정리(8.7 의 3). Task 8 이 채운다."""
+        """끝나지 않은 인수인계 정리(8.7 의 3)."""
+        from . import crew
+        crew.handoff_check(self)
 
     def apply_plan(self, tid: str) -> None:
         """기획 적용(8.9). Task 10 이 채운다."""

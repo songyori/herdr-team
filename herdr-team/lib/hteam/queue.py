@@ -268,6 +268,12 @@ def _x_scope(p, d, req):
                        target=req.get("target_dispatch"), remember=lambda did: annotate(p, req, target_dispatch=did))
 
 
+def _x_agent_reset(p, d, req):
+    """agent reset(설계 5.9.7): 큐 실행도 이름을 검사한다. 다시 해도 결과가 같다(7.1)."""
+    from . import config, crew  # crew 가 이 모듈을 쓴다
+    return crew.agent_reset(p, config.load(p), req["args"]["name"], request=req["id"])
+
+
 def _x_test_confirm(p, d, req):
     return d.confirm_test(force=True, request=req["id"])
 
@@ -282,10 +288,10 @@ def _x_reply(p, d, req):
     return {k: v for k, v in data.items() if k != "ok"}
 
 
-# 실행 표(관제 안이라 모두 기다리지 않는다). agent reset 은 Task 8 이 더한다
+# 실행 표(관제 안이라 모두 기다리지 않는다)
 EXECUTORS = {"start": _x_start, "start-ready": _x_start_ready, "fix": _x_fix, "accept": _x_accept, "drop": _x_drop,
-             "review": _x_review, "design-decide": _x_design_decide, "scope": _x_scope, "test-confirm": _x_test_confirm,
-             "reply": _x_reply}
+             "review": _x_review, "design-decide": _x_design_decide, "scope": _x_scope, "agent reset": _x_agent_reset,
+             "test-confirm": _x_test_confirm, "reply": _x_reply}
 
 
 def _finish(p, d, path, req: dict, outcome: dict) -> None:

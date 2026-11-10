@@ -3,18 +3,27 @@
 정리와 재확인의 터미널 확인(8.6·8.7 의 2), status 의 crew(8.3).
 
 crew.json 을 쓰는 것은 관제와 그 자식뿐이다(5.9.1). 쓰기는 늘 edit(crew.json.lock flock → 다시 읽기 → 고치기 → 원자 쓰기)다.
-태스크 잠금 안에서 edit 를 잡아도 되고, edit 안에서 다른 hteam 잠금을 잡지 않는다. 리셋·인수인계(5.9.7)는 뒤 단계가 더한다."""
+태스크 잠금 안에서 edit 를 잡아도 되고, edit 안에서 다른 hteam 잠금을 잡지 않는다.
+
+리셋·인수인계(5.9.7): 묶음 끝 표시(mark_batch_reset)와 `hteam agent reset`(agent_reset)이 reset_pending 을 세우고, 관제가
+틱마다 에이전트별 리셋 단계(begin_reset)를 돈다. 진행은 entry 의 resetting(starting → handoff → clear)에 남겨 관제가 어디서
+죽어도 이어 한다. 인수인계 Dispatch 의 메시지(handoff_message)와 재확인(handoff_check)이 끝을 맡는다. 입력 유실 재투입
+(not_started, 5.9.8)은 라운드 작업 기록의 resend 로 이어 붙인다."""
 from __future__ import annotations
 
 import contextlib
 import hashlib
+import os
+import re
 import time
 from typing import Iterator
 
-from . import drive, herdr, outbox, state
-from .errors import FAIL, HteamError
-from .horch import Horch
-from .util import bad_side_file, die_at, dumps, flock, local_age, local_now, now, read_json_strict, write_json
+from . import config, dispatch, drive, herdr, outbox, queue, state
+from .errors import FAIL, MISSING, USAGE, HteamError
+from .horch import Horch, failure
+from .paths import TEMPLATES, find_project, handoff_rel
+from .util import (bad_side_file, die_at, dumps, fill, flock, local_age, local_now, now, read_json_strict, write_atomic,
+                   write_json)
 
 READY = ("idle", "done")  # 같은 터미널에 넣을 수 있는 세션 상태(herdr-orch 13.4)
 FORGOT_LOG = "{name} 작업 터미널이 닫혀 잊음"
@@ -24,6 +33,24 @@ UNKNOWN_TEXT = ("{name} 에이전트 작업 터미널({terminal}) 상태를 {min
                 "사용자에게 그 탭을 확인해 달라고 한다")
 STOP_FAILED = ("{tid}: 일하는 중일 수 있는 이전 세션을 닫지 못했다({error}). 다시 띄우지 않았다. 사용자에게 그 에이전트 탭의 "
                "작업 pane 을 닫아 달라고 한 뒤 다시 한다")
+
+# 리셋·인수인계(설계 5.9.7·8.6 원문)
+HANDOFF_TEMPLATE = TEMPLATES / "handoff.md"  # 플러그인에서 바로 읽는다(프로젝트에 복사하지 않는다)
+CLOSE_LIMIT = 3  # 비우기 실패 뒤 닫기 재시도 상한
+UNKNOWN_CANCEL = ("{name} 에이전트의 작업 터미널 상태를 {minutes}분 넘게 알 수 없어 리셋(인수인계)을 취소했다. 터미널을 확인한 "
+                  "뒤 필요하면 다시 요청한다")
+BUSY_CANCEL = ("{name} 에이전트의 작업 세션이 {minutes}분 넘게 일하는 중이라 리셋(인수인계)을 취소했다. 그 탭을 확인한 뒤 "
+               "필요하면 다시 요청한다")
+INSERT_CANCEL = ("{name} 에이전트에 인수인계 태스크를 {n}번 넣지 못해 리셋을 취소했다: {code}: {message}. 작업 세션이 자동 압축 "
+                 "중이거나 다른 일을 하면 실패한다. 화면을 본 뒤 다시 요청한다")
+HANDOFF_FAILED = "{name} 에이전트가 인수인계를 쓰지 못했다: {summary}"
+HANDOFF_STUCK = "{name} 에이전트 인수인계가 끝나지 않았다"
+CLEAR_FAILED = "{name} 에이전트 세션을 비우지도 닫지도 못했다: {code}: {message}. 사용자에게 그 에이전트 탭의 작업 pane 을 닫아 달라고 한다"
+HANDOFF_PAUSED = "{name} 에이전트가 인수인계 중 {word} 로 멈췄다({msg}). 사용자에게 그 탭을 보게 한다"
+HANDOFF_GONE = "{name} 에이전트가 인수인계 중 끝났다"
+IDLE_TWICE = "done 없이 턴을 두 번 마쳤다"  # 인수인계 두 번째 idle 의 요약
+ENDED_NO_DONE = "done 없이 끝났다"  # 재확인이 본 끝난 인수인계(outcome 없음)의 요약
+NOT_STARTED_LIMIT = "작업자 시작을 {n}번 확인하지 못했다"
 
 
 def blank(name: str) -> dict:
@@ -430,3 +457,366 @@ def status_rows(p, cfg) -> list[dict]:
                      "roles": list(c.roles), "terminal": e["terminal"], "task": e["task"], "queue": list(e["queue"]),
                      "reset_pending": e["reset_pending"], "resetting": e["resetting"], "since_reset": e["since_reset"]})
     return rows
+
+
+# --- 리셋 표시(5.9.7 의 시점) ---
+def _set(p, name: str, **fields) -> None:
+    with edit(p) as data:
+        entry_of(data, name).update(fields)
+
+
+def mark_batch_reset(p) -> list[str]:
+    """묶음 끝(5.9.7): since_reset ≥ 1 인 에이전트마다 reset_pending = True. 그 이름(crew.json 순서, 멱등). 묶음 처리가 후속
+    태스크 만들기보다 먼저 부른다(후속 태스크는 배정이 기다리게 해 리셋 뒤 새 세션이 받는다)."""
+    names: list[str] = []
+    with edit(p) as data:
+        for name, raw in data.items():
+            if isinstance(raw, dict) and (raw.get("since_reset") or 0) >= 1:
+                entry_of(data, name)["reset_pending"] = True
+                names.append(name)
+    return names
+
+
+def _known(cfg, name: str) -> None:
+    if name not in cfg.crew:
+        raise HteamError("unknown_crew", f"고정 에이전트가 아니다: {name}. 가능한 이름: {', '.join(cfg.crew) or '없음'}", USAGE)
+
+
+def agent_reset(p, cfg, name: str, *, request: str | None = None) -> dict:
+    """`hteam agent reset <이름>`(5.9.7): reset_pending 만 쓴다(since_reset 조건 없음, entry 가 없으면 만든다). request 는
+    큐 요청 id(재실행 막기의 기록, 7.1). 다시 해도 결과가 같다."""
+    _known(cfg, name)
+    with edit(p) as data:
+        e = entry_of(data, name)
+        e["reset_pending"] = True
+        if request:
+            e["reset_request"] = request
+    return {"name": name, "reset_pending": True}
+
+
+# --- 리셋 단계(5.9.7 의 순서, 관제 틱 7) ---
+def _call(d, *args: str) -> tuple[int, dict]:
+    """horch 결과(code, data). 의존 프로그램 없음(exit 12)은 관제를 끝내도록 올린다(8.5)."""
+    code, data = d.horch().call(*args)
+    if code == MISSING:
+        raise failure(code, data, args)
+    return code, data
+
+
+def begin_reset(d, cfg, name: str) -> None:
+    """에이전트 하나의 리셋 단계. resetting 의 단계(clear·starting·handoff)를 먼저 잇고, 아니면 reset_pending 이고 맡은 일이
+    없을 때 작업 터미널을 보고 인수인계를 넣는다(일하는 중·확인 불가는 30분까지 미룬다)."""
+    p = d.p
+    raw = load(p).get(name)
+    if not isinstance(raw, dict):
+        return
+    e = {**blank(name), **raw}
+    step = (e["resetting"] or {}).get("step")
+    if step == "clear":
+        return _clear(d, name)
+    if step == "starting":
+        return _resume_start(d, cfg, name, e)
+    if step == "handoff":
+        return None  # 끝은 인수인계 Dispatch 의 메시지나 재확인이 본다
+    if not e["reset_pending"] or e["task"] or e["queue"]:
+        if e["reset_busy_since"] or e["reset_unknown_since"]:
+            _set(p, name, reset_busy_since=None, reset_unknown_since=None)  # 연속 구간이 끊겼다
+        return None
+    if not e["terminal"]:
+        return _skip(d, name)
+    verdict, info = probe(e["terminal"], e["terminal_argv"])
+    if verdict == "gone":
+        return _skip(d, name)
+    w = word(info) if verdict == "live" else None
+    if w in READY:
+        return _insert(d, cfg, name, e)
+    busy = w in ("working", "blocked")  # 그 밖(hc 실패·판정 불가·error·보고 없음)은 확인 불가
+    field, other, limit = (("reset_busy_since", "reset_unknown_since", drive.RESET_BUSY_S) if busy
+                           else ("reset_unknown_since", "reset_busy_since", drive.RESET_UNKNOWN_S))
+    since = e[field]
+    if not since:
+        _set(p, name, **{field: local_now(), other: None})
+        if busy:
+            d.log(f"{name} 리셋 미룸: 작업 세션이 일하는 중({w})")
+        return None
+    age = local_age(since)
+    if age is None or age < limit:
+        return None
+    _set(p, name, reset_pending=False, reset_busy_since=None, reset_unknown_since=None)
+    d.decide("escalation", None, (BUSY_CANCEL if busy else UNKNOWN_CANCEL).format(name=name, minutes=int(age // 60)))
+
+
+def _skip(d, name: str) -> None:
+    """비울 세션이 없다(터미널 없음·끝남·lost·terminal_gone): 리셋을 마친 것으로 둔다."""
+    _set(d.p, name, reset_pending=False, since_reset=0, reset_tasks=[], terminal=None, terminal_argv=None,
+         work_pane=None, resetting=None, reset_busy_since=None, reset_unknown_since=None)
+    d.log(f"{name} 리셋 시작: skipped")
+
+
+def _next_title(p, name: str) -> str:
+    """처음 넣는 인수인계의 제목(실행 키): state/crew/<이름>-handoff-s*.md 의 가장 큰 번호 + 1(없으면 1)."""
+    pattern = re.compile(re.escape(name) + r"-handoff-s(\d+)\.md")
+    found = [int(m.group(1)) for f in (p.crew_dir.iterdir() if p.crew_dir.is_dir() else [])
+             if (m := pattern.fullmatch(f.name))]
+    return f"[handoff] {name} s{max(found, default=0) + 1}"
+
+
+def _insert(d, cfg, name: str, e: dict, title: str | None = None) -> None:
+    """인수인계 넣기(5.9.7 의 3): 사양을 쓰고 resetting = starting 을 먼저 쓴 뒤 같은 터미널에 넣는다. title 이 있으면(starting
+    이어 붙이기) 그 번호를 그대로 쓴다."""
+    p = d.p
+    terminal = e["terminal"]
+    if not terminal:
+        return _skip(d, name)
+    title = title or _next_title(p, name)
+    spec = p.crew_dir / f"{name}-handoff-s{title.rsplit(' s', 1)[1]}.md"
+    write_atomic(spec, fill(HANDOFF_TEMPLATE.read_text(encoding="utf-8"), agent=name, agent_title=cfg.crew[name].title,
+                            path=handoff_rel(name)))
+    _set(p, name, resetting={"step": "starting", "title": title, "at": local_now()}, reset_busy_since=None,
+         reset_unknown_since=None)
+    code, data = _call(d, "worker-start", "--terminal", terminal, "--title", title, "--spec-file", str(spec))
+    if code == 0 and data.get("ok"):
+        _set(p, name, resetting={"step": "handoff", "dispatch": data["dispatch"], "title": title, "at": local_now()},
+             reset_failures=0)
+        d.log(f"{name} 리셋 시작: handoff")
+        return None
+    err = data.get("error") or {}
+    ecode, message = err.get("code") or f"exit_{code}", err.get("message") or ""
+    if ecode == "terminal_gone":
+        return _skip(d, name)
+    n = entry(p, name)["reset_failures"] + 1
+    d.log(f"{name} 리셋 시작: failed({n}/{drive.RESET_FAIL_LIMIT}): {ecode}: {message}")
+    if n < drive.RESET_FAIL_LIMIT:
+        return _set(p, name, resetting=None, reset_failures=n)  # 다음 틱에 다시 한다
+    _set(p, name, resetting=None, reset_pending=False, reset_failures=0)
+    d.decide("escalation", None, INSERT_CANCEL.format(name=name, n=n, code=ecode, message=message))
+
+
+def _resume_start(d, cfg, name: str, e: dict) -> None:
+    """starting 이어 붙이기(관제가 넣는 중에 죽었다): 그 제목의 launch_failed 가 아닌 Dispatch 가 있으면 handoff 로, 없으면
+    같은 제목으로 다시 넣는다(5.4 의 실행 키와 같은 규칙)."""
+    title = e["resetting"].get("title")
+    rows = [r for r in d.horch().workers() if title and r.get("title") == title and r.get("state") != "launch_failed"]
+    if not rows:
+        return _insert(d, cfg, name, e, title)
+    row = max(rows, key=lambda r: (r.get("created_at") or "", r["id"]))
+    _set(d.p, name, resetting={"step": "handoff", "dispatch": row["id"], "title": title, "at": local_now()},
+         reset_failures=0)
+    d.log(f"{name} 리셋 시작: handoff")
+
+
+def _reset_done(d, name: str, text: str, **fields) -> None:
+    _set(d.p, name, resetting=None, reset_pending=False, since_reset=0, reset_tasks=[], last_reset_at=local_now(),
+         reset_failures=0, close_failures=0, **fields)
+    d.log(f"{name} 리셋: {text}")
+
+
+def _clear(d, name: str) -> None:
+    """비우기와 닫기 재시도(clear 단계, 어디서 죽어도 이어 한다). 비우기 신호가 없거나 실패하면 비웠다고 믿지 않고 터미널을
+    닫는다(다음 태스크가 새 세션을 띄운다). 닫지 못하면 다음 틱에 닫기만 다시 하고, 세 번째면 decide 뒤 터미널을 잊는다."""
+    p = d.p
+    e = entry(p, name)
+    res = e["resetting"] or {}
+    reason, terminal = res.get("clear_error"), e["terminal"]
+    if not terminal:  # 그 사이 재확인이 끝난 터미널을 잊었다: 비울 세션이 없다
+        return _reset_done(d, name, f"new_terminal({reason or 'terminal_gone'})", terminal_argv=None, work_pane=None)
+    if e["close_failures"] == 0 and reason is None:  # 아직 비우기를 하지 않았다
+        args = ["terminal-reset", "--terminal", terminal]
+        if e["agent"] == "codex":
+            args += ["--name", name]  # /clear <이름> 이 Codex 대화 이름(제목)을 고정한다(X3b)
+        timeout = os.environ.get("HTEAM_RESET_TIMEOUT_MS") or str(drive.RESET_CLEAR_TIMEOUT_MS)
+        code, data = _call(d, *args, "--timeout-ms", timeout)
+        if code == 0 and data.get("ok"):
+            return _reset_done(d, name, f"reset(turn {data.get('turn')}, {data.get('seconds')}초)")
+        reason = (data.get("error") or {}).get("code") or f"exit_{code}"
+        _set(p, name, resetting={**res, "clear_error": reason})
+    code, data = _call(d, "terminal-close", "--terminal", terminal)  # 진행 중 Dispatch 가 없으니 --abandon 없이
+    if code == 0 and data.get("ok"):
+        return _reset_done(d, name, f"new_terminal({reason})", terminal=None, terminal_argv=None, work_pane=None)
+    n = e["close_failures"] + 1
+    if n < CLOSE_LIMIT:
+        return _set(p, name, close_failures=n)  # resetting 을 남겨 다음 틱에 닫기만 다시
+    err = data.get("error") or {}
+    d.decide("escalation", None, CLEAR_FAILED.format(name=name, code=err.get("code") or f"exit_{code}",
+                                                     message=err.get("message") or ""))
+    _set(p, name, resetting=None, reset_pending=False, close_failures=0, terminal=None, terminal_argv=None,
+         work_pane=None)
+
+
+# --- 인수인계 끝(5.9.7 의 4, 8.6 의 인수인계 줄, 8.7 의 3) ---
+def _handoff_end(d, name: str, did: str, outcome, summary) -> None:
+    """인수인계 Dispatch 가 끝났다: 성공이면 release 뒤 clear 단계를 먼저 쓰고 비운다. 실패면 정리하고 decide."""
+    if outcome != "succeeded":
+        return _handoff_failed(d, name, did, HANDOFF_FAILED.format(name=name, summary=str(summary or "")[:200]))
+    dispatch.cleanup(d.horch(), did, kill=False)  # 고정 Dispatch 라 터미널은 남는다
+    with edit(d.p) as data:
+        e = entry_of(data, name)
+        e["resetting"] = {**(e["resetting"] or {}), "step": "clear"}
+    _clear(d, name)
+
+
+def _handoff_failed(d, name: str, did: str, text: str) -> None:
+    """인수인계 실패 정리: 아직 active 면 --keep-terminal 로 버린 뒤 release. 세션은 비우지 않는다(since_reset 그대로)."""
+    dispatch.cleanup(d.horch(), did, kill=True)
+    _set(d.p, name, resetting=None, reset_pending=False)
+    d.decide("escalation", None, text, commands=[f"hteam agent reset {name}"])
+
+
+def _handoff_holder(p, did: str | None) -> str | None:
+    """resetting.dispatch 가 did 인 에이전트 이름."""
+    if not did:
+        return None
+    return next((name for name, e in load(p).items()
+                 if isinstance(e, dict) and (e.get("resetting") or {}).get("dispatch") == did), None)
+
+
+def handoff_message(d, m: dict) -> bool:
+    """인수인계 Dispatch 의 메시지면 처리하고 True(8.6). 아니면 False(태스크 메시지로 간다)."""
+    from .coord import _body  # coord 가 이 모듈을 쓴다
+    body = _body(m)
+    did = m.get("dispatch") or body.get("dispatch")
+    name = _handoff_holder(d.p, did)
+    if name is None:
+        return False
+    kind, what = m.get("type"), body.get("kind")
+    if kind == "worker_done":
+        _handoff_end(d, name, did, body.get("outcome"), body.get("summary"))
+    elif kind == "observed" and what == "idle":
+        res = entry(d.p, name)["resetting"] or {}
+        if res.get("idle_asked"):
+            _handoff_failed(d, name, did, HANDOFF_FAILED.format(name=name, summary=IDLE_TWICE))
+        else:
+            d.horch().ok("send", "--to", f"dispatch:{did}", "--subject", drive.IDLE_SUBJECT,
+                         f"--body={drive.IDLE_TEXT}")
+            _set(d.p, name, resetting={**res, "idle_asked": True})
+    elif kind == "observed" and what in ("blocked", "error"):
+        d.decide("escalation", None, HANDOFF_PAUSED.format(name=name, word=what, msg=str(body.get("msg") or "")[:120]))
+    elif kind == "observed" and what in ("exited", "lost"):
+        forget(d.p, name)  # terminal-close --abandon 으로 남은 기록 정리. 다음 세션은 새로 뜬다
+        _set(d.p, name, resetting=None, reset_pending=False, since_reset=0, reset_tasks=[])
+        d.decide("escalation", None, HANDOFF_GONE.format(name=name))
+    else:
+        d.log(f"{name} 인수인계 Dispatch 의 {kind} 무시: {did}")
+    return True
+
+
+def handoff_check(d) -> None:
+    """끝나지 않은 인수인계 정리(8.7 의 3): handoff 단계 entry 마다 그 Dispatch 행을 본다. 끝났으면 outcome 대로 끝내고,
+    아직 active 인데 resetting.at 에서 RESET_STUCK_S 가 지났으면 버린 뒤 실패로 정리한다. 에이전트마다 reset:<이름> 격리."""
+    pending = [(name, e["resetting"]) for name, e in load(d.p).items()
+               if isinstance(e, dict) and (e.get("resetting") or {}).get("step") == "handoff"]
+    if not pending:
+        return
+    rows = d.horch().workers()
+    for name, res in pending:
+        d.isolated(f"reset:{name}", lambda name=name, res=res: _check_handoff(d, name, res, rows))
+
+
+def _check_handoff(d, name: str, res: dict, rows: list[dict]) -> None:
+    did = res.get("dispatch")
+    row = dispatch.row_by_id(rows, did)
+    if row is None:
+        return
+    s = row["state"]
+    if s in ("settled", "retained") or (s == "released" and row.get("outcome")):
+        _handoff_end(d, name, did, row.get("outcome"), row.get("summary"))
+    elif s in ("abandoned", "released", "launch_failed") or row.get("verdict") in ("exited", "lost"):
+        _handoff_failed(d, name, did, HANDOFF_FAILED.format(name=name, summary=ENDED_NO_DONE))
+    elif s == "active":
+        age = local_age(res.get("at"))
+        if age is not None and age >= drive.RESET_STUCK_S:
+            _handoff_failed(d, name, did, HANDOFF_STUCK.format(name=name))
+
+
+# --- 입력 유실 재투입(5.9.8) ---
+def not_started(d, tid: str, did: str) -> None:
+    """observed not_started(넣은 입력이 들어가지 않았다): 작업 터미널이 live 이고 idle·done 일 때만 같은 라운드를 같은 터미널에
+    다시 넣는다. 재투입 예약 resend 를 먼저 쓰고, 새 Dispatch 를 기록하거나 실패 decide 를 올릴 때까지 지우지 않는다. 남은
+    resend 는 이 처리(다시 온 메시지)와 재확인이 잇는다. 세 번째면 다시 넣지 않고 decide."""
+    p = d.p
+    st = state.require(p, tid)
+    rd = state.current_round(st)
+    if rd is None:
+        return
+    work = rd["work"]
+    resend = work.get("resend")
+    abandon = True
+    if resend:  # 앞 재투입이 끝나기 전에 관제가 죽었거나 터미널을 확인하지 못했다
+        row = dispatch.latest_for_task(d.horch().workers(), work.get("horch_task"))
+        if row is not None and row["id"] != resend["from"]:
+            if row["state"] == "launch_failed":
+                d.procedure_failed(tid, HteamError("resend_failed", f"{tid} 에 다시 넣은 Dispatch {row['id']} 가 "
+                                                                    "launch_failed 다", FAIL))
+                return _drop_resend(p, tid)
+            return _resent(d, tid, row, resend["n"])  # 새 Dispatch 를 띄운 뒤 기록 전에 죽었다: 이어 붙인다
+        did, n = resend["from"], resend["n"]
+        abandon = row is None or row["state"] != "abandoned"
+    name = round_crew(rd)
+    e = entry(p, name) if name else None
+    if not e or not e["terminal"]:
+        return
+    verdict, info = probe(e["terminal"], e["terminal_argv"])
+    if verdict != "live" or word(info) not in READY:
+        return  # 일하는 중은 입력이 들어간 증거다. 확인 불가·보고 없음은 resend 를 두어 다음 재확인이 다시 본다
+    if not resend:
+        n = (st.get("unknown_starts") or 0) + 1
+        if n >= drive.UNKNOWN_START_LIMIT:
+            d.decide("escalation", tid, NOT_STARTED_LIMIT.format(n=n),
+                     commands=[d._fix_cmd(st), d._fix_cmd(st, force=True), f"hteam drop {tid}"])
+            return
+        with state.edit(p, tid) as cur:
+            state.current_round(cur)["work"]["resend"] = {"from": did, "n": n}
+    try:
+        if abandon:
+            d.horch().ok("worker-abandon", "--dispatch", did, "--keep-terminal")
+        die_at("resend_abandoned")  # 테스트: 앞 Dispatch 를 버린 뒤 새 Dispatch 를 띄우기 전에 죽는다
+        res = d.horch().ok("worker-start", "--terminal", e["terminal"], "--task", work["horch_task"])
+        die_at("resend_started")  # 테스트: 새 Dispatch 를 띄운 뒤 기록 전에 죽는다
+    except HteamError as exc:
+        if exc.exit_code == MISSING:
+            raise
+        d.procedure_failed(tid, exc)
+        return _drop_resend(p, tid)
+    _resent(d, tid, {"id": res["dispatch"], "start_turn": res.get("start_turn"), "delivery": res.get("delivery")}, n)
+
+
+def _resent(d, tid: str, row: dict, n: int) -> None:
+    """재투입한 Dispatch 를 기록한다: 한 상태 쓰기에서 작업 Dispatch·start_turn·delivery·unknown_starts, resend 를 지운다. 그
+    다음 맡은 에이전트의 dispatch."""
+    with state.edit(d.p, tid) as st:
+        rd = state.current_round(st)
+        rd["work"]["dispatch"] = row["id"]
+        for key in ("start_turn", "delivery"):
+            if row.get(key) is not None:
+                rd[key] = row[key]
+        rd["work"].pop("resend", None)
+        st["unknown_starts"] = n
+    name = round_crew(rd)
+    if name:
+        with edit(d.p) as data:
+            e = entry_of(data, name)
+            if e["task"] == tid:
+                e["dispatch"] = row["id"]
+    d.log(f"{tid} not_started: resent({n})")
+
+
+def _drop_resend(p, tid: str) -> None:
+    with state.edit(p, tid) as st:
+        state.current_round(st)["work"].pop("resend", None)
+
+
+# --- CLI ---
+def _cmd_agent_reset(args) -> dict:
+    """큐 명령(7.1): 관제(와 자식)에서는 바로, 메인에서는 이름 검사 뒤 요청 큐."""
+    p = find_project(args.root)
+    cfg = config.load(p)
+    return queue.route(p, "agent reset", {"name": args.name}, lambda req: agent_reset(p, cfg, args.name),
+                       check=lambda: _known(cfg, args.name))
+
+
+def register(sub) -> None:
+    agent = sub.add_parser("agent")
+    asub = agent.add_subparsers(dest="agent_cmd", required=True, parser_class=agent.__class__)
+    s = asub.add_parser("reset")
+    s.add_argument("name")
+    s.set_defaults(func=_cmd_agent_reset)
