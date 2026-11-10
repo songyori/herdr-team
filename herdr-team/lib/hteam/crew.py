@@ -691,6 +691,11 @@ def handoff_message(d, m: dict) -> bool:
     if name is None:
         return False
     kind, what = m.get("type"), body.get("kind")
+    if (entry(d.p, name)["resetting"] or {}).get("step") == "clear":
+        # 인수인계 Dispatch 는 이미 끝났다(clear 단계는 비우기만 남았다). 관제 재시작 뒤 재확인이 메일보다 먼저 clear 로
+        # 넘기면 그 Dispatch 의 지난 observed 가 늦게 온다: 리셋을 취소하지 않게 무시한다(Codex 커밋 리뷰 558d54d)
+        d.log(f"{name} 인수인계 Dispatch 의 {kind} 무시(clear 단계): {did}")
+        return True
     if kind == "worker_done":
         _handoff_end(d, name, did, body.get("outcome"), body.get("summary"))
     elif kind == "observed" and what == "idle":

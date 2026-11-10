@@ -191,6 +191,31 @@ class ResetFlowTest(ResetCase):
         self.assertTrue(any("production 리셋: new_terminal(terminal_not_ready)" in x for x in self.log_lines()),
                         self.log_lines())
 
+    def test_late_handoff_observation_in_clear_step_is_ignored(self):
+        """clear 단계(인수인계 Dispatch 가 이미 끝났다)에서 그 Dispatch 의 늦은 observed 는 무시한다. 관제 재시작 뒤 재확인이
+        메일보다 먼저 clear 로 넘기면 지난 두 번째 idle 이 남아 있다(Codex 커밋 리뷰 558d54d). 리셋을 취소하지 않는다."""
+        self.mark()
+        self.step()
+        did = self.handoff_did()
+        self.handle("observed", did, self.observed(did, "idle", "2", "done"), sender="horch")  # 첫 idle: done 요청
+        self.assertTrue(self.entry()["resetting"]["idle_asked"])
+        self.write_handoff()
+        turn = self.terminals()[self.t]["turn"]
+        self.ready(self.t, status="working", turn=turn)
+        self.handle("worker_done", did, self.done_body(did))
+        self.assertEqual(self.entry()["resetting"]["step"], "clear")
+        self.handle("observed", did, self.observed(did, "idle", "3", "done"), sender="horch")  # 늦게 처리된 두 번째 idle
+        e = self.entry()
+        self.assertEqual(((e["resetting"] or {}).get("step"), e["reset_pending"], e["terminal"]), ("clear", True, self.t))
+        self.assertEqual(self.decides(), [])
+        self.assertTrue(any(f"production 인수인계 Dispatch 의 observed 무시(clear 단계): {did}" in x
+                            for x in self.log_lines()), self.log_lines())
+        self.ready(self.t, status="done", turn=turn)  # 턴이 끝났다
+        self.step()
+        e = self.entry()
+        self.assertEqual(self.keys()[-1], ["/", "c", "l", "e", "a", "r", "enter"])
+        self.assertEqual((e["resetting"], e["reset_pending"], e["terminal"]), (None, False, self.t))
+
     def test_reset_timeout_goes_to_new_terminal(self):
         self.on_clear("none")  # /clear 뒤 turn 사건이 오지 않는다
         self.mark()
