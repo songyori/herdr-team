@@ -1,12 +1,14 @@
 """고정 터미널(설계 13장, 0.2.0): 터미널 확인, 리셋 예약 읽기, --terminal 로 같은 터미널에 새 Dispatch 넣기,
-보내기 표시 뒤 실행자가 죽은 Dispatch 정리."""
+보내기 표시 뒤 실행자가 죽은 Dispatch 정리, 닫기(terminal-close), 세션 비우기(terminal-reset)."""
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
+import time
 
 from . import hcio, liveness, preamble, procs, workers
-from .errors import CONFLICT, FAIL, HorchError
+from .errors import CONFLICT, FAIL, TIMEOUT, USAGE, HorchError
 from .ids import new_id, now
 from .paths import horch_cmd
 from .store import write_atomic
@@ -15,6 +17,10 @@ RESET_PREFIX = "reset:"  # meta 의 리셋 예약 key 접두사. 값은 <pid>|<�
 NOT_STARTED_S = 60  # 넣은 입력이 이만큼(초) 시작되지 않으면 observed not_started(설계 13.6)
 GET_TIMEOUT_S = 5.0  # 터미널 확인의 hc get(설계 13.4 의 2)
 READY = ("idle", "done")
+NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")  # terminal-reset --name(Codex 대화 이름, 설계 13.8 의 2)
+CLEAR_KEYS = ["/", "c", "l", "e", "a", "r"]  # 감싼 send 는 슬래시 명령을 실행하지 않으므로 키로 친다(설계 13.1)
+RESET_POLL_S = 0.2  # 비우기 대체 신호 hc get 폴링 간격(설계 13.8 의 6)
+POLL_GET_TIMEOUT_S = 3.0  # 폴링 hc get 한 번의 시간. 남은 시간으로 줄이지 않는다(설계 13.11)
 
 
 def _dumps(value: dict) -> str:
@@ -209,3 +215,141 @@ def settle_dead(store, row) -> None:
         delivery = {**json.loads(cur["delivery"] or "{}"), "uncertain": True, "error": "executor_died"}
         store.run("UPDATE dispatches SET state='active', delivery=? WHERE id=? AND state='launching'",
                   (_dumps(delivery), row["id"]))
+
+
+def close(store, run_id: str, terminal: str, abandon: bool) -> dict:
+    """terminal-close(설계 13.5): 이 Run 의 고정 터미널을 끄고 지운 뒤 그 터미널의 끝나지 않은 고정 Dispatch 를 정리한다.
+    kill·rm 이 실패하면 상태를 바꾸지 않는다. 다시 부르면 이어 한다(끝난 터미널은 rm 만, 이미 없으면 기록만)."""
+    try:
+        info = hcio.get(terminal, timeout=GET_TIMEOUT_S)
+    except hcio.HcFailure as exc:
+        if exc.kind != "not_found":
+            raise HorchError("hc_failed", f"hc get {terminal} 실패: {exc.kind}", FAIL) from exc
+        info = None  # 이미 닫혔다. 기록만 정리한다
+    if info is not None:
+        labels = info.get("labels") or {}
+        if labels.get("horch.run") != run_id or labels.get("horch.persistent") != "1":
+            raise HorchError("not_persistent_terminal", f"{terminal} 은 이 Run 의 고정 터미널이 아니다", CONFLICT)
+        running = _running_on(store, terminal)
+        if running and not abandon:
+            raise _busy(terminal, running)
+        if info.get("state") == "live":
+            workers._kill_ok(terminal)
+        workers._rm_ok(terminal)
+    ts = now()
+    mine = "run_id=? AND terminal=? AND persistent=1"
+    with store.tx():
+        ongoing = store.one(f"SELECT id FROM dispatches WHERE {mine} AND state IN ('launching','active') LIMIT 1",
+                            (run_id, terminal))
+        store.run(f"UPDATE dispatches SET state='abandoned' WHERE {mine} AND state IN ('launching','active')",
+                  (run_id, terminal))
+        # 방금 abandoned 로 쓴 것도 released 에 든다(터미널이 없으니 남길 것이 없다)
+        released = [r["id"] for r in store.all(f"SELECT id FROM dispatches WHERE {mine} "
+                                               "AND state IN ('settled','retained','abandoned') ORDER BY created_at, rowid",
+                                               (run_id, terminal))]
+        store.run(f"UPDATE dispatches SET state='released', closed_at=? WHERE {mine} "
+                  "AND state IN ('settled','retained','abandoned')", (ts, run_id, terminal))
+    abandoned = ongoing["id"] if ongoing else None
+    if info is None:
+        return {"terminal": terminal, "closed": False, "reason": "not_found", "abandoned": abandoned, "released": released}
+    return {"terminal": terminal, "closed": True, "abandoned": abandoned, "released": released}
+
+
+def _seen(info: dict) -> dict:
+    return {"status": liveness.status_word(info), "turn": info.get("turn"), "title": info.get("title", "")}
+
+
+def _cleared(status, turn, turn_before: int) -> bool:
+    """비웠다는 신호: turn 이 오르고 idle 이다(설계 13.8 의 6)."""
+    return status == "idle" and isinstance(turn, int) and turn > turn_before
+
+
+def reset(store, run_id: str, terminal: str, name: str | None, timeout_ms: int) -> dict:
+    """terminal-reset(설계 13.8): 리셋 예약 → events 구독 → hc keys 로 /clear → turn 신호(사건, 없으면 hc get 폴링) 대기.
+    예약은 끝날 때(성공·실패·시간 초과·예외) 자기 값일 때만 지운다."""
+    if name is not None and not NAME_RE.fullmatch(name):
+        raise HorchError("usage", "--name 은 소문자로 시작하는 소문자·숫자·- 1–32자다", USAGE)
+    _, prev = inspect(store, run_id, terminal)
+    agent = prev["agent"]
+    warnings: list[str] = []
+    if name is not None and agent != "codex":
+        warnings.append("name_ignored")  # Claude 는 띄울 때 준 제목이 /clear 뒤에도 남는다(설계 13.8 의 2)
+        name = None
+    pid, started = procs.me()
+    key, value = RESET_PREFIX + terminal, f"{pid}|{started}|{now()}"
+    with store.tx():
+        # 진행 중 Dispatch·살아 있는 다른 예약을 다시 본다. --terminal 넣기와 같은 트랜잭션 꼴이라 서로 배제된다(설계 13.8 의 3)
+        running = _running_on(store, terminal)
+        if running:
+            raise _busy(terminal, running)
+        if reservation(store, terminal):
+            raise _busy(terminal, None)
+        store.run("INSERT INTO meta(key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                  (key, value))
+    try:
+        return _clear(terminal, agent, name, timeout_ms, warnings)
+    finally:
+        with store.tx():
+            store.run("DELETE FROM meta WHERE key=? AND value=?", (key, value))
+
+
+def _clear(terminal: str, agent: str, name: str | None, timeout_ms: int, warnings: list[str]) -> dict:
+    stream = None
+    try:
+        try:
+            # 구독을 keys 보다 먼저 붙인다. 늦게 붙으면 비운 turn 사건을 놓친다(설계 13.8 의 4)
+            stream = hcio.events(terminal)
+        except hcio.HcFailure:
+            stream = None  # 대체 신호(hc get 폴링)만 쓴다
+        try:
+            info = hcio.get(terminal, timeout=GET_TIMEOUT_S)
+        except hcio.HcFailure as exc:
+            raise HorchError("hc_failed", f"hc get {terminal} 실패: {exc.kind}", FAIL) from exc
+        turn_before = info.get("turn") or 0
+        last = _seen(info)
+        names = ["space", *name] if agent == "codex" and name else []
+        try:
+            hcio.keys(terminal, CLEAR_KEYS + names + ["enter"])
+        except hcio.HcFailure as exc:
+            raise HorchError("hc_failed", f"hc keys {terminal} 실패: {exc.kind}", FAIL) from exc
+        start = time.monotonic()
+        deadline = start + timeout_ms / 1000
+        next_poll = start
+        while True:
+            now_m = time.monotonic()
+            if now_m >= deadline:
+                break
+            if stream is not None and not stream.closed and now_m < next_poll:
+                line = stream.read(min(next_poll, deadline) - now_m)
+                if line is not None and _cleared(line.get("status"), line.get("turn"), turn_before):
+                    seconds = time.monotonic() - start
+                    try:
+                        title = hcio.get(terminal, timeout=POLL_GET_TIMEOUT_S).get("title", "")
+                    except hcio.HcFailure:
+                        title = line.get("title", "")
+                    return _reset_result(terminal, agent, line["turn"], title, seconds, "event", warnings)
+                continue
+            if now_m < next_poll:
+                time.sleep(min(next_poll, deadline) - now_m)
+                continue
+            try:
+                info = hcio.get(terminal, timeout=POLL_GET_TIMEOUT_S)
+            except hcio.HcFailure:
+                info = None
+            if info is not None:
+                last = _seen(info)
+                if _cleared(last["status"], last["turn"], turn_before):
+                    return _reset_result(terminal, agent, last["turn"], last["title"], time.monotonic() - start, "poll",
+                                         warnings)
+            next_poll = time.monotonic() + RESET_POLL_S
+        raise HorchError("reset_timeout", f"고정 터미널 {terminal} 을 비웠다는 신호가 {timeout_ms}ms 안에 오지 않았다", TIMEOUT,
+                         "비웠는지 알 수 없다. 터미널을 닫고(terminal-close) 새로 띄운다",
+                         data={"turn_before": turn_before, "last": last})
+    finally:
+        if stream is not None:
+            stream.close()
+
+
+def _reset_result(terminal, agent, turn, title, seconds, signal, warnings) -> dict:
+    return {"terminal": terminal, "agent": agent, "turn": turn, "status": "idle", "title": title,
+            "seconds": round(float(seconds), 3), "signal": signal, "warnings": warnings}

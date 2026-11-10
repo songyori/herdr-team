@@ -29,12 +29,13 @@ def rewake_interval() -> float:
 
 
 def post(store, *, run_id: str, mailbox: str, sender: str, type: str, body: str, subject: str | None = None,
-         reply_to: int | None = None, dispatch_id: str | None = None, ask_key: str | None = None) -> int:
-    """메시지 한 건을 쓴다. 호출자가 트랜잭션을 연다."""
+         reply_to: int | None = None, dispatch_id: str | None = None, ask_key: str | None = None,
+         send_key: str | None = None) -> int:
+    """메시지 한 건을 쓴다. 호출자가 트랜잭션을 연다. send_key 는 send --key 의 key(설계 13.9)."""
     cur = store.run(
-        "INSERT INTO messages(run_id, mailbox, sender, type, subject, body, reply_to, dispatch_id, ask_key, created_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?)",
-        (run_id, mailbox, sender, type, subject, body, reply_to, dispatch_id, ask_key, now()))
+        "INSERT INTO messages(run_id, mailbox, sender, type, subject, body, reply_to, dispatch_id, ask_key, send_key, "
+        "created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (run_id, mailbox, sender, type, subject, body, reply_to, dispatch_id, ask_key, send_key, now()))
     return int(cur.lastrowid)
 
 

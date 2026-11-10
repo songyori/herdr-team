@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import time
 
@@ -11,7 +12,23 @@ from .errors import CONFLICT, DENIED, TIMEOUT, USAGE, HorchError
 from .ids import now
 
 
-def send(store, to: str, subject: str | None, body: str) -> dict:
+KEY_RE = re.compile(r"[A-Za-z0-9._:-]{1,64}")
+
+
+def _keyed(store, box: str, key: str, subject: str | None, body: str) -> dict | None:
+    """같은 메일함·같은 key 의 메시지가 있으면 그 메시지(duplicate), 제목·본문이 다르면 send_key_conflict, 없으면 None."""
+    row = store.one("SELECT id, subject, body FROM messages WHERE mailbox=? AND send_key=?", (box, key))
+    if row is None:
+        return None
+    if (row["subject"], row["body"]) != (subject, body):
+        raise HorchError("send_key_conflict", f"같은 key {key} 로 다른 제목·본문을 이미 보냈다(메시지 {row['id']})", CONFLICT)
+    return {"message": row["id"], "wake": None, "duplicate": True}
+
+
+def send(store, to: str, subject: str | None, body: str, key: str | None = None) -> dict:
+    """key 가 있으면 같은 메일함·같은 key 는 한 번만 간다(설계 13.9). 검사 순서는 key 형식 → 소유자 → key → 상태."""
+    if key is not None and not KEY_RE.fullmatch(key):
+        raise HorchError("usage", "--key 는 [A-Za-z0-9._:-] 1–64자다", USAGE)
     kind, _, ident = to.partition(":")
     term = auth.caller()
     if kind == "run":
@@ -31,23 +48,39 @@ def send(store, to: str, subject: str | None, body: str) -> dict:
         except HorchError as exc:
             # 설계 7장: 소유자의 Run 에 속한 active Dispatch 만 받는다. 아니면 exit 3.
             raise HorchError(exc.code, exc.message, CONFLICT, exc.hint) from exc
+        box, sender, dispatch_id = f"dispatch:{ident}", f"run:{run_id}", ident
+        # 같은 key 의 메시지가 있으면 Dispatch 상태와 상관없이 그 메시지를 돌려준다(설계 13.9)
+        dup = _keyed(store, box, key, subject, body) if key is not None else None
+        if dup:
+            return dup
         if row["state"] != "active":
             raise HorchError("dispatch_not_active", f"Dispatch {ident} 는 {row['state']} 다", CONFLICT)
-        box, sender, dispatch_id = f"dispatch:{ident}", f"run:{run_id}", ident
     else:
         raise HorchError("usage", "--to 는 run:<id> 또는 dispatch:<id> 다", USAGE)
-    with store.tx():
-        if kind == "dispatch":
-            # 확인과 트랜잭션 사이에 run-use 로 소유가 옮겨졌을 수 있다. 쓰기 직전에 다시 확인한다.
-            if auth.owner_run_id(store) != run_id:
-                raise HorchError("not_owner", f"이 터미널은 더는 Run {run_id} 의 소유자가 아니다", DENIED,
-                                 "run-create 또는 run-use 를 먼저 한다")
-            auth.require_active(store.one("SELECT id, state FROM dispatches WHERE id=?", (ident,)))
-        mid = mailbox.post(store, run_id=run_id, mailbox=box, sender=sender, type="status", subject=subject,
-                           body=body, dispatch_id=dispatch_id)
+    dup = None
+    try:
+        with store.tx():
+            if kind == "dispatch":
+                # 확인과 트랜잭션 사이에 run-use 로 소유가 옮겨졌을 수 있다. 쓰기 직전에 다시 확인한다.
+                if auth.owner_run_id(store) != run_id:
+                    raise HorchError("not_owner", f"이 터미널은 더는 Run {run_id} 의 소유자가 아니다", DENIED,
+                                     "run-create 또는 run-use 를 먼저 한다")
+            dup = _keyed(store, box, key, subject, body) if key is not None else None
+            if dup is None:
+                if kind == "dispatch":
+                    auth.require_active(store.one("SELECT id, state FROM dispatches WHERE id=?", (ident,)))
+                mid = mailbox.post(store, run_id=run_id, mailbox=box, sender=sender, type="status", subject=subject,
+                                   body=body, dispatch_id=dispatch_id, send_key=key)
+    except sqlite3.IntegrityError:
+        # 동시에 같은 key 를 쓴 쪽이 먼저 커밋했다(send_key_once). 다시 조회해 같은 판정을 한다
+        dup = _keyed(store, box, key, subject, body) if key is not None else None
+        if dup is None:
+            raise
     if kind == "run" and dispatch_id:
         auth.mark_seen(store, dispatch_id)  # 진행 중 Dispatch 의 워커가 보냈다(설계 13.6 seen_at)
-    return {"message": mid, "wake": mailbox.wake(store, box)}
+    if dup:
+        return dup
+    return {"message": mid, "wake": mailbox.wake(store, box), "duplicate": False}
 
 
 def check(store, *, dispatch: str | None, wait: bool, timeout_ms: int, ack: int | None) -> dict:

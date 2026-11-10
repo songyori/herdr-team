@@ -30,7 +30,7 @@
      - `exited`·`lost`: `horch worker-abandon --dispatch <d>` 로 `abandoned` 표시를 한다. 터미널은 남으므로 그 Dispatch 는 나중에 `horch worker-release --dispatch <d>` 해야 한다. 옛 Dispatch 를 `horch worker-show --dispatch <d> --lines 0` 으로 읽어 `agent`·`model`·`effort`·`cwd`·`agent_args` 를 그대로 넘겨 다시 띄운다: `horch worker-start --agent <agent> --task <task> --cwd <cwd> [--model <model>] [--effort <effort>] [--agent-arg=<각 인자>]...`. 값을 빼면 작업 폴더가 코디네이터의 것으로 바뀌고 모델·인자가 초기화된다. `--retry` 는 이전 Dispatch 가 `launch_failed` 일 때만 필요하다(abandon 뒤에는 필요 없다).
      - `idle`: 워커가 done 없이 턴을 끝냈다. `horch worker-show --dispatch <d> --lines 40` 으로 화면을 보고, 남은 일이 있으면 `horch send --to dispatch:<d> --body "<지시>"` 로 이어가게 하고(깨우기가 입력을 보낸다), 일을 끝냈는데 done 을 잊었으면 done 하라고 보내고, 막혔으면 사용자에게 알린다.
      - `blocked`: 사람의 결정(권한 등)이 필요하다. `horch worker-show --dispatch <d> --lines 80` 으로 화면을 보고 사용자에게 알린다. horch 는 키를 누르지 않는다.
-     - `error`: 화면을 읽고 이어갈 수 있으면 `send --to dispatch:<d>` 로 지시하고, 아니면 `worker-abandon --kill` 뒤 다시 띄운다(abandon 한 Dispatch 는 나중에 `worker-release` 한다).
+     - `error`: 화면을 읽고 이어갈 수 있으면 `send --to dispatch:<d>` 로 지시하고, 아니면 `worker-abandon --kill` 뒤 다시 띄운다(abandon 한 Dispatch 는 나중에 `worker-release` 한다). 고정 Dispatch 는 `--kill` 대신 `terminal-close --terminal <t> --abandon` 이 성공한 뒤(`closed: true`, 터미널이 이미 없으면 `closed: false`) 새로 띄운다(고정 Dispatch 에 `--kill` 은 exit 2).
    - `status`: 참고한다.
 7. 상황이 불분명하면 `horch worker-list` 의 `attention` 과 `next`(다음에 실행할 argv)를 본다. `horch status` 는 읽지 않은 메시지 수와 답 없는 질문을 보여 준다.
    `attention: "no_status"` 가 1분 넘게 이어지면 워커가 시작 확인 창(Claude 폴더 신뢰, Codex hook 검토)에서 멈춘 것일 수 있다. `next` 로 화면을 보고 사용자에게 알린다. 키를 대신 누르지 않는다. Codex 워커는 사용자가 허락하면 `--agent-arg=--disable=hooks` 로 띄워 hook 검토 창을 없앤다. `--dangerously-bypass-hook-trust` 는 검토하지 않은 hook 을 실행해, 깨진 hook(예: Node 버전이 맞지 않는 hook)이 워커의 셸 명령을 모두 막을 수 있다. `--disable=hooks` 는 hook 을 끄고 확인 창도 없앤다(codex-cli 0.166 에서 확인). 처음 보는 폴더의 Codex 폴더 신뢰 창은 이 인자로도 사라지지 않는다.
@@ -44,6 +44,19 @@
 - 같은 Task 를 동시에 두 번 띄울 수 없다(horch 가 막는다). `--task <id> --retry` 는 `launch_failed` 를 다시 띄울 때만 쓴다. `worker_done` 의 실패(`outcome=failed`)는 위 `worker_done` 처리대로 새 Task 로 한다.
 - `--agent-arg` 로 권한·샌드박스 우회를 넘기면 그 위험은 코디네이터가 진다. 워커가 사용자의 자격 증명(git, 클라우드 인증, 셸 환경)을 그대로 쓴다. 사용자가 허락했을 때만 쓴다.
 - 권한 확인은 실수 방지용이지 보안 경계가 아니다.
+
+## 고정 터미널(0.2.0)
+
+같은 에이전트 세션이 여러 Task 를 차례로 맡게 할 때 쓴다(예: herdr-team 의 고정 에이전트). 쓰지 않으면 0.1.x 와 같다.
+
+- 띄우기: `horch worker-start --keep-open [--tab <탭 id> | --hidden] --agent … --title … --spec-file …`. 결과의 `terminal` 이 고정 터미널이다(라벨 `horch.persistent=1`). `--tab` 은 소유자 space 의 그 탭에 붙이고 `--hidden` 은 화면에 붙이지 않는다(`--keep-open` 없이도 쓴다).
+- 다시 넣기: 앞 Dispatch 가 끝난 뒤 `horch worker-start --terminal <t> --title … --spec-file …`(또는 `--task <task> [--retry]`). 에이전트·모델·인자·cwd 는 그 터미널의 것을 그대로 쓴다(주면 exit 2). 상태가 `idle`·`done` 이 아니면 `terminal_not_ready`, 진행 중 Dispatch·리셋이 있으면 `terminal_busy`, 터미널이 없거나 끝났거나 다른 프로그램이면 `terminal_gone` 이고 어느 것이든 보내지 않는다(exit 3).
+- 들어갔는지: 결과의 `start_turn` 보다 turn 이 오르거나 워커가 horch 명령을 부르면 들어간 것이다. 보낸 뒤 60초 동안 아무 변화가 없으면 observed `not_started` 가 온다. horch 는 다시 보내지 않는다. 다시 넣으려면 `horch worker-abandon --dispatch <d> --keep-terminal` 뒤 `horch worker-start --terminal <t> --task <task>`. `warnings` 의 `delivery_uncertain` 은 보내기 응답을 받지 못했다는 뜻이다(들어갔을 수 있다).
+- 고정 Dispatch 의 `launch_failed` 는 `worker-list`·`worker-show` 의 `next` 를 주지 않는다(배치를 저장하지 않는다). 배치를 아는 호출자가 다시 띄운다.
+- 끝난 고정 Dispatch 는 `worker-release` 해도 터미널이 남는다. 일하는 중인 세션은 그대로 두고 Dispatch 만 떼려면 `worker-abandon --dispatch <d> --keep-terminal`(고정 Dispatch 에 `--kill` 은 exit 2).
+- 세션 비우기: `horch terminal-reset --terminal <t> [--name <이름>] [--timeout-ms N]` 이 `/clear` 를 키로 치고 turn 사건을 기다린다(`--name` 은 Codex 대화 이름). exit 4 `reset_timeout` 이면 비웠는지 모른다: 터미널을 닫고 새로 띄운다.
+- 닫기: `horch terminal-close --terminal <t> [--abandon]`(진행 중 Dispatch 가 있으면 `--abandon` 이 있어야 한다). 끄고 지운 뒤에만 `closed: true` 다.
+- 같은 메시지를 한 번만: `horch send --to dispatch:<d> --body=<글> --key <요청 id>`. 같은 key 를 다시 보내면 Dispatch 상태와 상관없이 `duplicate: true` 와 처음 메시지를 돌려준다.
 
 ## 워커 의무
 
@@ -61,6 +74,8 @@
 | `reply --id --body` | 코디네이터 | 질문에 답 |
 | `send --to run:<id>\|dispatch:<id> --body [--subject]` | 누구나(dispatch 는 코디네이터) | 상태 메시지 |
 | `worker-release` / `worker-retain` / `worker-abandon [--kill]` | 코디네이터 | release 는 터미널을 닫고 끝낸다. retain 은 남긴다. abandon 은 `abandoned` 표시만 한다(뒤에 release) |
+| `worker-start --keep-open` / `worker-start --terminal <t>` | 코디네이터 | 고정 터미널 띄우기 / 같은 터미널에 다시 넣기 |
+| `terminal-reset --terminal [--name] [--timeout-ms]` / `terminal-close --terminal [--abandon]` | 코디네이터 | 고정 터미널 세션 비우기 / 닫기 |
 | `ask` / `check --dispatch` / `escalate` / `done` | 워커 | 프리앰블 참고 |
 | `status` / `doctor` / `skill` | 누구나 | 상태, 점검, 이 문서 |
 

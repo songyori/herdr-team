@@ -372,5 +372,83 @@ class MailboxTest(HorchCase):
         self.assertEqual(res["messages"][0]["body"], "late")
 
 
+class SendKeyTest(HorchCase):
+    """send --key(herdr-orch 설계 13.9): 같은 메일함·같은 key 는 한 번만 간다. 검사 순서는 소유자 → key → 상태."""
+
+    def setUp(self):
+        super().setUp()
+        self.run_id = self.make_owner("t100")
+        self.update_terminal("t100", status="working")
+        self.did = self.add_dispatch(self.run_id)
+
+    def send(self, *extra, body="추가 범위 본문", subject="추가 범위", terminal="t100", did=None):
+        return self.horch("send", "--to", f"dispatch:{did or self.did}", "--subject", subject, f"--body={body}", *extra,
+                          terminal=terminal)
+
+    def messages(self, did=None) -> list:
+        return [tuple(r) for r in self.db().execute("SELECT id, send_key FROM messages WHERE mailbox=? ORDER BY id",
+                                                    (f"dispatch:{did or self.did}",))]
+
+    def set_state(self, state) -> None:
+        db = self.db()
+        db.execute("UPDATE dispatches SET state=? WHERE id=?", (state, self.did))
+        db.commit()
+
+    def test_same_key_twice_is_one_message(self):
+        code, first = self.send("--key", "q-000001")
+        self.assertEqual((code, first["duplicate"]), (0, False), first)
+        code, again = self.send("--key", "q-000001")
+        self.assertEqual((code, again["duplicate"], again["message"]), (0, True, first["message"]), again)
+        self.assertIsNone(again["wake"])  # 깨우지 않는다
+        self.assertEqual(self.messages(), [(first["message"], "q-000001")])
+
+    def test_duplicate_even_after_dispatch_ended(self):
+        _, first = self.send("--key", "q-000002")
+        for state in ("settled", "retained"):
+            with self.subTest(state=state):
+                self.set_state(state)
+                code, again = self.send("--key", "q-000002")
+                self.assertEqual((code, again["duplicate"], again["message"]), (0, True, first["message"]), again)
+        self.assertEqual(len(self.messages()), 1)
+
+    def test_conflicting_body_or_subject(self):
+        self.send("--key", "q-000003")
+        code, out = self.send("--key", "q-000003", body="다른 본문")
+        self.assertEqual((code, out["error"]["code"]), (3, "send_key_conflict"))
+        code, out = self.send("--key", "q-000003", subject="다른 제목")
+        self.assertEqual((code, out["error"]["code"]), (3, "send_key_conflict"))
+        self.assertEqual(len(self.messages()), 1)
+
+    def test_new_key_needs_active_dispatch(self):
+        self.set_state("settled")
+        code, out = self.send("--key", "q-000004")
+        self.assertEqual((code, out["error"]["code"]), (3, "dispatch_not_active"))
+        self.assertEqual(self.messages(), [])
+
+    def test_owner_checked_before_key(self):
+        self.send("--key", "q-000005")
+        code, out = self.send("--key", "q-000005", terminal="t9")
+        self.assertEqual(code, 5, out)
+
+    def test_bad_key_is_usage(self):
+        for key in ("a b", "x" * 65, "", "한글"):
+            with self.subTest(key=key):
+                code, out = self.send("--key", key)
+                self.assertEqual((code, out["error"]["code"]), (2, "usage"))
+        self.assertEqual(self.messages(), [])
+
+    def test_key_is_per_mailbox_and_optional(self):
+        other = self.add_dispatch(self.run_id, did="dsp-00000002", terminal="t10")
+        _, a = self.send("--key", "q-000006")
+        code, b = self.send("--key", "q-000006", did=other)
+        self.assertEqual((code, b["duplicate"]), (0, False))
+        self.assertNotEqual(a["message"], b["message"])
+        _, c = self.send()
+        _, d = self.send()
+        self.assertEqual((c["duplicate"], d["duplicate"]), (False, False))
+        self.assertNotEqual(c["message"], d["message"])
+        self.assertEqual(len(self.messages()), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

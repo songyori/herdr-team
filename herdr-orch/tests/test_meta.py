@@ -18,6 +18,7 @@ class MetaTest(HorchCase):
         market = json.loads((REPO / ".claude-plugin" / "marketplace.json").read_text())
         entry = [p for p in market["plugins"] if p["name"] == "herdr-orch"][0]
         self.assertEqual({VERSION, plugin["version"], entry["version"]}, {VERSION})
+        self.assertEqual(VERSION, "0.2.0")  # 고정 터미널(herdr-orch 설계 13장)
 
     def test_skill_output(self):
         proc = subprocess.run([sys.executable, str(BIN), "--home", str(self.home), "skill"],
@@ -66,6 +67,15 @@ class MetaTest(HorchCase):
         for line in proc.stdout.splitlines():
             if "worker-abandon" in line:
                 self.assertNotIn("정리", line, line)
+
+    def test_skill_covers_persistent_terminal(self):
+        proc = subprocess.run([sys.executable, str(BIN), "--home", str(self.home), "skill"],
+                              capture_output=True, text=True, env=self.env, timeout=30)
+        for needle in ("## 고정 터미널(0.2.0)", "worker-start --keep-open", "worker-start --terminal <t>",
+                       "observed `not_started`", "--keep-terminal", "terminal-reset --terminal <t>",
+                       "terminal-close --terminal <t> [--abandon]", "--key <요청 id>", "`duplicate: true`",
+                       "`reset_timeout`", "고정 Dispatch 는 `--kill` 대신 `terminal-close --terminal <t> --abandon`"):
+            self.assertIn(needle, proc.stdout)
 
     def test_skill_stub(self):
         text = (ROOT / "skills" / "herdr-orchestration" / "SKILL.md").read_text(encoding="utf-8")

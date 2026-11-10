@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import json
 import os
+import select
 import subprocess
+import time
 
 from .errors import MISSING, HorchError
 
@@ -106,8 +108,90 @@ def label(terminal: str, pairs: dict[str, str], timeout: float = 10) -> dict:
     return _json(["label", terminal, *(f"{k}={v}" for k, v in pairs.items())], timeout=timeout)
 
 
-def kill(terminal: str) -> dict:
-    return _json(["kill", terminal])
+def keys(terminal: str, keys: list[str], timeout: float = 10) -> dict:
+    """hc keys --json T <키…>. 이름 있는 키(enter, space 등)와 글자 하나씩. --json 은 키 앞에 둔다
+    (키 목록 뒤에 두면 키 이름으로 읽힐 수 있다). 슬래시 명령은 감싼 send 가 아니라 이것으로 친다(설계 13.1)."""
+    proc = _call(["keys", "--json", terminal, *keys], timeout)
+    if proc.returncode != 0:
+        raise _failure(proc)
+    return _parse(proc.stdout)
+
+
+class EventStream:
+    """hc events 구독. read 가 마감까지 다음 JSON 객체 줄을 준다. 호출자가 늘 close 한다."""
+
+    def __init__(self, proc: subprocess.Popen):
+        self._proc = proc
+        self._fd = proc.stdout.fileno()
+        self._buf = b""
+        self.closed = False  # EOF 를 봤거나 닫았다
+
+    def _next_line(self) -> dict | None:
+        while b"\n" in self._buf:
+            line, self._buf = self._buf.split(b"\n", 1)
+            value = _line_value(line)
+            if value is not None:
+                return value
+        return None
+
+    def read(self, timeout: float) -> dict | None:
+        """마감(초)까지 다음 JSON 객체 줄. 없거나 EOF 면 None. JSON 객체가 아닌 줄은 건너뛴다."""
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            value = self._next_line()
+            if value is not None or self.closed:
+                return value
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return None
+            ready, _, _ = select.select([self._fd], [], [], left)
+            if not ready:
+                return None
+            chunk = os.read(self._fd, 65536)
+            if not chunk:
+                self.closed = True  # 줄바꿈 없이 끝난 마지막 줄도 본다
+                tail, self._buf = self._buf, b""
+                return _line_value(tail) if tail else None
+            self._buf += chunk
+
+    def close(self) -> None:
+        """살아 있으면 terminate → 2초 → kill 하고 파이프를 닫는다. 여러 번 불러도 된다."""
+        self.closed = True
+        proc = self._proc
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        if proc.stdout and not proc.stdout.closed:
+            proc.stdout.close()
+
+
+def _line_value(line: bytes) -> dict | None:
+    try:
+        value = json.loads(line.decode("utf-8", "replace"))
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def events(terminal: str) -> EventStream:
+    """hc events --json --terminal T 를 띄운다. 마감은 호출자가 read 로 정하고 끝나면 close 한다(설계 13.7)."""
+    try:
+        proc = subprocess.Popen(["hc", "events", "--json", "--terminal", terminal], stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except FileNotFoundError as exc:
+        raise HorchError("hc_missing", "hc 실행 파일을 찾지 못했다", MISSING,
+                         "herdr-core 를 설치하고 PATH 에 hc 를 둔다") from exc
+    except OSError as exc:
+        raise HcFailure("exec_failed", str(exc)) from exc
+    return EventStream(proc)
+
+
+def kill(terminal: str, timeout: float = 30) -> dict:
+    return _json(["kill", terminal], timeout=timeout)
 
 
 def rm(terminal: str, timeout: float | None = None) -> dict:

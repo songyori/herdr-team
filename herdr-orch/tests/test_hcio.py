@@ -1,4 +1,6 @@
+import json
 import os
+import subprocess
 import unittest
 from unittest import mock
 
@@ -169,6 +171,87 @@ class HcioPersistTest(HorchCase):
         with self.assertRaises(hcio.HcFailure) as cm:
             hcio.label("t404", {"x": "1"})
         self.assertEqual(cm.exception.kind, "not_found")
+
+
+class HcioKeysEventsTest(HorchCase):
+    """0.2.0 hcio: keys·events·kill 시간 제한(herdr-orch 설계 13.7)과 herdr-team 이 쓰는 가짜 hc connect."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.dict(os.environ, self.env, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_keys_clear_moves_turn_without_send(self):
+        self.add_terminal("t3", status="done", turn=2)
+        hcio.keys("t3", ["/", "c", "l", "e", "a", "r", "enter"])
+        st = self.hc_state()
+        self.assertEqual(st["keys"], [{"terminal": "t3", "keys": ["/", "c", "l", "e", "a", "r", "enter"]}])
+        self.assertEqual((st["terminals"]["t3"]["turn"], st["terminals"]["t3"]["status"]["state"]), (3, "idle"))
+        self.assertEqual(st.get("sent", []), [])
+        call = self.hc_calls()[-1]
+        self.assertEqual(call[0], "keys")
+        self.assertIn("--json", call)
+        self.assertEqual(hcio.get("t3")["title"], "")
+
+    def test_keys_other_and_no_turn_scenario(self):
+        self.add_terminal("t3", status="done", turn=2)
+        hcio.keys("t3", ["down"])
+        with self._hc_locked() as st:
+            st["on_clear"] = {"t3": "none"}
+        hcio.keys("t3", ["/", "c", "l", "e", "a", "r", "enter"])
+        self.assertEqual(self.hc_state()["terminals"]["t3"]["turn"], 2)
+        with self.assertRaises(hcio.HcFailure) as cm:
+            hcio.keys("t404", ["enter"])
+        self.assertEqual(cm.exception.kind, "not_found")
+
+    def test_events_stream_and_close(self):
+        self.add_terminal("t3", status="done", turn=2)
+        stream = hcio.events("t3")
+        try:
+            first = stream.read(5)
+            self.assertEqual((first["terminal"], first["status"], first["turn"]), ("t3", "done", 2))
+            self.update_terminal("t3", status="idle", turn=3)
+            nxt = stream.read(5)
+            self.assertEqual((nxt["status"], nxt["turn"]), ("idle", 3))
+            self.assertIsNone(stream.read(0.2))  # 바뀐 것이 없으면 마감까지 None
+        finally:
+            stream.close()
+        self.assertTrue(stream.closed)
+        self.assertIn(["events", "--json", "--terminal", "t3"], self.hc_calls())
+
+    def test_events_failure_ends_stream(self):
+        self.add_terminal("t3", status="done", turn=2)
+        self.fail_hc("events", "unavailable")
+        stream = hcio.events("t3")
+        try:
+            self.assertIsNone(stream.read(2))
+            self.assertTrue(stream.closed)
+        finally:
+            stream.close()
+
+    def test_kill_passes_timeout(self):
+        proc = mock.Mock(returncode=0, stdout='{"killed": true}', stderr="")
+        with mock.patch.object(hcio.subprocess, "run", return_value=proc) as run:
+            hcio.kill("t4", timeout=7)
+        self.assertEqual(run.call_args.kwargs["timeout"], 7)
+
+    def test_fake_connect_doc_get(self):
+        # herdr-team(설계 5.9.2 배치 확인)이 쓰는 가짜 hc connect 의 계약: doc.get herdr-app 은 탭마다 root row 의 터미널 순서
+        self.add_terminal("t1", labels={"herdr.space": "spA", "herdr.tab": "tbA"})
+        self.add_terminal("t2", labels={"herdr.space": "spA", "herdr.tab": "tbA"})
+        self.add_terminal("t3")
+        with self._hc_locked() as st:
+            st["layout"] = {"tbA": ["t2", "t1"]}
+        req = json.dumps({"jsonrpc": "2.0", "id": 7, "method": "doc.get", "params": {"name": "herdr-app"}})
+        proc = subprocess.run(["hc", "connect"], input=req + "\n", capture_output=True, text=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        res = json.loads(proc.stdout.strip().splitlines()[-1])
+        self.assertEqual(res["id"], 7)
+        tab = res["result"]["spaces"][0]["tabs"][0]
+        self.assertEqual((res["result"]["spaces"][0]["id"], tab["id"], tab["root"]["type"]), ("spA", "tbA", "row"))
+        self.assertEqual([c["terminal"] for c in tab["root"]["children"]], ["t2", "t1"])
+        self.assertEqual(tab["root"]["children"][0]["pane"], "pt2")
 
 
 if __name__ == "__main__":

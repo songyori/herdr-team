@@ -35,6 +35,7 @@ def build_parser() -> Parser:
     s.add_argument("--to", required=True)
     s.add_argument("--subject")
     s.add_argument("--body", required=True)
+    s.add_argument("--key")
     s = sub.add_parser("check")
     s.add_argument("--dispatch")
     s.add_argument("--wait", action="store_true")
@@ -88,6 +89,13 @@ def build_parser() -> Parser:
     s.add_argument("--dispatch", required=True)
     s.add_argument("--kill", action="store_true")
     s.add_argument("--keep-terminal", action="store_true")
+    s = sub.add_parser("terminal-close")
+    s.add_argument("--terminal", required=True)
+    s.add_argument("--abandon", action="store_true")
+    s = sub.add_parser("terminal-reset")
+    s.add_argument("--terminal", required=True)
+    s.add_argument("--name")
+    s.add_argument("--timeout-ms", type=int, default=10000)
     sub.add_parser("doctor")
     sub.add_parser("skill")
     # --- 명령 파서 끝 ---
@@ -140,7 +148,7 @@ def _with_store(args, store: Store) -> dict:
     if args.cmd == "status":
         return runs.status(store)
     if args.cmd == "send":
-        return comms.send(store, args.to, args.subject, args.body)
+        return comms.send(store, args.to, args.subject, args.body, args.key)
     if args.cmd == "check":
         return comms.check(store, dispatch=args.dispatch, wait=args.wait, timeout_ms=args.timeout_ms, ack=args.ack)
     if args.cmd == "worker-start":
@@ -176,6 +184,10 @@ def _with_store(args, store: Store) -> dict:
         return workers.retain(store, auth.owner_run_id(store), args.dispatch)
     if args.cmd == "worker-abandon":
         return workers.abandon(store, auth.owner_run_id(store), args.dispatch, args.kill, args.keep_terminal)
+    if args.cmd == "terminal-close":
+        return persist.close(store, auth.owner_run_id(store), args.terminal, args.abandon)
+    if args.cmd == "terminal-reset":
+        return persist.reset(store, auth.owner_run_id(store), args.terminal, args.name, args.timeout_ms)
     # --- 저장소 명령 끝 ---
     raise HorchError("usage", f"알 수 없는 명령: {args.cmd}", USAGE)
 
