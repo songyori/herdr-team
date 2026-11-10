@@ -1,6 +1,8 @@
 """status(태스크별 next, 설계 8.3·13장)와 관제가 쓰는 Dispatch 찾기(locate)·손볼 행(attention).
 
-0.4.0 에서 코디네이터의 wait·which 와 메시지 주석을 없앴다(관제가 안에서 처리한다, 8.6)."""
+0.4.0 에서 코디네이터의 wait·which 와 메시지 주석을 없앴다(관제가 안에서 처리한다, 8.6). status 는 horch 를 부르지 않고
+관제가 재확인마다 쓰는 워커 목록 사본(state/drive/workers.json, 8.7)을 읽는다. 메인이 읽는 hint 에는 horch 명령을 넣지
+않는다(메인은 horch 를 부르지 않는다, 7.1·9.4)."""
 from __future__ import annotations
 
 import json
@@ -13,6 +15,8 @@ from .paths import SHIM, find_project
 from .util import age_seconds, flock, read_json, write_json
 
 LIVE = ("launching", "active")
+NO_ROWS = "관제의 워커 목록 사본이 없다(관제가 재확인마다 쓴다)"
+DRIVE_ONLY = ("review", "review-finish", "design-review")  # 관제만 하는 next(review 는 --retry 없이, 설계 8.3)
 CANCELED_HINT = "앞선 fix·drop 이 끝나지 않았다(실행 키가 취소됐다). 같은 명령을 다시 한다"
 # horch.workers._attention 이 내는 값 가운데 실제 상태 보고를 본 것이 아닌 상태: 시작 전·확인 불가·워커가 죽음.
 # 이 상태는 정상 관측(attention.json 의 ok)으로 치지 않는다
@@ -170,7 +174,7 @@ def attention(p, rows: list[dict], grace: float, *, states: list[dict] | None = 
     return found
 
 
-def _live_hint(st: dict, rows: list[dict], horch_cmd: str = "horch") -> str | None:
+def _live_hint(st: dict, rows: list[dict]) -> str | None:
     """태스크의 작업·리뷰 Dispatch(모든 라운드) 가운데 launching·active 인 것이 있으면 정리 안내. accept 는 이때 exit 3 이다."""
     tid = st["id"]
     for rd in st.get("rounds", []):
@@ -182,24 +186,21 @@ def _live_hint(st: dict, rows: list[dict], horch_cmd: str = "horch") -> str | No
                 if row["state"] == "launching":
                     return f"{did}({slot['title']})가 아직 launching 이다. accept 는 exit 3 로 거부한다. 끝난 뒤 accept 한다"
                 return (f"{did}({slot['title']})가 아직 active 다. accept 는 exit 3 로 거부한다(살아 있는 워커가 파일을 고칠 "
-                        f"수 있다). 워커를 끝낸 뒤 accept: {horch_cmd} worker-abandon --dispatch {did} --kill 뒤 {horch_cmd} "
-                        f"worker-release --dispatch {did}. 태스크를 버리려면 {SHIM} drop {tid} --force")
+                        f"수 있다). 사용자에게 그 워커 탭을 확인해 달라고 한다. 태스크를 버리려면 {SHIM} drop {tid} --force")
     return None
 
 
 def next_step(cfg, st: dict, by_task: dict[str, dict], have_rows: bool,
-              rows: list[dict] | None = None, horch_cmd: str | None = None,
+              rows: list[dict] | None = None,
               appr: dict | None = None,
               gone: dict[str, list[str]] | None = None) -> tuple[list[str] | None, str | None]:
     """태스크마다 다음 명령(설계 13장). 끝났다는 확실한 증거가 있을 때만 바꾸라고 하고, 모르면 기다린다.
 
-    by_task: horch Task → 최신 시도 행. rows 를 주면(worker-list 전체) 지난 시도·제목으로 찾은 Dispatch 까지 본다.
-    horch_cmd: 힌트에 넣을 horch 명령(--home 포함, Horch.cmd). 없으면 `horch`.
+    by_task: horch Task → 최신 시도 행. rows 를 주면(워커 목록 사본 전체) 지난 시도·제목으로 찾은 Dispatch 까지 본다.
     appr: approval.view 결과(끝나지 않은 일괄 승인 결정, awaiting_user 의 next). 읽지 못했으면 None.
     gone: 직간접 선행 가운데 dropped 인 것(tasks.dropped_blockers). start-ready 로 띄울 태스크(pending, 띄운 적 없는
     queued 라운드)는 영영 시작하지 못하므로 start-ready 를 권하지 않고 사람이 정할 일을 알린다."""
     tid, s = st["id"], st["status"]
-    hc = horch_cmd or "horch"
     rd = state.current_round(st)
     if s == "pending":
         if gone:
@@ -213,7 +214,7 @@ def next_step(cfg, st: dict, by_task: dict[str, dict], have_rows: bool,
         return None, f"일괄 승인 결정 {oid} 이 끝나지 않았다. 관제가 재확인마다 기록대로 마저 한다"
     if _round_canceled(rd):
         return None, CANCELED_HINT
-    no_rows = None if have_rows else "horch 정보를 읽지 못했다(코디네이터 터미널에서 본다)"
+    no_rows = None if have_rows else NO_ROWS
 
     def latest(horch_task):
         return by_task.get(horch_task) if horch_task else None
@@ -241,9 +242,9 @@ def next_step(cfg, st: dict, by_task: dict[str, dict], have_rows: bool,
             return _fix(cfg, tid, st["round"], "이전 워커가 done 없이 끝남")
         word = row.get("attention")
         if word == "idle":
-            return None, f"done 없이 턴을 마쳤다. {hc} send --to dispatch:{row['id']} 로 이어가게 하거나 done 을 요구한다"
+            return None, "done 없이 턴을 마쳤다. 관제가 done 을 요구하고 두 번째면 decide 로 올린다"
         if word in ("blocked", "error", "no_status", "unverifiable"):
-            return None, f"{word}: {hc} worker-show --dispatch {row['id']} --lines 80 으로 보고 메인에 묻는다"
+            return None, f"{word}: 관제가 decide 로 올린다. 사용자에게 그 워커 탭을 보게 한다"
         return None, None
     if s == "reviewing":
         att = state.latest_attempt(rd)
@@ -259,13 +260,12 @@ def next_step(cfg, st: dict, by_task: dict[str, dict], have_rows: bool,
         if dispatch.review_ended(row):
             return H("review-finish", tid), None
         if row.get("attention") == "idle":
-            return None, f"리뷰어가 done 없이 턴을 마쳤다. {hc} send --to dispatch:{row['id']} 로 done 을 요구한다"
+            return None, "리뷰어가 done 없이 턴을 마쳤다. 관제가 done 을 요구한다"
         return None, None
     if s == "approved":
         if not have_rows:
-            return H("accept", tid), ("horch 정보를 읽지 못해 살아 있는 워커를 확인하지 못했다. 작업·리뷰 Dispatch 가 살아 "
-                                      "있으면 accept 는 exit 3 로 거부한다(코디네이터 터미널에서 status 를 본다)")
-        live = _live_hint(st, rows if rows is not None else list(by_task.values()), hc)
+            return H("accept", tid), f"{NO_ROWS}. 작업·리뷰 Dispatch 가 살아 있으면 accept 는 exit 3 로 거부한다"
+        live = _live_hint(st, rows if rows is not None else list(by_task.values()))
         if live:
             return None, live
         return H("accept", tid), None
@@ -336,19 +336,35 @@ def _question(q: dict) -> dict:
     return item
 
 
+def _workers_copy(p) -> tuple[list[dict] | None, str | None]:
+    """관제의 워커 목록 사본(설계 8.7): (rows, at). 없거나 깨졌으면 (None, None)."""
+    data = read_json(p.workers_file, None)
+    if not isinstance(data, dict) or not isinstance(data.get("rows"), list):
+        return None, None
+    return data["rows"], data.get("at")
+
+
+def _drive_next(nxt: list[str] | None, hint: str | None) -> tuple[list[str] | None, str | None]:
+    """관제만 하는 next 는 메인이 실행하지 않는다(설계 8.3): next 를 비우고 hint 에 `관제가 한다(hteam <인자>)`."""
+    if not nxt or nxt[1] not in DRIVE_ONLY or "--retry" in nxt:
+        return nxt, hint
+    said = f"관제가 한다(hteam {' '.join(nxt[1:])})"
+    return None, f"{said}. {hint}" if hint else said
+
+
 def status(p) -> dict:
     cfg, config_error = None, None
     try:
         cfg = config.load(p)
     except HteamError as exc:
         config_error = exc.message
-    rows, horch_error, horch_cmd = [], None, None
+    horch_error, horch_cmd = None, None
     try:
-        h = Horch(p.horch_home)
-        horch_cmd = h.cmd()
-        rows = h.workers()
+        horch_cmd = Horch(p.horch_home).cmd()  # 힌트용 명령만 만든다. horch 는 부르지 않는다(설계 8.3)
     except HteamError as exc:
         horch_error = exc.message
+    copied, workers_at = _workers_copy(p)
+    rows = copied or []
     by_task: dict[str, dict] = {}
     for r in rows:
         if r.get("task") not in by_task or r["attempt"] > by_task[r["task"]]["attempt"]:
@@ -369,8 +385,7 @@ def status(p) -> dict:
         gone = None  # 영영 시작하지 못하게 하는 dropped 선행(직간접). start-ready 로 띄울 태스크만 본다
         if st["status"] == "pending" or approval.unlaunched(st):
             gone = tasks.dropped_blockers(graph, st["id"], by_id.get)
-        nxt, hint = next_step(cfg, st, by_task, horch_error is None, rows if horch_error is None else None,
-                              horch_cmd=horch_cmd, appr=appr, gone=gone)
+        nxt, hint = _drive_next(*next_step(cfg, st, by_task, copied is not None, copied, appr=appr, gone=gone))
         rd = state.current_round(st)
         work = by_task.get(rd["work"].get("horch_task")) if rd and rd["work"].get("horch_task") else None
         items.append({"id": st["id"], "role": st.get("role"), "title": title, "status": st["status"],
@@ -388,7 +403,7 @@ def status(p) -> dict:
     except HteamError as exc:  # 손상된 run.json 을 없는 것처럼 숨기지 않는다(up·큐 명령은 bad_run_file 로 거부한다)
         run_error = exc.message
     out = {"tasks": items, "config_error": config_error, "run_error": run_error, "horch_error": horch_error,
-           "horch": horch_cmd, "drive": drive.view(p, run), "watch_alive": outbox.watch_alive(p),
+           "horch": horch_cmd, "workers_at": workers_at, "drive": drive.view(p, run), "watch_alive": outbox.watch_alive(p),
            "open_questions": questions, "unread_outbox": outbox.unread(p), "test_gate": testgate.gate_state(p)}
     if warnings:
         out["warnings"] = warnings

@@ -327,6 +327,15 @@ class TeamCase(unittest.TestCase):
         self.drive_dir.mkdir(parents=True, exist_ok=True)
         (self.drive_dir / "heartbeat").write_text(stamp, encoding="utf-8")
 
+    def refresh_workers(self) -> None:
+        """관제가 재확인마다 쓰는 워커 목록 사본(설계 8.7, state/drive/workers.json)을 지금 horch 로 쓴다(관제 터미널에서).
+        status 는 horch 를 부르지 않고 이 사본만 읽는다(설계 8.3)."""
+        code, out = self.horch("worker-list")
+        self.assertEqual(code, 0, out)
+        self.drive_dir.mkdir(parents=True, exist_ok=True)
+        (self.drive_dir / "workers.json").write_text(
+            json.dumps({"at": "2026-01-01T00:00:00Z", "rows": out["workers"]}), encoding="utf-8")
+
     def outbox_items(self) -> list[dict]:
         path = self.state_dir / "outbox.jsonl"
         if not path.exists():

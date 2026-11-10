@@ -80,6 +80,18 @@ def finish_probe(p, tid: str) -> None:
         pass
 
 
+def finish_busy(p, tid: str) -> bool:
+    """그 태스크의 finish 잠금을 다른 실행자(리뷰 관문, 죽은 관제가 남긴 리뷰 자식 등)가 쥐었나. LOCK_EX|LOCK_NB 로 잡아 보고
+    곧 놓는다(관제가 리뷰 자식을 띄우기 전에 본다, 설계 8.8)."""
+    try:
+        finish_probe(p, tid)
+    except HteamError as exc:
+        if exc.code == "review_busy":
+            return True
+        raise
+    return False
+
+
 def _read_state(path, tid: str) -> dict | None:
     """없으면 None. 읽을 수 없거나 JSON 객체가 아니면 bad_state_file(없는 것으로 보지 않는다)."""
     try:

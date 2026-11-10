@@ -238,8 +238,12 @@ def _x_fix(p, d, req):
 
 
 def _x_accept(p, d, req):
+    """accept 뒤 처리는 관제 판정 경로와 같다(설계 8.6). 그 예외는 큐 결과를 바꾸지 않는다(격리 accept:<T>)."""
     from . import tasks
-    return tasks.accept(p, req["args"]["task"], req.get("expect_round"), request=req["id"], nowait=True)
+    task = req["args"]["task"]
+    res = tasks.accept(p, task, req.get("expect_round"), request=req["id"], nowait=True)
+    d.isolated(f"accept:{task}", lambda: d.after_accept(task, res))
+    return res
 
 
 def _x_drop(p, d, req):

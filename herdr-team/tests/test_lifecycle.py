@@ -157,9 +157,10 @@ class AcceptTest(LifeCase):
         before = self.task_state("T-001")
         code, out = self.hteam("accept", "T-001")
         self.assertEqual((code, out["error"]["code"], out.get("dispatch")), (3, "worker_active", did), out)
-        hint = out["error"]["hint"]  # 그대로 실행할 수 있는 horch 명령(절대 경로와 --home)
-        self.assertIn(f"--home {self.horch_home} worker-abandon --dispatch {did} --kill", hint)
-        self.assertIn(f"--home {self.horch_home} worker-release --dispatch {did}", hint)
+        hint = out["error"]["hint"]  # 큐 결과로 메인에 간다. 메인은 horch 를 부르지 않는다(설계 7.1)
+        self.assertIn("사용자에게 그 워커 탭을 확인해 달라고 한다", hint)
+        self.assertIn(".herdr-team/bin/hteam drop T-001 --force", hint)
+        self.assertNotIn("horch", hint)
         self.assertEqual(self.task_state("T-001"), before)  # 아무것도 바꾸지 않았다
         self.assertEqual(self.dispatch_row(did)["state"], "active")
         self.assertEqual(self.horch("worker-abandon", "--dispatch", did, "--kill")[0], 0)

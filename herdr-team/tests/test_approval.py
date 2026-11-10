@@ -1495,7 +1495,9 @@ class ApprovalFlowTest(DecisionCase):
         self.finish_design("T-001", "login")
         self.write_spec("T-002", "developer", owns="src/**", depends="T-001")
         state.create(self.p, "T-002", "developer")
-        self.assertEqual(self.statuses()["T-001"]["next"], [H, "design-review"])
+        task = self.statuses()["T-001"]
+        self.assertIsNone(task["next"])  # 일괄 승인 질문은 관제만 한다(설계 8.3·8.9)
+        self.assertIn("관제가 한다(hteam design-review)", task["hint"])
         code, out = self.hteam("start-ready")
         self.assertEqual((code, out.get("started")), (0, []), out)  # T-002 는 T-001 이 done 이 되기를 기다린다
         code, out = self.hteam("design-review")

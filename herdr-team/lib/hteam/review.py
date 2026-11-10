@@ -10,6 +10,7 @@ review·review-finish 는 호출 내내, fix·drop 은 취소·정리하는 동�
 """
 from __future__ import annotations
 
+import argparse
 import contextlib
 import hashlib
 import os
@@ -17,7 +18,7 @@ import re
 from typing import Iterator
 
 from . import compose, config, dispatch, gitio, plan, procs, queue, roles, specs, state, tasks, testgate
-from .errors import CONFLICT, FAIL, HteamError
+from .errors import CONFLICT, FAIL, USAGE, HteamError
 from .globs import covers_tree, matches_any
 from .horch import Horch
 from .paths import SHIM, find_project, review_rel
@@ -623,6 +624,22 @@ def _warning_body(warnings: list[str]) -> str | None:
     return "\n\n".join(parts) or None
 
 
+def attempt_error(tid: str, n: int, att: dict) -> HteamError | None:
+    """시도 기록의 결과가 실패·변조면 review-finish 가 내는 오류(review_failed·review_tampered), 아니면 None. 관제의
+    재확인이 decide 전에 죽은 관제의 시도 결과를 같은 문구로 올린다(설계 8.7)."""
+    if att.get("result") == "failed":
+        return HteamError("review_failed", f"{tid} r{n} 리뷰 시도가 실패했다: {att.get('reason')}", FAIL,
+                          "메인에 묻는다(다시 시도 / 버림). 다시면 hteam review T --retry",
+                          data={"attempt": att.get("attempt"), "reason": att.get("reason")})
+    if att.get("result") == "tampered":
+        tamper = att.get("tamper") or {}
+        return HteamError("review_tampered", f"{tid} r{n} 리뷰 중 제품이 바뀌었다: "
+                          f"{', '.join(show(x) for x in tamper.get('paths') or []) or tamper.get('reason')}",
+                          FAIL, "자동으로 다시 하지 않는다. 메인에 올리고, 사용자가 정리한 뒤 hteam review T --retry",
+                          data={"tamper": tamper})
+    return None
+
+
 def review_finish(p, tid: str, nowait: bool = False) -> dict:
     """같은 태스크의 review-finish 는 한 번에 하나만 돈다. 겹치면 옛 시도 정보를 쥔 호출이 이미 옮긴 파일을 못 찾아
     재시도를 띄우는 사이 다른 호출이 승인으로 옮긴다. 잠금은 태스크 잠금보다 먼저 잡는다(fix·drop 의 취소·정리도 같은
@@ -657,10 +674,8 @@ def _finish(p, tid: str) -> dict:
     if tamper:
         with _finish_write(p, tid, k) as (_, a):
             a.update(tamper=tamper, result="tampered", warnings=warnings)
-        raise HteamError("review_tampered", f"{tid} r{n} 리뷰 중 제품이 바뀌었다: "
-                         f"{', '.join(show(x) for x in tamper['paths']) or tamper['reason']}",
-                         FAIL, "자동으로 다시 하지 않는다. 메인에 올리고, 사용자가 정리한 뒤 hteam review T --retry",
-                         data={"tamper": tamper})
+            err = attempt_error(tid, n, a)
+        raise err
     die_at("before_verdict")
     verdict, reason = None, None
     if att.get("verdict_read") is None:
@@ -681,9 +696,8 @@ def _finish(p, tid: str) -> dict:
             return {**res, "retried": True, "failed_attempt": k, "reason": reason}
         with _finish_write(p, tid, k) as (_, a):
             a.update(result="failed", reason=reason, warnings=warnings)
-        raise HteamError("review_failed", f"{tid} r{n} 리뷰 시도가 실패했다: {reason}", FAIL,
-                         "메인에 묻는다(다시 시도 / 버림). 다시면 hteam review T --retry",
-                         data={"attempt": k, "reason": reason})
+            err = attempt_error(tid, n, a)
+        raise err
     final_rel = review_rel(tid, n)
     final = p.root / final_rel
     _require_open(state.require(p, tid), tid, k)  # 옮기고 커밋하기 전에 fix·drop 의 취소가 끼었는지 본다
@@ -713,12 +727,16 @@ def _finish(p, tid: str) -> dict:
 
 
 def _cmd_review(args) -> dict:
-    """`review T` 는 관제만, `review T --retry` 는 큐 명령이다(설계 7.1, 8.3)."""
+    """`review T` 는 관제만, `review T --retry` 는 큐 명령이다(설계 7.1, 8.3). 도움말 없는 --round·--request 는 관제가 띄운
+    리뷰 자식만 준다(큐 review --retry 의 라운드 재검사와 재실행 기록, 설계 8.8)."""
     p = find_project(args.root)
+    if (args.round is not None or args.request is not None) and not roles.drive_env(p):
+        raise HteamError("usage", "--round·--request 는 관제가 띄운 리뷰 자식만 쓴다", USAGE)
     if not args.retry:
         roles.require_drive(p)
-        return review(p, args.task)
-    return queue.route(p, "review", {"task": args.task, "retry": True}, lambda req: review(p, args.task, retry=True),
+        return review(p, args.task, expect_round=args.round, request=args.request)
+    return queue.route(p, "review", {"task": args.task, "retry": True},
+                       lambda req: review(p, args.task, retry=True, expect_round=args.round, request=args.request),
                        check=lambda: state.require(p, args.task),
                        expect_round=lambda: state.require(p, args.task)["round"])
 
@@ -733,6 +751,8 @@ def register(sub) -> None:
     s = sub.add_parser("review")
     s.add_argument("task")
     s.add_argument("--retry", action="store_true")
+    s.add_argument("--round", type=int, help=argparse.SUPPRESS)
+    s.add_argument("--request", help=argparse.SUPPRESS)
     s.set_defaults(func=_cmd_review)
     s = sub.add_parser("review-finish")
     s.add_argument("task")

@@ -154,9 +154,10 @@ def read_outbox(p) -> list[dict]:
     return [e for _, e in _scan(p)[1]]
 
 
-def append(p, fields: dict, guard=None, reuse=None) -> dict:
+def append(p, fields: dict, guard=None, reuse=None, fill=None) -> dict:
     """outbox 에 flock 으로 한 줄을 더한다. guard(entries) 는 같은 잠금 안에서 먼저 부른다. reuse(entries) 가 항목을
     돌려주면 쓰지 않고 그 항목을 돌려준다(이미 쓴 같은 항목. 끊긴 마지막 줄을 완결한 뒤에 보므로 LF 만 빠진 항목도 찾는다).
+    fill(oid) 가 있으면 잠금 안에서 정한 id 로 부른 결과(dict)를 fields 에 합쳐 쓴다(decide commands 의 `{id}`, 설계 8.10).
 
     ID 는 완결된 줄 수 + 1 이다. 앞 쓰기가 줄 중간에서 끊겼으면(쓰는 쪽은 늘 이 잠금을 쥐므로 잠금 안에서 본 LF 없는
     끝은 죽은 쓰기다) guard 보다 먼저 LF 를 써서 남긴다. 그래야 guard(중복 검사)와 잠금 없이 읽는 쪽이 같은 줄을 본다."""
@@ -177,7 +178,8 @@ def append(p, fields: dict, guard=None, reuse=None) -> dict:
             found = reuse(entries)
             if found is not None:
                 return found
-        entry = {"id": f"out-{count + 1:04d}", "at": now(), **fields, "answered": False}
+        oid = f"out-{count + 1:04d}"
+        entry = {"id": oid, "at": now(), **fields, **(fill(oid) if fill is not None else {}), "answered": False}
         _write(p, (json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8"))
     return entry
 
@@ -204,6 +206,17 @@ def unread(p) -> int:
 
 def answer_of(p, oid: str) -> dict | None:
     return read_json(p.answers / f"{oid}.json", None)
+
+
+def open_decide(p, st: dict) -> str | None:
+    """태스크의 열린 decide(설계 8.10): decide 가 있고 그 라운드가 지금 라운드이고 답 파일이 없으면 그 out id. 재확인과
+    start-ready 는 이 태스크를 건드리지 않는다."""
+    oid = st.get("decide")
+    if not oid or st.get("decide_round") != st.get("round"):
+        return None
+    if (p.answers / f"{oid}.json").exists():
+        return None
+    return oid
 
 
 def answer_strict(p, oid: str) -> dict | None:

@@ -9,7 +9,7 @@ import contextlib
 import os
 from typing import Iterator
 
-from . import compose, config, dispatch, gitio, plan, procs, queue, roles, specs, state
+from . import compose, config, dispatch, gitio, outbox, plan, procs, queue, roles, specs, state
 from .errors import CONFLICT, FAIL, USAGE, HteamError
 from .globs import any_overlap, within
 from .horch import Horch, failure
@@ -184,6 +184,9 @@ def _prepare_start(p, cfg, spec, choice, cli: dict, cap: Capacity | None = None,
             if st["status"] not in ("pending", "launch_failed"):
                 raise HteamError("bad_state", f"{tid} 는 {st['status']} 다(start 는 pending·launch_failed 에서)", CONFLICT,
                                  data={"status": st["status"]})
+            # start-ready 만: 후보를 고른 뒤 관제가 지금 라운드에 decide 를 올렸을 수 있다(설계 5.4). start T 는 보지 않는다
+            if cap is not None and (oid := outbox.open_decide(p, st)):
+                raise HteamError("decide_open", f"메인이 답하지 않은 decide {oid} 가 있다", CONFLICT)
             recovering = st["status"] == "launch_failed" and bool(st["rounds"])
             if recovering:
                 # 같은 라운드 복구: horch --task --retry 는 DB 에 저장된 사양으로 띄운다. 그래서 저장된 사양 파일·owns·
@@ -361,7 +364,7 @@ def dropped_hint(tid: str, gone: dict[str, list[str]]) -> str:
 
 
 WAIT_CODES = {"owns_locked": "lock", "planner_busy": "lock", "launching": "launching", "parallel_limit": "limit",
-              "deps_unmet": "deps", "decision_pending": "decision"}
+              "deps_unmet": "deps", "decision_pending": "decision", "decide_open": "decide"}
 
 
 def start_ready(p) -> dict:
@@ -382,6 +385,10 @@ def start_ready(p) -> dict:
         try:
             st = state.load(p, tid)
             if not st or st["status"] not in ("pending", "launch_failed"):
+                continue
+            oid = outbox.open_decide(p, st)  # 메인이 답하지 않은 지금 라운드의 decide 가 있으면 띄우지 않는다(설계 5.4)
+            if oid:
+                waiting.append({"task": tid, "reason": "decide", "detail": f"메인이 답하지 않은 decide {oid} 가 있다"})
                 continue
             try:
                 spec = specs.check(p, cfg, tid)
@@ -639,6 +646,7 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
         _start_gate(p, cfg, spec, check_deps=False)
     seen: dict = {}
     _close_round(p, h, tid, kill=True, check=allowed, seen=seen, nowait=nowait)
+    die_at("fix_closed")  # 테스트: 이전 라운드를 정리한 뒤 새 라운드를 쓰기 전에 죽는다(관제 fix 이어 하기, 설계 8.7)
     with _closing(p, tid, seen) as st:
         _check_locks(p, cfg, spec, owns)
         if not queue or follower:  # 결정 밖의 fix 는 끝나지 않은 결정이 고치는 태스크를 띄우지 않는다(결정 자신의 fix 는 queue 다)
@@ -672,6 +680,7 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
         st["round"] = rd["round"]
         st["owns"] = owns
         st["note"] = note
+        st.pop("drive_fix", None)  # 관제 fix 표시는 새 라운드를 쓰는 이 쓰기에서 지운다(설계 8.7)
         _begin(p, st, rd, text, "fix", previous=old, force_round=force_round, **_req(request))
     fixed, skipped = _queue_followers(p, followers, supplement, tid) if followers else ([], [])
     if queue or defer:  # 띄우지 않는다. start-ready 의 의존 검사가 선행이 다시 승인된 뒤에 띄운다(설계 11.4)
@@ -828,16 +837,17 @@ def _refuse_stale(p, cfg, tid: str) -> None:
                          data={"because": behind})
 
 
-def _live_error(tid: str, slot: dict, row: dict, horch_cmd: str) -> HteamError:
-    """살아 있는 워커 때문에 accept 하지 않는다. 힌트의 horch 명령은 그대로 실행할 수 있다(horch_cmd = Horch.cmd())."""
+def _live_error(tid: str, slot: dict, row: dict) -> HteamError:
+    """살아 있는 워커 때문에 accept 하지 않는다. 큐 결과로 메인에 가므로 힌트에 horch 명령을 넣지 않는다(메인은 horch 를
+    부르지 않는다, 설계 7.1·9.4)."""
     did = row["id"]
     if row["state"] == "launching":
         return HteamError("launching", f"{tid} 의 Dispatch {did}({slot['title']})가 아직 launching 이다", CONFLICT,
                           "끝난 뒤 다시 한다", data={"dispatch": did})
     return HteamError("worker_active", f"{tid} 의 Dispatch {did}({slot['title']})가 아직 active 다. 살아 있는 워커가 "
                       "파일을 고칠 수 있어 owns 잠금을 풀지 않는다", CONFLICT,
-                      f"워커를 끝낸 뒤 다시 한다: {horch_cmd} worker-abandon --dispatch {did} --kill 뒤 {horch_cmd} "
-                      f"worker-release --dispatch {did}. 태스크를 버리려면 {SHIM} drop {tid} --force", data={"dispatch": did})
+                      "사용자에게 그 워커 탭을 확인해 달라고 한다(살아 있는 워커가 끝나야 accept 한다). 태스크를 버리려면 "
+                      f"{SHIM} drop {tid} --force", data={"dispatch": did})
 
 
 def _held_for_accept(p, tid: str, decision: str | None) -> None:
@@ -880,7 +890,7 @@ def accept(p, tid: str, expect_round: int | None = None, decision: str | None = 
     for slot in _slots(st):
         for row in dispatch.slot_rows(rows, slot):
             if row["state"] in ("launching", "active"):
-                raise _live_error(tid, slot, row, h.cmd())
+                raise _live_error(tid, slot, row)
     warnings: list[str] = []
     slot = work_slot(st)
     cleaned = bool(slot.get("cleaned"))
