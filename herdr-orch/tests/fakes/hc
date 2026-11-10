@@ -79,6 +79,11 @@ def notice(kind, address, seq, data):
     return {"jsonrpc": "2.0", "method": "event", "params": {"type": kind, "terminal": address, "seq": seq, "data": data}}
 
 
+def heartbeat(seq):
+    """실제 hc events 의 heartbeat 알림 한 줄(2026-11-11 실환경 확인: 사건이 아니라 method 가 heartbeat 이고 params 는 seq 뿐)."""
+    return {"jsonrpc": "2.0", "method": "heartbeat", "params": {"seq": seq}}
+
+
 def handle(st, argv, lines=()):
     if not argv:
         return fail("usage", 2)
@@ -328,7 +333,7 @@ def events(args):
         burst = int(st.get("burst", {}).get(addr, 0)) if due else 0
         if burst:
             # 건너뛸 알림과 늦은 알림을 한 번에 쓴다(쓰기 하나라 그 사이에 끊기지 않는다)
-            out_lines += [notice("heartbeat", addr, 0, {}) for _ in range(burst)]
+            out_lines += [heartbeat(seq) for _ in range(burst)]
         for line in due:
             seq += 1
             line["params"]["seq"] = seq
@@ -341,7 +346,7 @@ def events(args):
             print(json.dumps(line), flush=True)
         if last is None and noise:
             # 잠금 밖에서 큰 묶음으로 쉬지 않고 쓴다. 파이프가 늘 차 있어 읽는 쪽에는 언제나 읽을 것이 있다
-            blob = "".join(json.dumps(notice("heartbeat", addr, 0, {})) + "\n" for _ in range(2000))
+            blob = "".join(json.dumps(heartbeat(seq)) + "\n" for _ in range(2000))
             until = time.monotonic() + noise
             while time.monotonic() < until:
                 sys.stdout.write(blob)

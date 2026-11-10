@@ -263,7 +263,8 @@ class HcioKeysEventsTest(HorchCase):
 
         turn, title = note("turn", {"state": "idle", "turn": 4}), note("title", {"title": "끝"})
         # 큰 묶음: 쓰는 쪽은 파이프가 차서 쓰는 중이다. 읽기 한 조각에는 heartbeat 만 있다
-        proc, stream = stream_of("\n".join([note("heartbeat", {})] * 3000 + [turn]) + "\n")
+        beat = json.dumps({"jsonrpc": "2.0", "method": "heartbeat", "params": {"seq": 0}})  # 실제 heartbeat 꼴
+        proc, stream = stream_of("\n".join([beat] * 3000 + [turn]) + "\n")
         self.assertTrue(select.select([proc.stdout], [], [], 10)[0], "쓰는 쪽이 아무것도 쓰지 않았다")
         self.assertIsNone(stream.read(0))
         self.assertEqual([(e["type"], e.get("turn")) for e in stream.drain()], [("turn", 4)])
@@ -318,7 +319,7 @@ class HcioKeysEventsTest(HorchCase):
             {"channel": None, "seq": 1, "terminals": [
                 {"address": "t9", "status": {"app": "codex", "state": "working"}, "turn": 7, "title": "x"},
                 {"address": "t12w", "status": {"app": "codex", "state": "done"}, "turn": 1, "title": "⠙ codexproj"}]},
-            note("heartbeat", {}),
+            {"jsonrpc": "2.0", "method": "heartbeat", "params": {"seq": 5708}},  # 실제 꼴(2026-11-11 실환경)
             note("status", {"records": {}, "reported": True, "status": {"app": "codex", "state": "idle"}}),
             "not json",
             [1, 2],
