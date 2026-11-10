@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import unittest
 from unittest import mock
 
@@ -223,6 +224,24 @@ class HcioKeysEventsTest(HorchCase):
             stream.close()
         self.assertTrue(stream.closed)
         self.assertIn(["events", "--json", "--terminal", "t3"], self.hc_calls())
+
+    def test_read_keeps_deadline_under_skipped_notices(self):
+        """건너뛸 알림(heartbeat)이 쉬지 않고 와 파이프가 늘 읽을 수 있어도 read 는 마감을 지킨다. read(0) 도 버퍼와 한 번의
+        비차단 읽기만 한다(Codex 커밋 리뷰 79bd058: 실제 Codex 는 작업 중 제목 사건을 0.1초마다 낸다)."""
+        self.add_terminal("t3", status="done", turn=2)
+        with self._hc_locked() as st:
+            st["noise"] = {"t3": 3.0}
+        stream = hcio.events("t3")
+        try:
+            self.assertEqual(stream.read(5)["type"], "snapshot")
+            for timeout in (0.05, 0):
+                with self.subTest(timeout=timeout):
+                    t0 = time.monotonic()
+                    self.assertIsNone(stream.read(timeout))
+                    self.assertLess(time.monotonic() - t0, 0.3)
+            self.assertFalse(stream.closed)  # 알림은 아직 이어진다
+        finally:
+            stream.close()
 
     def test_events_failure_ends_stream(self):
         self.add_terminal("t3", status="done", turn=2)

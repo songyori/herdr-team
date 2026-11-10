@@ -9,7 +9,8 @@ turn+1·idle 의 turn 알림(이름이 있으면 title 알림도)을 준다. key
 남긴다), "keys": [{terminal, keys}] 기록, "layout": {탭: [주소…]}(connect 의 doc 순서), "doc"(있으면 connect doc.get 결과의
 value 그대로). events 는 실제 hc 꼴이다: 처음 스냅숏 한 줄 {"channel", "seq", "terminals": [get 꼴]}, 그 뒤 0.05초마다
 상태를 보고 바뀐 것마다 JSON-RPC 알림 한 줄 {"jsonrpc", "method": "event", "params": {"type": status|turn|title, "terminal",
-"seq", "data"}}(FAKE_HC_EVENTS_MAX 초 뒤 끝). 구독은 "subscribers": {주소: [pid…]} 에 이름을 올린다."""
+"seq", "data"}}(FAKE_HC_EVENTS_MAX 초 뒤 끝). 구독은 "subscribers": {주소: [pid…]} 에 이름을 올린다.
+"noise": {주소: 초} 면 스냅숏 뒤 그 초 동안 heartbeat 알림을 쉬지 않고 낸다(건너뛸 알림이 이어지는 구독 흉내)."""
 import fcntl
 import json
 import os
@@ -309,6 +310,7 @@ def events(args):
             seq += 1
             out_lines.append({"channel": None, "seq": seq,
                               "terminals": [{"title": "", **{k: v for k, v in t.items() if k != "flags"}}]})
+            noise = float(st.get("noise", {}).get(addr, 0))
         else:
             if cur["status"] != last["status"]:
                 seq += 1
@@ -327,6 +329,13 @@ def events(args):
             out_lines.append(line)
         for line in out_lines:
             print(json.dumps(line), flush=True)
+        if last is None and noise:
+            # 잠금 밖에서 큰 묶음으로 쉬지 않고 쓴다. 파이프가 늘 차 있어 읽는 쪽에는 언제나 읽을 것이 있다
+            blob = "".join(json.dumps(notice("heartbeat", addr, 0, {})) + "\n" for _ in range(2000))
+            until = time.monotonic() + noise
+            while time.monotonic() < until:
+                sys.stdout.write(blob)
+                sys.stdout.flush()
         last = cur
         if time.monotonic() >= end:
             return 0

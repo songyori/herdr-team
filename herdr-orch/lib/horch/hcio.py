@@ -148,13 +148,20 @@ class EventStream:
         return None
 
     def read(self, timeout: float) -> dict | None:
-        """마감(초)까지 다음 사건. 없거나 EOF 면 None. 0 이면 기다리지 않고 이미 온 것만 본다(버퍼와 파이프)."""
+        """마감(초)까지 다음 사건. 없거나 EOF 면 None. 0 이면 버퍼와 한 번의 비차단 읽기만 본다.
+        반복마다 마감을 먼저 본다: 지났으면 버퍼의 줄만 보고 새로 읽지 않는다. 건너뛸 알림(heartbeat 등)이 쉬지 않고
+        들어와 파이프가 늘 읽을 수 있어도 마감을 지킨다(Codex 커밋 리뷰 79bd058)."""
         deadline = time.monotonic() + max(0.0, timeout)
+        first = True
         while True:
             event = self._next_event()
             if event is not None or self.closed:
                 return event
-            ready, _, _ = select.select([self._fd], [], [], max(0.0, deadline - time.monotonic()))
+            left = deadline - time.monotonic()
+            if left <= 0 and not first:
+                return None
+            first = False
+            ready, _, _ = select.select([self._fd], [], [], max(0.0, left))
             if not ready:
                 return None
             chunk = os.read(self._fd, 65536)
