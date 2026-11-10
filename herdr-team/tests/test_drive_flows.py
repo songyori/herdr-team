@@ -589,6 +589,33 @@ class FinishTest(FlowCase):
         self.assertEqual(len(self.items("question")), 1)  # 같은 식별값은 한 번
         self.assertEqual(self.done_items(), [])
 
+    def corrupt_state(self, tid):
+        """읽지 못하는 상태 파일(진행 중이었을 수 있는 태스크). all_states 는 건너뛴다."""
+        (self.state_dir / "tasks" / f"{tid}.json").write_text("{깨짐", encoding="utf-8")
+
+    def test_unreadable_state_holds_finish(self):
+        """손상된 상태 파일을 없는 태스크로 보지 않는다(엄격 읽기): 끝났는지 모르므로 done·전체 테스트를 하지 않는다."""
+        self.use_gate()
+        self.all_done()
+        self.corrupt_state("T-003")
+        self.d.finish_step()
+        self.assertEqual(self.done_items(), [])
+        self.spawn.assert_not_called()
+        self.assertFalse(self.finish().get("reported"))
+        self.assertRegex(self.log_lines()[-1], rf"^{LOCAL_ISO} 마무리 보류: 상태 파일을 읽을 수 없다: T-003\.json$")
+
+    def test_full_result_is_dropped_when_a_state_file_became_unreadable(self):
+        self.use_gate()
+        self.all_done()
+        self.d.finish_step()
+        self.assertEqual(self.finish()["final_ids"], ["T-001", "T-002"])
+        self.corrupt_state("T-003")  # 테스트 중 생긴 태스크의 상태 파일을 읽지 못한다
+        self.d.final_done(0, {"ok": True, "task": None, "kind": "full", "status": "passed", "exit": 0, "seconds": 1.0,
+                              "tail": "", "log": ".herdr-team/state/tests/logs/final-full-x.log"}, "")
+        self.assertEqual((self.done_items(), self.decides()), ([], []))
+        self.assertFalse(self.finish().get("reported"))
+        self.assertNotIn("final_ids", self.finish())
+
 
 class ConfirmTest(FlowCase):
     """[test] 확정 질문(설계 8.4 끝 문단, 5.7, 7.1 의 test-confirm)."""

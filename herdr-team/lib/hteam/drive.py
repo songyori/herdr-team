@@ -1289,9 +1289,14 @@ class Drive:
     # --- 마무리(8.4) ---
     def finish_step(self) -> None:
         """마무리(설계 8.4 의 1–7): 모든 태스크가 끝났고 판단을 기다리는 decide 가 없고 이 태스크 묶음으로 아직 알리지 않았으면,
-        묶음 밖 후속(전역 한 번) → 마지막 전체 테스트 자식(확정한 [test]) 또는 확정 질문 → done."""
+        묶음 밖 후속(전역 한 번) → 마지막 전체 테스트 자식(확정한 [test]) 또는 확정 질문 → done. 읽지 못하는 상태 파일이
+        있으면 끝났는지 모르므로 보류한다(손상을 없는 태스크로 보지 않는다)."""
         states = state.all_states(self.p)
         if not states or any(s["status"] not in state.CLOSED for s in states) or self.running("final"):
+            return
+        bad = state.unreadable_ids(self.p)
+        if bad:  # 읽히는 태스크가 모두 끝났을 때만 알린다(진행 중에는 재확인마다 같은 줄을 남기지 않는다)
+            self.log(f"마무리 보류: 상태 파일을 읽을 수 없다: {', '.join(self.p.state_path(t).name for t in bad)}")
             return
         if any(e.get("type") == "decide" and e.get("kind") in JUDGE_KINDS and not self._answered(e["id"])
                for e in outbox.read_outbox(self.p)):
@@ -1330,11 +1335,13 @@ class Drive:
 
     def final_done(self, code: int, out: dict, err: str) -> None:
         """마지막 전체 테스트 자식의 결과(설계 8.4 의 6). out 은 자식 stdout 의 마지막 JSON 객체({} 일 수 있다), err 는
-        stderr 글. 도는 동안 태스크가 바뀌었으면(끝나지 않은 태스크가 있거나 final_ids 와 다르다) 결과를 버린다."""
+        stderr 글. 도는 동안 태스크가 바뀌었으면(끝나지 않은 태스크나 읽지 못하는 상태 파일이 있거나 final_ids 와 다르다)
+        결과를 버린다."""
         states = state.all_states(self.p)
         ids = [s["id"] for s in states]
         fin = self._finish()
-        moved = any(s["status"] not in state.CLOSED for s in states) or fin.get("final_ids", ids) != ids
+        moved = (any(s["status"] not in state.CLOSED for s in states) or bool(state.unreadable_ids(self.p))
+                 or fin.get("final_ids", ids) != ids)
         if fin.pop("final_ids", None) is not None:
             self._write_finish(fin)
         if moved:
