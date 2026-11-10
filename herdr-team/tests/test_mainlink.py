@@ -5,7 +5,7 @@ import time
 import unittest
 from unittest import mock
 
-from tests.helpers import COORD, TeamCase
+from tests.helpers import DRIVE, TeamCase
 from hteam import outbox, state, testgate
 from hteam.errors import HteamError
 from hteam.paths import Project
@@ -66,7 +66,7 @@ class LinkCase(TeamCase):
         return out["id"]
 
     def run_messages(self):
-        code, out = self.horch("check", terminal=COORD)
+        code, out = self.horch("check", terminal=DRIVE)
         self.assertEqual(code, 0, out)
         return out["messages"]
 
@@ -103,7 +103,7 @@ class NotifyWatchTest(LinkCase):
         self.assertFalse((self.state_dir / "watch.pid").exists())
 
     def test_watch_orphaned_when_coordinator_ends(self):
-        self.update_terminal(COORD, state="finished")
+        self.update_terminal(DRIVE, state="finished")
         code, out = self.hteam("watch", as_="main", timeout=10)
         self.assertEqual((code, out["status"]), (0, "orphaned"))
 
@@ -289,7 +289,7 @@ class TestConfirmTest(LinkCase):
         self.assertEqual(entry["render"]["context"], "## 계획 핵심\n- 할 일 앱\n\n## 테스트 명령\n" + testgate.CONFIRM_LINE +
                          '\n```toml\nquick = "npx vitest related --run {files}"\nfull = "npx vitest run"\n'
                          "timeout_min = 30\nok_exit = [0]\nexclusive = false\n```")
-        code, out = self.hteam("answer", entry["id"], "localStorage (추천)", terminal=COORD, as_=None)
+        code, out = self.hteam("answer", entry["id"], "localStorage (추천)", terminal=DRIVE, as_=None)
         self.assertEqual(code, 5, out)  # 코디네이터 터미널은 답하지 못한다(기록도 없다)
         self.assertEqual(self.approvals()[0], [])
         code, out = self.hteam("answer", entry["id"], "localStorage (추천)", as_="main")
@@ -460,19 +460,19 @@ class MainOnlyTest(LinkCase):
 
     def test_coordinator_cannot_answer_own_question(self):
         oid = self.notify_q()
-        code, out = self.hteam("answer", oid, "x")  # 코디네이터 환경 + COORD 터미널
+        code, out = self.hteam("answer", oid, "x")  # 코디네이터 환경 + DRIVE 터미널
         self.assertEqual((code, out["error"]["code"]), (5, "not_main"), out)
         self.assertFalse((self.state_dir / "answers" / f"{oid}.json").exists())
         self.assertNotIn("main_terminals", self.run_json())
         self.assertEqual([q["id"] for q in outbox.open_questions(self.p)], [oid])
 
     def test_coordinator_terminal_or_role_refused(self):
-        code, out = self.hteam("tell", "a", as_=None, terminal=COORD)  # HTEAM_ROLE 없는 코디네이터 터미널
+        code, out = self.hteam("tell", "a", as_=None, terminal=DRIVE)  # HTEAM_ROLE 없는 코디네이터 터미널
         self.assertEqual((code, out["error"]["code"]), (5, "not_main"), out)
-        code, out = self.hteam("tell", "a", as_="main", env={"HTEAM_ROLE": "coordinator"})
+        code, out = self.hteam("tell", "a", as_="main", env={"HTEAM_ROLE": "drive"})
         self.assertEqual((code, out["error"]["code"]), (5, "not_main"), out)
         # bind 전(run.json 에 터미널이 아직 없음)의 코디네이터 터미널은 hteam up 이 붙인 hc 라벨로 가린다(설계 9.3)
-        self.add_terminal("t5", argv=["claude"], labels={"hteam.role": "coordinator"})
+        self.add_terminal("t5", argv=["claude"], labels={"hteam.role": "drive"})
         code, out = self.hteam("tell", "a", as_=None, terminal="t5")
         self.assertEqual((code, out["error"]["code"]), (5, "not_main"), out)
         self.assertNotIn("main_terminals", self.run_json())
@@ -765,7 +765,7 @@ class CallerTest(LinkCase):
         self.notify_q()
         code, out = self.hteam("watch", timeout=10)  # 코디네이터 환경
         self.assertEqual((code, out.get("error", {}).get("code")), (5, "not_main"), out)
-        code, out = self.hteam("watch", as_=None, terminal=COORD, timeout=10)
+        code, out = self.hteam("watch", as_=None, terminal=DRIVE, timeout=10)
         self.assertEqual((code, out.get("error", {}).get("code")), (5, "not_main"), out)
         code, out = self.hteam("reask")
         self.assertEqual((code, out.get("error", {}).get("code")), (5, "not_main"), out)
@@ -799,7 +799,7 @@ class ParentTest(LinkCase):
         self.add_terminal("t50", labels={"horch.run": "r", "horch.dispatch": "dsp-x"})
         self.child("t51", "t50")
         self.child("t52", "t51")
-        self.add_terminal("t60", labels={"hteam.role": "coordinator"})
+        self.add_terminal("t60", labels={"hteam.role": "drive"})
         self.child("t61", "t60")
         for term in ("t51", "t52", "t61"):
             code, out = self.tell_from(term)

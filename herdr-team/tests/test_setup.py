@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tests.helpers import BASE_CONFIG, COORD, HORCH_FAKES, MAIN, NONCE, ROOT, TeamCase
+from tests.helpers import BASE_CONFIG, DRIVE, HORCH_FAKES, MAIN, NONCE, ROOT, TeamCase
 from hteam import config
 from hteam.errors import HteamError
 from hteam.paths import Project
@@ -312,62 +312,6 @@ class SubdirUpgradeTest(UpgradeTest):
         self.scaffolded()
 
 
-class UpBindTest(TeamCase):
-    def setUp(self):
-        super().setUp()
-        self.init_project()
-        self.add_terminal(MAIN, argv=["claude"], labels={"herdr.space": "spA", "herdr.tab": "tbMain"}, status="idle")
-
-    def run_json(self):
-        return json.loads((self.state_dir / "run.json").read_text())
-
-    def test_up_launches_coordinator_then_bind(self):
-        code, out = self.hteam("up", as_="main")
-        self.assertEqual((code, out["status"]), (0, "launched"), out)
-        run = self.run_json()
-        nonce = run["pending_launch"]["nonce"]
-        term = self.hc_state()["terminals"][out["terminal"]]
-        self.assertEqual(term["argv"][:4], ["env", "HTEAM_ROLE=coordinator", f"HTEAM_LAUNCH={nonce}", "claude"])
-        self.assertEqual(term["argv"][-2:], ["--", "`.herdr-team/bin/hteam bind` 를 실행하고 `.herdr-team/coordinator.md` 를 따른다."])
-        self.assertIn("--keep", term["flags"])
-        self.assertEqual(term["labels"]["hteam.role"], "coordinator")
-        self.assertEqual(term["labels"]["herdr.tab"], run["team_tab"])
-        self.assertTrue(run["team_tab"].startswith("tb") and len(run["team_tab"]) == 34)
-        self.assertEqual((run["coordinator_terminal"], run["coordinator_argv"]), (out["terminal"], term["argv"]))
-        self.assertIn(["do", "tab.rename", "--id", run["team_tab"], "--name", "팀"], self.herdr_calls())
-        code, again = self.hteam("up", as_="main")
-        self.assertEqual((code, again["status"], again["launched"]), (0, "starting", False))
-        code, again = self.hteam("up", "--wait-run", "0.3", as_="main")
-        self.assertEqual((code, again["error"]["code"]), (4, "timeout"))
-        env = {"HTEAM_ROLE": "coordinator", "HTEAM_LAUNCH": nonce}
-        code, bound = self.hteam("bind", as_=None, terminal=out["terminal"], env=env)
-        self.assertEqual((code, bound["mode"], bound["owner_tab"]), (0, "create", run["team_tab"]), bound)
-        self.assertIn("--home", bound["horch"])
-        code, again = self.hteam("up", "--wait-run", "1", as_="main")
-        self.assertEqual((code, again["status"], again["run_id"]), (0, "alive", bound["run_id"]))
-
-    def test_bind_needs_nonce_and_takes_over_dead_owner(self):
-        run_id = self.setup_run()
-        code, out = self.hteam("bind", as_=None, terminal="t300", env={"HTEAM_ROLE": "coordinator", "HTEAM_LAUNCH": "x"})
-        self.assertEqual((code, out["error"]["code"]), (5, "not_coordinator"))
-        self.add_terminal("t300", argv=["claude"], labels={"herdr.space": "spA", "herdr.tab": "tbTeam"})
-        code, out = self.hteam("bind", terminal="t300")
-        self.assertEqual((code, out["error"]["code"]), (3, "horch_owner_alive"), out)
-        self.update_terminal(COORD, state="finished")
-        code, out = self.hteam("bind", terminal="t300")
-        self.assertEqual((code, out["mode"], out["run_id"], out["previous_owner"]), (0, "use", run_id, COORD), out)
-        self.assertEqual(self.run_json()["coordinator_terminal"], "t300")
-
-    def test_up_relaunches_dead_coordinator_and_needs_terminal(self):
-        self.setup_run()
-        self.update_terminal(COORD, state="finished")
-        code, out = self.hteam("up", as_=None)
-        self.assertEqual((code, out["error"]["code"]), (5, "no_terminal"))
-        code, out = self.hteam("up", as_="main")
-        self.assertEqual((code, out["status"]), (0, "launched"), out)
-        self.assertNotEqual(self.run_json()["pending_launch"]["nonce"], "nonce-test")
-
-
 class SkillTemplateTest(unittest.TestCase):
     def test_skills_and_templates(self):
         for name in ("init", "up"):
@@ -381,149 +325,6 @@ class SkillTemplateTest(unittest.TestCase):
         for needle in ("hteam bind", "hteam wait", "--ack <delivery>", "review-finish", "notify --type question",
                        "applied", "start-ready", "plan apply", "--force-round", "review T --retry"):
             self.assertIn(needle, coord)
-
-
-class UnverifiableCoordinatorTest(TeamCase):
-    def test_unverifiable_is_kept_then_force_and_bind_takes_over(self):
-        self.init_project()
-        run_id = self.setup_run()
-        with self._hc_locked() as hc:
-            del hc["terminals"][COORD]  # hc 가 터미널을 모른다: 끝났다고 단정할 수 없다(horch 와 같은 규칙)
-        code, out = self.hteam("up", as_="main")
-        self.assertEqual((code, out["error"]["code"]), (3, "coordinator_unverifiable"), out)
-        run = json.loads((self.state_dir / "run.json").read_text())
-        self.assertEqual((run["pending_launch"]["nonce"], run["coordinator_terminal"]), ("nonce-test", COORD))
-        code, out = self.hteam("up", "--force", as_="main")
-        self.assertEqual((code, out["status"]), (0, "launched"), out)
-        run = json.loads((self.state_dir / "run.json").read_text())
-        self.assertTrue(run["pending_launch"]["force"])
-        env = {"HTEAM_ROLE": "coordinator", "HTEAM_LAUNCH": run["pending_launch"]["nonce"]}
-        code, bound = self.hteam("bind", as_=None, terminal=out["terminal"], env=env)
-        self.assertEqual((code, bound["mode"], bound["run_id"]), (0, "use", run_id), bound)
-
-    def test_force_is_carried_until_bind(self):
-        self.init_project()
-        run_id = self.setup_run()
-        with self._hc_locked() as hc:
-            del hc["terminals"][COORD]
-        _, first = self.hteam("up", "--force", as_="main")
-        self.update_terminal(first["terminal"], state="finished")  # bind 전에 끝났다
-        code, out = self.hteam("up", as_="main")  # 이번 판정은 exited 지만 이전 소유자는 여전히 확인할 수 없다
-        self.assertEqual((code, out["status"]), (0, "launched"), out)
-        run = json.loads((self.state_dir / "run.json").read_text())
-        self.assertTrue(run["pending_launch"]["force"])
-        env = {"HTEAM_ROLE": "coordinator", "HTEAM_LAUNCH": run["pending_launch"]["nonce"]}
-        code, bound = self.hteam("bind", as_=None, terminal=out["terminal"], env=env)
-        self.assertEqual((code, bound["mode"], bound["run_id"]), (0, "use", run_id), bound)
-        self.assertEqual(self.hteam("up", as_="main")[1]["status"], "alive")
-        self.assertFalse(self.hteam("up", as_="main")[1]["launched"])
-
-
-# --- 아래는 계획 리뷰·앞 태스크 계약(코디네이터 생존·인계 승인·라벨·팀 탭·템플릿)을 더 좁게 확인한다 ---
-
-
-class CoordinatorContractTest(SetupCase):
-    def setUp(self):
-        super().setUp()
-        self.init_project()
-        self.run_id = self.setup_run()
-
-    def test_every_unverifiable_form_keeps_records_and_nonce(self):
-        """hc get 실패(not_found 포함)와 argv 없음은 모두 확인 불가다(horch liveness 와 같다). 기록·nonce 를 그대로 두고 exit 3."""
-        before = self.run_json()
-        cases = {
-            "not_found": (lambda hc: hc["terminals"].pop(COORD), None),
-            "argv_missing": (lambda hc: hc["terminals"][COORD].update(argv=None), None),
-            "get_failed": (lambda hc: None, self.wrap_env(WRAP_FAIL_GET=COORD)),  # 코디네이터 터미널의 hc get 만 실패
-            "not_live": (lambda hc: hc["terminals"][COORD].update(state="starting"), None),
-        }
-        for name, (breaks, env) in cases.items():
-            with self.subTest(name):
-                saved = self.hc_state()
-                with self._hc_locked() as hc:
-                    breaks(hc)
-                code, out = self.hteam("up", as_="main", env=env)
-                self.assertEqual((code, out["error"]["code"]), (3, "coordinator_unverifiable"), out)
-                self.assertEqual(self.run_json(), before)
-                self.assertFalse([c for c in self.hc_calls() if c[:1] == ["run"]])
-                self.set_hc_state(saved)
-
-    def test_alive_coordinator_is_never_relaunched_even_with_force(self):
-        for args in ((), ("--force",)):
-            code, out = self.hteam("up", *args, as_="main")
-            self.assertEqual((code, out["status"], out["launched"], out["terminal"]), (0, "alive", False, COORD), out)
-        self.assertFalse([c for c in self.hc_calls() if c[:1] == ["run"]])
-        self.assertNotIn("force", self.run_json()["pending_launch"])
-
-    def test_bind_without_force_refuses_unverifiable_owner(self):
-        """pending_launch.force 가 없으면 bind 는 run-use 에 --force 를 붙이지 않는다."""
-        with self._hc_locked() as hc:
-            del hc["terminals"][COORD]
-        self.add_terminal("t300", argv=["claude"], labels={"herdr.space": "spA", "herdr.tab": "tbTeam"})
-        code, out = self.hteam("bind", terminal="t300")
-        self.assertEqual((code, out["error"]["code"]), (3, "horch_owner_unverifiable"), out)
-        self.assertIn("up --force", out["error"]["hint"])
-        self.assertEqual(self.run_json()["coordinator_terminal"], COORD)
-
-    def test_force_is_not_reused_after_successful_bind(self):
-        """bind 가 성공하면 인계 승인은 끝난다: 같은 nonce 의 다음 bind 는 --force 없이 run-use 한다."""
-        with self._hc_locked() as hc:
-            del hc["terminals"][COORD]
-        code, first = self.hteam("up", "--force", as_="main")
-        self.assertEqual(code, 0, first)
-        nonce = self.run_json()["pending_launch"]["nonce"]
-        env = {"HTEAM_ROLE": "coordinator", "HTEAM_LAUNCH": nonce}
-        code, bound = self.hteam("bind", as_=None, terminal=first["terminal"], env=env)
-        self.assertEqual((code, bound["mode"]), (0, "use"), bound)
-        with self._hc_locked() as hc:
-            del hc["terminals"][first["terminal"]]  # 새 소유자도 확인할 수 없게 된다
-        self.add_terminal("t300", argv=["claude"], labels={"herdr.space": "spA", "herdr.tab": "tbTeam"})
-        code, out = self.hteam("bind", as_=None, terminal="t300", env=env)
-        self.assertEqual((code, out["error"]["code"]), (3, "horch_owner_unverifiable"), out)
-        code, out = self.hteam("up", as_="main")  # 다음 up 도 인계 승인을 이어 받지 않는다
-        self.assertEqual((code, out["error"]["code"]), (3, "coordinator_unverifiable"), out)
-
-    def test_relaunch_after_exit_is_not_forced(self):
-        self.update_terminal(COORD, state="finished")
-        code, out = self.hteam("up", as_="main")
-        self.assertEqual((code, out["status"]), (0, "launched"), out)
-        self.assertFalse(self.run_json()["pending_launch"]["force"])
-        self.update_terminal(out["terminal"], reason="stopped_by_restart")  # lost 도 확인된 끝이다(띄운 지 180초 안이어도)
-        code, again = self.hteam("up", as_="main")
-        self.assertEqual((code, again["status"]), (0, "launched"), again)
-        self.assertNotEqual(again["terminal"], out["terminal"])
-        self.assertFalse(self.run_json()["pending_launch"]["force"])
-
-    def test_launch_failure_restores_run_json(self):
-        """hc run 이 실패하면 pending_launch 를 되돌린다(새 코디네이터가 없는데 starting 으로 보이지 않게)."""
-        self.update_terminal(COORD, state="finished")
-        before = self.run_json()
-        self.fail_hc("run", "server_down")
-        code, out = self.hteam("up", as_="main")
-        self.assertEqual((code, out["error"]["code"]), (1, "hc_failed"), out)
-        self.assertEqual(self.run_json(), before)
-        with self._hc_locked() as hc:
-            hc["fail"].clear()
-        code, out = self.hteam("up", as_="main")
-        self.assertEqual((code, out["status"]), (0, "launched"), out)
-
-    def test_team_tab_label_and_hash(self):
-        import hashlib
-        from hteam import setup
-        self.update_terminal(COORD, state="finished")
-        code, out = self.hteam("up", as_="main")
-        self.assertEqual(code, 0, out)
-        run = self.run_json()
-        root = str(Project(self.proj).root)
-        expected = "tb" + hashlib.sha1(f"herdr-team\n{root}\nspA".encode("utf-8")).hexdigest()[:32]
-        self.assertEqual((run["team_tab"], setup.team_tab(Project(self.proj).root, "spA")), (expected, expected))
-        term = self.hc_state()["terminals"][out["terminal"]]
-        self.assertEqual(term["labels"], {"herdr.space": "spA", "herdr.tab": expected, "hteam.role": "coordinator"})
-        self.assertEqual(set(term["flags"]), {"--bg", "--no-parent", "--no-notify", "--keep"})
-        # 띄운 코디네이터 터미널은 bind 전에도 메인 명령(tell)을 거부당한다(라벨 hteam.role)
-        self.add_terminal("t400", argv=["sh"], labels={"hteam.role": "coordinator"})
-        code, out = self.hteam("tell", "안녕", as_=None, terminal="t400")
-        self.assertEqual((code, out["error"]["code"]), (5, "not_main"), out)
 
 
 class TemplateContractTest(unittest.TestCase):
@@ -690,133 +491,6 @@ class TemplateContractTest(unittest.TestCase):
 
 
 # --- 리뷰 지적(commit-2b52d76) 재현 ---
-
-
-class ReviewFixUpTest(SetupCase):
-    """up·bind: 손상 run.json, 실패 복원, 불명확한 실행, 호출자, bind 잠금, 동시 up."""
-
-    def setUp(self):
-        super().setUp()
-        self.init_project()
-        self.run_id = self.setup_run()
-
-    def test_unreadable_run_json_is_refused_without_changes(self):
-        self.update_terminal(COORD, state="finished")
-        for text in ("{broken", "[]"):
-            with self.subTest(text):
-                (self.state_dir / "run.json").write_text(text)
-                code, out = self.hteam("up", as_="main")
-                self.assertEqual((code, out["error"]["code"]), (1, "bad_run_file"), out)
-                code, out = self.hteam("bind")
-                self.assertEqual((code, out["error"]["code"]), (1, "bad_run_file"), out)
-                self.assertEqual((self.state_dir / "run.json").read_text(), text)
-        self.assertEqual(self.run_calls(), [])
-
-    def test_failed_launch_keeps_concurrent_main_terminals(self):
-        """hc run 이 확실히 실패하면 이번 up 이 바꾼 키만 되돌린다. 그사이 tell·answer 가 등록한 메인은 남는다."""
-        from hteam import outbox
-        self.update_terminal(COORD, state="finished")
-        before = self.run_json()
-        self.fail_hc("run", "usage")
-        gate, env = self.pause_env("up_before_hc_run", "up")
-        proc = self.hteam_bg("up", as_="main", env=env)
-        self.wait_reached(gate, proc)
-        with mock.patch.dict(os.environ, {"HC_TERMINAL_ID": "t2"}):
-            outbox.note_main(Project(self.proj))
-        gate.touch()
-        code, out = self.finish(proc)
-        self.assertEqual((code, out["error"]["code"]), (1, "hc_failed"), out)
-        run = self.run_json()
-        self.assertEqual(run.pop("main_terminals"), ["t2"])
-        self.assertEqual(run, before)
-
-    def test_launch_created_despite_structured_error_is_recorded(self):
-        self.update_terminal(COORD, state="finished")
-        with self._hc_locked() as hc:
-            hc["fail"]["run"] = {"kind": "server_down", "code": 1, "create": True}
-        code, out = self.hteam("up", as_="main")
-        self.assertEqual((code, out["status"]), (0, "launched"), out)
-        run = self.run_json()
-        term = self.hc_state()["terminals"][out["terminal"]]
-        self.assertEqual((run["coordinator_terminal"], run["coordinator_argv"]), (out["terminal"], term["argv"]))
-        self.assertEqual(term["argv"][2], f"HTEAM_LAUNCH={run['pending_launch']['nonce']}")
-
-    def test_launch_created_with_garbled_response_is_recorded(self):
-        self.update_terminal(COORD, state="finished")
-        code, out = self.hteam("up", as_="main", env=self.wrap_env(WRAP_MODE="created_garbled"))
-        self.assertEqual((code, out["status"]), (0, "launched"), out)
-        run = self.run_json()
-        self.assertEqual(run["coordinator_terminal"], out["terminal"])
-        self.assertEqual(self.hc_state()["terminals"][out["terminal"]]["argv"], run["coordinator_argv"])
-
-    def test_uncertain_launch_keeps_pending_nonce(self):
-        """응답이 없고 이름으로도 못 찾으면 떴는지 모른다: nonce 와 pending 을 남기고 exit 1. 다음 up 은 180초 규칙."""
-        self.update_terminal(COORD, state="finished")
-        before = self.run_json()
-        terms = set(self.hc_state()["terminals"])
-        code, out = self.hteam("up", as_="main", env=self.wrap_env(WRAP_MODE="lost"))
-        self.assertEqual((code, out["error"]["code"]), (1, "launch_uncertain"), out)
-        self.assertTrue(out["name"].startswith("hteam-coord-"), out)
-        run = self.run_json()
-        self.assertNotEqual(run["pending_launch"]["nonce"], before["pending_launch"]["nonce"])
-        self.assertNotIn("coordinator_terminal", run)
-        self.assertEqual((run["run_id"], run["bound_nonce"]), (before["run_id"], before["bound_nonce"]))
-        code, again = self.hteam("up", as_="main")
-        self.assertEqual((code, again["status"], again["launched"]), (0, "starting", False), again)
-        self.assertEqual(set(self.hc_state()["terminals"]), terms)
-
-    def test_up_refuses_non_main_callers(self):
-        self.update_terminal(COORD, state="finished")
-        before = (self.state_dir / "run.json").read_text()
-        self.add_terminal("t500", argv=["codex"], labels={"horch.dispatch": "dsp-x"})
-        for kwargs in ({"as_": "coordinator"}, {"as_": None, "terminal": "t500"}):
-            with self.subTest(kwargs):
-                code, out = self.hteam("up", "--force", **kwargs)
-                self.assertEqual((code, out["error"]["code"]), (5, "not_main"), out)
-        self.assertEqual((self.state_dir / "run.json").read_text(), before)
-        self.assertEqual(self.run_calls(), [])
-
-    def test_concurrent_up_is_raced(self):
-        self.update_terminal(COORD, state="finished")
-        gate, env = self.pause_env("up_before_pending", "first")
-        first = self.hteam_bg("up", as_="main", env=env)
-        self.wait_reached(gate, first)
-        code, out = self.hteam("up", as_="main")
-        self.assertEqual((code, out["status"]), (0, "launched"), out)
-        gate.touch()
-        code, raced = self.finish(first)
-        self.assertEqual((code, raced["error"]["code"]), (3, "launch_raced"), raced)
-        self.assertEqual(len(self.run_calls()), 1)
-        self.assertEqual(self.run_json()["coordinator_terminal"], out["terminal"])
-
-    def test_up_during_bind_cannot_change_nonce(self):
-        """bind 는 nonce 확인부터 run-use 와 기록까지 run.lock 을 쥔다. 그사이 up --force 는 bind 뒤에 판정이 바뀐 것을
-        보고(launch_raced) 띄우지 않는다."""
-        with self._hc_locked() as hc:
-            del hc["terminals"][COORD]  # up 의 판정은 unverifiable(--force 면 띄우려 한다)
-        bgate, benv = self.pause_env("bind_locked", "bind")
-        bind = self.hteam_bg("bind", env=benv)
-        self.wait_reached(bgate, bind)
-        ugate, uenv = self.pause_env("up_before_pending", "up")
-        up = self.hteam_bg("up", "--force", as_="main", env=uenv)
-        self.wait_reached(ugate, up)
-        ugate.touch()
-        time.sleep(0.3)  # up 이 run.lock 앞에서 기다린다
-        bgate.touch()
-        code, bound = self.finish(bind)
-        self.assertEqual((code, bound["mode"], bound["run_id"]), (0, "use", self.run_id), bound)
-        code, out = self.finish(up)
-        self.assertEqual((code, out["error"]["code"]), (3, "launch_raced"), out)
-        run = self.run_json()
-        self.assertEqual((run["pending_launch"]["nonce"], run["bound_nonce"], run["coordinator_terminal"]),
-                         (NONCE, NONCE, COORD))
-        self.assertEqual(self.run_calls(), [])
-
-    def test_bind_owner_alive_hint(self):
-        self.add_terminal("t300", argv=["claude"], labels={"herdr.space": "spA", "herdr.tab": "tbTeam"})
-        code, out = self.hteam("bind", terminal="t300")
-        self.assertEqual((code, out["error"]["code"]), (3, "horch_owner_alive"), out)
-        self.assertIn("hteam up", out["error"]["hint"])
 
 
 class ReviewFixScaffoldTest(SetupCase):
@@ -1000,35 +674,6 @@ class ReviewFix2Test(SetupCase):
                 self.assertEqual((code, ".gitignore" in out["created"]), (0, appended), out)
                 self.git("check-ignore", "-q", ".herdr-team/state/plugin-root")
 
-    def test_uncertain_launch_waits_for_bind(self):
-        """응답을 잃었어도 --wait-run 동안 그 nonce 로 bind 하면 성공이다(탭 이름도 붙인다). bind 가 기록한 argv 는 덮지 않는다."""
-        self.update_terminal(COORD, state="finished")
-        old = self.run_json()["pending_launch"]["nonce"]
-        proc = self.hteam_bg("up", "--wait-run", "20", as_="main", env=self.wrap_env(WRAP_MODE="lost"))
-        deadline = time.monotonic() + 30
-        while self.run_json()["pending_launch"]["nonce"] == old:
-            self.assertIsNone(proc.poll(), "up 이 pending_launch 를 쓰기 전에 끝났다")
-            self.assertLess(time.monotonic(), deadline)
-            time.sleep(0.02)
-        run = self.run_json()
-        self.add_terminal("t300", argv=["claude"], labels={"herdr.space": "spA", "herdr.tab": run["team_tab"]})
-        env = {"HTEAM_ROLE": "coordinator", "HTEAM_LAUNCH": run["pending_launch"]["nonce"]}
-        code, bound = self.hteam("bind", as_=None, terminal="t300", env=env)
-        self.assertEqual(code, 0, bound)
-        code, out = self.finish(proc)
-        self.assertEqual((code, out.get("status"), out.get("terminal"), out.get("run_id"), out.get("recovered")),
-                         (0, "launched", "t300", self.run_id, True), out)
-        self.assertIn(["do", "tab.rename", "--id", run["team_tab"], "--name", "팀"], self.herdr_calls())
-        self.assertEqual((self.run_json()["coordinator_terminal"], self.run_json()["coordinator_argv"]), ("t300", ["claude"]))
-
-    def test_non_object_run_json_in_role_check(self):
-        (self.state_dir / "run.json").write_text("[]")
-        code, out = self.hteam("notify", "--type", "progress", "--body", "x")  # require_coordinator → coordinator_env
-        self.assertEqual((code, out["error"]["code"]), (1, "bad_run_file"), out)
-        self.setup_run()
-        code, out = self.hteam("notify", "--type", "progress", "--body", "x", env={"HTEAM_LAUNCH": "other"})
-        self.assertEqual((code, out["error"]["code"]), (5, "not_coordinator"), out)
-
     def test_watch_reports_bad_run_file(self):
         proc = self.hteam_bg("watch", as_="main", env={"HTEAM_ORPHAN_CHECK": "0.1"})
         deadline = time.monotonic() + 30
@@ -1050,3 +695,192 @@ class ReviewFix2Test(SetupCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+from tests.helpers import DRIVE_ARGV  # noqa: E402  (6단계 관제 실행 시험, 설계 9.3)
+
+
+class UpDriveTest(SetupCase):
+    """hteam up 이 관제(hteam drive)를 띄운다(설계 9.3, 6단계). 관제 생존은 drive.pid·heartbeat 로 본다(8.2)."""
+
+    def setUp(self):
+        super().setUp()
+        self.init_project()
+        self.run_id = self.setup_run()
+
+    def kill_drive(self):
+        (self.drive_dir / "drive.pid").unlink()
+
+    def bind(self, nonce: str, terminal: str | None = None) -> None:
+        """띄운 관제가 Run 에 묶인 것처럼 run.json 을 쓰고 생존 파일을 남긴다(관제 시작 순서 4, 설계 8.2)."""
+        run = self.run_json()
+        run.update(run_id=self.run_id, bound_nonce=nonce, bound_at="2026-11-10T00:00:00Z")
+        if terminal:
+            run.update(drive_terminal=terminal, drive_argv=DRIVE_ARGV)
+        run.pop("launched_at", None)
+        (self.state_dir / "run.json").write_text(json.dumps(run))
+        self.write_drive_pid()
+        self.write_heartbeat()
+
+    def test_running_drive_is_left_alone(self):
+        code, out = self.hteam("up", as_="main")
+        self.assertEqual((code, out["status"], out["launched"], out["terminal"]), (0, "running", False, DRIVE), out)
+        code, out = self.hteam("up", "--wait-run", "1", as_="main")
+        self.assertEqual((code, out["status"], out["run_id"]), (0, "running", self.run_id), out)
+        self.assertEqual(self.run_calls(), [])
+
+    def test_hung_drive_is_not_relaunched(self):
+        self.write_heartbeat(age_s=200)
+        code, out = self.hteam("up", as_="main")
+        self.assertEqual((code, out["status"], out["launched"]), (0, "hung", False), out)
+        self.assertEqual(out["message"], "관제 프로세스가 살아 있지만 응답이 없다. 관제 탭을 확인한다")
+        self.assertEqual(self.run_calls(), [])
+
+    def test_up_launches_drive_then_starting_then_running(self):
+        import hashlib
+        self.kill_drive()
+        code, out = self.hteam("up", as_="main")
+        self.assertEqual((code, out["status"], out["launched"]), (0, "launched", True), out)
+        run = self.run_json()
+        nonce = run["pending_launch"]["nonce"]
+        self.assertNotEqual(nonce, NONCE)
+        self.assertNotIn("force", run["pending_launch"])
+        term = self.hc_state()["terminals"][out["terminal"]]
+        root = str(Project(self.proj).root)
+        tab = "tb" + hashlib.sha1(f"herdr-team\n{root}\nspA".encode("utf-8")).hexdigest()[:32]
+        self.assertEqual(term["argv"], ["env", "HTEAM_ROLE=drive", f"HTEAM_LAUNCH={nonce}", sys.executable,
+                                        str(ROOT / "bin" / "hteam"), "--root", root, "drive"])
+        self.assertEqual(set(term["flags"]), {"--bg", "--no-parent", "--no-notify", "--keep"})
+        self.assertEqual(term["labels"], {"herdr.space": "spA", "herdr.tab": tab, "hteam.role": "drive"})
+        self.assertRegex(term["name"], r"^hteam-drive-[0-9a-f]{6}$")
+        self.assertEqual((run["drive_terminal"], run["drive_argv"], run["team_tab"], run["team_space"]),
+                         (out["terminal"], term["argv"], tab, "spA"))
+        self.assertEqual((out["team_tab"], out["terminal"]), (tab, run["drive_terminal"]))
+        self.assertIn("launched_at", run)
+        self.assertFalse([c for c in self.herdr_calls() if c[:2] == ["do", "tab.rename"]])  # 탭 이름은 관제가 붙인다(8.2 의 5)
+        code, again = self.hteam("up", as_="main")
+        self.assertEqual((code, again["status"], again["launched"]), (0, "starting", False), again)
+        self.assertEqual(again["message"], "관제가 아직 시작 중이다(180초 안에 다시 띄우지 않는다). hteam status 로 확인한다")
+        code, again = self.hteam("up", "--wait-run", "0.3", as_="main")
+        self.assertEqual((code, again["error"]["code"]), (4, "timeout"), again)
+        self.assertEqual(again["error"]["message"], "관제가 0.3초 안에 Run 을 만들지 않았다. 관제 탭(herdr-team 관제)을 확인한다")
+        self.bind(nonce)
+        code, again = self.hteam("up", "--wait-run", "1", as_="main")
+        self.assertEqual((code, again["status"], again["run_id"]), (0, "running", self.run_id), again)
+        self.assertEqual(len(self.run_calls()), 1)
+
+    def test_bound_drive_that_died_is_relaunched_at_once(self):
+        # Run 에 묶인 뒤 죽은 관제는 시작 유예 없이 다시 띄운다(띄운 지 180초 안이어도). 새로 띄운 관제가 아직 묶이지
+        # 않았으면 180초 동안 starting
+        run = self.run_json()
+        run["pending_launch"]["at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        (self.state_dir / "run.json").write_text(json.dumps(run))
+        self.kill_drive()
+        self.assertEqual(self.hteam("up", as_="main")[1]["status"], "launched")
+        self.assertEqual(self.hteam("up", as_="main")[1]["status"], "starting")
+        self.assertEqual(len(self.run_calls()), 1)
+
+    def test_old_config_refuses_up(self):
+        (self.team / "config.toml").write_text(BASE_CONFIG + '\n[coordinator]\nmodel = "opus"\n', encoding="utf-8")
+        self.kill_drive()
+        code, out = self.hteam("up", as_="main")
+        self.assertEqual((code, out["error"]["code"], out["errors"]), (2, "bad_config", [config.OLD_CONFIG_MESSAGE]), out)
+        self.assertEqual(self.run_calls(), [])
+
+    def test_up_refuses_non_main_callers_and_bad_run_file(self):
+        self.kill_drive()
+        before = (self.state_dir / "run.json").read_text()
+        self.add_terminal("t500", argv=["codex"], labels={"horch.dispatch": "dsp-x"})
+        for kwargs in ({"as_": "drive"}, {"as_": None, "terminal": "t500"}, {"as_": None, "terminal": DRIVE}):
+            with self.subTest(kwargs=kwargs):
+                code, out = self.hteam("up", **kwargs)
+                self.assertEqual((code, out["error"]["code"]), (5, "not_main"), out)
+        self.assertEqual((self.state_dir / "run.json").read_text(), before)
+        for text in ("{broken", "[]"):
+            with self.subTest(text=text):
+                (self.state_dir / "run.json").write_text(text)
+                code, out = self.hteam("up", as_="main")
+                self.assertEqual((code, out["error"]["code"]), (1, "bad_run_file"), out)
+                self.assertEqual((self.state_dir / "run.json").read_text(), text)
+        self.assertEqual(self.run_calls(), [])
+
+    def test_launch_failure_restores_run_json(self):
+        self.kill_drive()
+        before = self.run_json()
+        self.fail_hc("run", "server_down")
+        code, out = self.hteam("up", as_="main")
+        self.assertEqual((code, out["error"]["code"]), (1, "hc_failed"), out)
+        self.assertEqual(self.run_json(), before)
+        with self._hc_locked() as hc:
+            hc["fail"].clear()
+        code, out = self.hteam("up", as_="main")
+        self.assertEqual((code, out["status"]), (0, "launched"), out)
+
+    def test_launch_created_despite_error_or_garbled_response_is_recorded(self):
+        self.kill_drive()
+        with self._hc_locked() as hc:
+            hc["fail"]["run"] = {"kind": "server_down", "code": 1, "create": True}
+        code, out = self.hteam("up", as_="main")
+        self.assertEqual((code, out["status"], out.get("recovered")), (0, "launched", True), out)
+        run = self.run_json()
+        term = self.hc_state()["terminals"][out["terminal"]]
+        self.assertEqual((run["drive_terminal"], run["drive_argv"]), (out["terminal"], term["argv"]))
+        self.assertEqual(term["argv"][2], f"HTEAM_LAUNCH={run['pending_launch']['nonce']}")
+        with self._hc_locked() as hc:
+            hc["fail"].clear()
+        self.set_run_old_launch()
+        code, out = self.hteam("up", as_="main", env=self.wrap_env(WRAP_MODE="created_garbled"))
+        self.assertEqual((code, out["status"]), (0, "launched"), out)
+        run = self.run_json()
+        self.assertEqual(self.hc_state()["terminals"][out["terminal"]]["argv"], run["drive_argv"])
+
+    def set_run_old_launch(self) -> None:
+        """앞서 띄운 관제가 시작 유예(180초)를 넘기고도 묶이지 않고 죽었다."""
+        run = self.run_json()
+        run["launched_at"] = "2026-01-01T00:00:00Z"
+        run["pending_launch"]["at"] = "2026-01-01T00:00:00Z"
+        (self.state_dir / "run.json").write_text(json.dumps(run))
+
+    def test_uncertain_launch_keeps_pending_nonce(self):
+        self.kill_drive()
+        before = self.run_json()
+        terms = set(self.hc_state()["terminals"])
+        code, out = self.hteam("up", as_="main", env=self.wrap_env(WRAP_MODE="lost"))
+        self.assertEqual((code, out["error"]["code"]), (1, "launch_uncertain"), out)
+        self.assertRegex(out["name"], r"^hteam-drive-[0-9a-f]{6}$")
+        run = self.run_json()
+        self.assertNotEqual(run["pending_launch"]["nonce"], before["pending_launch"]["nonce"])
+        self.assertNotIn("drive_terminal", run)
+        self.assertEqual((run["run_id"], run["bound_nonce"]), (before["run_id"], before["bound_nonce"]))
+        code, again = self.hteam("up", as_="main")
+        self.assertEqual((code, again["status"], again["launched"]), (0, "starting", False), again)
+        self.assertEqual(set(self.hc_state()["terminals"]), terms)
+
+    def test_uncertain_launch_waits_for_the_drive_to_bind(self):
+        self.kill_drive()
+        old = self.run_json()["pending_launch"]["nonce"]
+        proc = self.hteam_bg("up", "--wait-run", "20", as_="main", env=self.wrap_env(WRAP_MODE="lost"))
+        deadline = time.monotonic() + 30
+        while self.run_json()["pending_launch"]["nonce"] == old:
+            self.assertIsNone(proc.poll(), "up 이 pending_launch 를 쓰기 전에 끝났다")
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.02)
+        self.add_terminal("t300", argv=DRIVE_ARGV, labels={"herdr.space": "spA", "herdr.tab": "tbTeam"})
+        self.bind(self.run_json()["pending_launch"]["nonce"], terminal="t300")
+        code, out = self.finish(proc)
+        self.assertEqual((code, out.get("status"), out.get("terminal"), out.get("run_id"), out.get("recovered")),
+                         (0, "launched", "t300", self.run_id, True), out)
+        self.assertEqual((self.run_json()["drive_terminal"], self.run_json()["drive_argv"]), ("t300", DRIVE_ARGV))
+
+    def test_concurrent_up_is_raced(self):
+        self.kill_drive()
+        gate, env = self.pause_env("up_before_pending", "first")
+        first = self.hteam_bg("up", as_="main", env=env)
+        self.wait_reached(gate, first)
+        code, out = self.hteam("up", as_="main")
+        self.assertEqual((code, out["status"]), (0, "launched"), out)
+        gate.touch()
+        code, raced = self.finish(first)
+        self.assertEqual((code, raced["error"]["code"]), (3, "launch_raced"), raced)
+        self.assertEqual(len(self.run_calls()), 1)
+        self.assertEqual(self.run_json()["drive_terminal"], out["terminal"])

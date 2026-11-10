@@ -203,7 +203,7 @@ class DesignReviewTest(ApprovalCase):
         code, out = self.review()
         self.assertEqual((code, out["error"]["code"]), (3, "nothing_to_approve"), out)
         code, out = self.review(as_="main")
-        self.assertEqual((code, out["error"]["code"]), (5, "not_coordinator"), out)
+        self.assertEqual((code, out["error"]["code"]), (5, "drive_only"), out)
         (self.team / "config.toml").write_text(BASE_CONFIG, encoding="utf-8")
         code, out = self.review()
         self.assertEqual((code, out["error"]["code"]), (2, "no_approval_roles"), out)
@@ -612,7 +612,7 @@ class ApprovalDecisionTest(DecisionCase):
         code, out = self.decide("out-0009", {})
         self.assertEqual((code, out["error"]["code"]), (2, "unknown_batch"), out)
         code, out = self.decide("out-0001", {}, as_="main")
-        self.assertEqual((code, out["error"]["code"]), (5, "not_coordinator"), out)
+        self.assertEqual((code, out["error"]["code"]), (5, "drive_only"), out)
         self.assertNotIn("decision", self.record()["batches"][0])
 
     def test_corrupt_applied_record_stops_before_deciding(self):

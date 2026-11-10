@@ -5,7 +5,7 @@ import json
 import re
 import time
 
-from . import approval, config, dispatch, herdr, outbox, roles, state, tasks, testgate
+from . import approval, config, dispatch, drive, outbox, roles, state, tasks, testgate
 from .errors import USAGE, HteamError
 from .horch import Horch
 from .paths import SHIM, find_project
@@ -14,7 +14,6 @@ from .util import age_seconds, env_float, flock, read_json, write_json
 # answer 가 보내는 답 제목(`[main] reply <out-id>`) 그대로일 때만 답이다(fullmatch). tell 은 첫 줄이 reply 로 시작하면
 # `지시: ` 를 붙이므로(`[main] 지시: reply out-0001 …`) 답으로 읽히지 않는다
 MAIN_REPLY_RE = re.compile(r"\[main\] reply (out-\d+)")
-STARTING_S = 180  # 띄운 지 이 시간 안이면 starting(설계 9.3)
 LIVE = ("launching", "active")
 CANCELED_HINT = "앞선 fix·drop 이 끝나지 않았다(실행 키가 취소됐다). 같은 명령을 다시 한다"
 # horch.workers._attention 이 내는 값 가운데 실제 상태 보고를 본 것이 아닌 상태: 시작 전·확인 불가·워커가 죽음.
@@ -110,7 +109,7 @@ def _body(m: dict) -> dict:
 def _main_sender(p, m: dict, rows: list[dict] | None) -> str | None:
     """`[main]` 글이 메인이 보낸 것인가(설계 8.2). 메인이면 None, 아니면 그 까닭.
 
-    발신자가 external:<터미널> 이고 그 터미널이 main_terminals 에 있어야 한다. 그래도 코디네이터 터미널이나 이 Run 의
+    발신자가 external:<터미널> 이고 그 터미널이 main_terminals 에 있어야 한다. 그래도 관제 터미널이나 이 Run 의
     워커 터미널(지난 Dispatch 포함. done 뒤의 워커는 horch 가 external 로 적는다)이면 메인이 아니다. worker-list 를
     읽지 못해 확인할 수 없으면 메인으로 보지 않는다."""
     if m.get("dispatch"):
@@ -122,8 +121,8 @@ def _main_sender(p, m: dict, rows: list[dict] | None) -> str | None:
     run = _run(p)
     if term not in (run.get("main_terminals") or []):
         return f"{term} 은 tell·answer 가 기록한 메인 터미널이 아니다"
-    if term == run.get("coordinator_terminal"):
-        return f"{term} 은 코디네이터 터미널이다"
+    if term == run.get("drive_terminal"):
+        return f"{term} 은 관제 터미널이다"
     if rows is None:
         return "worker-list 를 읽지 못해 워커 터미널이 아닌지 확인하지 못했다"
     if any(r.get("terminal") == term for r in rows):
@@ -573,18 +572,6 @@ def _awaiting(cfg, st: dict, appr: dict | None) -> tuple[list[str] | None, str |
     return H("design-review"), None
 
 
-def coordinator_view(p, run: dict | None = None) -> dict:
-    run = _run(p) if run is None else run
-    term = run.get("coordinator_terminal")
-    verdict = herdr.probe(term, run.get("coordinator_argv")) if term else None
-    launched = age_seconds(run.get("launched_at") or (run.get("pending_launch") or {}).get("at"))
-    starting = launched is not None and launched < STARTING_S and (verdict in (None, "live", "unverifiable"))
-    return {"terminal": term, "verdict": verdict, "alive": verdict == "live",
-            "starting": bool(starting and (not run.get("run_id") or run.get("bound_nonce") !=
-                                           (run.get("pending_launch") or {}).get("nonce"))),
-            "run_id": run.get("run_id"), "team_tab": run.get("team_tab")}
-
-
 def _question(q: dict) -> dict:
     """열린 질문 요약. 답을 남겼지만 보내지 못한 것(unsent)은 다시 보내라는 hint 를 그대로 둔다."""
     item = {"id": q["id"], "type": q["type"], "from": q.get("from")}
@@ -646,7 +633,7 @@ def status(p) -> dict:
     except HteamError as exc:  # 손상된 run.json 을 없는 것처럼 숨기지 않는다(up·tell 은 bad_run_file 로 거부한다)
         run_error = exc.message
     out = {"tasks": items, "config_error": config_error, "run_error": run_error, "horch_error": horch_error,
-           "horch": horch_cmd, "coordinator": coordinator_view(p, run), "watch_alive": outbox.watch_alive(p),
+           "horch": horch_cmd, "drive": drive.view(p, run), "watch_alive": outbox.watch_alive(p),
            "open_questions": questions, "unread_outbox": outbox.unread(p), "test_gate": testgate.gate_state(p)}
     if warnings:
         out["warnings"] = warnings
@@ -655,7 +642,7 @@ def status(p) -> dict:
 
 def _cmd_wait(args) -> dict:
     p = find_project(args.root)
-    roles.require_coordinator(p)
+    roles.require_drive(p)
     return wait(p, args.ack, args.timeout)
 
 

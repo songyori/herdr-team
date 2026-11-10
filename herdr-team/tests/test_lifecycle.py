@@ -44,7 +44,7 @@ class LifeCase(TeamCase):
     @contextlib.contextmanager
     def in_process(self):
         """hteam 을 이 프로세스에서 부른다(경합 지점에 끼어들려고). horch 는 테스트 환경을 물려받는다."""
-        with mock.patch.dict(os.environ, self._env("coordinator", None, None), clear=True):
+        with mock.patch.dict(os.environ, self._env("drive", None, None), clear=True):
             yield
 
     def paused(self, point: str, *args: str):

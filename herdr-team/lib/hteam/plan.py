@@ -470,7 +470,7 @@ def _cmd_check(args) -> dict:
 
 def _cmd_apply(args) -> dict:
     p = find_project(args.root)
-    roles.require_coordinator(p)
+    roles.require_drive(p)
     return apply(p, config.load(p), args.append)
 
 

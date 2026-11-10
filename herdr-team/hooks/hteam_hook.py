@@ -27,7 +27,7 @@ SETUP_PREFIXES = (".herdr-team/", ".claude/", "docs/superpowers/")
 SETUP_FILES = {"CLAUDE.md", "AGENTS.md", ".gitignore"}
 STATE_DIR = ".herdr-team/state"
 SESSION_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-# 캐시하는 역할. 코디네이터는 캐시하지 않는다(늘 환경 변수와 nonce 로 본다)
+# 캐시하는 역할. 관제 환경은 캐시하지 않는다(늘 환경 변수와 run.json 으로 본다)
 CACHED_RE = re.compile(r"^(main|reviewer|worker(:[a-z][a-z0-9-]*)?)$")
 NOISE_RE = re.compile(r"[\s#*_>|\-`]+")
 FINGERPRINT = 80  # 정규화한 render.context 앞 80자가 메인 텍스트에 있으면 보여 준 것으로 본다
@@ -76,18 +76,19 @@ def _session(payload: dict) -> str | None:
 
 
 def role_of(p, payload: dict, *, fresh: bool = False) -> str:
-    """코디네이터 환경 → 캐시 → 판별. 확실할 때만 state/sessions/<session id> 에 캐시한다.
+    """관제 환경 → 캐시 → 판별. 확실할 때만 state/sessions/<session id> 에 캐시한다.
 
-    fresh(SessionStart): 캐시를 믿지 않고 지운 뒤 다시 판별한다. `claude --continue`·`--resume` 은 session id 를 그대로
-    이어 쓰므로 다른 터미널(워커 등)에서 쓰던 캐시가 남아 있을 수 있다. run.json 을 읽지 못해 코디네이터인지 확인할 수
-    없으면 오류를 남기고 모름(unknown)으로 둔다."""
+    관제는 Claude 세션이 아니다(설계 9.4): 관제 환경(HTEAM_ROLE=drive 이고 run.json 의 drive_terminal)의 세션은 모름
+    (unknown)이다. fresh(SessionStart): 캐시를 믿지 않고 지운 뒤 다시 판별한다. `claude --continue`·`--resume` 은 session id
+    를 그대로 이어 쓰므로 다른 터미널(워커 등)에서 쓰던 캐시가 남아 있을 수 있다. run.json 을 읽지 못해 관제 환경인지 확인할
+    수 없으면 오류를 남기고 모름(unknown)으로 둔다."""
     sid = _session(payload)
     cache = p.sessions / sid if sid else None
     if fresh and cache is not None:
         cache.unlink(missing_ok=True)
     try:
-        if roles.coordinator_env(p):
-            return "coordinator"
+        if roles.drive_env(p):
+            return "unknown"
     except HteamError as exc:
         log_error(p.root, f"역할 판별: {exc.code}: {exc.message}")
         return "unknown"
@@ -297,9 +298,6 @@ def guard(p, payload: dict):
     if tool == "AskUserQuestion":
         if role == "main":
             return context_guard(p, payload, tool_input)
-        if role == "coordinator":
-            return deny("코디네이터는 사용자에게 직접 묻지 않는다. 질문 JSON(render)을 "
-                        f"`{SHIM} notify --type question --json -` 의 표준 입력으로 메인에 올린다(coordinator.md \"메인에 묻기\").")
         if role in ("worker:planner", "worker:director"):
             return deny("기획·디렉터 워커는 AskUserQuestion 을 쓰지 않는다. 질문 JSON 을 "
                         f"`{SHIM} ask-user --task T-xxx --json -` 의 표준 입력으로 보낸다(직무 문서, Bash timeout 600000).")
@@ -313,12 +311,8 @@ def guard(p, payload: dict):
         kind, real, rel = where(p, raw, _cwd(payload))
         if kind != "unknown" and _in_state(p, real, rel):
             return deny("`.herdr-team/state/` 는 hteam 이 관리한다. 직접 고치지 않는다. 복구는 `hteam status` 의 next 를 따른다.")
-        in_team = kind != "unknown" and _below(real, p.team) is not None
-        if role == "coordinator" and not in_team:
-            shown = rel if kind == "inside" else repr(raw)
-            return deny(f"코디네이터는 `.herdr-team/` 밖({shown})을 고치지 않는다. 프로젝트 밖과 풀 수 없는 경로도 같다. "
-                        "`hteam task new` 로 워커에게 맡긴다.")
         if role == "main":
+            in_team = kind != "unknown" and _below(real, p.team) is not None
             if kind == "unknown":  # setup-mode 에서도 거부한다
                 return deny(f"경로를 확인할 수 없다({raw!r}). 메인은 풀 수 없는 경로를 고치지 않는다.")
             # 프로젝트 밖(스크래치 파일 등)은 이 프로젝트의 제품 파일이 아니므로 막지 않는다
@@ -336,7 +330,7 @@ def guard(p, payload: dict):
 
 
 def auto_up(p, force: bool) -> str | None:
-    """코디네이터 자동 부활 확인(설계 9.5). 메인 세션에서만 부른다. Herdr 터미널 밖($HC_TERMINAL_ID 없음)이면 하지 않는다
+    """관제 자동 부활 확인(설계 9.5). 메인 세션에서만 부른다. Herdr 터미널 밖($HC_TERMINAL_ID 없음)이면 하지 않는다
     (up 이 exit 5 다). autoup 은 이 두 훅에서만 늦게 가져온다(guard 훅은 도구 호출마다 돈다). 예외는 막지 않고 라벨
     auto-up 으로 hook-errors.log 에 남긴다."""
     if not os.environ.get("HC_TERMINAL_ID", "").strip():
@@ -357,10 +351,11 @@ def session_start(p, payload: dict):
     notice = auto_up(p, force=True)
     lines = ["herdr-team 프로젝트다. 너는 메인이다(사용자와 대화하는 세션). 첫 지시가 코디네이터나 워커 지시면 이 안내를 무시한다.",
              f"- {notice}" if notice else
-             "- 코디네이터는 훅이 확인하고 꺼져 있으면 자동으로 다시 띄운다(config.toml [coordinator] auto_up). watch 가 꺼져 "
-             f"있으면 Bash `run_in_background: true` 로 `{SHIM} watch` 를 띄운다. 코디네이터 상태가 의심되면 "
+             "- 관제(hteam drive)는 훅이 확인하고 꺼져 있으면 자동으로 다시 띄운다(config.toml [drive] auto_up). watch 가 꺼져 "
+             f"있으면 Bash `run_in_background: true` 로 `{SHIM} watch` 를 띄운다. 관제 상태가 의심되면 "
              "`/herdr-team:up` 을 실행한다.",
-             f"- 산출물 작업은 `{SHIM} tell \"<요청>\"` 으로 코디네이터에게 넘긴다."]
+             "- 메인은 사용자와 대화하고 판단한다. 산출물은 태스크로 맡기고, 관제가 올린 decide 를 처리한다"
+             "(CLAUDE.md \"메인 규칙\")."]
     if not os.environ.get("HC_TERMINAL_ID", "").strip():
         lines.append("- 이 세션은 Herdr 터미널이 아니다($HC_TERMINAL_ID 없음). tell·watch·answer 는 Herdr 터미널의 메인 "
                      "세션에서만 된다. 사용자에게 Herdr 안에서 다시 열라고 알린다.")
@@ -381,7 +376,7 @@ def role_mark(p, payload: dict):
 
 
 def stop(p, payload: dict):
-    """메인이고 코디네이터가 살아 있는데 watch 가 없으면 턴을 끝내지 못하게 한다. stop_hook_active 면 다시 막지 않는다.
+    """메인이고 관제 터미널이 살아 있는데 watch 가 없으면 턴을 끝내지 못하게 한다. stop_hook_active 면 다시 막지 않는다.
     Herdr 터미널 밖($HC_TERMINAL_ID 없음)의 메인은 watch 를 띄울 수 없으므로(require_main 이 exit 5) 막지 않는다.
 
     watch 생존은 watch.pid 기록(pid + 시작 시각)으로 본다. 죽었거나 pid 가 다른 프로세스에 다시 쓰였으면 watch 가 없다.
@@ -393,8 +388,7 @@ def stop(p, payload: dict):
     if outbox.watch_alive(p):
         return None
     run = outbox._run(p)
-    if not run.get("coordinator_terminal") or \
-            herdr.probe(run["coordinator_terminal"], run.get("coordinator_argv")) != "live":
+    if not run.get("drive_terminal") or herdr.probe(run["drive_terminal"], run.get("drive_argv")) != "live":
         return None
     return {"decision": "block",
             "reason": f"herdr-team: watch 가 꺼져 있다. Bash `run_in_background: true` 로 `{SHIM} watch` 를 띄우고 턴을 "

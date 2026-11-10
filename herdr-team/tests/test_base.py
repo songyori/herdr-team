@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tests.helpers import HORCH_BIN, NONCE, TeamCase
+from tests.helpers import DRIVE, HORCH_BIN, TeamCase
 from hteam import horch as horch_mod
 from hteam import paths, procs, roles, util
 from hteam.errors import HteamError
@@ -228,18 +228,27 @@ class RolesTest(TeamCase):
         self.assertEqual(roles.parse_title("T-1234 r1 리뷰 a3")["attempt"], 3)
         self.assertIsNone(roles.parse_title("e2e"))
 
-    def test_coordinator_env_needs_nonce(self):
+    def test_drive_env_is_role_and_terminal(self):
+        # 설계 8.2 관제 판별: HTEAM_ROLE=drive 이고 $HC_TERMINAL_ID 가 run.json 의 drive_terminal 이다(nonce 는 시작 때만 본다)
         self.init_project(commit=False)
         self.setup_run()
         p = paths.Project(self.proj)
-        with mock.patch.dict(os.environ, {"HTEAM_ROLE": "coordinator", "HTEAM_LAUNCH": NONCE}):
-            self.assertTrue(roles.coordinator_env(p))
-            roles.require_coordinator(p)
-        with mock.patch.dict(os.environ, {"HTEAM_ROLE": "coordinator", "HTEAM_LAUNCH": "other"}):
-            self.assertFalse(roles.coordinator_env(p))
+        with mock.patch.dict(os.environ, {"HTEAM_ROLE": "drive", "HC_TERMINAL_ID": DRIVE, "HTEAM_LAUNCH": "any"}):
+            self.assertTrue(roles.drive_env(p))
+            roles.require_drive(p)
+        for env in ({"HTEAM_ROLE": "drive", "HC_TERMINAL_ID": "t999"}, {"HTEAM_ROLE": "coordinator", "HC_TERMINAL_ID": DRIVE}):
+            with self.subTest(env=env), mock.patch.dict(os.environ, env):
+                self.assertFalse(roles.drive_env(p))
+                with self.assertRaises(HteamError) as ctx:
+                    roles.require_drive(p)
+                self.assertEqual((ctx.exception.code, ctx.exception.exit_code), ("drive_only", 5))
+        (p.run_file).write_text("[]")
+        with mock.patch.dict(os.environ, {"HTEAM_ROLE": "drive", "HC_TERMINAL_ID": DRIVE}):
             with self.assertRaises(HteamError) as ctx:
-                roles.require_coordinator(p)
-            self.assertEqual(ctx.exception.exit_code, 5)
+                roles.drive_env(p)
+            self.assertEqual((ctx.exception.code, ctx.exception.exit_code), ("bad_run_file", 1))
+        for gone in ("coordinator_env", "require_coordinator"):
+            self.assertFalse(hasattr(roles, gone), gone)
 
 
 if __name__ == "__main__":

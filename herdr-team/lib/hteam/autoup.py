@@ -1,10 +1,11 @@
-"""코디네이터 자동 부활(설계 9.5): 메인 세션 훅(SessionStart·UserPromptSubmit)이 코디네이터 터미널을 확인하고, 확실히
-죽었을 때만(exited·lost) `hteam up` 을 분리된 백그라운드 프로세스로 실행한다. 프롬프트를 막지 않고 bind 를 기다리지 않는다.
+"""관제 자동 부활(설계 9.5, 6단계에 대상을 관제로): 메인 세션 훅(SessionStart·UserPromptSubmit)이 관제를 확인하고, 확실히
+죽었을 때만(pid 없음·죽음) `hteam up` 을 분리된 백그라운드 프로세스로 실행한다. 프롬프트를 막지 않고 새 관제가 Run 에 묶일
+때까지 기다리지 않는다.
 
-훅 제한(15초) 안에 끝나도록 바깥 프로그램(ps·hc·sh)은 모두 훅 시작 + HOOK_DEADLINE_S 까지 남은 시간을 시간 제한으로
-받는다. 띄우기 전에 시간이 모자라면 아무것도 쓰지 않고 멈춘다(다음 프롬프트가 바로 다시 확인한다). 생존 판정은 up·horch 와
-같은 herdr.probe 다(hc 가 모르는 터미널, 조회 실패는 확인 불가라 띄우지 않는다). 두 번 띄우는 것은 up 의 run.json 잠금이
-막으므로 이 모듈의 상태 파일은 잠그지 않고 원자적으로만 쓴다.
+훅 제한(15초) 안에 끝나도록 바깥 프로그램(ps·sh)은 모두 훅 시작 + HOOK_DEADLINE_S 까지 남은 시간을 시간 제한으로 받는다.
+띄우기 전에 시간이 모자라면 아무것도 쓰지 않고 멈춘다(다음 프롬프트가 바로 다시 확인한다). 생존 판정은 up·status 와 같은
+drive.liveness 다(drive.pid·heartbeat 와 ps 만 본다. hc 를 부르지 않는다). 두 번 띄우는 것은 up 의 run.json 잠금이 막으므로
+이 모듈의 상태 파일은 잠그지 않고 원자적으로만 쓴다.
 """
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ import subprocess
 import sys
 import time
 
-from . import config, herdr, outbox, procs
+from . import config, drive, outbox, procs
 from .errors import HteamError
 from .paths import PLUGIN_ROOT
 from .util import age_seconds, now, read_json, write_json
@@ -21,28 +22,30 @@ from .util import age_seconds, now, read_json, write_json
 CHECK_INTERVAL_S = 60  # UserPromptSubmit 의 확인 간격(SessionStart 는 간격과 관계없다)
 RETRY_WINDOW_S = 600  # 자동으로 띄운 뒤 이 안에 다시 죽으면 FAILED(다시 띄우지 않는다)
 PID_STALE_S = 60  # auto-up.pid 를 쓴 지 이 안이고 그 프로세스가 살아 있으면 자동 실행이 진행 중이다
-PROBE_TIMEOUT_S = 3
 SPAWN_WAIT_S = 5
 PS_TIMEOUT_S = 5  # procs 의 ps 기본 제한과 같다
 HOOK_START_BUDGET_S = 4  # 훅이 시작한 지 이만큼 지났으면(역할 판별이 오래 걸렸다) 이번 확인을 건너뛴다
 HOOK_DEADLINE_S = 12  # 훅 시작부터 바깥 프로그램을 부를 수 있는 마지막 시각(15초 훅 제한 안에 끝나게)
 MIN_LEFT_S = 1  # 띄우기 전 단계는 남은 시간이 이보다 적으면 멈춘다
-STARTING_S = 180  # coord.STARTING_S 와 같다(띄운 지 이 안이면 시작 중이다)
+STARTING_S = 180  # drive.LAUNCH_GRACE_S 와 같다(띄운 지 이 안이면 시작 중이다)
+DRIVE_STALE_S = 120  # drive.DRIVE_STALE_S 와 같다(heartbeat 가 이보다 오래면 멈춤, 설계 8.2)
 
 PREFIX = "herdr-team: "
-REVIVED = (PREFIX + "코디네이터가 꺼져 있어 자동으로 다시 띄우는 중이다. 답변 첫 줄에 사용자에게 이 사실을 한 줄로 알린다. "
-           "요청은 평소대로 hteam tell 로 넘긴다(Run 메일함에 쌓였다가 새 코디네이터가 bind 하면 처리된다). watch 가 꺼져 "
-           "있으면 띄우고, 답하지 않은 질문이 있으면 hteam reask 로 다시 보여 준다.")
-UNKNOWN = (PREFIX + "코디네이터가 살아 있는지 확인하지 못했거나 자동으로 다시 띄우지 못했다(hc 조회 실패·시간 초과·터미널 없음, "
-           "기록: .herdr-team/state/auto-up.log). 답변 첫 줄에 사용자에게 한 줄로 알리고 팀 탭의 코디네이터 pane 을 확인해 "
-           "달라고 한다. 끝났다고 확인되면 /herdr-team:up 을 실행한다.")
-NO_HANDLE = (PREFIX + "코디네이터 실행 기록이 불확실하다(run.json 에 코디네이터 터미널이 없다). 답변 첫 줄에 사용자에게 한 줄로 "
-             "알리고 /herdr-team:up 결과를 확인한다.")
-DISABLED = (PREFIX + "코디네이터가 꺼져 있다(config.toml 의 [coordinator] auto_up = false). 답변 첫 줄에 사용자에게 한 줄로 "
-            "알리고 /herdr-team:up 을 안내한다.")
-FAILED = (PREFIX + "자동으로 다시 띄운 코디네이터가 10분 안에 다시 꺼졌거나 뜨지 못했다(기록: .herdr-team/state/auto-up.log). "
-          "답변 첫 줄에 사용자에게 한 줄로 알리고, 그 기록으로 원인을 확인한 뒤 /herdr-team:up 을 실행하도록 안내한다. "
-          "10분 동안은 자동으로 다시 띄우지 않는다.")
+REVIVED = (PREFIX + "관제(hteam drive)가 꺼져 있어 자동으로 다시 띄우는 중이다. 답변 첫 줄에 사용자에게 이 사실을 한 줄로 "
+           "알린다. 관제가 뜨기 전에 낸 큐 명령은 '관제가 꺼져 있다' 로 거부되므로 잠시 뒤 다시 한다. watch 가 꺼져 있으면 "
+           "띄우고, 답하지 않은 질문이 있으면 hteam reask 로 다시 보여 준다.")
+HUNG = (PREFIX + "관제 프로세스는 살아 있지만 2분 넘게 응답이 없다. 답변 첫 줄에 사용자에게 한 줄로 알리고 관제 탭(herdr-team "
+        "관제)의 출력을 확인하게 한다.")
+DISABLED = (PREFIX + "관제가 꺼져 있다(config.toml 의 [drive] auto_up = false). 답변 첫 줄에 사용자에게 한 줄로 알리고 "
+            "/herdr-team:up 을 안내한다.")
+FAILED = (PREFIX + "자동으로 다시 띄운 관제가 10분 안에 다시 꺼졌거나 뜨지 못했다(기록: .herdr-team/state/auto-up.log, "
+          ".herdr-team/state/drive/drive.log). 답변 첫 줄에 사용자에게 한 줄로 알리고, 그 기록으로 원인을 확인한 뒤 "
+          "/herdr-team:up 을 실행하도록 안내한다. 10분 동안은 자동으로 다시 띄우지 않는다.")
+FAILED_SPAWN = (PREFIX + "관제를 자동으로 다시 띄우지 못했다(hteam up 실행 실패, 기록: .herdr-team/state/auto-up.log). 답변 "
+                "첫 줄에 사용자에게 한 줄로 알리고 /herdr-team:up 을 안내한다.")
+OLD_CONFIG = (PREFIX + "config.toml 에 0.3.0 의 [coordinator] 가 남아 있다. 0.4.0 은 관제(hteam drive)를 쓴다. 답변 첫 줄에 "
+              "사용자에게 한 줄로 알리고, [coordinator] 를 지우고 템플릿의 [drive]·[overflow]·[crew.*] 를 옮기거나, "
+              "config.toml 을 지운 뒤 /herdr-team:init 으로 다시 세팅하도록 안내한다(있는 파일은 덮어쓰지 않는다).")
 
 
 def within(stamp, seconds: float) -> bool:
@@ -67,7 +70,7 @@ def _record(p) -> dict:
 
 
 def _run(p) -> dict | None:
-    """자격이 있으면 run.json. bind 한 적이 없거나(run_id 없음) 읽지 못하거나 setup-mode 면 None."""
+    """자격이 있으면 run.json. Run 이 없거나(run_id 없음) 읽지 못하거나 setup-mode 면 None."""
     if p.setup_mode.exists():
         return None
     try:
@@ -92,14 +95,18 @@ def _in_progress(p, deadline: float) -> bool | None:
 
 
 def decide(p, deadline: float) -> tuple[str | None, str | None] | None:
-    """(할 일 "spawn" 또는 None, 안내 문구 또는 None). 시간이 모자라면 None. 파일을 쓰지 않고 hc 조회는 많아야 한 번이다."""
+    """(할 일 "spawn" 또는 None, 안내 문구 또는 None). 시간이 모자라면 None. 파일을 쓰지 않고 hc 를 부르지 않는다.
+
+    관제 생존은 drive.liveness(pid·heartbeat, 설계 8.2): 살아 있으면 그대로, pid 만 살았으면 HUNG(띄우지 않는다), pid 가
+    없거나 죽었으면 띄운다. 설정 오류 가운데 0.3.0 의 [coordinator] 만 OLD_CONFIG 로 알린다(그 밖은 status·up 이 알린다)."""
     run = _run(p)
     if run is None:
         return None, None
     try:
         auto_up = config.load(p).auto_up
-    except HteamError:  # 설정 오류는 status·up 이 알린다
-        return None, None
+    except HteamError as exc:
+        old = exc.code == "bad_config" and config.OLD_CONFIG_MESSAGE in (exc.data.get("errors") or [])
+        return None, (OLD_CONFIG if old else None)
     if within(run.get("launched_at") or (run.get("pending_launch") or {}).get("at"), STARTING_S):
         return None, None
     busy = _in_progress(p, deadline)
@@ -107,16 +114,13 @@ def decide(p, deadline: float) -> tuple[str | None, str | None] | None:
         return None
     if busy:
         return None, None
-    term = run.get("coordinator_terminal")
-    if not term:
-        return None, NO_HANDLE
     if _left(deadline) < MIN_LEFT_S:
         return None
-    verdict = herdr.probe(term, run.get("coordinator_argv"), timeout=min(PROBE_TIMEOUT_S, _left(deadline)))
-    if verdict == "live":
+    live = drive.liveness(p, timeout=min(PS_TIMEOUT_S, _left(deadline)))
+    if live["alive"]:
         return None, None
-    if verdict not in ("exited", "lost"):
-        return None, UNKNOWN
+    if live["hung"]:
+        return None, HUNG
     if within(_record(p).get("spawned_at"), RETRY_WINDOW_S):
         return None, FAILED
     return ("spawn", REVIVED) if auto_up else (None, DISABLED)
@@ -167,7 +171,7 @@ def check(p, force: bool, started: float) -> str | None:
                 return None
             spawned = spawn_up(p, deadline)
             if not spawned:
-                notice = UNKNOWN
+                notice = FAILED_SPAWN
     except Exception:
         try:
             write_json(p.auto_up, {**rec, "checked_at": now()})

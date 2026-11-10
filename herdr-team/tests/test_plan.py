@@ -318,7 +318,7 @@ class PlanApplyTest(TeamCase):
         self.git("commit", "-q", "-m", "a 만 커밋", "--", ".herdr-team/tasks/T-001.md")
         self.write_plan([task("a"), task("b", "tester", ["tests/**"], title="고친 초안")])
         for args in (("check",), ("apply", "--append")):
-            code, out = self.hteam("plan", *args, as_=None if args == ("check",) else "coordinator")
+            code, out = self.hteam("plan", *args, as_=None if args == ("check",) else "drive")
             self.assertEqual((code, out["error"]["code"], out["error"]["message"]),
                              (3, "plan_incomplete", "앞선 plan apply 의 사양 일부만 커밋돼 있다: .herdr-team/tasks/T-001.md"),
                              (args, out))
@@ -330,7 +330,7 @@ class PlanApplyTest(TeamCase):
         self.assertEqual([r["key"] for r in self.pending()], ["a", "b"])
         self.write_plan([task("a"), task("b", "tester", ["tests/**"], title="바뀜")])
         for args in (("check",), ("apply", "--append")):
-            code, out = self.hteam("plan", *args, as_=None if args == ("check",) else "coordinator")
+            code, out = self.hteam("plan", *args, as_=None if args == ("check",) else "drive")
             self.assertEqual((code, out["error"]["code"], out["error"]["message"]),
                              (2, "plan_changed", "이미 적용한 b 의 내용이 바뀌었다"), (args, out))
 

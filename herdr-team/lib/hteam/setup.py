@@ -1,4 +1,4 @@
-"""세팅과 코디네이터(설계 9.1–9.3): doctor, scaffold, up, bind, setup-done."""
+"""세팅과 관제 실행(설계 9.1–9.3): doctor, scaffold, up(관제를 띄운다), setup-done, upgrade."""
 from __future__ import annotations
 
 import hashlib
@@ -12,15 +12,14 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import browser, config, coord, gitio, herdr, image, outbox, roles
+from . import browser, config, drive, gitio, herdr, image, outbox
 from .browser import BROWSER_SERVER
-from .errors import CONFLICT, DENIED, FAIL, TIMEOUT, USAGE, HteamError
+from .errors import CONFLICT, FAIL, TIMEOUT, USAGE, HteamError
 from .horch import Horch
-from .paths import PLUGIN_ROOT, SHIM, TEMPLATES, Project, find_project
+from .paths import PLUGIN_ROOT, TEMPLATES, Project, find_project
 from .util import die_at, env_float, flock, now, write_atomic, write_json
 
 MARK = "<!-- herdr-team -->"
-COORD_PROMPT = f"`{SHIM} bind` 를 실행하고 `.herdr-team/coordinator.md` 를 따른다."
 # 템플릿 → 프로젝트 경로. 있는 파일은 덮어쓰지 않는다.
 FILES = {
     "config.toml": ".herdr-team/config.toml",
@@ -42,9 +41,9 @@ UPGRADE_NEXT = ("바뀐 파일을 확인하고(git diff -- .herdr-team) 커밋�
                 "면 메인에서 /herdr-team:up). 테스트 관문을 쓰려면 docs/planning/tasks.toml 에 [test] 를 넣고 커밋한다"
                 "(README \"묶음 검증\").")
 # up 이 띄울 때 바꾸는 run.json 키. 띄우기가 확실히 실패하면 이것만 되돌린다(main_terminals 등 다른 키는 그대로 둔다).
-LAUNCH_KEYS = ("pending_launch", "team_space", "team_tab", "launched_at", "coordinator_terminal", "coordinator_argv")
-# up 이 판정한 뒤 이 키가 바뀌었으면 판정이 낡았다(다른 up 이 띄웠거나 코디네이터가 bind 했다): launch_raced.
-RACE_KEYS = ("pending_launch", "run_id", "bound_nonce", "bound_at", "coordinator_terminal", "coordinator_argv")
+LAUNCH_KEYS = ("pending_launch", "team_space", "team_tab", "launched_at", "drive_terminal", "drive_argv")
+# up 이 판정한 뒤 이 키가 바뀌었으면 판정이 낡았다(다른 up 이 띄웠거나 관제가 Run 에 묶였다): launch_raced.
+RACE_KEYS = ("pending_launch", "run_id", "bound_nonce", "bound_at", "drive_terminal", "drive_argv")
 
 
 def _check(name: str, ok, detail: str, level: str = "error") -> dict:
@@ -329,7 +328,7 @@ def _setup_done_file(p) -> Path:
 
 
 def team_tab(root: Path, space: str) -> str:
-    """팀 탭 id 는 프로젝트·space 마다 고정이다(없으면 Herdr 가 새 탭으로 만든다)."""
+    """관제 탭 id 는 프로젝트·space 마다 고정이다(0.3.0 팀 탭과 같은 식. 없으면 Herdr 가 새 탭으로 만든다)."""
     return "tb" + hashlib.sha1(f"herdr-team\n{root}\n{space}".encode("utf-8")).hexdigest()[:32]
 
 
@@ -341,10 +340,10 @@ def _read_run(p) -> dict:
 def _run_update(p, fn) -> dict:
     """run.json 을 잠금(state/run.lock) 안에서 읽고 fn 으로 바꿔 쓴다. fn 이 예외를 내면 쓰지 않는다.
 
-    run.lock 은 다른 hteam 잠금 안에서 잡지 않는다(잡는 곳: setup 의 up·bind, outbox.note_main. 셋 다 안에서 다른
-    hteam 잠금을 잡지 않는다)."""
+    run.lock 은 다른 hteam 잠금 안에서 잡지 않는다(잡는 곳: setup 의 up, drive 의 Run 연결, outbox.note_main. 셋 다 안에서
+    다른 hteam 잠금을 잡지 않는다)."""
     p.ensure_state()
-    with flock(p.state / "run.lock"):
+    with flock(p.run_lock):
         run = _read_run(p)
         fn(run)
         write_json(p.run_file, run)
@@ -379,60 +378,58 @@ def _find_launched(name: str, argv: list[str]) -> tuple[str | None, bool]:
 
 
 def _wait_bound(p, nonce: str, wait: float | None) -> str | None:
-    """wait 초 동안 이 nonce 의 코디네이터가 bind 하기를 기다린다. 했으면 bind 가 기록한 터미널, 아니면 None."""
+    """wait 초 동안 이 nonce 의 관제가 Run 에 묶이기를 기다린다. 묶였으면 관제가 기록한 터미널, 아니면 None."""
     deadline = time.monotonic() + (wait or 0)
     while True:
         run = _read_run(p)
         if (run.get("pending_launch") or {}).get("nonce") == nonce and _bound(run):
-            return run.get("coordinator_terminal")
+            return run.get("drive_terminal")
         if time.monotonic() >= deadline:
             return None
         time.sleep(env_float("HTEAM_POLL", 0.5))
 
 
-def up(p, wait_run: float | None, force: bool = False) -> dict:
-    """설계 9.3: 코디네이터가 살아 있으면 그대로, 아니면 pending_launch 를 먼저 쓰고 팀 탭에 띄운다.
+HUNG_MESSAGE = "관제 프로세스가 살아 있지만 응답이 없다. 관제 탭을 확인한다"
+STARTING_MESSAGE = "관제가 아직 시작 중이다(180초 안에 다시 띄우지 않는다). hteam status 로 확인한다"
 
-    메인만 부른다(무엇이든 바꾸기 전에 outbox.require_main). 새로 띄우는 것은 처음이거나 끝남·소실(exited·lost)이
-    확인됐을 때만이다. 확인할 수 없으면(unverifiable) 기록과 nonce 를 그대로 두고 exit 3. 사용자가 끝났다고 확인하면
-    --force 로 띄우고, bind 가 run-use --force 로 넘겨받는다.
+
+def up(p, wait_run: float | None) -> dict:
+    """설계 9.3: 관제(hteam drive)가 살아 있으면 그대로, 아니면 pending_launch 를 먼저 쓰고 관제 탭에 띄운다.
+
+    메인만 부른다(무엇이든 바꾸기 전에 outbox.require_main). 관제 생존은 drive.view(pid·heartbeat, 8.2)다. 멈췄으면(hung)
+    다시 띄우지 않고 알린다(--wait-run 도 기다리지 않는다). 띄운 지 180초 안이고 아직 Run 에 묶이지 않았으면 starting.
 
     hc run 이 실패하면: 터미널이 생기지 않았다고 확인되면 이번에 바꾼 키만 되돌린다. 무엇을 했는지 모르면(시간 초과,
     응답 유실) 이름으로 찾아 있으면 기록하고, 없거나 찾지 못하면 nonce 와 pending_launch 를 남기고 exit 1
-    launch_uncertain(떴다면 스스로 bind 한다. 아니면 180초 뒤 다음 up 이 새로 띄운다)."""
-    cfg = config.load(p)
+    launch_uncertain(떴다면 관제가 스스로 Run 에 묶인다. 아니면 180초 뒤 다음 up 이 새로 띄운다)."""
+    config.load(p)
     main = outbox.require_main(p)
     seen = _read_run(p)
-    view = coord.coordinator_view(p)
-    if view["alive"] or view["starting"]:
-        result = {"status": "alive" if view["alive"] and _bound(_read_run(p)) else "starting",
-                  "terminal": view["terminal"], "launched": False}
-    elif view["verdict"] == "unverifiable" and not force:
-        raise HteamError("coordinator_unverifiable", f"코디네이터 터미널 {view['terminal']} 의 상태를 확인할 수 없다", CONFLICT,
-                         "기록과 nonce 는 그대로 두었다. pane 을 보고 끝났다고 확신하면 hteam up --force",
-                         data={"terminal": view["terminal"]})
+    view = drive.view(p, seen)
+    if view["hung"]:
+        return {"status": "hung", "terminal": view["terminal"], "launched": False, "message": HUNG_MESSAGE}
+    if view["alive"]:
+        result = {"status": "running", "terminal": view["terminal"], "launched": False}
+    elif view["starting"]:
+        result = {"status": "starting", "terminal": view["terminal"], "launched": False, "message": STARTING_MESSAGE}
     else:
         space = (herdr.get(main).get("labels") or {}).get("herdr.space")
         if not space:
             raise HteamError("no_space", f"메인 터미널 {main} 에 herdr.space 라벨이 없다", FAIL)
-        nonce, tab, name = secrets.token_hex(8), team_tab(p.root, space), f"hteam-coord-{secrets.token_hex(3)}"
+        nonce, tab, name = secrets.token_hex(8), team_tab(p.root, space), f"hteam-drive-{secrets.token_hex(3)}"
         before: dict = {}
 
         def pending(run: dict) -> None:
             if any(run.get(k) != seen.get(k) for k in RACE_KEYS):
-                raise HteamError("launch_raced", "판정하는 사이에 다른 hteam up 이 띄웠거나 코디네이터가 bind 했다", CONFLICT,
-                                 "hteam status 로 코디네이터를 확인한다(띄우는 중이면 hteam up --wait-run 180)")
+                raise HteamError("launch_raced", "판정하는 사이에 다른 hteam up 이 띄웠거나 관제가 Run 에 묶였다", CONFLICT,
+                                 "hteam status 로 관제를 확인한다(띄우는 중이면 hteam up --wait-run 180)")
             before.update({k: run[k] for k in LAUNCH_KEYS if k in run})
-            # 인계 승인(force)은 bind 가 성공할 때까지 이어 받는다: 강제로 띄운 코디네이터가 bind 전에 끝나 다시 띄워도
-            # 이전 소유자는 여전히 확인할 수 없으므로 bind 의 run-use 에 --force 가 필요하다
-            forced = force or bool((run.get("pending_launch") or {}).get("force") and not _bound(run))
-            run.update(pending_launch={"nonce": nonce, "at": now(), "force": forced}, team_space=space, team_tab=tab,
-                       launched_at=now())
-            run.pop("coordinator_terminal", None)
-            run.pop("coordinator_argv", None)
+            run.update(pending_launch={"nonce": nonce, "at": now()}, team_space=space, team_tab=tab, launched_at=now())
+            run.pop("drive_terminal", None)
+            run.pop("drive_argv", None)
 
         def restore(run: dict) -> None:
-            # 이번 up 이 바꾼 키만 되돌린다. 그사이 다른 up 이 덮어썼거나 이 nonce 로 bind 까지 했으면 건드리지 않는다
+            # 이번 up 이 바꾼 키만 되돌린다. 그사이 다른 up 이 덮어썼거나 이 nonce 로 관제가 묶였으면 건드리지 않는다
             if (run.get("pending_launch") or {}).get("nonce") == nonce and run.get("bound_nonce") != nonce:
                 for key in LAUNCH_KEYS:
                     if key in before:
@@ -442,12 +439,13 @@ def up(p, wait_run: float | None, force: bool = False) -> dict:
 
         die_at("up_before_pending")
         _run_update(p, pending)
-        argv = ["env", "HTEAM_ROLE=coordinator", f"HTEAM_LAUNCH={nonce}", "claude", *cfg.args("claude"), "--", COORD_PROMPT]
+        argv = ["env", "HTEAM_ROLE=drive", f"HTEAM_LAUNCH={nonce}", sys.executable, str(PLUGIN_ROOT / "bin" / "hteam"),
+                "--root", str(p.root), "drive"]
         die_at("up_before_hc_run")
         recovered = bound_seen = False
         try:
             address = herdr.run_bg(name, str(p.root),
-                                   {"herdr.space": space, "herdr.tab": tab, "hteam.role": "coordinator"}, argv).get("address")
+                                   {"herdr.space": space, "herdr.tab": tab, "hteam.role": "drive"}, argv).get("address")
             if not address:
                 raise HteamError("hc_failed", "hc run 출력에 터미널 주소가 없다", FAIL, data={"kind": "bad_output"})
         except HteamError as exc:
@@ -456,91 +454,39 @@ def up(p, wait_run: float | None, force: bool = False) -> dict:
                 if _never_started(exc) or (known and not _uncertain(exc)):
                     _run_update(p, restore)  # hc 가 거부했고 터미널도 없다: 확실한 실패
                     raise
-                # 떴다면 곧 이 nonce 로 bind 한다: --wait-run 동안 기다린다. bind 가 터미널·argv 를 기록한다
+                # 떴다면 곧 이 nonce 로 Run 에 묶인다: --wait-run 동안 기다린다. 관제가 터미널·argv 를 기록한다
                 address = _wait_bound(p, nonce, wait_run)
                 if address is None:
-                    raise HteamError("launch_uncertain", f"코디네이터를 띄웠는지 확인하지 못했다(hc run: {exc.message})",
-                                     FAIL, f"pending_launch 와 nonce 는 남겼다. 떴다면 팀 탭의 {name} pane 이 스스로 bind "
-                                     f"한다. hteam status 의 coordinator 를 보고, 띄운 지 180초가 지나도 bind 하지 않으면 "
-                                     f"hteam up(새로 띄운다)", data={"name": name, "terminal": None}) from None
+                    raise HteamError("launch_uncertain", f"관제를 띄웠는지 확인하지 못했다(hc run: {exc.message})",
+                                     FAIL, f"pending_launch 와 nonce 는 남겼다. 떴다면 관제 탭의 {name} pane 이 스스로 "
+                                     f"Run 에 묶인다. hteam status 의 drive 를 보고, 띄운 지 180초가 지나도 묶이지 "
+                                     f"않으면 hteam up(새로 띄운다)", data={"name": name, "terminal": None}) from None
                 bound_seen = True
             recovered = True
         if address == main:
             _run_update(p, restore)
-            raise HteamError("same_terminal", f"코디네이터 터미널({address})이 메인 터미널과 같다", CONFLICT)
+            raise HteamError("same_terminal", f"관제 터미널({address})이 메인 터미널과 같다", CONFLICT)
 
         def record(run: dict) -> None:
             if (run.get("pending_launch") or {}).get("nonce") == nonce:
-                run.update(coordinator_terminal=address, coordinator_argv=argv)
+                run.update(drive_terminal=address, drive_argv=argv)
 
         if not bound_seen:
             _run_update(p, record)
-        result = {"status": "launched", "terminal": address, "team_tab": tab, "launched": True,
-                  "tab_renamed": herdr.rename_tab(tab, "팀", pause=env_float("HTEAM_POLL", 0.3))}
+        # 탭 이름은 관제가 시작하며 붙인다(설계 8.2 의 5)
+        result = {"status": "launched", "terminal": address, "team_tab": tab, "launched": True}
         if recovered:
-            result["recovered"] = True  # hc 가 실패를 알렸지만 이름으로 찾았거나 그 nonce 로 bind 했다
+            result["recovered"] = True  # hc 가 실패를 알렸지만 이름으로 찾았거나 그 nonce 로 관제가 묶였다
     if wait_run:
         deadline = time.monotonic() + wait_run
         while not _bound(_read_run(p)):
             if time.monotonic() >= deadline:
-                raise HteamError("timeout", f"{wait_run:g}초 안에 코디네이터가 bind 하지 않았다", TIMEOUT,
-                                 "코디네이터 pane 을 본다(폴더 신뢰 확인 창 등)", data=result)
+                raise HteamError("timeout", f"관제가 {wait_run:g}초 안에 Run 을 만들지 않았다. 관제 탭(herdr-team 관제)을 "
+                                 "확인한다", TIMEOUT, "관제 탭의 출력과 .herdr-team/state/drive/drive.log 를 본다",
+                                 data=result)
             time.sleep(env_float("HTEAM_POLL", 0.5))
         result["run_id"] = _read_run(p).get("run_id")
     return result
-
-
-_BIND_HINTS = {
-    "owner_alive": ("이전 코디네이터가 아직 살아 있다. 메인에 알린다. 사용자가 그 코디네이터와 이 코디네이터를 끝낸 뒤 메인에서 "
-                    "hteam up(그 pane 을 닫아 상태를 확인할 수 없게 됐으면 hteam up --force)"),
-    "owner_unverifiable": ("이전 코디네이터의 상태를 확인할 수 없다. 메인에 알린다. 사용자가 끝났다고 확인하면 이 코디네이터를 "
-                           "끝내고 메인에서 hteam up --force"),
-}
-
-
-def bind(p) -> dict:
-    """설계 9.3: 코디네이터만(HTEAM_ROLE·HTEAM_LAUNCH nonce). 이전 run_id 가 있으면 run-use, 없으면 run-create.
-
-    nonce 확인부터 run-use·run-create 와 run.json 기록까지 run.lock 을 쥔다. 그래서 그사이 up 이 nonce 를 바꿔 지난
-    코디네이터가 horch Run 을 차지한 채 run.json 만 새 코디네이터를 가리키는 일이 없다(up 은 bind 뒤에 launch_raced)."""
-    p.ensure_state()
-    with flock(p.state / "run.lock"):
-        run = _read_run(p)
-        roles.require_coordinator(p)
-        term = os.environ.get("HC_TERMINAL_ID", "").strip()
-        if not term:
-            raise HteamError("no_terminal", "Herdr 터미널 안에서 실행해야 한다($HC_TERMINAL_ID 없음)", DENIED)
-        nonce = os.environ["HTEAM_LAUNCH"]
-        h = Horch(p.horch_home)
-        die_at("bind_locked")
-        mode, data = "create", None
-        if run.get("run_id"):
-            # up --force 로 띄웠고 그 뒤 bind 가 아직 성공하지 않았을 때만 확인할 수 없는 이전 소유자를 넘겨받는다
-            # (horch run-use --force). 그 밖에는 --force 없이 부른다
-            force = ["--force"] if (run.get("pending_launch") or {}).get("force") and not _bound(run) else []
-            code, data = h.call("run-use", "--id", run["run_id"], *force)
-            if code == 0 and data.get("ok"):
-                mode = "use"
-            elif (data.get("error") or {}).get("code") != "unknown_run":
-                err = data.get("error") or {}
-                raise HteamError(f"horch_{err.get('code')}", f"run-use 실패: {err.get('message')}", code or FAIL,
-                                 _BIND_HINTS.get(err.get("code")) or err.get("hint") or "", data={"horch": data})
-        if mode == "create":
-            try:
-                objective = _first_line(p.project_md.read_text(encoding="utf-8")) if p.project_md.exists() else ""
-            except (OSError, UnicodeDecodeError):
-                objective = ""
-            data = h.ok("run-create", "--objective", objective or "herdr-team")
-        try:
-            argv = herdr.get(term).get("argv")
-        except HteamError:
-            argv = None
-        run.update(run_id=data["run"]["id"], coordinator_terminal=term, bound_nonce=nonce, bound_at=now())
-        if argv is not None:
-            run["coordinator_argv"] = argv
-        write_json(p.run_file, run)
-    return {"run_id": data["run"]["id"], "mode": mode, "previous_owner": data.get("previous_owner"),
-            "owner_tab": data["run"].get("owner_tab"), "horch": h.cmd()}
 
 
 def _root_arg(args) -> Path:
@@ -560,11 +506,7 @@ def _cmd_scaffold(args) -> dict:
 
 
 def _cmd_up(args) -> dict:
-    return up(find_project(args.root), args.wait_run, args.force)
-
-
-def _cmd_bind(args) -> dict:
-    return bind(find_project(args.root))
+    return up(find_project(args.root), args.wait_run)
 
 
 def _cmd_upgrade(args) -> dict:
@@ -586,8 +528,6 @@ def register(sub) -> None:
     s.set_defaults(func=_cmd_scaffold)
     s = sub.add_parser("up")
     s.add_argument("--wait-run", type=float, metavar="S")
-    s.add_argument("--force", action="store_true", help="상태를 확인할 수 없는 코디네이터를 끝난 것으로 보고 새로 띄운다")
     s.set_defaults(func=_cmd_up)
-    sub.add_parser("bind").set_defaults(func=_cmd_bind)
     sub.add_parser("setup-done").set_defaults(func=_cmd_setup_done)
     sub.add_parser("upgrade").set_defaults(func=_cmd_upgrade)

@@ -376,7 +376,7 @@ class TextSectionTest(ReviewCase):
         from hteam import review
         self.started("T-001", "developer")
         self.assertEqual(self.act_work("T-001", {"src/app.tsx": 'a = "저장됬어요";\n'})[0], 0)
-        with mock.patch.dict(os.environ, self._env("coordinator", None, None), clear=True), \
+        with mock.patch.dict(os.environ, self._env("drive", None, None), clear=True), \
                 mock.patch.object(textlint, "targets", side_effect=RuntimeError("대상 판정\n실패")):
             out = review.review(self.p, "T-001")
         self.assertEqual(out["status"], "reviewing", out)
@@ -764,7 +764,7 @@ class TamperEntryTest(ReviewCase):
         plumb("update-index", "--cacheinfo", b"100644," + two + b"," + name)  # 리뷰어가 스테이징을 바꿨다
         self.act_review("T-001", "APPROVE")
         proc = subprocess.run([sys.executable, str(BIN), "review-finish", "T-001"], capture_output=True,
-                              env=self._env("coordinator", None, None), cwd=str(self.proj), timeout=60)
+                              env=self._env("drive", None, None), cwd=str(self.proj), timeout=60)
         out = json.loads(proc.stdout.decode("utf-8").strip().split("\n")[-1])  # 엄격한 UTF-8 디코딩
         self.assertEqual((proc.returncode, out["error"]["code"]), (1, "review_tampered"), out)
         self.assertEqual([os.fsencode(x) for x in out["tamper"]["paths"]], [name])
@@ -1484,7 +1484,7 @@ class ReviewGateTest(GateCase):
         lock = self.state_dir / "tests" / ".lock"
         lock.parent.mkdir(parents=True, exist_ok=True)
         real = testgate.attempt
-        with open(lock, "a") as fh, mock.patch.dict(os.environ, self._env("coordinator", None, None), clear=True), \
+        with open(lock, "a") as fh, mock.patch.dict(os.environ, self._env("drive", None, None), clear=True), \
                 mock.patch.object(testgate, "attempt", lambda *a, **kw: real(*a, **{**kw, "lock_wait": 0.3})):
             fcntl.flock(fh, fcntl.LOCK_EX)
             with self.assertRaises(HteamError) as cm:

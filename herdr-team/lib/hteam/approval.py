@@ -821,7 +821,7 @@ def reply_hint(view: dict, oid: str) -> str:
 
 def _cmd(args) -> dict:
     p = find_project(args.root)
-    roles.require_coordinator(p)
+    roles.require_drive(p)
     if args.decide:
         text = sys.stdin.read() if args.json == "-" else args.json
         return decide(p, args.decide, text)

@@ -9,7 +9,7 @@ import time
 import unittest
 from pathlib import Path
 
-from tests.helpers import COORD, MAIN, NONCE, ROOT, TeamCase
+from tests.helpers import DRIVE, MAIN, NONCE, ROOT, TeamCase
 from hteam import state
 from hteam.paths import Project
 
@@ -31,12 +31,12 @@ class HookCase(TeamCase):
         self.setup_run()
         self.p = Project(self.proj)
 
-    def hook(self, event, payload=None, *, terminal=None, coordinator=False, env=None):
+    def hook(self, event, payload=None, *, terminal=None, drive=False, env=None):
         e = dict(self.env, CLAUDE_PROJECT_DIR=str(self.proj))
         if terminal:
             e["HC_TERMINAL_ID"] = terminal
-        if coordinator:
-            e.update({"HTEAM_ROLE": "coordinator", "HTEAM_LAUNCH": NONCE, "HC_TERMINAL_ID": COORD})
+        if drive:
+            e.update({"HTEAM_ROLE": "drive", "HTEAM_LAUNCH": NONCE, "HC_TERMINAL_ID": DRIVE})
         e.update(env or {})
         body = {"session_id": "s1", "cwd": str(self.proj), **(payload or {})}
         proc = subprocess.run([sys.executable, str(HOOK), event], input=json.dumps(body), capture_output=True,
@@ -129,11 +129,11 @@ class RoleTest(HookCase):
             self.assertEqual(self.cached(sid), "worker", term)
             self.assertIsNone(self.hook("stop", {"session_id": sid}, terminal=term), term)
         # bind 전 코디네이터(라벨 hteam.role)와 그 아래 터미널, Run 소유자, nonce 가 맞지 않는 코디네이터 환경: 모름(캐시 안 함)
-        self.add_terminal("t52", labels={"hteam.role": "coordinator"})
+        self.add_terminal("t52", labels={"hteam.role": "drive"})
         self.add_terminal("t53")
         self.update_terminal("t53", parent="t52")
-        cases = (("c1", "t52", None), ("c2", "t53", None), ("c3", COORD, None),
-                 ("c4", COORD, {"HTEAM_ROLE": "coordinator", "HTEAM_LAUNCH": "old-nonce"}))
+        cases = (("c1", "t52", None), ("c2", "t53", None), ("c3", DRIVE, None),
+                 ("c4", DRIVE, {"HTEAM_ROLE": "drive", "HTEAM_LAUNCH": "old-nonce"}))
         for sid, term, env in cases:
             self.assertIsNone(self.hook("session-start", {"session_id": sid}, terminal=term, env=env), sid)
             self.assertIsNone(self.cached(sid), sid)
@@ -143,8 +143,8 @@ class RoleTest(HookCase):
             self.assertIsNone(out, sid)  # 메인 가드(제품 파일 거부)가 걸리지 않는다
         # run.json 이 다른 터미널을 가리켜도 horch Run 소유자는 메인이 아니다
         run = json.loads((self.state_dir / "run.json").read_text())
-        (self.state_dir / "run.json").write_text(json.dumps({**run, "coordinator_terminal": "t999"}))
-        self.assertIsNone(self.hook("session-start", {"session_id": "c5"}, terminal=COORD))
+        (self.state_dir / "run.json").write_text(json.dumps({**run, "drive_terminal": "t999"}))
+        self.assertIsNone(self.hook("session-start", {"session_id": "c5"}, terminal=DRIVE))
         self.assertIsNone(self.cached("c5"))
 
     def test_hc_failure_is_not_cached(self):
@@ -171,23 +171,23 @@ class RoleTest(HookCase):
 
     def test_corrupt_run_file_is_logged_and_role_unknown(self):
         (self.state_dir / "run.json").write_text("{")
-        self.assertIsNone(self.edit("src/app.py", coordinator=True))  # 코디네이터인지 모른다: 코디네이터 가드를 걸지 않는다
-        self.assertEqual(self.decision(self.edit(".herdr-team/state/run.json", coordinator=True)), "deny")
-        self.assertIsNone(self.hook("session-start", {"session_id": "c"}, coordinator=True))
+        self.assertIsNone(self.edit("src/app.py", drive=True))  # 코디네이터인지 모른다: 코디네이터 가드를 걸지 않는다
+        self.assertEqual(self.decision(self.edit(".herdr-team/state/run.json", drive=True)), "deny")
+        self.assertIsNone(self.hook("session-start", {"session_id": "c"}, drive=True))
         self.assertIsNone(self.cached("c"))
         self.assertIn("bad_run_file", self.hook_log())
 
 
 class GuardTest(HookCase):
     def test_state_dir_denied_for_everyone(self):
-        for kw in ({"terminal": MAIN}, {"coordinator": True}):
+        for kw in ({"terminal": MAIN}, {"drive": True}):
             self.assertEqual(self.decision(self.edit(".herdr-team/state/tasks/T-001.json", **kw)), "deny")
 
-    def test_coordinator_edits(self):
-        self.assertEqual(self.decision(self.edit("src/app.py", coordinator=True)), "deny")
-        self.assertIsNone(self.edit(".herdr-team/tasks/T-001.md", coordinator=True))
-        out = self.hook("guard", {"tool_name": "AskUserQuestion", "tool_input": {"questions": []}}, coordinator=True)
-        self.assertIn("notify --type question", out["hookSpecificOutput"]["permissionDecisionReason"])
+    def test_drive_env_session_is_unknown(self):
+        # 관제는 Claude 세션이 아니다(설계 9.4). HTEAM_ROLE 이 있는 Claude 세션은 역할을 모른다: 가드를 걸지 않는다
+        self.assertIsNone(self.edit("src/app.py", drive=True))
+        self.assertIsNone(self.hook("guard", {"tool_name": "AskUserQuestion", "tool_input": {"questions": []}}, drive=True))
+        self.assertIsNone(self.cached("s1"))
 
     def test_main_edits_and_setup_mode(self):
         self.assertEqual(self.decision(self.edit("src/app.py", terminal=MAIN)), "deny")
@@ -223,9 +223,9 @@ class GuardTest(HookCase):
         def tool(name, key, rel, **kw):
             return self.decision(self.hook("guard", {"tool_name": name, "tool_input": {key: str(self.proj / rel)}}, **kw))
         self.assertEqual(tool("NotebookEdit", "notebook_path", "src/a.ipynb", terminal=MAIN), "deny")
-        self.assertEqual(tool("NotebookEdit", "notebook_path", ".herdr-team/state/a.ipynb", coordinator=True), "deny")
+        self.assertEqual(tool("NotebookEdit", "notebook_path", ".herdr-team/state/a.ipynb", drive=True), "deny")
         self.assertIsNone(tool("NotebookEdit", "notebook_path", "docs/superpowers/a.ipynb", terminal=MAIN))
-        self.assertEqual(tool("MultiEdit", "file_path", "src/a.py", coordinator=True), "deny")
+        self.assertEqual(tool("MultiEdit", "file_path", "src/a.py", terminal=MAIN), "deny")
         self.assertIsNone(tool("MultiEdit", "file_path", "CLAUDE.md", terminal=MAIN))
 
     def ask_with_context(self, n):
@@ -330,7 +330,7 @@ class StopTest(HookCase):
         self.assertEqual(out["decision"], "block")
         self.assertIn("watch", out["reason"])
         self.assertIsNone(self.hook("stop", {"stop_hook_active": True}, terminal=MAIN))
-        self.assertIsNone(self.hook("stop", {"session_id": "c"}, coordinator=True))
+        self.assertIsNone(self.hook("stop", {"session_id": "c"}, drive=True))
 
     def test_main_outside_herdr_is_not_blocked_every_turn(self):
         # $HC_TERMINAL_ID 가 없는 세션은 메인이지만 watch 를 띄울 수 없다(require_main 이 exit 5). 매 턴 막지 않는다
@@ -348,7 +348,7 @@ class StopTest(HookCase):
         self.assertIsNone(self.hook("stop", terminal=MAIN))
         proc.kill()
         proc.communicate()
-        self.update_terminal(COORD, state="finished")
+        self.update_terminal(DRIVE, state="finished")
         self.assertIsNone(self.hook("stop", {"session_id": "s2"}, terminal=MAIN))
 
     def test_stale_watch_pid_is_not_a_watch(self):
@@ -386,7 +386,7 @@ class StopTest(HookCase):
 
 
 class AutoUpHookTest(HookCase):
-    """메인 세션 훅의 코디네이터 자동 부활(설계 9.4·9.5)."""
+    """메인 세션 훅의 관제 자동 부활(설계 9.4·9.5). 관제 생존은 drive.pid·heartbeat 로 본다(hc 를 부르지 않는다)."""
 
     def record(self):
         path = self.state_dir / "auto-up.json"
@@ -394,6 +394,9 @@ class AutoUpHookTest(HookCase):
 
     def context(self, out):
         return out["hookSpecificOutput"]["additionalContext"] if out else None
+
+    def kill_drive(self):
+        (self.drive_dir / "drive.pid").unlink()
 
     def wait_spawned(self):
         from hteam import procs
@@ -403,22 +406,23 @@ class AutoUpHookTest(HookCase):
             self.assertLess(time.monotonic(), deadline, "자동 실행한 hteam up 이 끝나지 않았다")
             time.sleep(0.05)
 
-    def test_prompt_revives_a_dead_coordinator(self):
+    def test_prompt_revives_a_dead_drive(self):
         from hteam import autoup
-        self.update_terminal(COORD, state="finished")
+        self.kill_drive()
         out = self.hook("role-mark", terminal=MAIN)
         self.assertEqual(out["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
         self.assertEqual(self.context(out), autoup.REVIVED)
         self.wait_spawned()
         run = json.loads((self.state_dir / "run.json").read_text())
-        self.assertNotEqual(run["coordinator_terminal"], COORD)
+        self.assertNotEqual(run["drive_terminal"], DRIVE)
+        self.assertEqual(self.hc_state()["terminals"][run["drive_terminal"]]["labels"]["hteam.role"], "drive")
         self.assertIn('"launched"', (self.state_dir / "auto-up.log").read_text())
 
     def test_interval_skips_prompts_but_not_session_start(self):
         from hteam import autoup
         self.assertIsNone(self.hook("role-mark", terminal=MAIN))  # 살아 있다: 확인 기록만 남는다
         self.assertIn("checked_at", self.record())
-        self.update_terminal(COORD, state="finished")
+        self.kill_drive()
         self.assertIsNone(self.hook("role-mark", terminal=MAIN))  # 60초 안
         self.assertFalse((self.state_dir / "auto-up.pid").exists())
         ctx = self.context(self.hook("session-start", terminal=MAIN))
@@ -426,9 +430,15 @@ class AutoUpHookTest(HookCase):
         self.assertNotIn("자동으로 다시 띄운다(config.toml", ctx)  # 기본 줄 대신 문구
         self.wait_spawned()
 
+    def test_hung_drive_only_informs(self):
+        from hteam import autoup
+        self.write_heartbeat(age_s=200)
+        self.assertEqual(self.context(self.hook("role-mark", terminal=MAIN)), autoup.HUNG)
+        self.assertFalse((self.state_dir / "auto-up.pid").exists())
+
     def test_other_sessions_setup_mode_and_outside_herdr_are_skipped(self):
-        self.update_terminal(COORD, state="finished")
-        self.assertIsNone(self.hook("role-mark", {"session_id": "c"}, coordinator=True))
+        self.kill_drive()
+        self.assertIsNone(self.hook("role-mark", {"session_id": "c"}, drive=True))
         self.assertIsNone(self.hook("role-mark", {"session_id": "w"}, terminal=self.worker()))
         self.assertIsNone(self.hook("role-mark", {"session_id": "o"}))  # $HC_TERMINAL_ID 없는 메인
         (self.state_dir / "setup-mode").write_text("x")
@@ -440,8 +450,16 @@ class AutoUpHookTest(HookCase):
         from hteam import autoup
         config = (self.team / "config.toml").read_text() + "\n[drive]\nauto_up = false\n"
         (self.team / "config.toml").write_text(config)
-        self.update_terminal(COORD, state="finished")
+        self.kill_drive()
         self.assertEqual(self.context(self.hook("role-mark", terminal=MAIN)), autoup.DISABLED)
+        self.assertFalse((self.state_dir / "auto-up.pid").exists())
+
+    def test_old_config_is_announced(self):
+        from hteam import autoup
+        config = (self.team / "config.toml").read_text() + '\n[coordinator]\nmodel = "opus"\n'
+        (self.team / "config.toml").write_text(config)
+        self.kill_drive()
+        self.assertEqual(self.context(self.hook("role-mark", terminal=MAIN)), autoup.OLD_CONFIG)
         self.assertFalse((self.state_dir / "auto-up.pid").exists())
 
     def test_late_hook_skips_without_writing_and_next_prompt_checks(self):
@@ -452,7 +470,7 @@ class AutoUpHookTest(HookCase):
         hook._load()
         with mock.patch.dict(os.environ, {**self.env, "HC_TERMINAL_ID": MAIN}, clear=True):
             hook.HOOK_START = time.monotonic() - 5  # 역할 판별이 오래 걸렸다
-            self.update_terminal(COORD, state="finished")
+            self.kill_drive()
             self.assertIsNone(hook.auto_up(self.p, force=False))
             self.assertIsNone(self.record())
             hook.HOOK_START = time.monotonic()
@@ -462,28 +480,18 @@ class AutoUpHookTest(HookCase):
     def test_errors_do_not_block_and_session_start_has_the_default_line(self):
         (self.state_dir / "auto-up.json").mkdir()  # 쓰기가 실패한다
         ctx = self.context(self.hook("session-start", terminal=MAIN))
-        self.assertIn("- 코디네이터는 훅이 확인하고 꺼져 있으면 자동으로 다시 띄운다(config.toml [coordinator] auto_up). "
+        self.assertIn("- 관제(hteam drive)는 훅이 확인하고 꺼져 있으면 자동으로 다시 띄운다(config.toml [drive] auto_up). "
                       "watch 가 꺼져 있으면 Bash `run_in_background: true` 로 `.herdr-team/bin/hteam watch` 를 띄운다. "
-                      "코디네이터 상태가 의심되면 `/herdr-team:up` 을 실행한다.\n"
-                      "- 산출물 작업은 `.herdr-team/bin/hteam tell \"<요청>\"` 으로 코디네이터에게 넘긴다.", ctx)
-        self.assertNotIn("먼저 `/herdr-team:up`", ctx)
+                      "관제 상태가 의심되면 `/herdr-team:up` 을 실행한다.\n"
+                      "- 메인은 사용자와 대화하고 판단한다. 산출물은 태스크로 맡기고, 관제가 올린 decide 를 처리한다"
+                      "(CLAUDE.md \"메인 규칙\").", ctx)
+        self.assertNotIn("코디네이터", ctx.split("\n", 1)[1])
         log = self.hook_log()
         self.assertIn("session-start\nauto-up\n", log)
         self.assertIn("Traceback", log)
 
 
 class PathGuardTest(HookCase):
-    def test_coordinator_outside_project_and_traversal(self):
-        sibling = self.tmp / "sibling"
-        sibling.mkdir()
-        for raw in (str(sibling / "a.py"), str(self.proj / ".herdr-team/../../sibling/a.py"), "../sibling/a.py"):
-            out = self.hook("guard", {"tool_name": "Write", "tool_input": {"file_path": raw}}, coordinator=True)
-            self.assertEqual(self.decision(out), "deny", raw)
-        link = self.proj / ".herdr-team" / "out"
-        link.symlink_to(sibling)
-        out = self.hook("guard", {"tool_name": "Write", "tool_input": {"file_path": str(link / "a.py")}},
-                        coordinator=True)
-        self.assertEqual(self.decision(out), "deny")
 
     def test_main_traversal_into_product_and_outside_scratch(self):
         out = self.hook("guard", {"tool_name": "Write",
@@ -500,18 +508,17 @@ class PathGuardTest(HookCase):
         (self.team / "st").symlink_to(self.state_dir)
         (self.proj / ".claude").mkdir()
         (self.proj / ".claude" / "src").symlink_to(self.proj / "src")
-        for kw in ({"terminal": MAIN}, {"coordinator": True}):
+        for kw in ({"terminal": MAIN}, {"drive": True}):
             self.assertEqual(self.decision(self.edit(".herdr-team/st/run.json", **kw)), "deny", kw)
             self.assertEqual(self.decision(self.edit(".herdr-team/State/run.json", **kw)), "deny", kw)  # 대소문자
         self.assertEqual(self.decision(self.edit(".claude/src/a.py", terminal=MAIN)), "deny")
 
-    def test_unresolvable_path_denied_for_coordinator_and_main(self):
+    def test_unresolvable_path_denied_for_main(self):
         loop = self.team / "loop"
         loop.symlink_to(loop)  # 자기 자신을 가리키는 링크: 풀 수 없다
         for raw in ("", str(loop / "a.md"), str(self.team / "a\0b.md"), ["x"]):
-            for kw in ({"terminal": MAIN}, {"coordinator": True}):
-                out = self.hook("guard", {"tool_name": "Write", "tool_input": {"file_path": raw}}, **kw)
-                self.assertEqual(self.decision(out), "deny", (raw, kw))
+            out = self.hook("guard", {"tool_name": "Write", "tool_input": {"file_path": raw}}, terminal=MAIN)
+            self.assertEqual(self.decision(out), "deny", raw)
         self.assertEqual(self.hook_log(), "")  # 훅 오류가 아니라 판단이다
 
     def test_setup_mode_still_denies_unresolvable(self):
@@ -542,7 +549,7 @@ class PathGuardTest(HookCase):
                 "file_path": str(root / ".herdr-team/state/run.json")}}, terminal=worker)
             self.assertEqual(self.decision(out), "deny", root)
             out = self.hook("guard", {**write, "tool_input": {"file_path": str(root / ".herdr-team/tasks/T-001.md")}},
-                            coordinator=True)
+                            drive=True)
             self.assertIsNone(out, root)
 
     def test_relative_and_home_paths(self):
@@ -552,7 +559,7 @@ class PathGuardTest(HookCase):
                                   "tool_input": {"file_path": "../../src/x.py"}}, terminal=MAIN)
         self.assertEqual(self.decision(out), "deny")
         out = self.hook("guard", {"tool_name": "Write", "cwd": str(self.team),
-                                  "tool_input": {"file_path": "tasks/T-001.md"}}, coordinator=True)
+                                  "tool_input": {"file_path": "tasks/T-001.md"}}, drive=True)
         self.assertIsNone(out)
         out = self.hook("guard", {"tool_name": "Write", "session_id": "w",
                                   "tool_input": {"file_path": "~/proj/.herdr-team/state/x"}},

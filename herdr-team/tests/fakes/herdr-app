@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""테스트용 가짜 herdr-app(herdr-team 시험 전용, 설계 5.9.2·6.5·8.2). 호출 argv 를 $FAKE_HC_DIR/herdr-calls.jsonl 에 남기고,
+가짜 hc 와 같은 상태 파일($FAKE_HC_DIR/state.json)을 같은 잠금(lock)으로 읽고 쓴다.
+
+- status: 실제 herdr-app status 의 키(zoom·font_size·ui_font_size·space·tab·focused_pane·layout·agent·floats·overlays·
+  errors, 2026-11-10 확인)를 여러 줄 JSON 으로. herdr-team 은 horch doctor 의 herdr_app 검사(exit 0 과 한 줄 요약)로만
+  쓴다. 가짜가 모르는 값은 null·빈 목록이다.
+- do tab.rename --id X --name N: {"ok": true}.
+- ls: 실제 꼴(2026-11-10 확인) {"spaces": [{"id", "name", "folder", "machine": null, "active", "tabs": [{"id", "name",
+  "active", "settled", "terminals": [{"terminal": "<주소>", "pane": "p<주소>", "status", "app", "name": null,
+  "sub_agents": []}]}]}], "recent": []}. live 이고 라벨 herdr.space·herdr.tab 이 있는 터미널만. 탭 안 순서는 상태
+  "layout"[탭] 의 주소 순서, 그 밖은 상태에 있는 순서로 뒤에. space·탭의 name 은 id, folder 는 "/", 처음 space 와 space 마다
+  처음 탭이 active. 터미널의 status·app 은 상태 파일의 status({"app", "state"})에서, 모르면 null.
+- do pane.split '<JSON {direction, pane, argv}>': 새 터미널(주소 t<next>, argv, 그 pane 터미널의 herdr 라벨)을 만들고
+  layout 에서 그 pane 바로 오른쪽에 둔다. {"pane", "terminal"}.
+- do pane.swap '<JSON {pane, target}>': layout 에서 두 pane 의 자리를 바꾼다. {"ok": true}.
+- do pane.close '<JSON {pane}>': 그 터미널을 finished 로 두고 layout 에서 뺀다. {"ok": true}.
+- 상태 "fail" 의 "herdr-app <명령>"(예 "herdr-app pane.split") 이 있으면 {"error": "<kind>"} 와 exit 1.
+- 모르는 pane 이면 {"error": "unknown pane"} 와 exit 1. 그 밖의 명령은 exit 2.
+"""
+import fcntl
+import json
+import os
+import sys
+from pathlib import Path
+
+DIR = Path(os.environ.get("FAKE_HC_DIR", "."))
+
+
+def out(obj, code=0):
+    print(json.dumps(obj))
+    return code
+
+
+def placed(st):
+    """(space, tab) → 주소 목록(layout 순서 다음 나머지)."""
+    tabs = {}
+    for t in st["terminals"].values():
+        labels = t.get("labels") or {}
+        if t.get("state") == "live" and labels.get("herdr.space") and labels.get("herdr.tab"):
+            tabs.setdefault((labels["herdr.space"], labels["herdr.tab"]), []).append(t["address"])
+    layout = st.get("layout") or {}
+    for key, addrs in tabs.items():
+        order = [a for a in layout.get(key[1], []) if a in addrs]
+        tabs[key] = order + [a for a in addrs if a not in order]
+    return tabs
+
+
+def pane_term(st, pane):
+    addr = pane[1:] if isinstance(pane, str) and pane.startswith("p") else None
+    t = st["terminals"].get(addr) if addr else None
+    return t if t and t.get("state") == "live" else None
+
+
+def row(st, tab):
+    for (_, tb), addrs in placed(st).items():
+        if tb == tab:
+            return addrs
+    return []
+
+
+def ls_terminal(t):
+    """ls 의 탭 terminals 항목(실제 꼴). status·app 은 상태 파일의 status 에서, 모르면 null."""
+    status = t.get("status")
+    if isinstance(status, str):
+        status = {"state": status}
+    status = status if isinstance(status, dict) else {}
+    return {"terminal": t["address"], "pane": f"p{t['address']}", "status": status.get("state"), "app": status.get("app"),
+            "name": None, "sub_agents": []}
+
+
+def handle(st, argv):
+    if argv[:1] == ["status"]:
+        print(json.dumps({"zoom": 1.0, "font_size": 13, "ui_font_size": 13, "space": None, "tab": None,
+                          "focused_pane": None, "layout": None, "agent": None, "floats": [], "overlays": [],
+                          "errors": []}, indent=2))
+        return 0
+    if argv[:1] == ["ls"]:
+        spaces = {}
+        for (space, tab), addrs in placed(st).items():
+            tabs = spaces.setdefault(space, [])
+            tabs.append({"id": tab, "name": tab, "active": not tabs, "settled": True,
+                         "terminals": [ls_terminal(st["terminals"][a]) for a in addrs]})
+        return out({"spaces": [{"id": s, "name": s, "folder": "/", "machine": None, "active": i == 0, "tabs": tabs}
+                               for i, (s, tabs) in enumerate(spaces.items())], "recent": []})
+    if argv[:1] != ["do"] or len(argv) < 2:
+        return 2
+    name = argv[1]
+    fail = (st.get("fail") or {}).get(f"herdr-app {name}")
+    if fail:
+        return out({"error": fail.get("kind", "failed")}, 1)
+    if name == "tab.rename":
+        return out({"ok": True})
+    try:
+        args = json.loads(argv[2]) if len(argv) > 2 else {}
+    except ValueError:
+        return out({"error": "bad json"}, 1)
+    layout = st.setdefault("layout", {})
+    if name == "pane.split":
+        base = pane_term(st, args.get("pane"))
+        if base is None:
+            return out({"error": "unknown pane"}, 1)
+        labels = {k: v for k, v in (base.get("labels") or {}).items() if k in ("herdr.space", "herdr.tab")}
+        addr = f"t{st['next']}"
+        st["next"] += 1
+        st["terminals"][addr] = {"address": addr, "name": None, "state": "live", "status": None,
+                                 "argv": list(args.get("argv") or ["sh"]), "labels": labels, "reason": None, "turn": 0,
+                                 "cwd": base.get("cwd", "/"), "exit_code": None, "title": ""}
+        tab = labels["herdr.tab"]
+        order = row(st, tab)
+        order.remove(addr)
+        order.insert(order.index(base["address"]) + 1, addr)
+        layout[tab] = order
+        return out({"pane": f"p{addr}", "terminal": addr})
+    if name == "pane.swap":
+        a, b = pane_term(st, args.get("pane")), pane_term(st, args.get("target"))
+        if a is None or b is None:
+            return out({"error": "unknown pane"}, 1)
+        tab = a["labels"]["herdr.tab"]
+        order = row(st, tab)
+        i, j = order.index(a["address"]), order.index(b["address"])
+        order[i], order[j] = order[j], order[i]
+        layout[tab] = order
+        return out({"ok": True})
+    if name == "pane.close":
+        t = pane_term(st, args.get("pane"))
+        if t is None:
+            return out({"error": "unknown pane"}, 1)
+        t["state"], t["exit_code"] = "finished", 0
+        tab = (t.get("labels") or {}).get("herdr.tab")
+        if tab in layout:
+            layout[tab] = [x for x in layout[tab] if x != t["address"]]
+        return out({"ok": True})
+    return 2
+
+
+def main(argv):
+    DIR.mkdir(parents=True, exist_ok=True)
+    with open(DIR / "herdr-calls.jsonl", "a") as f:
+        f.write(json.dumps(argv) + "\n")
+    path = DIR / "state.json"
+    if not path.exists():  # 상태 파일이 없는 시험(doctor 등)은 status 만 쓴다
+        return handle({"terminals": {}, "next": 1}, argv)
+    with open(DIR / "lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        st = json.loads(path.read_text())
+        code = handle(st, argv)
+        path.write_text(json.dumps(st))
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

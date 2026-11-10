@@ -282,7 +282,7 @@ class TaskNewTest(TeamCase):
         code, out = self.hteam("task", "new", "--role", "nope", "--title", "x")
         self.assertEqual((code, out["error"]["code"]), (2, "unknown_role"))
         code, out = self.hteam("task", "new", "--role", "developer", "--title", "x", as_="main")
-        self.assertEqual((code, out["error"]["code"]), (5, "not_coordinator"))
+        self.assertEqual((code, out["error"]["code"]), (5, "drive_only"))
         (self.proj / ".herdr-team" / "config.toml").write_text("max_parallel = 0\n")
         code, out = self.hteam("task", "new", "--role", "developer", "--title", "x")
         self.assertEqual((code, out["error"]["code"]), (2, "bad_config"))

@@ -30,6 +30,24 @@ def age_seconds(stamp: str | None) -> float | None:
     return (datetime.now(timezone.utc) - then).total_seconds()
 
 
+def local_now() -> str:
+    """로컬 오프셋 ISO 8601 초 단위(예 `2026-11-10T15:23:45+09:00`). 관제 heartbeat·drive.log·crew.json 의 시각(설계 8.2·8.11)."""
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def local_age(stamp) -> float | None:
+    """local_now() 꼴 시각에서 지금까지 흐른 초(미래면 음수). 오프셋 있는 ISO 8601 이 아니면 None."""
+    if not isinstance(stamp, str) or not stamp:
+        return None
+    try:
+        then = datetime.fromisoformat(stamp)
+    except ValueError:
+        return None
+    if then.tzinfo is None or then.utcoffset() is None:
+        return None
+    return (datetime.now(timezone.utc) - then).total_seconds()
+
+
 def write_atomic(path: Path, text: str) -> None:
     """임시 파일에 쓴 뒤 os.replace 한다. 읽는 쪽은 잠금 없이도 완전한 파일만 본다."""
     path.parent.mkdir(parents=True, exist_ok=True)

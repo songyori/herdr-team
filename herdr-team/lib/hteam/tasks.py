@@ -913,32 +913,32 @@ def _cli(args) -> dict:
 
 def _cmd_start(args) -> dict:
     p = find_project(args.root)
-    roles.require_coordinator(p)
+    roles.require_drive(p)
     return start(p, args.task, _cli(args))
 
 
 def _cmd_start_ready(args) -> dict:
     p = find_project(args.root)
-    roles.require_coordinator(p)
+    roles.require_drive(p)
     return start_ready(p)
 
 
 def _cmd_fix(args) -> dict:
     p = find_project(args.root)
-    roles.require_coordinator(p)
+    roles.require_drive(p)
     return fix(p, args.task, note=args.note, supplement=args.supplement, force_round=args.force_round, cli=_cli(args),
                expect_round=args.expect_round)
 
 
 def _cmd_accept(args) -> dict:
     p = find_project(args.root)
-    roles.require_coordinator(p)
+    roles.require_drive(p)
     return accept(p, args.task, args.expect_round)
 
 
 def _cmd_drop(args) -> dict:
     p = find_project(args.root)
-    roles.require_coordinator(p)
+    roles.require_drive(p)
     return drop(p, args.task, args.force)
 
 

@@ -304,21 +304,21 @@ def _terminal() -> str:
 def require_main(p) -> str:
     """메인 터미널에서 불렀는지 확인한다(tell·answer·watch·reask 가 무엇이든 쓰기 전에 부른다). 실수 방지용이다(설계 8.3).
 
-    코디네이터(HTEAM_ROLE·run.json 의 터미널·horch Run 소유자·hc 라벨 hteam.role)와 워커·리뷰어는 메인이 아니다. horch status 는
+    관제(HTEAM_ROLE·run.json 의 터미널·horch Run 소유자·hc 라벨 hteam.role)와 워커·리뷰어는 메인이 아니다. horch status 는
     launching·active Dispatch 만 알려 주므로, 끝난 Dispatch 의 터미널은 horch 가 워커 터미널을 띄울 때 붙이는 hc 라벨
     (horch.dispatch)로 가린다. horch worker-list 는 Run 소유자 터미널에서만 되므로 메인에서 부를 수 없다.
     확인할 수 없으면 거부한다(exit 1 main_unverified)."""
     term = _terminal()
-    hint = "메인 세션 터미널에서 실행한다. 코디네이터·워커는 horch 로 주고받는다"
-    if os.environ.get("HTEAM_ROLE") == "coordinator" or term == _run(p).get("coordinator_terminal"):
-        raise HteamError("not_main", "코디네이터는 이 명령을 부르지 않는다(메인 전용)", DENIED, hint)
+    hint = "메인 세션 터미널에서 실행한다. 관제·워커는 horch 로 주고받는다"
+    if os.environ.get("HTEAM_ROLE") == "drive" or term == _run(p).get("drive_terminal"):
+        raise HteamError("not_main", "관제 터미널은 이 명령을 부르지 않는다(메인 전용)", DENIED, hint)
     code, data = Horch(p.horch_home).call("status")
     if code != 0 or not data.get("ok"):
         err = data.get("error") or {}
         raise HteamError("main_unverified", f"horch status 로 이 터미널({term})을 확인하지 못했다: {err.get('code')}",
                          FAIL, "다시 시도한다")
     if data.get("dispatch") or data.get("run"):
-        who = "워커" if data.get("dispatch") else "Run 소유자(코디네이터)"
+        who = "워커" if data.get("dispatch") else "Run 소유자(관제)"
         raise HteamError("not_main", f"{term} 은 {who} 터미널이다(메인 전용)", DENIED, hint)
     # 이 터미널과 hc parent 조상(기본 `hc run` 은 띄운 터미널을 parent 로 남긴다)의 라벨을 본다. --no-parent 로 띄운
     # 자식은 못 가린다(실수 방지용, 설계 14장). 조상을 끝까지 따라가지 못하면(hc 실패·순환·너무 깊음) 확인 불가다.
@@ -329,8 +329,8 @@ def require_main(p) -> str:
         where = term if node == term else f"{term}(조상 {node} 아래에서 띄움)"
         if labels.get("horch.dispatch"):
             raise HteamError("not_main", f"{where} 은 horch 가 띄운 워커 터미널이다(메인 전용)", DENIED, hint)
-        if labels.get("hteam.role") == "coordinator":  # bind 전이라 run.json·horch 가 아직 모르는 코디네이터(설계 9.3)
-            raise HteamError("not_main", f"{where} 은 hteam up 이 띄운 코디네이터 터미널이다(메인 전용)", DENIED, hint)
+        if labels.get("hteam.role") == "drive":  # Run 연결 전이라 run.json·horch 가 아직 모르는 관제(설계 9.3)
+            raise HteamError("not_main", f"{where} 은 hteam up 이 띄운 관제 터미널이다(메인 전용)", DENIED, hint)
         parent = _parent_ref(info.get("parent"))
         if not parent:
             return term
@@ -414,8 +414,8 @@ def notify(p, kind: str, body: str | None, json_text: str | None, confirm: bool 
 
 def _orphaned(p) -> bool:
     run = _run(p)  # 읽지 못하면 bad_run_file(watch 가 그 오류로 끝난다)
-    term = run.get("coordinator_terminal")
-    return bool(term) and herdr.probe(term, run.get("coordinator_argv")) in ("exited", "lost")
+    term = run.get("drive_terminal")
+    return bool(term) and herdr.probe(term, run.get("drive_argv")) in ("exited", "lost")
 
 
 def _lock_watch(p):
@@ -587,7 +587,7 @@ def _cmd_tell(args) -> dict:
 
 def _cmd_notify(args) -> dict:
     p = find_project(args.root)
-    roles.require_coordinator(p)
+    roles.require_drive(p)
     text = sys.stdin.read() if args.json == "-" else args.json
     return notify(p, args.type, args.body, text, args.test_confirm)
 
@@ -604,7 +604,7 @@ def _cmd_answer(args) -> dict:
 
 def _cmd_applied(args) -> dict:
     p = find_project(args.root)
-    roles.require_coordinator(p)
+    roles.require_drive(p)
     return mark_applied(p, args.id)
 
 

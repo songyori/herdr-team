@@ -221,7 +221,7 @@ def _split(value: str | None) -> list[str] | None:
 
 def _cmd_task_new(args) -> dict:
     p = find_project(args.root)
-    roles.require_coordinator(p)
+    roles.require_drive(p)
     return new(p, config.load(p), args.role, args.title, _split(args.owns), _split(args.depends_on))
 
 

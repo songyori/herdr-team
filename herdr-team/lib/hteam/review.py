@@ -705,13 +705,13 @@ def _finish(p, tid: str) -> dict:
 
 def _cmd_review(args) -> dict:
     p = find_project(args.root)
-    roles.require_coordinator(p)
+    roles.require_drive(p)
     return review(p, args.task, args.retry)
 
 
 def _cmd_review_finish(args) -> dict:
     p = find_project(args.root)
-    roles.require_coordinator(p)
+    roles.require_drive(p)
     return review_finish(p, args.task)
 
 

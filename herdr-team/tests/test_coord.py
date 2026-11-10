@@ -4,7 +4,7 @@ import os
 import time
 import unittest
 
-from tests.helpers import BASE_CONFIG, COORD, TeamCase
+from tests.helpers import BASE_CONFIG, DRIVE, TeamCase
 from hteam import dispatch, state
 from hteam.paths import Project
 
@@ -109,7 +109,7 @@ class WaitTest(CoordCase):
         def load(p, tid):
             calls.append(tid)
             return real(p, tid)
-        with mock.patch.dict(os.environ, self._env("coordinator", None, None), clear=True), \
+        with mock.patch.dict(os.environ, self._env("drive", None, None), clear=True), \
                 mock.patch.object(specs, "load", load):
             out = coord.status(self.p)
         self.assertEqual(out["tasks"][0]["title"], "앱 만들기")
@@ -280,7 +280,7 @@ class WhichStatusTest(CoordCase):
         self.assertEqual(nxt["T-001"], [H, "start-ready"])
         self.assertEqual(nxt["T-002"], [H, "review", "T-002"])
         self.assertIsNone(nxt["T-003"])
-        self.assertTrue(out["coordinator"]["alive"])
+        self.assertTrue(out["drive"]["alive"])
         self.assertFalse(out["watch_alive"])
         self.assertIn("--home", out["horch"])
         self.hteam("review", "T-002")
@@ -315,7 +315,7 @@ class WhichStatusTest(CoordCase):
         code, out = self.hteam("status", as_="main")
         self.assertEqual(code, 0, out)
         self.assertIn("run.json", out["run_error"])
-        self.assertIsNone(out["coordinator"]["terminal"])
+        self.assertIsNone(out["drive"]["terminal"])
 
     def test_status_from_main_and_broken_config(self):
         self.started()
@@ -419,9 +419,9 @@ class ContractTest(CoordCase):
     def test_coordinator_terminal_or_unknown_rows_is_not_main(self):
         from hteam import coord
         run = self.run_json()
-        run["main_terminals"] = ["t1", COORD]
+        run["main_terminals"] = ["t1", DRIVE]
         (self.state_dir / "run.json").write_text(json.dumps(run))
-        self.assertEqual(coord.annotate(self.p, self.main_msg("[main] x", COORD), [], "horch")["hteam"]["kind"],
+        self.assertEqual(coord.annotate(self.p, self.main_msg("[main] x", DRIVE), [], "horch")["hteam"]["kind"],
                          "other")
         self.assertEqual(coord.annotate(self.p, self.main_msg("[main] x", "t1"), [], "horch")["hteam"]["kind"], "main")
         # worker-list 를 읽지 못하면 워커 터미널인지 모른다. 메인으로 보지 않는다
@@ -684,7 +684,7 @@ class ReviewFindingsTest(CoordCase):
             calls.append(1)
             return real(p)
 
-        with mock.patch.dict(os.environ, self._env("coordinator", None, None), clear=True), \
+        with mock.patch.dict(os.environ, self._env("drive", None, None), clear=True), \
                 mock.patch.object(state, "all_states", counted):
             out = coord.wait(self.p, None, 3)
         self.assertEqual((out["reason"], out["count"]), ("message", 3))

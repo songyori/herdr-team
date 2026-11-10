@@ -26,7 +26,8 @@ FAKES = Path(__file__).resolve().parent / "fakes"
 sys.path.insert(0, str(ROOT / "lib"))
 
 NONCE = "nonce-test"
-COORD = "t100"  # 코디네이터 터미널(Run 소유자)
+DRIVE = "t100"  # 관제 터미널(Run 소유자). 상태를 보고하지 않는 셸 프로그램 hteam drive 가 돈다(설계 8.1)
+DRIVE_ARGV = ["hteam-drive"]  # 가짜 hc 의 관제 터미널 argv(run.json 의 drive_argv)
 MAIN = "t1"  # 메인 터미널
 
 BASE_CONFIG = """max_parallel = 4
@@ -97,7 +98,9 @@ hello 를 출력한다.
 DROP_ENV = ("HC_TERMINAL_ID", "CODEX_SANDBOX", "HERDR_ORCH_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "HTEAM_ROLE",
             "HTEAM_LAUNCH", "HERDR_ORCH_BIN", "HERDR_TEAM_PLUGIN_ROOT", "CLAUDE_PROJECT_DIR", "HTEAM_TEST_DIE_AT",
             "HORCH_TEST_DIE_AT", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
-            "GIT_CONFIG_GLOBAL", "HTEAM_TEST_PAUSE_AT", "HTEAM_TEST_PAUSE_FILE")
+            "GIT_CONFIG_GLOBAL", "HTEAM_TEST_PAUSE_AT", "HTEAM_TEST_PAUSE_FILE", "CLAUDECODE", "HTEAM_DRIVE_TICKS",
+            "HTEAM_DRIVE_WAIT_MS", "HTEAM_DRIVE_IDLE_S", "HTEAM_BIND_RETRY_S", "HTEAM_QUEUE_WAIT_S", "HTEAM_QUEUE_POLL_S",
+            "HTEAM_RESET_TIMEOUT_MS")
 
 
 class TeamCase(unittest.TestCase):
@@ -247,18 +250,23 @@ class TeamCase(unittest.TestCase):
             self.git("add", "--", ".herdr-team", ".gitignore")
             self.git("commit", "-q", "-m", "chore: setup", "--", ".herdr-team", ".gitignore")
 
-    def setup_run(self) -> str:
-        """코디네이터 터미널(COORD)에서 horch Run 을 만들고 run.json 을 bind 뒤 모양으로 쓴다."""
-        self.add_terminal(COORD, argv=["claude"], labels={"herdr.space": "spA", "herdr.tab": "tbTeam"}, status="idle")
+    def setup_run(self, *, alive: bool = True) -> str:
+        """관제 터미널(DRIVE, 상태를 보고하지 않는 셸)에서 horch Run 을 만들고 run.json 을 관제가 Run 에 묶인 뒤 모양으로
+        쓴다(설계 3.4·8.2). alive 면 관제 생존 파일도 쓴다(drive.pid 는 이 시험 프로세스, heartbeat 는 지금): 관제가 살아
+        있는 것이 기본이다(메인 훅의 자동 부활이 돌지 않는다). 관제가 죽은 경우는 drive.pid 를 지운다."""
+        self.add_terminal(DRIVE, argv=DRIVE_ARGV, labels={"herdr.space": "spA", "herdr.tab": "tbTeam", "hteam.role": "drive"})
         self.add_terminal(MAIN, argv=["claude"], labels={"herdr.space": "spA", "herdr.tab": "tbMain"}, status="idle")
-        code, out = self.horch("run-create", "--objective", "test", terminal=COORD)
+        code, out = self.horch("run-create", "--objective", "test", terminal=DRIVE)
         self.assertEqual(code, 0, out)
         run_id = out["run"]["id"]
         self.state_dir.mkdir(parents=True, exist_ok=True)
         (self.state_dir / "run.json").write_text(json.dumps({
             "run_id": run_id, "pending_launch": {"nonce": NONCE, "at": "2026-01-01T00:00:00Z"},
-            "bound_nonce": NONCE, "coordinator_terminal": COORD, "coordinator_argv": ["claude"],
-            "team_space": "spA", "team_tab": "tbTeam", "launched_at": "2026-01-01T00:00:00Z"}))
+            "bound_nonce": NONCE, "bound_at": "2026-01-01T00:00:00Z", "drive_terminal": DRIVE, "drive_argv": DRIVE_ARGV,
+            "team_space": "spA", "team_tab": "tbTeam"}))
+        if alive:
+            self.write_drive_pid()
+            self.write_heartbeat()
         return run_id
 
     def write_spec(self, tid: str, role: str = "developer", title: str = "앱 만들기", *, owns: str | None = None,
@@ -282,6 +290,48 @@ class TeamCase(unittest.TestCase):
 
     def task_state(self, tid: str) -> dict:
         return json.loads((self.state_dir / "tasks" / f"{tid}.json").read_text(encoding="utf-8"))
+
+    # --- 관제(6단계, 설계 8장) ---
+    @property
+    def drive_dir(self) -> Path:
+        return self.state_dir / "drive"
+
+    def in_drive(self):
+        """이 프로세스 환경을 관제 환경으로 바꾼다(설계 8.2 관제 판별). with 블록 안에서 drive·tasks 함수를 바로 부른다."""
+        return mock.patch.dict(os.environ, self._env("drive", None, None), clear=True)
+
+    def make_drive(self):
+        """관제 객체(시작 절차 없이). in_drive() 안에서 부른다."""
+        from hteam import drive
+        from hteam.paths import Project
+        return drive.Drive(Project(self.proj))
+
+    @staticmethod
+    def message(type_: str, did: str | None, body: dict, mid: int = 1, sender: str | None = None) -> dict:
+        """horch check 의 messages[i] 모양(관제의 handle 에 바로 넘긴다)."""
+        return {"id": mid, "type": type_, "sender": sender or (f"dispatch:{did}" if did else "horch"),
+                "subject": f"{type_} {did}", "body": json.dumps(body, ensure_ascii=False), "reply_to": None,
+                "dispatch": did, "created_at": "2026-01-01T00:00:00Z"}
+
+    def write_drive_pid(self, pid: int | None = None, started: str | None = None) -> None:
+        """관제 pid 파일 {pid, started}(설계 8.2). 기본은 이 시험 프로세스(살아 있다)."""
+        from hteam import procs
+        rec = procs.me() if pid is None else {"pid": pid, "started": started}
+        self.drive_dir.mkdir(parents=True, exist_ok=True)
+        (self.drive_dir / "drive.pid").write_text(json.dumps(rec), encoding="utf-8")
+
+    def write_heartbeat(self, age_s: float = 0) -> None:
+        """관제 heartbeat(로컬 오프셋 ISO 8601 초 단위, 설계 8.2). age_s 초 전 시각을 쓴다."""
+        from datetime import datetime, timedelta
+        stamp = (datetime.now().astimezone() - timedelta(seconds=age_s)).isoformat(timespec="seconds")
+        self.drive_dir.mkdir(parents=True, exist_ok=True)
+        (self.drive_dir / "heartbeat").write_text(stamp, encoding="utf-8")
+
+    def outbox_items(self) -> list[dict]:
+        path = self.state_dir / "outbox.jsonl"
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
     # --- 테스트 관문(5단계) ---
     def use_gate(self, quick: str = "fake-test {files}", full: str = "fake-test --all", extra: str = "", *,
@@ -320,8 +370,8 @@ class TeamCase(unittest.TestCase):
     # --- 실행 ---
     def _env(self, as_: str | None, terminal: str | None, extra: dict | None) -> dict:
         env = dict(self.env)
-        if as_ == "coordinator":
-            env.update({"HTEAM_ROLE": "coordinator", "HTEAM_LAUNCH": NONCE, "HC_TERMINAL_ID": COORD})
+        if as_ == "drive":
+            env.update({"HTEAM_ROLE": "drive", "HTEAM_LAUNCH": NONCE, "HC_TERMINAL_ID": DRIVE})
         elif as_ == "main":
             env["HC_TERMINAL_ID"] = MAIN
         if terminal:
@@ -330,14 +380,14 @@ class TeamCase(unittest.TestCase):
             env.update(extra)
         return env
 
-    def hteam(self, *args: str, as_: str | None = "coordinator", terminal: str | None = None,
+    def hteam(self, *args: str, as_: str | None = "drive", terminal: str | None = None,
               stdin: str | None = None, env: dict | None = None, timeout: float = 60,
               cwd: Path | None = None) -> tuple[int, dict]:
         proc = subprocess.run([sys.executable, str(BIN), *args], capture_output=True, text=True, input=stdin,
                               env=self._env(as_, terminal, env), timeout=timeout, cwd=str(cwd or self.proj))
         return proc.returncode, _parse(proc.stdout, proc.stderr)
 
-    def hteam_bg(self, *args: str, as_: str | None = "coordinator", terminal: str | None = None,
+    def hteam_bg(self, *args: str, as_: str | None = "drive", terminal: str | None = None,
                  stdin: str | None = None, env: dict | None = None) -> subprocess.Popen:
         proc = subprocess.Popen([sys.executable, str(BIN), *args], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, env=self._env(as_, terminal, env),
@@ -372,7 +422,7 @@ class TeamCase(unittest.TestCase):
         out, err = proc.communicate(timeout=timeout)
         return proc.returncode, _parse(out, err)
 
-    def horch(self, *args: str, terminal: str | None = COORD, timeout: float = 60) -> tuple[int, dict]:
+    def horch(self, *args: str, terminal: str | None = DRIVE, timeout: float = 60) -> tuple[int, dict]:
         env = dict(self.env)
         if terminal:
             env["HC_TERMINAL_ID"] = terminal
