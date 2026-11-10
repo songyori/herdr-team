@@ -822,9 +822,13 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
     cfg = config.load(p)
     spec = specs.check(p, cfg, tid)
     choice = config.resolve(cfg, spec.role, spec.front, cli)
-    # 대기열의 수정(queued_fix)이 있으면 그 지시를 잇는다(새 라운드 쓰기가 표시를 지운다, 5.9.5)
-    note, supplement, force_round = crew.merged((state.load(p, tid) or {}).get("queued_fix"), note, supplement,
-                                                force_round)
+    # 대기열의 수정(queued_fix)이 있으면 그 지시를 잇는다(새 라운드 쓰기가 표시를 지운다, 5.9.5). 사용자 결정 라운드(from_user)면
+    # 대기 지시는 사용자 요청과 섞지 않고 지시(coord_note)로 잇는다(설계 7.4). supplement·force_round 는 같이 합친다
+    queued = (state.load(p, tid) or {}).get("queued_fix")
+    held_note = None
+    if from_user and queued:
+        held_note, queued = queued.get("note"), {**queued, "note": None}
+    note, supplement, force_round = crew.merged(queued, note, supplement, force_round)
     followers: list[dict] = []
     defer = False
     if supplement is not None:
@@ -891,6 +895,8 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
             kept = (prior["coord_note"].split(" / ") if prior.get("coord_note") else []) + ([note] if note else [])
             coord_note = " / ".join(dict.fromkeys(kept)) if kept else None
             note, from_user = prior["note"], True
+        if held_note:  # 앞 지시 → 대기 지시 순서, 같은 줄은 한 번
+            coord_note = crew.merged({"note": coord_note}, held_note, None, False)[0]
         if supplement is None and prior.get("supplement") and old != "awaiting_user":
             # 보강 라운드가 다시 승인되지 못한 채 닫힌다(작업 실패, 리뷰 수정 요청 등). 끝나지 않은 보강을 잇는다
             # (수정 블록이 보강 결과를 계속 보이고, 다시 승인된 뒤 그 라운드의 제안을 보강 대상으로 보지 않는다)

@@ -1734,3 +1734,21 @@ class ApprovalDocsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class QueuedNoteDecisionTest(DecisionCase):
+    def test_user_fix_keeps_queued_note_as_coord_note(self):
+        """대기 수정(queued_fix)의 지시는 사용자 결정 라운드의 사용자 요청과 섞지 않고 지시(coord_note)로 잇는다(설계 7.4,
+        Codex 커밋 리뷰 c34bcdc). supplement·force_round 는 지금처럼 합친다."""
+        self.task("T-001", "awaiting_user")
+        self.assertEqual(self.review()[1].get("id"), "out-0001")
+        with state.edit(self.p, "T-001") as st:  # 관제·메인의 일반 fix 지시가 대기열에 들어가 있다
+            st["queued_fix"] = {"note": "코디네이터 지시", "supplement": None, "force_round": False,
+                                "at": "2026-01-01T00:00:00Z", "request": None}
+        code, out = self.decide("out-0001", {"T-001": "실제 사용자 요청"})
+        self.assertEqual(code, 0, out)
+        st = self.task_state("T-001")
+        rd = st["rounds"][-1]
+        self.assertEqual((rd["note"], rd.get("coord_note"), rd.get("from_user")),
+                         ("실제 사용자 요청", "코디네이터 지시", True))
+        self.assertNotIn("queued_fix", st)
