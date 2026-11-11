@@ -645,17 +645,21 @@ def failed_quick(tests: dict | None) -> bool:
     return bool(tests) and "quick" in tests and tests["quick"].get("status") not in PASSED
 
 
-def describe(entry: dict, kind: str) -> list[str]:
+def describe(entry: dict, kind: str, p=None) -> list[str]:
     """관문 결과 한 종류의 줄(설계 6.2). 명령은 JSON 문자열(util.dumps)로 보인다: 여러 줄 명령이 새 줄·절을 만들지 못하고,
-    UTF-8 이 아닌 파일 이름(os.fsdecode 의 서로게이트)도 `\\udcXX` 로 보여 프롬프트·반려 파일을 쓸 수 있다."""
+    UTF-8 이 아닌 파일 이름(os.fsdecode 의 서로게이트)도 `\\udcXX` 로 보여 프롬프트·반려 파일을 쓸 수 있다. p(그 태스크의
+    view)를 주면 로그는 그 세션이 여는 경로(p.state_ref: 슬롯 태스크면 상태 루트의 절대 경로)다."""
+    def log(rel):
+        return rel if p is None else p.state_ref(rel)
+
     first = f"{kind}: {STATUS_TEXT.get(entry.get('status'), entry.get('status'))}"
     if entry.get("command"):
         first += f" ({entry['seconds']}초" + (f", exit {entry['exit']})" if entry.get("exit") is not None else ")")
     lines = [first]
     if entry.get("command"):
-        lines += [f"{kind} 명령: {dumps(entry['command'])}", f"{kind} 로그: {entry['log']}"]
+        lines += [f"{kind} 명령: {dumps(entry['command'])}", f"{kind} 로그: {log(entry['log'])}"]
     if entry.get("status") == "flaky" and isinstance(entry.get("first"), dict):
-        lines.append(f"{kind} 첫 실행 로그: {entry['first'].get('log')}")
+        lines.append(f"{kind} 첫 실행 로그: {log(entry['first'].get('log'))}")
     dirty = list(entry.get("dirty") or [])
     if dirty:
         more = f" 외 {len(dirty) - DIRTY_SHOWN}개" if len(dirty) > DIRTY_SHOWN else ""

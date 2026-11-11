@@ -98,6 +98,14 @@ class Project:
     def role_doc(self, role: str) -> Path:
         return self.roles / f"{role}.md"
 
+    def state_ref(self, rel: str) -> str:
+        """세션(워커·리뷰어)에게 읽으라고 주는 상태 루트 파일 rel(프로젝트 기준 상대 경로)의 경로. 두 루트가 같거나 작업 루트에도
+        그 파일이 있으면(커밋된 파일) rel 그대로, 상태 루트에만 있으면(`.herdr-team/state/` 등) 절대 경로다. 슬롯 세션의 cwd 는
+        작업 루트다(설계 5.10.4, Codex 커밋 리뷰 b916c8c P2)."""
+        if self.work_root == self.root or (self.work_root / rel).exists():
+            return rel
+        return (self.root / rel).as_posix()
+
 
 def report_rel(tid: str) -> str:
     return f"docs/tasks/{tid}/report.md"

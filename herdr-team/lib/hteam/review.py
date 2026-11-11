@@ -126,13 +126,14 @@ def prechecks(p, cfg, st: dict, spec, commits: list[dict], files: list[str]) -> 
     return found
 
 
-def _gate_text(tid: str, n: int, tests: dict) -> str:
-    """테스트 관문 반려 파일(설계 6.1 4a). 명령은 JSON 문자열, 출력 끝은 가변 길이 펜스로 넣는다."""
+def _gate_text(tid: str, n: int, tests: dict, p=None) -> str:
+    """테스트 관문 반려 파일(설계 6.1 4a). 명령은 JSON 문자열, 출력 끝은 가변 길이 펜스로 넣는다. 로그 경로는 다음 라운드
+    워커가 작업 루트에서 여는 경로다(p, testgate.describe)."""
     quick = tests["quick"]
     tail = f"\n출력 끝:\n{testgate.fenced(quick['tail'])}\n" if quick.get("tail") else ""
     return (f"# {tid} r{n} 리뷰 (출처: hteam 테스트 관문)\n\n리뷰어를 띄우지 않았다. 수정 라운드에서 다음을 고친다.\n\n"
             f"## 지적 사항\n- [P1] {GATE_PROBLEM}\n\n## 테스트 관문\n"
-            + "".join(f"- {x}\n" for x in testgate.describe(quick, "quick")) + tail
+            + "".join(f"- {x}\n" for x in testgate.describe(quick, "quick", p)) + tail
             + f"\n고친 뒤 `{SHIM} test {tid}` 로 다시 확인한다.\n실패가 이 태스크 탓이 아니면(소유 경로 밖 코드, 위의 커밋 안 된 "
             "다른 파일) 코드를 고치지 말고 근거를 보고서에 적은 뒤 프리앰블의 ask 명령으로 묻는다(메인이 답한다).\n\n"
             "VERDICT: REQUEST_CHANGES\n")
@@ -144,7 +145,7 @@ def _precheck_fail(p, tid: str, n: int, problems: list[str], tests: dict | None 
     돌린 관문이면 expect 는 reviewing). 라운드를 하나 쓴다."""
     rel = review_rel(tid, n)
     if tests is not None:
-        text = _gate_text(tid, n, tests)
+        text = _gate_text(tid, n, tests, p)
     else:
         text = (f"# {tid} r{n} 리뷰 (출처: hteam 사전 검사)\n\n리뷰어를 띄우지 않았다. 수정 라운드에서 다음을 고친다.\n\n"
                 "## 지적 사항\n" + "".join(f"- [P1] {show(x)}\n" for x in problems) + "\nVERDICT: REQUEST_CHANGES\n")
@@ -207,7 +208,10 @@ def tamper_check(p, tid: str, base: dict) -> tuple[dict | None, list[str]]:
     states = {s["id"]: s for s in state.all_states(p)}
     during = [s["id"] for s in states.values() if s["id"] != tid and any(
         h.get("event") in ("start", "fix") and h.get("at", "") >= base["at"] for h in s.get("history", []))]
-    excluded_tasks = sorted(set(base["in_progress"]) | set(during))
+    # 같은 작업 루트에서 도는 태스크만 뺀다: 다른 슬롯(또는 메인 폴더와 슬롯 사이)의 워커는 이 작업 트리를 바꾸지 않는다(설계
+    # 5.10.4, Codex 커밋 리뷰 b916c8c P1). shared 모드는 모두 메인 폴더다
+    excluded_tasks = sorted(t for t in set(base["in_progress"]) | set(during)
+                            if workspace.task_root(p, states.get(t, {})) == p.work_root)
     patterns = [".herdr-team/**", "docs/reviews/**", "docs/handoff/**"]  # 인수인계(5.9.7)는 어느 태스크의 일도 아니다
     for t in excluded_tasks:
         patterns += list(states.get(t, {}).get("owns") or []) + [f"docs/tasks/{t}/**"]

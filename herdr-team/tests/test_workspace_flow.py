@@ -2,10 +2,12 @@
 슬롯 예약·준비 대기·busy, horch 의 --cwd·--env, 워커 사양의 작업 공간 절, 슬롯 안의 리뷰·관문·리뷰 커밋·변조 기준점·리뷰어,
 관제의 준비 자식과 decide workspace_failed. 병합·놓기·drop·reset·status·마무리 full 은 test_workspace_merge(Task 5)."""
 import json
+import re
 import subprocess
 import sys
 import tomllib
 import unittest
+from pathlib import Path
 
 from tests.helpers import BASE_CONFIG, CREW_CONFIG, WS_CONFIG, TeamCase
 from tests.test_drive_events import EventCase
@@ -261,6 +263,43 @@ class SlotReviewTest(WsCase):
         self.assertFalse((self.proj / "docs" / "reviews").exists())
         self.assertEqual(self.head(), main_head)  # 메인 폴더 브랜치에는 아직 아무것도 들지 않았다(병합은 Task 5)
 
+    def test_other_slot_task_owns_are_not_excluded_from_tamper(self):
+        # 다른 슬롯의 워커는 이 작업 트리를 바꾸지 않는다. 그 태스크의 owns 를 이 슬롯의 변조 검사에서 빼지 않는다(Codex 커밋
+        # 리뷰 b916c8c P1: T-002 가 src/b/** 를 쥔 동안 T-001 리뷰어가 자기 슬롯의 src/b 를 고쳐 커밋해도 승인됐다)
+        self.write_spec("T-002", owns="src/b/**")
+        self.ws_start("T-001")
+        self.ws_start("T-002")  # 기준점에 진행 중(slot-2)
+        self.work()
+        self.hteam("review", "T-001")
+        self.act_review("T-001", "APPROVE", extra={"write": {"src/b/x.py": "리뷰어가 고침\n"}, "commit": "리뷰어 커밋"})
+        code, out = self.hteam("review-finish", "T-001")
+        self.assertEqual((code, out["error"]["code"]), (1, "review_tampered"), out)
+        self.assertEqual((out["tamper"]["paths"], out["tamper"]["excluded_tasks"]), (["src/b/x.py"], []))
+
+    def test_fix_round_review_prompt_state_files_open_from_slot(self):
+        # 리뷰어 cwd 는 슬롯이다. 상태 루트에만 있는 이번 라운드 작업 사양과 관문 로그는 슬롯에서 열리는 경로로 준다(Codex 커밋
+        # 리뷰 b916c8c P2). 저장소 파일(보고서·이전 리뷰)은 작업 루트 기준 그대로다
+        self.use_gate()
+        self.ws_start("T-001")
+        self.work()
+        self.hteam("review", "T-001")
+        self.act_review("T-001", "REQUEST_CHANGES")
+        self.assertEqual(self.hteam("review-finish", "T-001")[1]["status"], "changes")
+        code, out = self.hteam("fix", "T-001", "--note=로그를 남긴다")
+        self.assertEqual((code, out["round"]), (0, 2), out)
+        self.assertEqual(self.act_work("T-001", {"src/a/app.py": "print('b')\n"})[0], 0)
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual((code, out["status"]), (0, "reviewing"), out)
+        cwd = Path(self.dispatch_row(self.attempt("T-001")["dispatch"])["cwd"])
+        self.assertEqual(cwd, self.slot_root(1))
+        prompt = (self.state_dir / "tasks" / "T-001" / "r2-review-a1.md").read_text(encoding="utf-8")
+        work = re.search(r"^- 이번 라운드 작업 사양: `([^`]+)`$", prompt, re.M).group(1)
+        log = re.search(r"^- quick 로그: (\S+)$", prompt, re.M).group(1)
+        self.assertEqual(work, str(self.state_dir / "tasks" / "T-001" / "r2-work.md"))
+        for path in (work, log):
+            self.assertTrue((cwd / path).is_file(), path)
+        self.assertIn("- 워커 보고서: `docs/tasks/T-001/report.md`\n- 이전 리뷰: `docs/reviews/T-001/r1.md`", prompt)
+
     def test_main_folder_commit_during_review_is_not_tamper(self):
         self.ws_start("T-001")
         self.work()
@@ -294,6 +333,9 @@ class SlotReviewTest(WsCase):
         self.assertEqual(self.git_at(root, "log", "-1", "--format=%s").strip(), "[T-001] review r1: REQUEST_CHANGES")
         self.assertTrue((root / "docs" / "reviews" / "T-001" / "r1.md").is_file())
         self.assertEqual(self.head(), main_head)
+        text = (root / "docs" / "reviews" / "T-001" / "r1.md").read_text(encoding="utf-8")
+        log = re.search(r"^- quick 로그: (\S+)$", text, re.M).group(1)
+        self.assertTrue((root / log).is_file(), log)  # 다음 라운드 워커(cwd 는 슬롯)가 이 반려 파일의 로그를 연다
 
     def test_worker_hteam_test_from_slot(self):
         self.use_gate(quick=ENV_QUICK)
@@ -426,6 +468,24 @@ class DrivePrepareTest(EventCase):
             self.assertEqual(self.logged(line), 1, line)
         self.assertEqual(self.decides(), [])
 
+    def test_reservation_written_by_start_ready_is_prepared_in_the_same_tick(self):
+        # accept 뒤 start-ready 가 새로 쓴 예약의 준비 자식은 그 start-ready 끝에서 띄운다(다음 재확인까지 최대 60초 기다리지
+        # 않는다. Task 4 태스크 리뷰 Minor 1)
+        self.write_spec("T-002", owns="src/a/**")
+        self.hteam("start", "T-001")
+        self.d.slot_step()
+        self.wait_jobs()
+        self.assertEqual(self.task_state("T-001")["status"], "working")
+        code, out = self.hteam("start", "T-002")
+        self.assertEqual((code, out.get("reason")), (0, "lock"), out)
+        with state.edit(self.p, "T-001") as st:  # 승인했다(병합·놓기는 Task 5)
+            st["status"] = "done"
+        self.d.after_accept("T-001", {"status": "done"})
+        self.assertEqual((self.slots()["slots"]["2"]["state"], self.slots()["slots"]["2"]["task"]), ("preparing", "T-002"))
+        self.assertEqual(self.d.jobs["slot:2"]["args"], ["slot", "prepare", "T-002"])
+        self.wait_jobs()
+        self.assertEqual(self.task_state("T-002")["status"], "working")
+
     def test_live_prepare_child_is_waited_then_restarted(self):
         self.hteam("start", "T-001")
         release = self.hold_slot(1)
@@ -453,9 +513,13 @@ class DrivePrepareTest(EventCase):
         self.assertTrue(dec[0]["summary"].startswith("slot-1 폴더에 커밋 안 된 변경이 있어 T-001 를 준비하지 않았다"), dec[0])
         slots = self.slots()["slots"]
         self.assertEqual((slots["1"]["state"], slots["1"]["task"]), ("dirty", None))
-        self.assertEqual((slots["2"]["state"], slots["2"]["task"]), ("preparing", "T-001"))  # 거둔 뒤 start-ready 가 다음 슬롯
-        self.assertNotIn("decide", self.task_state("T-001"))
+        # 거둔 뒤 start-ready 가 다음 슬롯을 잡고, 그 끝의 slot_step 이 곧바로 준비한다(같은 거두기 동안 띄워진다)
+        self.assertEqual((slots["2"]["state"], slots["2"]["task"]), ("busy", "T-001"))
+        st = self.task_state("T-001")
+        self.assertNotIn("decide", st)
+        self.assertEqual((st["status"], st["workspace"]["slot"]), ("working", 2))
         self.assertEqual(self.logged("slot-1 T-001 준비 slot_dirty"), 1)
+        self.assertEqual(self.logged("slot-2 T-001 준비 시작"), 1)
 
     def test_branch_exists_decides_on_task(self):
         self.git("branch", "herdr/T-001")
@@ -537,6 +601,28 @@ class DriveSetupFailTest(EventCase):
         self.answer(e["id"])
         self.d.slot_step()
         self.assertEqual(self.d.jobs["slot:1"]["args"], ["slot", "prepare", "T-001"])
+
+    def test_start_options_after_setup_failure_reach_the_worker(self):
+        # 준비 실패 뒤(라운드 없는 launch_failed) start 의 --model 도 pending 처럼 남겨 start-ready 가 쓴다. 문구는 실제
+        # 상태다(Codex 커밋 리뷰 b916c8c P2, 태스크 리뷰 Minor 3)
+        self.hteam("start", "T-001")
+        self.d.slot_step()
+        self.wait_jobs()
+        (e,) = self.decides()
+        self.p.config.write_text(WS_CONFIG, encoding="utf-8")  # 사용자가 setup 을 고쳤다
+        code, out = self.hteam("start", "T-001", "--model", "sonnet")
+        self.assertEqual((code, out["status"], out["reason"]), (0, "waiting", "slot_setup"), out)
+        self.assertEqual(out["message"], "T-001: 작업 공간 slot-1 을 준비하는 중이다(관제가 hteam slot prepare 를 돌린다). "
+                                         "launch_failed(라운드 없음) 그대로 두었다. 준비가 끝나면 관제가 띄운다")
+        code, out = self.hteam("start", "T-001")  # 옵션 없이 다시 와도 앞서 받은 옵션을 잃지 않는다
+        self.assertEqual((code, out["status"]), (0, "waiting"), out)
+        self.answer(e["id"])
+        self.d.slot_step()
+        self.wait_jobs()
+        st = self.task_state("T-001")
+        self.assertEqual((st["status"], st["rounds"][-1]["model"]), ("working", "sonnet"))
+        self.assertEqual(self.dispatch_row(st["rounds"][-1]["work"]["dispatch"])["model"], "sonnet")
+        self.assertNotIn("start_cli", st)
 
 
 if __name__ == "__main__":

@@ -704,7 +704,9 @@ class Drive:
 
     def start_ready(self) -> dict | None:
         """요청을 실행한 틱의 start-ready(설계 8.5 의 4). 띄우지 못한 태스크는 launch_failed 면 넘기고(재확인의 launch_failed
-        decide 가 한 번 올린다, 8.7) 아니면 관제 절차 실패로 올린다. 그 밖의 오류는 올린다(격리가 받는다)."""
+        decide 가 한 번 올린다, 8.7) 아니면 관제 절차 실패로 올린다. 그 밖의 오류는 올린다(격리가 받는다). 끝에 늘(오류여도)
+        작업 공간 예약의 준비 자식을 띄운다(slot_step, 격리 slots): 이 start-ready 가 새로 쓴 예약도 다음 재확인을 기다리지
+        않는다(5.10.3, Task 4 태스크 리뷰 Minor 1). 작업 공간이 꺼져 있으면 slots.json 이 없어 아무것도 하지 않는다."""
         from . import tasks  # tasks 가 queue 를 거쳐 이 모듈을 쓴다
         try:
             return tasks.start_ready(self.p)
@@ -723,6 +725,8 @@ class Drive:
                 self.procedure_failed(tid, HteamError(err.get("code") or "failed", err.get("message") or "",
                                                       hint=err.get("hint") or ""))
             return exc.data
+        finally:
+            self.isolated("slots", self.slot_step)
 
     def spawn_review(self, tid: str, *, retry: bool, expect_round: int | None = None,
                      request: str | None = None) -> dict:
@@ -1042,8 +1046,7 @@ class Drive:
             self.heartbeat()
             self.isolated(f"reconcile:{st['id']}", lambda st=st: self.reconcile_task(st))
         self.isolated("batches", self.unbatched)  # 8.7 의 6
-        self.isolated("start_ready", self.start_ready)  # 8.7 의 7
-        self.isolated("slots", self.slot_step)  # 작업 공간 예약의 준비 자식(5.10.3)
+        self.isolated("start_ready", self.start_ready)  # 8.7 의 7. 끝에 작업 공간 예약의 준비 자식(slot_step, 5.10.3)
         self.isolated("design", self.design_step)
         self.isolated("decisions", self.resume_decisions)
         self.isolated("finish", self.finish_step)
@@ -1674,8 +1677,7 @@ class Drive:
         self.isolated("check", self.check_mail)
         done = self.isolated("queue", self.run_queue)
         if done:
-            self.isolated("start_ready", self.start_ready)
-            self.isolated("slots", self.slot_step)
+            self.isolated("start_ready", self.start_ready)  # 끝에 slot_step
         self.reap_jobs()
         self.heartbeat()
         self.reset_step()

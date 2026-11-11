@@ -267,15 +267,17 @@ def _lines(items: list[str]) -> str:
     return "\n".join(f"- {x}" for x in items)
 
 
-def tests_section(tests: dict | None) -> str:
-    """테스트 절(설계 6.2): developer 관문의 quick 결과. 건너뛰었으면(확정하지 않은 [test]) 한 줄. 없으면 빈 문자열."""
+def tests_section(tests: dict | None, p=None) -> str:
+    """테스트 절(설계 6.2): developer 관문의 quick 결과. 건너뛰었으면(확정하지 않은 [test]) 한 줄. 없으면 빈 문자열. p 는
+    로그 경로를 정한다(testgate.describe)."""
     if not tests:
         return ""
     if tests.get("skipped"):
         return f"## hteam 테스트 결과\n{SKIPPED_LINE}\n\n"
     if "quick" not in tests:
         return ""
-    return fill(_template("review-tests.md"), test_lines=_lines(testgate.describe(tests["quick"], "quick"))).rstrip() + "\n\n"
+    lines = _lines(testgate.describe(tests["quick"], "quick", p))
+    return fill(_template("review-tests.md"), test_lines=lines).rstrip() + "\n\n"
 
 
 def _group_task(p, tid: str) -> str:
@@ -299,7 +301,7 @@ def group_section(p, spec, tests: dict | None) -> str:
         full_lines, full_tail = "- full: 돌리지 않음(확정하지 않은 테스트 명령)", ""
     else:
         full = tests["full"]
-        full_lines = _lines(testgate.describe(full, "full"))
+        full_lines = _lines(testgate.describe(full, "full", p))
         failed = full.get("status") not in testgate.PASSED and full.get("tail")
         full_tail = f"출력 끝:\n{testgate.fenced(full['tail'])}\n\n" if failed else ""
     return fill(_template("review-group.md"), group_key=spec.front.get("plan_key") or spec.id,
@@ -344,7 +346,8 @@ def review_prompt(p, cfg, spec, rd: dict, att: dict, rounds: list[dict] | None =
     (없으면 그대로).
     기준 뒤에 테스트 절(tests_section), 묶음 절(group_section), 디자인 절(design_section), 문구 절(text_section) 순서로
     붙인다. 없는 절은 빈 문자열이다. 관문 결과는 시도 기록 inputs.tests 를 쓴다(관문을 다시 돌리지 않는다). 라운드 2 부터는
-    테스트 절 다음에 라운드 절(round_section, rounds 는 상태의 라운드 기록)을 붙인다."""
+    테스트 절 다음에 라운드 절(round_section, rounds 는 상태의 라운드 기록)을 붙인다. 리뷰어는 작업 루트에서 뜨므로 상태 루트
+    파일(사양·직무 문서·이번 라운드 작업 사양·관문 로그)은 p.state_ref 경로다(슬롯 태스크면 작업 루트에 없는 것은 절대 경로)."""
     tid, n = spec.id, rd["round"]
     st = state.load(p, tid) or {}  # 작업 공간 태스크면 이전 리뷰·린트는 슬롯에서 보고 작업 공간 줄을 넣는다(설계 5.10.5)
     p = workspace.view(p, st)
@@ -357,16 +360,17 @@ def review_prompt(p, cfg, spec, rd: dict, att: dict, rounds: list[dict] | None =
     asks = round_requests(p, rd)
     if asks:
         labels = "·".join(dict.fromkeys(label for label, _ in asks))
-        work = p.work_file(tid, n).relative_to(p.root).as_posix()
+        work = p.state_ref(p.work_file(tid, n).relative_to(p.root).as_posix())  # 상태 루트에만 있다(슬롯이면 절대 경로)
         request = "".join(f"\n- 이번 라운드 {label}: {text}" for label, text in asks) + f"\n- 이번 라운드 작업 사양: `{work}`"
         request_rule = (f"\n5. 이번 라운드 요청(위 {labels})을 반영했는가. 요청이 사양의 Acceptance 를 바꾸면 요청을 따른 쪽을 "
                         "맞는 것으로 본다.")
     return fill(_template("review-prompt.md"), role=spec.role, role_title=cfg.role_title(spec.role), task_id=tid,
                 round=str(n), attempt=str(att["attempt"]), title=spec.title, review_file=att["file"],
-                spec_path=f".herdr-team/tasks/{tid}.md", role_doc=f".herdr-team/roles/{spec.role}.md",
+                spec_path=p.state_ref(f".herdr-team/tasks/{tid}.md"),
+                role_doc=p.state_ref(f".herdr-team/roles/{spec.role}.md"),
                 report=report_rel(tid), prior=", ".join(f"`{x}`" for x in prior) or "없음", request=request,
                 workspace=review_workspace(cfg, st),
-                request_rule=request_rule, verify_rule=verify_rule(p, spec.role, tests), tests=tests_section(tests),
+                request_rule=request_rule, verify_rule=verify_rule(p, spec.role, tests), tests=tests_section(tests, p),
                 round_scope=round_section(p, tid, rd, rounds or [], commits, bool(asks)),
                 group=group_section(p, spec, tests),
                 design=design_section(p, cfg, spec, files, shas, att.get("agent") or "codex"),

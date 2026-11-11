@@ -451,35 +451,42 @@ WAIT_TAIL = {"deps": "선행이 끝나면 관제가 띄운다", "lock": "잠금�
 SLOT_WAIT = ("slot_preparing", "no_free_slot")  # 준비 실패 뒤(라운드 없는 launch_failed)의 start 도 기다림이다(설계 5.10.3)
 
 
-def _waiting(p, tid: str, reason: str, said: str, cli: dict) -> dict:
+def _prep_failed(st: dict) -> bool:
+    """슬롯 준비가 실패해 라운드 없이 launch_failed 다(설계 5.10.3 의 4). start 는 처음 시작(pending)처럼 다룬다."""
+    return st["status"] == "launch_failed" and not st["rounds"]
+
+
+def _waiting(p, tid: str, reason: str, said: str, cli: dict, *, prep_failed: bool = False) -> dict:
     """기다림 결과. 받은 --worker·--model·--effort 는 상태의 start_cli 에 남긴다: start-ready 가 이 태스크를 띄울 때 쓴다
-    (Codex 브랜치 리뷰 p6r1). 새 라운드를 쓰는 시작 예약이 지운다(_prepare_start)."""
+    (Codex 브랜치 리뷰 p6r1). 라운드 없는 launch_failed(prep_failed)도 같다(Codex 커밋 리뷰 b916c8c P2). 새 라운드를 쓰는
+    시작 예약이 지운다(_prepare_start)."""
     if cli:
         with state.edit(p, tid) as st:
-            if st["status"] == "pending":
+            if st["status"] == "pending" or _prep_failed(st):
                 st["start_cli"] = dict(cli)
-    return {"id": tid, "status": "waiting", "reason": reason,
-            "message": f"{tid}: {said}. pending 으로 두었다. {WAIT_TAIL[reason]}"}
+    kept = "launch_failed(라운드 없음) 그대로 두었다" if prep_failed else "pending 으로 두었다"
+    return {"id": tid, "status": "waiting", "reason": reason, "message": f"{tid}: {said}. {kept}. {WAIT_TAIL[reason]}"}
 
 
 def start_command(p, tid: str, cli: dict, *, request: str | None = None) -> dict:
     """`hteam start T` 와 큐 요청 start 의 명령 의미(설계 5.4 의 6단계 문단). 처음 시작(상태 없음·pending)이면 먼저 의존을
     보고(끝나지 않았으면 기다린다), 잠금·에이전트 거부를 exit 0 waiting 으로 바꾼다. 같은 라운드 복구는 그 오류 그대로다.
-    처음 시작인데 옵션이 없으면 앞서 기다리게 둔 start 의 옵션(start_cli)을 쓴다. 옵션을 명시하면 그 값이 새 기준이다."""
+    처음 시작(라운드 없는 launch_failed 포함)인데 옵션이 없으면 앞서 기다리게 둔 start 의 옵션(start_cli)을 쓴다. 옵션을
+    명시하면 그 값이 새 기준이다."""
     cfg = config.load(p)
     spec = specs.check(p, cfg, tid)
     st = state.load(p, tid) or state.create(p, tid, spec.role)  # 기다리게 둬도 start-ready 가 볼 상태가 있어야 한다
     first = st["status"] == "pending"
-    if first and not cli:
+    prep_failed = _prep_failed(st)  # 슬롯 준비가 실패했다(라운드 없음)
+    if (first or prep_failed) and not cli:
         cli = st.get("start_cli") or {}
     if first and not deps_met(p, cfg, spec):
         return _waiting(p, tid, "deps", f"선행이 끝나지 않았다({_unmet_text(unmet_deps(p, cfg, spec), spec)})", cli)
-    unlaunched = st["status"] == "launch_failed" and not st["rounds"]  # 슬롯 준비가 실패했다(라운드 없음)
     try:
         return start(p, tid, cli, cfg=cfg, request=request)
     except HteamError as exc:
-        if exc.code in START_WAIT and (first or (unlaunched and exc.code in SLOT_WAIT)):
-            return _waiting(p, tid, START_WAIT[exc.code], exc.message, cli)
+        if exc.code in START_WAIT and (first or (prep_failed and exc.code in SLOT_WAIT)):
+            return _waiting(p, tid, START_WAIT[exc.code], exc.message, cli, prep_failed=prep_failed)
         raise
 
 
