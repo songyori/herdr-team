@@ -11,7 +11,7 @@ import os
 import subprocess
 from typing import Iterator
 
-from . import browser, procs, state
+from . import browser, procs, state, workspace
 from .errors import CONFLICT, FAIL, MISSING, HteamError
 from .horch import agent_args, parse
 from .launch import Barrier
@@ -157,7 +157,7 @@ def _run_barrier(p, tid: str, pick, argv: list[str], expect, on_fresh=None) -> t
 
 def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str | None, args: list[str],
            spec_file, expect=None, on_fresh=None, keep_open_tab: str | None = None,
-           same_terminal: str | None = None, hidden: bool = False) -> dict:
+           same_terminal: str | None = None, hidden: bool = False, cwd=None, env: dict[str, str] | None = None) -> dict:
     """pick(st) 가 가리키는 실행 기록으로 horch 워커를 띄우거나 이어 붙인다. 실패하면 HteamError(launch_failed).
 
     기록을 쓸 때마다 owned 로 이전 상태(expect)·취소·실행자를 다시 확인한다. 어긋나면 exit 3(launch_canceled 등).
@@ -168,6 +168,9 @@ def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str |
     same_terminal 이면 그 고정 터미널에 넣는다(`--terminal`, 모델·effort·인자·cwd 없음). 실행 키·시작 장벽·복구 규칙은 같다.
     hidden 이면 새로 띄우거나 같은 Task 를 다시 띄울 때 `--hidden`(herdr 라벨 없이, 고정 에이전트 태스크의 리뷰어, 설계 6.5 의
     1)을 더한다. 이어 붙이기는 그대로다.
+    cwd 는 새로 띄우기·같은 Task 다시 띄우기의 `--cwd`(없으면 프로젝트 루트), env 는 `--env=KEY=VALUE`(이름 순서, 없거나
+    비었으면 넣지 않는다)다. 작업 공간 태스크의 작업 워커·리뷰어가 슬롯의 작업 루트와 슬롯 env 를 준다(설계 5.10.3 의 5,
+    5.10.4). 같은 터미널에 넣기(--terminal)에는 넣지 않는다(작업 공간 직무는 고정 에이전트가 없다).
     결과에 horch 의 placement·start_turn·delivery 를 더한다. 실행 기록에는 horch Task·Dispatch 와 함께 그 터미널을 쓴다."""
     slot = pick(state.require(p, tid))
     mode, row, warnings = existing(h, slot)
@@ -204,12 +207,13 @@ def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str |
         opts += ["--effort", effort]
     keep = ["--keep-open", "--tab", keep_open_tab] if keep_open_tab else []
     hide = ["--hidden"] if hidden else []
+    where = ["--cwd", str(cwd or p.root), *workspace.env_args(env or {})]
     if mode == "retry":
-        argv = h.argv("worker-start", "--task", row["task"], "--retry", "--agent", agent, "--cwd", str(p.root),
+        argv = h.argv("worker-start", "--task", row["task"], "--retry", "--agent", agent, *where,
                       *opts, *agent_args(args), *keep, *hide)
     else:
         argv = h.argv("worker-start", "--agent", agent, "--title", slot["title"], "--spec-file", str(spec_file),
-                      "--cwd", str(p.root), *opts, *agent_args(args), *keep, *hide)
+                      *where, *opts, *agent_args(args), *keep, *hide)
     return _start(p, h, tid, pick, argv, mode, expect, on_fresh, warnings)
 
 

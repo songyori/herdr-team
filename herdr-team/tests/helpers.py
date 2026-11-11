@@ -527,6 +527,17 @@ class TeamCase(unittest.TestCase):
             raise AssertionError(f"git -C {root} {args} 실패: {proc.stderr}")
         return proc.stdout
 
+    def ws_start(self, tid: str) -> dict:
+        """작업 공간 태스크를 관제 쪽에서 처음 띄운다(설계 5.10.3): start(슬롯 예약, waiting slot_setup) → slot prepare(관제의
+        준비 자식 자리) → start(슬롯 busy, 워커). 마지막 start 출력을 돌려준다."""
+        code, out = self.hteam("start", tid)
+        self.assertEqual((code, out.get("status"), out.get("reason")), (0, "waiting", "slot_setup"), out)
+        code, out = self.hteam("slot", "prepare", tid)
+        self.assertEqual(code, 0, out)
+        code, out = self.hteam("start", tid)
+        self.assertEqual((code, out.get("status")), (0, "working"), out)
+        return out
+
 
 def _parse(stdout: str, stderr: str) -> dict:
     for line in reversed(stdout.strip().split("\n")):  # LF 로만 나눈다(본문의 U+2028 등은 경계가 아니다)

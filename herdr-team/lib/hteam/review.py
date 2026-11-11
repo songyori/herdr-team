@@ -5,6 +5,10 @@ git 출력(최상위 기준)은 gitio.from_top 으로 바꾸고, 프로젝트 �
 제외 경로에도 들지 않는다: 사전 검사는 그것을 owns 밖으로 지적하고, 변조 검사는 경고로만 남긴다(설계 6.3 3).
 blob 에는 gitio.to_top 으로 최상위 기준 경로를 넘긴다.
 
+작업 루트(설계 5.10.2·5.10.4): git 조회·작업 트리 파일(리뷰 결과·반려 파일)·리뷰 커밋·변조 기준점은 그 태스크의 작업 루트
+(p.work_root)에서 한다. 들어가는 함수(review·review-finish·새 시도·리뷰어 띄우기)가 태스크 상태로 p 를 다시 묶는다
+(workspace.view). 상태·로그·프롬프트는 상태 루트(p.root)다. 작업 공간 태스크가 아니면 두 루트가 같다.
+
 잠금 순서: finish 잠금(state.finish_lock, state/tasks/T-xxx.finish.lock) → 태스크 잠금. 프로젝트 잠금은 쓰지 않는다.
 review·review-finish 는 호출 내내, fix·drop 은 취소·정리하는 동안 finish 잠금을 잡는다(설계 6.4).
 """
@@ -17,7 +21,7 @@ import os
 import re
 from typing import Iterator
 
-from . import compose, config, crew, dispatch, gitio, plan, procs, queue, roles, specs, state, tasks, testgate
+from . import compose, config, crew, dispatch, gitio, plan, procs, queue, roles, specs, state, tasks, testgate, workspace
 from .errors import CONFLICT, FAIL, USAGE, HteamError
 from .globs import covers_tree, matches_any
 from .horch import Horch
@@ -77,16 +81,16 @@ def target_commits(p, st: dict) -> list[dict]:
     건드린 경로로 거르지 않는다: 프로젝트 밖만 고친 태스크 커밋도 사전 검사가 owns 밖으로 지적해야 한다. 그래서 같은
     저장소의 여러 herdr-team 프로젝트가 태스크 ID 를 겹쳐 쓰면 사전 검사가 거짓으로 실패한다(지원하지 않음, 설계 6.3 3)."""
     tid = st["id"]
-    return [{"sha": sha, "subject": subject} for sha, subject in gitio.log_since(p.root, st["base"])
+    return [{"sha": sha, "subject": subject} for sha, subject in gitio.log_since(p.work_root, st["base"])
             if subject.startswith(f"[{tid}]") and not subject.startswith(f"[{tid}] review r")]
 
 
 def changed_files(p, commits: list[dict]) -> list[str]:
     """대상 커밋이 건드린 경로, 프로젝트 기준(프로젝트 밖은 `../`). 병합 커밋은 첫 부모와 견준 경로다."""
-    prefix = gitio.top_prefix(p.root)
+    prefix = gitio.top_prefix(p.work_root)
     files: set[str] = set()
     for c in commits:
-        files.update(_rel(prefix, gitio.commit_files(p.root, c["sha"])))
+        files.update(_rel(prefix, gitio.commit_files(p.work_root, c["sha"])))
     return sorted(files)
 
 
@@ -97,12 +101,12 @@ def prechecks(p, cfg, st: dict, spec, commits: list[dict], files: list[str]) -> 
     found = []
     if not commits:
         found.append(f"리뷰 대상 커밋이 없다(base 이후 `[{tid}]` 로 시작하는 커밋)")
-    outside = [f for f in files if not _covered(f, own) and gitio.differs(p.root, st["base"], "HEAD", f)]
+    outside = [f for f in files if not _covered(f, own) and gitio.differs(p.work_root, st["base"], "HEAD", f)]
     if outside:
         found.append("owns 밖 경로의 내용이 base 와 다르다: " + ", ".join(outside))
     if spec.role == "planner":
         try:
-            plan.check(p, cfg, p.root / plan.PLAN_FILE)
+            plan.check(p, cfg, p.work_root / plan.PLAN_FILE)
         except HteamError as exc:
             if exc.code == "plan_incomplete":  # 앞선 plan apply(관제)가 남긴 일이다. 기획자가 고칠 수 없다
                 raise HteamError("plan_incomplete", f"{tid} 를 리뷰하기 전에 앞선 plan apply 를 정리해야 한다: {exc.message}",
@@ -115,7 +119,7 @@ def prechecks(p, cfg, st: dict, spec, commits: list[dict], files: list[str]) -> 
     # status --porcelain 은 최상위 기준 경로를 낸다(pathspec 은 프로젝트 기준). 이 태스크의 리뷰 폴더는 hteam 이 쓴다:
     # 사전 검사가 rN.md 를 쓴 뒤 커밋 전에 죽었으면 owns(`**/*.md` 등)가 그것을 덮어 다시 셀 때 결과가 바뀐다
     mine = [f"docs/reviews/{tid}/**"]
-    dirty = [d for d in _rel(gitio.top_prefix(p.root), gitio.dirty(p.root, [gitio.glob_spec(o) for o in own]))
+    dirty = [d for d in _rel(gitio.top_prefix(p.work_root), gitio.dirty(p.work_root, [gitio.glob_spec(o) for o in own]))
              if not matches_any(d, mine)]
     if dirty:
         found.append("owns 안에 커밋하지 않은 변경이 있다: " + ", ".join(dirty))
@@ -144,12 +148,12 @@ def _precheck_fail(p, tid: str, n: int, problems: list[str], tests: dict | None 
     else:
         text = (f"# {tid} r{n} 리뷰 (출처: hteam 사전 검사)\n\n리뷰어를 띄우지 않았다. 수정 라운드에서 다음을 고친다.\n\n"
                 "## 지적 사항\n" + "".join(f"- [P1] {show(x)}\n" for x in problems) + "\nVERDICT: REQUEST_CHANGES\n")
-    write_atomic(p.root / rel, text)
+    write_atomic(p.work_root / rel, text)
     die_at("after_precheck_write")
-    if gitio.dirty(p.root, [gitio.literal(rel)]):
-        sha = gitio.commit_paths(p.root, [rel], f"[{tid}] review r{n}: REQUEST_CHANGES")
+    if gitio.dirty(p.work_root, [gitio.literal(rel)]):
+        sha = gitio.commit_paths(p.work_root, [rel], f"[{tid}] review r{n}: REQUEST_CHANGES")
     else:  # 앞 호출이 같은 내용을 커밋한 뒤 상태를 쓰기 전에 죽었다. 빈 커밋을 만들지 않는다
-        sha = gitio.last_commit(p.root, rel)
+        sha = gitio.last_commit(p.work_root, rel)
     die_at("after_precheck_commit")
     info = testgate.summary(tests)
     with state.edit(p, tid, expect=expect) as st:
@@ -166,7 +170,7 @@ def _precheck_fail(p, tid: str, n: int, problems: list[str], tests: dict | None 
 def _changes(p, prefix: str, exec_bit: bool) -> tuple[dict[str, str | None], dict[str, str | None]]:
     """프로젝트 기준 경로의 (작업 트리 항목, 인덱스 항목)(gitio.changed_entries 는 최상위 기준이다). 숨김 플래그가 붙은
     파일과 서브모듈은 프로젝트 안만 본다(밖은 경고뿐이고 sparse checkout 의 skip-worktree 파일이 아주 많을 수 있다)."""
-    work, index = gitio.changed_entries(p.root, exec_bit, inside=lambda top: top.startswith(prefix))
+    work, index = gitio.changed_entries(p.work_root, exec_bit, inside=lambda top: top.startswith(prefix))
     return ({gitio.from_top(prefix, t): v for t, v in work.items()},
             {gitio.from_top(prefix, t): v for t, v in index.items()})
 
@@ -178,11 +182,11 @@ def baseline(p, tid: str) -> dict:
     경로는 프로젝트 기준이다. 추적 파일은 저장소 전체를 본다(프로젝트 밖은 `../`, 리뷰 동안 바뀌면 경고를 내려고).
     추적 안 된 파일은 프로젝트 안만 본다."""
     others = [s["id"] for s in state.all_states(p) if s["id"] != tid and s["status"] in ("working", "launch_failed")]
-    prefix = gitio.top_prefix(p.root)
-    exec_bit = gitio.file_mode(p.root)
+    prefix = gitio.top_prefix(p.work_root)
+    exec_bit = gitio.file_mode(p.work_root)
     dirty, index = _changes(p, prefix, exec_bit)
-    return {"at": now(), "head": gitio.head(p.root), "exec_bit": exec_bit, "dirty": dirty, "index": index,
-            "untracked": gitio.untracked(p.root), "in_progress": others}
+    return {"at": now(), "head": gitio.head(p.work_root), "exec_bit": exec_bit, "dirty": dirty, "index": index,
+            "untracked": gitio.untracked(p.work_root), "in_progress": others}
 
 
 def tamper_check(p, tid: str, base: dict) -> tuple[dict | None, list[str]]:
@@ -211,18 +215,18 @@ def tamper_check(p, tid: str, base: dict) -> tuple[dict | None, list[str]]:
     def excluded(path: str) -> bool:
         return _covered(path, patterns)
 
-    prefix = gitio.top_prefix(p.root)
-    head = gitio.head(p.root)
+    prefix = gitio.top_prefix(p.work_root)
+    head = gitio.head(p.work_root)
     exec_bit = base.get("exec_bit", True)  # 기준점 때의 core.fileMode 로 고정한다(리뷰어가 설정을 바꿔도)
     record = {"head_before": base["head"], "head_after": head, "excluded_tasks": excluded_tasks}
-    if head != base["head"] and not gitio.is_ancestor(p.root, base["head"], head):
+    if head != base["head"] and not gitio.is_ancestor(p.work_root, base["head"], head):
         return {**record, "reason": "HEAD 가 fast-forward 가 아니게 움직였다", "paths": []}, []
     bad: set[str] = set()
     outside: set[str] = set()
     allowed: set[str] = set()
     if head != base["head"]:
-        for sha, subject in gitio.log_since(p.root, base["head"]):
-            files = _rel(prefix, gitio.commit_files(p.root, sha))
+        for sha, subject in gitio.log_since(p.work_root, base["head"]):
+            files = _rel(prefix, gitio.commit_files(p.work_root, sha))
             if any(subject.startswith(f"[{t}]") for t in excluded_tasks):
                 allowed.update(files)
                 continue
@@ -231,7 +235,7 @@ def tamper_check(p, tid: str, base: dict) -> tuple[dict | None, list[str]]:
     now_dirty, now_index = _changes(p, prefix, exec_bit)
     candidates = set(base["dirty"]) | set(now_dirty)
     if head != base["head"]:
-        candidates |= set(_rel(prefix, gitio.diff_names(p.root, base["head"], head)))
+        candidates |= set(_rel(prefix, gitio.diff_names(p.work_root, base["head"], head)))
     trees: dict[tuple[str, str], str | None] = {}  # 이 검사 안에서 (커밋, 경로)마다 ls-tree 를 한 번만 부른다
     for path in candidates - allowed:
         if excluded(path):
@@ -240,7 +244,7 @@ def tamper_check(p, tid: str, base: dict) -> tuple[dict | None, list[str]]:
 
         def tree(commit: str, top: str = top) -> str | None:
             if (commit, top) not in trees:
-                trees[(commit, top)] = gitio.tree_entry(p.root, commit, top)
+                trees[(commit, top)] = gitio.tree_entry(p.work_root, commit, top)
             return trees[(commit, top)]
         before = base["dirty"][path] if path in base["dirty"] else tree(base["head"])
         after = now_dirty[path] if path in now_dirty else tree(head)
@@ -254,7 +258,7 @@ def tamper_check(p, tid: str, base: dict) -> tuple[dict | None, list[str]]:
             continue  # 서브모듈 안의 변경은 항목 하나로 요약된다. 그 아래 전체를 가진 다른 태스크의 일일 수 있다
         if moved:
             (outside if _outside(path) else bad).add(path)
-    fresh = {u for u in set(gitio.untracked(p.root)) - set(base["untracked"]) if not excluded(u)}
+    fresh = {u for u in set(gitio.untracked(p.work_root)) - set(base["untracked"]) if not excluded(u)}
     warnings = sorted(fresh | outside)
     if bad:
         return {**record, "reason": "리뷰 동안 제외 경로 밖 추적 파일이 바뀌었다", "paths": sorted(bad)}, warnings
@@ -274,22 +278,25 @@ def _launch_attempt(p, cfg, h, tid: str, k: int, request: str | None = None) -> 
     리뷰어를 숨겨 띄운다(--hidden, 6.1 7·6.5 의 1. 보기는 관제의 view_step 이 에이전트 탭 pane 에 연다)."""
     pick = attempt_slot(k)
     st = state.require(p, tid)
+    p = workspace.view(p, st)
     rd = st["rounds"][-1]
     att = pick(st)
     if not att.get("reset"):
         # 결과 경로 초기화(설계 6.1 6). 시도 기록 뒤 죽었으면 복구가 여기서 다시 지운다. 초기화는 리뷰어를
         # 띄우기 전에만 하므로(reset 표시) 이미 실행된 시도의 결과 파일은 지우지 않는다
         with dispatch.owned(p, tid, pick, REVIEW_STATES) as cur:
-            (p.root / att["file"]).unlink(missing_ok=True)
+            (p.work_root / att["file"]).unlink(missing_ok=True)
             pick(cur)["reset"] = True
     spec = specs.load(p, tid)
     info = testgate.summary(att["inputs"].get("tests"))  # 출력·history 의 관문 요약(설계 6.1 4a)
     prompt = p.task_dir(tid) / f"r{rd['round']}-review-a{k}.md"
     if not prompt.is_file():
         write_atomic(prompt, compose.review_prompt(p, cfg, spec, rd, att, st["rounds"]))
+    # 작업 공간 태스크의 리뷰어는 슬롯의 작업 루트와 슬롯 env 로 뜬다(설계 5.10.4)
+    env = workspace.slot_env(cfg, st["workspace"]["slot"]) if st.get("workspace") else None
     res = dispatch.launch(p, h, tid, pick, agent=att["agent"], model=att["model"], effort=att["effort"],
                           args=cfg.args(att["agent"]), spec_file=prompt, expect=REVIEW_STATES,
-                          hidden=crew.round_crew(rd) is not None)
+                          hidden=crew.round_crew(rd) is not None, cwd=p.work_root, env=env)
     try:
         # fix·drop 의 취소·전이가 그 사이 끼었으면 reviewing 으로 두지 않는다(정리는 그쪽이 horch 상태로 한다)
         with dispatch.owned(p, tid, pick, REVIEW_STATES) as cur:
@@ -339,6 +346,7 @@ def _new_attempt(p, cfg, h, tid: str, *, commits: list[dict], files: list[str], 
     failed=(k, 사유, 경고)면 실패한 시도 k 의 결과도 같은 쓰기에 남긴다. 그래서 자동 재시도 사이에 죽어도 열린 시도가
     남고 review 가 그것을 이어 띄운다(설계 6.3 6). 기준점은 git 을 부르므로 잠금 밖에서 만들고, 잠금 안에서 상태를 다시 본다."""
     spec = specs.load(p, tid)
+    p = workspace.view(p, state.require(p, tid))
     base = baseline(p, tid)
     with state.edit(p, tid, expect=REVIEW_STATES) as st:
         rd = st["rounds"][-1]
@@ -426,6 +434,8 @@ def _review(p, tid: str, retry: bool, expect_round: int | None = None, request: 
     tasks._expect_round(tid, st, expect_round)  # 상태보다 먼저: 다른 라운드로 옮겨 갔으면 그 요청은 이미 처리된 것이다
     if st["status"] in state.CLOSED:
         raise state.closed_error(st)  # 무엇보다 먼저, 복구도 하지 않는다
+    workspace.require_worktree(p, st)  # 슬롯이 worktree 가 아니면 그 폴더에 쓰거나 커밋하지 않는다
+    p = workspace.view(p, st)
     spec = specs.load(p, tid)
     cfg.role(spec.role)
     h = Horch(p.horch_home)
@@ -540,7 +550,7 @@ def _read_verdict(p, att: dict) -> tuple[str | None, str | None, dict | None]:
         return None, "리뷰어가 done 없이 끝났다", None
     if end["outcome"] == "failed":
         return None, f"리뷰어가 실패로 보고했다: {end.get('summary') or ''}".strip(), None
-    path = p.root / att["file"]
+    path = p.work_root / att["file"]
     if not path.is_file():
         return None, f"리뷰 파일이 없다: {att['file']}", None
     try:
@@ -575,11 +585,11 @@ def _evidence(p, att: dict, tid: str, n: int):
     해시(final_sha, 옛 기록은 verdict_sha)와 같아야 한다.
 
     (판정, 실패 사유, 검증한 경로). 최종화는 검증한 그 파일만 한다."""
-    src = p.root / att["file"]
+    src = p.work_root / att["file"]
     if src.exists():
         path, want = src, att.get("verdict_sha")
     else:
-        path, want = p.root / review_rel(tid, n), att.get("final_sha") or att.get("verdict_sha")
+        path, want = p.work_root / review_rel(tid, n), att.get("final_sha") or att.get("verdict_sha")
     if want and _sha(path) == want:
         return att["verdict_read"], None, path
     return None, "기록한 판정의 리뷰 파일이 없거나 바뀌었다", None
@@ -659,6 +669,8 @@ def _finish(p, tid: str) -> dict:
     if st["status"] != "reviewing":
         raise HteamError("bad_state", f"{tid} 는 {st['status']} 다(review-finish 는 reviewing 에서)", CONFLICT,
                          data={"status": st["status"]})
+    workspace.require_worktree(p, st)
+    p = workspace.view(p, st)
     rd = st["rounds"][-1]
     _check_round(tid, rd)  # 취소된 시도는 열린 시도가 아니다. no_open_review 의 --retry 안내도 여기서 막힌다
     att = state.open_attempt(rd)
@@ -701,7 +713,7 @@ def _finish(p, tid: str) -> dict:
             err = attempt_error(tid, n, a)
         raise err
     final_rel = review_rel(tid, n)
-    final = p.root / final_rel
+    final = p.work_root / final_rel
     _require_open(state.require(p, tid), tid, k)  # 옮기고 커밋하기 전에 fix·drop 의 취소가 끼었는지 본다
     adjusted = att.get("verdict_adjusted")
     if verified != final:  # 검증한 시도 파일만 최종 파일로 옮긴다(판정을 맞췄으면 같은 바이트로 다시 맞춘 내용을 쓴다)
@@ -710,14 +722,14 @@ def _finish(p, tid: str) -> dict:
         else:
             os.replace(verified, final)
     die_at("after_move")
-    for other in (p.root / "docs" / "reviews" / tid).glob(f"r{n}-a*.md"):
+    for other in (p.work_root / "docs" / "reviews" / tid).glob(f"r{n}-a*.md"):
         other.unlink()
-    if gitio.dirty(p.root, [gitio.literal(final_rel)]):
+    if gitio.dirty(p.work_root, [gitio.literal(final_rel)]):
         note = f"판정 맞추기: {adjusted}({ADJUST_BASIS})" if adjusted else None
         body = "\n\n".join(x for x in (note, _warning_body(att.get("warnings") or [])) if x) or None
-        sha = gitio.commit_paths(p.root, [final_rel], f"[{tid}] review r{n}: {verdict}", body)
+        sha = gitio.commit_paths(p.work_root, [final_rel], f"[{tid}] review r{n}: {verdict}", body)
     else:  # 앞 호출이 커밋한 뒤 상태를 쓰기 전에 죽었다
-        sha = gitio.last_commit(p.root, final_rel)
+        sha = gitio.last_commit(p.work_root, final_rel)
     die_at("after_commit")
     to = "approved" if verdict == "APPROVE" else "changes"
     with _finish_write(p, tid, k) as (cur, a):

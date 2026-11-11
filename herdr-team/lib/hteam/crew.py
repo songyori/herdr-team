@@ -151,7 +151,10 @@ TEMP = {"kind": "temp", "crew": None}
 
 def place(p, cfg, role: str, worker: str, *, crew_name: str | None = None) -> dict:
     """배정(5.9.4, 5.9.3 의 2). crew_name 을 주면(같은 라운드 복구) 그 에이전트를 보고, 바쁘면 넘치지 않고 기다린다.
-    {"kind": "crew", "crew", "mode": "fresh"|"insert"(, "terminal", "entry")}·{"kind": "temp"}·{"kind": "wait", "reason"}."""
+    {"kind": "crew", "crew", "mode": "fresh"|"insert"(, "terminal", "entry")}·{"kind": "temp"}·{"kind": "wait", "reason"}.
+    worktree 모드의 작업 공간 직무는 늘 임시 워커다(5.9.4 의 0. 설정을 다시 보지 않는다)."""
+    if cfg.workspace.covers(role):
+        return dict(TEMP)
     c = cfg.crew.get(crew_name) if crew_name else cfg.crew_of(role)
     if c is None:
         return dict(TEMP)

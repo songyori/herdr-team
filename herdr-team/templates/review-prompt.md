@@ -17,7 +17,7 @@ REVIEW_FILE: {{review_file}}
 - 사양: `{{spec_path}}`
 - 직무 문서: `{{role_doc}}`
 - 워커 보고서: `{{report}}`
-- 이전 리뷰: {{prior}}{{request}}
+- 이전 리뷰: {{prior}}{{request}}{{workspace}}
 
 ## 리뷰 대상 커밋
 {{commits}}

@@ -19,7 +19,7 @@ import subprocess
 import sys
 import time
 
-from . import config, dispatch, followups, gitio, herdr, outbox, procs, specs, state, testgate
+from . import config, dispatch, followups, gitio, herdr, outbox, procs, specs, state, testgate, workspace
 from .errors import CONFLICT, DENIED, FAIL, MISSING, TIMEOUT, USAGE, HteamError
 from .globs import matches_any
 from .horch import Horch
@@ -50,7 +50,7 @@ PID_TRIES = 3  # drive.pid 를 만들다 다른 관제와 경합하면 이만큼
 
 # decide 종류(설계 8.10, orca 의 DECIDE_KINDS 와 같은 순서)
 DECIDE_KINDS = ("worker_failed", "worker_question", "escalation", "max_rounds", "repeat_test_failure", "test_config",
-                "planning_gaps", "unknown_regression", "token_update")
+                "planning_gaps", "unknown_regression", "token_update", "workspace_failed")
 TITLE = "herdr-team 관제"  # 관제 탭 이름과 관제 pane 제목(8.2 의 5)
 
 # 정해진 글(설계 8.6 원문)
@@ -190,7 +190,7 @@ class Drive:
         self._raised: set[tuple[str, str]] = set()  # 올린 격리 실패(키, 문구). 이 프로세스 안의 기억
         self._failed: set[tuple[str | None, str]] = set()  # 올린 관제 절차 실패(태스크, 문구). 이 프로세스 안의 기억
         self._horch: Horch | None = None
-        # 돌고 있는 자식(설계 8.8): {키: {proc, args, out, err}}. 키는 review:<T> 와 final
+        # 돌고 있는 자식(설계 8.8): {키: {proc, args, out, err}}. 키는 review:<T>, final, 작업 공간 준비 slot:<N>
         self.jobs: dict[str, dict] = {}
         self.rows: list[dict] = []  # 마지막 워커 목록(재확인). locate 가 기록 전 Dispatch 를 제목으로 찾을 때 쓴다
         self.retry_reviews: set[str] = set()  # 관문 잠금 대기 초과로 미룬 리뷰(8.7 의 4)
@@ -381,7 +381,8 @@ class Drive:
             self._question(tid, message)
         elif kind == "escalation":
             text = str(message.get("body") or "")
-            self.decide("escalation", tid, text[:300] or "워커가 done 없이 멈췄다", files=self._files(*self._grounds(tid)))
+            self.decide("escalation", tid, text[:300] or "워커가 done 없이 멈췄다",
+                        files=self._task_files(tid, state.require(self.p, tid)))
         elif kind == "observed":
             word = body.get("kind")
             if word == "idle":
@@ -409,13 +410,14 @@ class Drive:
             self.start_review(tid)
             return
         self.decide("worker_failed", tid, str(body.get("summary") or "")[:300] or "워커가 실패를 보고했다",
-                    files=self._files(*self._grounds(tid)),
+                    files=self._task_files(tid, st),
                     commands=[self._fix_cmd(st, "<원인과 지시>"), f"hteam drop {tid}"])
 
     def _question(self, tid: str, m: dict) -> None:
         text = str(m.get("body") or "")
-        role = (state.load(self.p, tid) or {}).get("role")
-        files = self._files(*self._grounds(tid), *GROUNDS, f".herdr-team/roles/{role}.md", ".herdr-team/project.md")
+        st = state.load(self.p, tid) or {}
+        role = st.get("role")
+        files = self._task_files(tid, st) + self._files(*GROUNDS, f".herdr-team/roles/{role}.md", ".herdr-team/project.md")
         self.decide("worker_question", tid, text[:300], files=files, commands=['hteam answer {id} "<답>"'],
                     question=text, message_id=m.get("id"))
 
@@ -518,6 +520,17 @@ class Drive:
         """decide files: 있는 파일만(프로젝트 루트 기준)."""
         return [r for r in rels if (self.p.root / r).exists()]
 
+    def _work_files(self, st: dict, *rels: str) -> list[str]:
+        """decide files 의 태스크 산출물(보고서·리뷰 파일): 그 태스크의 작업 루트에서 찾아 있는 것만, 메인 루트 기준 경로다
+        (설계 5.10.2·8.10). 병합 전 작업 공간 태스크면 슬롯 경로(`.herdr-team/state/slots/slot-<N>/<rel>`)라 메인이 그대로 연다."""
+        root = workspace.task_root(self.p, st)
+        return [(root / r).relative_to(self.p.root).as_posix() for r in rels if (root / r).exists()]
+
+    def _task_files(self, tid: str, st: dict) -> list[str]:
+        """태스크 decide 의 근거 파일: 사양(메인 루트), 보고서(그 태스크의 작업 루트, _work_files)."""
+        spec, report = self._grounds(tid)
+        return self._files(spec) + self._work_files(st, report)
+
     @staticmethod
     def _grounds(tid: str) -> tuple[str, str]:
         return f".herdr-team/tasks/{tid}.md", report_rel(tid)
@@ -566,7 +579,8 @@ class Drive:
     def _max_rounds(self, st: dict) -> None:
         tid = st["id"]
         self.decide("max_rounds", tid, f"최대 {self._limit()} 라운드에도 승인되지 않았다",
-                    files=self._files(review_rel(tid, st["round"])), commands=[self._fix_cmd(st), f"hteam drop {tid}"])
+                    files=self._work_files(st, review_rel(tid, st["round"])),
+                    commands=[self._fix_cmd(st), f"hteam drop {tid}"])
 
     def hteam_changes(self, tid: str) -> None:
         """hteam 반려(사전 검사·테스트 관문)의 다음(8.6): 같은 관문 실패 두 라운드면 repeat_test_failure, 최대 라운드면
@@ -575,7 +589,8 @@ class Drive:
         st = state.require(self.p, tid)
         if _same_gate_failure(st):
             self.decide("repeat_test_failure", tid, "같은 quick 테스트 실패로 hteam 사전 검사가 두 라운드 연속 반려했다",
-                        files=self._files(review_rel(tid, st["round"])), commands=[self._fix_cmd(st), f"hteam drop {tid}"])
+                        files=self._work_files(st, review_rel(tid, st["round"])),
+                        commands=[self._fix_cmd(st), f"hteam drop {tid}"])
             return
         if st["round"] >= self._limit():
             self._max_rounds(st)
@@ -816,6 +831,10 @@ class Drive:
             elif key == "final":
                 self.isolated(f"job:{key}",
                               lambda code=code, out=out, err=err: self.final_done(code, _last_json(out) or {}, err))
+            elif key.startswith("slot:"):
+                n, tid = int(key.split(":", 1)[1]), job["args"][2]  # 자식 인자 slot prepare T
+                self.isolated(f"job:{key}",
+                              lambda n=n, tid=tid, code=code, out=out: self._slot_done(n, tid, code, _last_json(out)))
 
     def _review_done(self, tid: str, code: int, out: str, args: list[str] | None = None, rnd: int | None = None) -> None:
         """리뷰 자식이 끝났다: 도는 동안 올린 decide 의 표시를 먼저 쓰고(그 뒤 결과 처리가 쓰는 새 표시가 이긴다) 결과를 처리한다.
@@ -833,6 +852,53 @@ class Drive:
             self.on_review_result(tid, code, _last_json(out))
         finally:
             self._job_args.pop(tid, None)
+
+    # --- 작업 공간 준비(5.10.3, 8.8) ---
+    def slot_step(self) -> None:
+        """start 가 써 둔 예약(preparing, 준비가 끝나지 않은 것)마다 번호 순으로 준비 자식 `hteam slot prepare T`(키 slot:<N>)를
+        띄운다. 그 키의 자식이 있거나, 그 태스크에 열린 decide 가 있거나(같은 실패를 되풀이하지 않는다), 슬롯 잠금을 다른
+        실행자가 쥐었으면(앞 관제가 남긴 준비 자식이 산다) 띄우지 않는다. 자식이 죽었으면 다음 재확인이 다시 띄운다(준비는 이어
+        하기 안전하다)."""
+        data = workspace.load(self.p)
+        for key in sorted(data["slots"], key=int):
+            n = int(key)
+            rec = workspace.entry(data, n)
+            tid = rec["task"]
+            if rec["state"] != "preparing" or rec.get("ready") or not tid or self.running(f"slot:{n}"):
+                continue
+            if outbox.open_decide(self.p, state.load(self.p, tid) or {}) or workspace.slot_busy(self.p, n):
+                continue
+            self.spawn(f"slot:{n}", ["slot", "prepare", tid])
+            self.log(f"slot-{n} {tid} 준비 시작")
+
+    def _slot_done(self, n: int, tid: str, code: int, data: dict | None) -> None:
+        """준비 자식이 끝났다(설계 5.10.3 의 2–4, 5.10.8). 성공이면 start-ready 가 띄운다. setup_failed·branch_exists 는 그
+        태스크에(라운드 없는 launch_failed 라 열린 decide 가 start-ready 를 막는다), slot_dirty 는 태스크 없이(그 태스크가 다른
+        슬롯을 잡게) decide workspace_failed 를 올린다. 예약이 바뀌었거나 다른 자식이 쥐었으면 로그만 남긴다."""
+        err = (data or {}).get("error") or {}
+        if code == 0 and data and data.get("ok"):
+            self.log(f"slot-{n} {tid} 준비 ready" + ("(setup passed)" if data.get("setup") else ""))
+            self.isolated("start_ready", self.start_ready)
+            return
+        kind = err.get("code")
+        if kind in ("slot_locked", "slot_not_reserved"):
+            self.log(f"slot-{n} {tid} 준비 건너뜀({kind})")
+            return
+        if kind not in ("setup_failed", "slot_dirty", "branch_exists"):
+            self.procedure_failed(tid, HteamError(kind or "failed", err.get("message") or f"exit {code}: 출력이 없다"))
+            return
+        self.log(f"slot-{n} {tid} 준비 {kind}")
+        if kind == "slot_dirty":
+            self.decide("workspace_failed", None, err["message"], commands=[f"hteam slot reset {n}"],
+                        detail={"kind": kind, "slot": n, "files": data.get("files") or [], "task": tid})
+            self.isolated("start_ready", self.start_ready)
+        elif kind == "setup_failed":
+            self.decide("workspace_failed", tid, err["message"], files=self._files(data["log"]),
+                        commands=[f"hteam start {tid}"], tail=data.get("tail") or "",
+                        detail={k: data.get(k) for k in ("kind", "slot", "status", "exit", "log")})
+        else:
+            self.decide("workspace_failed", tid, err["message"], commands=[f"hteam start {tid}"],
+                        detail={"kind": kind, "slot": n, "branch": data.get("branch")})
 
     def reset_step(self) -> None:
         """고정 에이전트마다 리셋 단계(설계 5.9.7). 설정 순서로, 에이전트마다 reset:<이름> 격리."""
@@ -977,6 +1043,7 @@ class Drive:
             self.isolated(f"reconcile:{st['id']}", lambda st=st: self.reconcile_task(st))
         self.isolated("batches", self.unbatched)  # 8.7 의 6
         self.isolated("start_ready", self.start_ready)  # 8.7 의 7
+        self.isolated("slots", self.slot_step)  # 작업 공간 예약의 준비 자식(5.10.3)
         self.isolated("design", self.design_step)
         self.isolated("decisions", self.resume_decisions)
         self.isolated("finish", self.finish_step)
@@ -1608,6 +1675,7 @@ class Drive:
         done = self.isolated("queue", self.run_queue)
         if done:
             self.isolated("start_ready", self.start_ready)
+            self.isolated("slots", self.slot_step)
         self.reap_jobs()
         self.heartbeat()
         self.reset_step()

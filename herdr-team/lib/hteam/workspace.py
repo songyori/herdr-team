@@ -96,9 +96,33 @@ def own_worktree(top) -> bool:
     return found is not None and os.path.samefile(found, top)
 
 
+def require_worktree(p, st: dict) -> None:
+    """작업 공간 태스크의 슬롯 폴더가 자기 git worktree 인가(own_worktree). 아니면 그 폴더에 git 을 부르지 않고 exit 1
+    slot_not_worktree: `.git` 이 없으면 git 이 위로 올라가 메인 저장소를 보고 리뷰 커밋이 메인 작업 트리로 간다. 리뷰가 슬롯에
+    쓰고 커밋하기 전에 본다. 작업 공간 태스크가 아니면 보지 않는다."""
+    ws = st.get("workspace")
+    if ws and not own_worktree(folder(p, ws["slot"])):
+        raise HteamError("slot_not_worktree", f"{st['id']} 의 slot-{ws['slot']} 폴더가 git worktree 가 아니다(.git 이 없거나 "
+                         "깨졌다). 그 폴더에서 git 을 부르지 않았다", FAIL,
+                         "사용자와 폴더를 확인한다(그 폴더에서 git 을 부르면 메인 저장소가 잡힌다)",
+                         data={"slot": ws["slot"]})
+
+
 def task_root(p, st: dict) -> Path:
     """태스크가 도는 작업 루트. 작업 공간 태스크가 아니면 메인 프로젝트 루트다."""
     return Path(st["workspace"]["root"]) if st.get("workspace") else p.root
+
+
+def view(p, st: dict):
+    """태스크의 두 루트(설계 5.10.2): 상태 루트는 p.root 그대로, 작업 루트는 그 태스크의 task_root. 태스크의 git 조회·작업
+    트리 파일·커밋·시험은 이것의 work_root 에서 한다(슬롯 안에서 찾은 p 여도 태스크 상태가 위치를 정한다)."""
+    from .paths import Project  # 이 모듈은 paths 를 위에서 가져오지 않는다(모듈 설명)
+    return Project(p.root, work_root=task_root(p, st))
+
+
+def env_args(env: dict[str, str]) -> list[str]:
+    """horch worker-start 의 `--env=KEY=VALUE` 인자(이름 순서, 값은 한 인자로)."""
+    return [f"--env={k}={env[k]}" for k in sorted(env)]
 
 
 def slot_env(cfg, n: int) -> dict[str, str]:

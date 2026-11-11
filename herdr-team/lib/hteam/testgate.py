@@ -3,6 +3,10 @@
 
 git 은 gitio 로만 부른다. 테스트 명령은 이 모듈이 `/bin/sh -c` 로 직접 돌린다(horch·hc 를 거치지 않는다, 설계 3.3).
 `hteam test` 는 역할을 확인하지 않고 config.toml 을 읽지 않는다(워커·관제·메인 누구나 부른다, 설계 8.3).
+
+작업 루트(설계 5.7 7단계·5.10.4): 태스크의 작업 커밋·대상 파일·커밋 안 된 변경·테스트 명령의 cwd 는 그 태스크의 작업 루트
+(p.work_root)다. 태스크로 들어가는 함수가 태스크 상태로 p 를 다시 묶는다(workspace.view). `[test]` 설정·확정 기록·테스트
+기록·로그는 상태 루트(p.root, 메인)의 것이다. 작업 공간 태스크의 테스트는 슬롯 env 와 HTEAM_SLOT 을 받는다.
 """
 from __future__ import annotations
 
@@ -328,18 +332,21 @@ def changed_files(p, commits: list[dict]) -> list[str]:
 
 
 def task_target(p, tid: str) -> tuple[dict, list[dict]]:
+    """(상태, 작업 커밋). 작업 커밋은 그 태스크의 작업 루트에서 센다: 슬롯 안에서 부른 `hteam test T` 도 위치는 찾은 폴더가
+    아니라 태스크 상태의 workspace.root 다(설계 5.10.4)."""
+    from . import workspace  # workspace 가 이 모듈을 쓴다
     state.check_id(tid)
     st = state.load(p, tid)
     if st is None or not st.get("base"):
         raise HteamError("not_started", f"{tid} 는 아직 시작하지 않은 태스크다(hteam start)", USAGE)
-    return st, work_commits(p, st)
+    return st, work_commits(workspace.view(p, st), st)
 
 
 def code_head(p, tid: str, commits: list[dict]) -> str | None:
     """작업 커밋을 뒤에서부터 보며 보고서 경로 밖 파일(프로젝트 밖 `../` 포함)을 하나라도 바꾼 첫 커밋. 재사용 기준이다."""
-    prefix = gitio.top_prefix(p.root)
+    prefix = gitio.top_prefix(p.work_root)
     for c in reversed(commits):
-        if any(not _report(gitio.from_top(prefix, f), tid) for f in gitio.commit_files(p.root, c["sha"])):
+        if any(not _report(gitio.from_top(prefix, f), tid) for f in gitio.commit_files(p.work_root, c["sha"])):
             return c["sha"]
     return None
 
@@ -347,7 +354,7 @@ def code_head(p, tid: str, commits: list[dict]) -> str | None:
 def quick_files(p, tid: str, commits: list[dict]) -> list[str]:
     """작업 커밋이 바꾼 파일 가운데 보고서 경로 밖이고 프로젝트 안이며 지금 작업 트리에 파일로 있는 것, 정렬."""
     return sorted(f for f in changed_files(p, commits)
-                  if not _report(f, tid) and not f.startswith("../") and (p.root / f).is_file())
+                  if not _report(f, tid) and not f.startswith("../") and (p.work_root / f).is_file())
 
 
 def check_committed(p, st: dict, commits: list[dict]) -> None:
@@ -357,8 +364,8 @@ def check_committed(p, st: dict, commits: list[dict]) -> None:
         raise HteamError("no_work_commit", f"아직 `[{tid}]` 작업 커밋이 없다. 작업을 먼저 커밋한 뒤 hteam test 를 "
                          "돌린다(quick 은 커밋된 변경만 본다)", USAGE)
     owns = list(st.get("owns") or [])
-    prefix = gitio.top_prefix(p.root)
-    found = [gitio.from_top(prefix, x) for x in gitio.dirty(p.root, [gitio.glob_spec(o) for o in owns])]
+    prefix = gitio.top_prefix(p.work_root)
+    found = [gitio.from_top(prefix, x) for x in gitio.dirty(p.work_root, [gitio.glob_spec(o) for o in owns])]
     bad = sorted(x for x in found if not _report(x, tid) and matches_any(x, owns))
     if bad:
         raise HteamError("uncommitted_owned", f"{tid}: 소유 경로에 커밋하지 않은 변경이 있다: "
@@ -369,8 +376,8 @@ def check_committed(p, st: dict, commits: list[dict]) -> None:
 
 def dirty_files(p, allowed: list[str]) -> list[str]:
     """실행 직후 추적 파일의 커밋 안 된 변경(추적하지 않는 파일 제외) 가운데 allowed 밖, 정렬."""
-    prefix = gitio.top_prefix(p.root)
-    found = (gitio.from_top(prefix, x) for x in gitio.modified_tracked(p.root))
+    prefix = gitio.top_prefix(p.work_root)
+    found = (gitio.from_top(prefix, x) for x in gitio.modified_tracked(p.work_root))
     return sorted(x for x in found if x.startswith("../") or not matches_any(x, allowed))
 
 
@@ -426,8 +433,10 @@ def read_tail(log: Path) -> str:
     return "\n".join(lines[-TAIL_LINES:])
 
 
-def execute(p, command: str, log: Path, timeout_s: float, ok_exit, args=(), shown: str | None = None) -> dict:
-    """`/bin/sh -c <명령> sh <args…>`(args 는 위치 인자 $1…), 로그 첫 줄은 shown(없으면 명령). cwd 프로젝트 루트, stdin /dev/null, 출력은 로그 하나, 새 세션(자기 프로세스 그룹).
+def execute(p, command: str, log: Path, timeout_s: float, ok_exit, args=(), shown: str | None = None, *, cwd=None,
+            env: dict[str, str] | None = None) -> dict:
+    """`/bin/sh -c <명령> sh <args…>`(args 는 위치 인자 $1…), 로그 첫 줄은 shown(없으면 명령). cwd 는 주지 않으면 작업 루트(p.work_root), stdin /dev/null, 출력은 로그 하나, 새 세션(자기 프로세스 그룹).
+    환경은 child_env(None, env)(env 는 작업 공간 슬롯 env 등).
     hteam 이 중단되면(SIGINT·SIGTERM) 그룹을 끝내고 다시 올린다(기록 없이 끝난다)."""
     log.parent.mkdir(parents=True, exist_ok=True)
     start = time.monotonic()
@@ -435,8 +444,8 @@ def execute(p, command: str, log: Path, timeout_s: float, ok_exit, args=(), show
         fh.write(f"$ {show(shown or command)}\n")  # 첫 줄 하나. 여러 줄 명령의 줄바꿈은 \n 으로 보인다
         fh.flush()
         try:
-            proc = subprocess.Popen(["/bin/sh", "-c", command, "sh", *args], cwd=str(p.root), stdin=subprocess.DEVNULL, stdout=fh,
-                                    stderr=subprocess.STDOUT, start_new_session=True, env=child_env(None))
+            proc = subprocess.Popen(["/bin/sh", "-c", command, "sh", *args], cwd=str(cwd or p.work_root), stdin=subprocess.DEVNULL, stdout=fh,
+                                    stderr=subprocess.STDOUT, start_new_session=True, env=child_env(None, env))
         except OSError as exc:
             raise HteamError("test_unrunnable", f"[test] 명령을 실행하지 못했다: {exc}", USAGE) from None
         try:
@@ -481,15 +490,17 @@ def run_lock(p, cfg: GateConfig, wait_s: float) -> Iterator[None]:
 
 
 def attempt(p, cfg: GateConfig, command: str, name: str, timeout_s: float | None = None,
-            lock_wait: float | None = None, args=(), shown: str | None = None) -> dict:
+            lock_wait: float | None = None, args=(), shown: str | None = None, *, cwd=None,
+            env: dict[str, str] | None = None) -> dict:
     limit = cfg.timeout_min * 60
     with run_lock(p, cfg, limit if lock_wait is None else lock_wait):
         log = log_path(p, name)
-        result = execute(p, command, log, limit if timeout_s is None else timeout_s, cfg.ok_exit, args, shown)
+        result = execute(p, command, log, limit if timeout_s is None else timeout_s, cfg.ok_exit, args, shown, cwd=cwd,
+                         env=env)
     return {"command": shown or command, "log": log.relative_to(p.root).as_posix(), **result}
 
 
-def run_quick(p, cfg: GateConfig, files: list[str], name: str) -> dict:
+def run_quick(p, cfg: GateConfig, files: list[str], name: str, *, cwd=None, env: dict[str, str] | None = None) -> dict:
     """관련 파일이 없으면 돌리지 않고 skipped(통과로 본다). 1차가 failed 면 바로 2차, 2차가 통과면 flaky."""
     if not files:
         return {"status": "skipped", "exit": None, "seconds": 0.0, "command": None, "log": None, "tail": "",
@@ -497,10 +508,10 @@ def run_quick(p, cfg: GateConfig, files: list[str], name: str) -> dict:
     # 파일은 위치 인자로 넘긴다: 이름이 셸 문법으로 다시 읽히지 않는다. 기록·로그에 보이는 명령만 shlex.quote 한 문자열이다
     script = cfg.quick.replace("{files}", '"$@"')
     shown = cfg.quick.replace("{files}", " ".join(shlex.quote(f) for f in files))
-    first = attempt(p, cfg, script, f"{name}-quick-a1", args=files, shown=shown)
+    first = attempt(p, cfg, script, f"{name}-quick-a1", args=files, shown=shown, cwd=cwd, env=env)
     if first["status"] != "failed":  # 시간 초과는 다시 돌리지 않는다
         return {**first, "files": files}
-    second = attempt(p, cfg, script, f"{name}-quick-a2", args=files, shown=shown)
+    second = attempt(p, cfg, script, f"{name}-quick-a2", args=files, shown=shown, cwd=cwd, env=env)
     if second["status"] == "passed":
         return {**second, "status": "flaky", "first": {"exit": first["exit"], "log": first["log"]}, "files": files}
     return {**second, "files": files}
@@ -530,14 +541,19 @@ def _save(path: Path, kind: str, entry: dict) -> None:
 
 
 def record_task(p, cfg: GateConfig, st: dict, commits: list[dict], kind: str) -> dict:
-    """태스크 하나의 quick·full 을 돌려 종류별 마지막 기록으로 남긴다. 실행 불가(126·127)는 기록하지 않는다."""
+    """태스크 하나의 quick·full 을 돌려 종류별 마지막 기록으로 남긴다. 실행 불가(126·127)는 기록하지 않는다. 테스트는 그
+    태스크의 작업 루트에서 그 태스크의 시험 env(workspace.task_env: 작업 공간 태스크는 슬롯 값, worktree 모드의 메인 폴더
+    태스크는 슬롯 0 값, shared 는 없음)로 돈다(설계 5.7 7단계). 설정은 검사 없이 읽는다(config.test_settings, 설계 4.2)."""
+    from . import config, workspace  # workspace 가 이 모듈을 쓴다. 불러오는 순서가 꼬이지 않게 여기서 가져온다
+    p = workspace.view(p, st)
+    env = workspace.task_env(p, config.test_settings(p), st)
     tid, rnd = st["id"], st.get("round") or 1
     name = f"{tid}-r{rnd}"
     if kind == "quick":
         check_committed(p, st, commits)
-        result = run_quick(p, cfg, quick_files(p, tid, commits), name)
+        result = run_quick(p, cfg, quick_files(p, tid, commits), name, env=env)
     else:
-        result = attempt(p, cfg, cfg.full, f"{name}-full")
+        result = attempt(p, cfg, cfg.full, f"{name}-full", env=env)
     if result["status"] == "unrunnable":
         raise _unrunnable(result)
     allowed = list(st.get("owns") or []) + [f"docs/tasks/{tid}/**"]
@@ -572,11 +588,13 @@ def gate_results(p, st: dict, role: str, commits: list[dict]) -> dict | None:
     """리뷰 관문(설계 6.1 4a). None 이면 관문이 없다(직무가 developer·tester 가 아니거나 HEAD 에 [test] 가 없다).
     결과는 {head(code_head), config(식별값), 그리고 quick·full 기록 또는 skipped: "unapproved"}. 실행 불가·잠금 대기
     초과·형식·읽기 오류는 예외로 올라간다(리뷰는 아무것도 쓰지 않는다)."""
+    from . import workspace
     if role not in GATED_ROLES:
         return None
     cfg = load_config(p)
     if cfg is None:
         return None
+    p = workspace.view(p, st)
     tid, value = st["id"], digest(cfg)
     head = code_head(p, tid, commits)
     out = {"head": head, "config": value}
@@ -599,11 +617,13 @@ def gate_results(p, st: dict, role: str, commits: list[dict]) -> dict | None:
 def retry_results(p, st: dict, role: str, commits: list[dict], prev: dict | None) -> dict | None:
     """`review --retry`(설계 6.1): code_head·식별값·확정 여부가 앞 시도의 관문 결과(prev)와 같으면 그것을 그대로 쓰고,
     다르면 관문을 다시 돌린다."""
+    from . import workspace
     if role not in GATED_ROLES:
         return None
     cfg = load_config(p)
     if cfg is None:
         return None
+    p = workspace.view(p, st)
     value = digest(cfg)
     if (prev and prev.get("head") == code_head(p, st["id"], commits) and prev.get("config") == value
             and bool(prev.get("skipped")) == (not is_approved(p, value))):

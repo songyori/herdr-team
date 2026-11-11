@@ -9,7 +9,7 @@ import contextlib
 import os
 from typing import Iterator
 
-from . import compose, config, crew, dispatch, gitio, outbox, plan, procs, queue, roles, specs, state
+from . import compose, config, crew, dispatch, gitio, outbox, plan, procs, queue, roles, specs, state, workspace
 from .errors import CONFLICT, FAIL, MISSING, USAGE, HteamError
 from .globs import any_overlap, within
 from .horch import Horch, failure
@@ -22,10 +22,14 @@ def work_slot(st: dict) -> dict:
 
 
 def lock_conflicts(p, tid: str, owns: list[str]) -> list[dict]:
-    """잠금을 가진 다른 태스크 가운데 owns 가 겹치는 것."""
+    """잠금을 가진 다른 태스크 가운데 owns 가 겹치는 것. 작업 공간 슬롯을 쥔 태스크는 pending(예약)이어도 잠금을 가진다
+    (설계 5.10.3: 같은 옛 기준에서 두 태스크가 브랜치를 준비하지 않게). 닫힌 태스크는 슬롯을 쥐어도 아니다(잠금은 병합까지)."""
+    holders = {rec.get("task") for rec in workspace.load(p)["slots"].values() if rec.get("task")}
     found = []
     for other in state.all_states(p):
-        if other["id"] == tid or other["status"] not in state.LOCKING:
+        if other["id"] == tid:
+            continue
+        if other["status"] not in state.LOCKING and (other["id"] not in holders or other["status"] in state.CLOSED):
             continue
         pairs = any_overlap(owns, other.get("owns") or [])
         if pairs:
@@ -202,10 +206,68 @@ def _req(request: str | None) -> dict:
     return {"request": request} if request else {}
 
 
+def _slot_preparing(n: int) -> HteamError:
+    return HteamError("slot_preparing", f"작업 공간 slot-{n} 을 준비하는 중이다(관제가 hteam slot prepare 를 돌린다)",
+                      CONFLICT, "준비가 끝나면 관제가 띄운다")
+
+
+def _no_free_slot(cfg) -> HteamError:
+    return HteamError("no_free_slot", f"빈 작업 공간 슬롯이 없다(slots = {cfg.workspace.slots})", CONFLICT,
+                      "슬롯이 비면 관제가 띄운다")
+
+
+def _base_detached(tid: str) -> HteamError:
+    return HteamError("base_detached", f"메인 폴더가 detached HEAD 라 {tid} 의 작업 공간 슬롯을 잡지 않았다(기준 브랜치가 "
+                      "없다). 메인 폴더를 기준 브랜치로 되돌린 뒤 다시 시작한다", CONFLICT,
+                      f"메인 폴더에서 git switch <기준 브랜치> 뒤 hteam start {tid}")
+
+
+def _take_slot(p, cfg, st: dict, owns: list[str], data: dict) -> tuple[HteamError | None, str | None, bool]:
+    """작업 공간 태스크의 슬롯 잡기(설계 5.10.3 의 1·5, 끝 문단). 프로젝트 잠금 → 태스크 잠금 안에서 부른다. data 는 읽은
+    slots.json 이고 이 함수가 고친다. 쓸 것이 없는 기다림은 바로 올린다(상태 블록이 예외로 끝나 아무것도 쓰지 않는다). 아니면
+    (상태를 쓴 뒤 올릴 기다림, drive.log 줄, data 를 저장할지).
+
+    - 슬롯이 없으면: 메인 폴더가 detached HEAD 면 base_detached, 빈 슬롯이 없으면 no_free_slot(둘 다 아무것도 쓰지 않는다).
+      아니면 가장 작은 free 슬롯에 예약(preparing)을 쓰고 상태에 owns 를 남긴 뒤 slot_preparing(예약이 owns 잠금을 쥔다).
+    - preparing 이고 준비가 끝나지 않았으면 slot_preparing(아무것도 쓰지 않는다).
+    - preparing·ready 면 busy 로 바꾸고 상태에 workspace 를 쓴다. 부르는 쪽이 이어 띄운다.
+    - busy 면(수정 라운드·같은 라운드 복구) 그대로 이어 한다."""
+    tid = st["id"]
+    n = workspace.held_by(data, tid)
+    if n is None:
+        branch = gitio.current_branch(p.root)
+        if branch is None:
+            raise _base_detached(tid)
+        n = next((i for i in range(1, cfg.workspace.slots + 1) if workspace.entry(data, i)["state"] == "free"), None)
+        if n is None:
+            raise _no_free_slot(cfg)
+        data["slots"][str(n)] = {**workspace.SLOT_DEFAULT, "state": "preparing", "task": tid,
+                                 "branch": workspace.branch_of(tid), "base_branch": branch, "base": gitio.head(p.root),
+                                 "setup_done": workspace.entry(data, n)["setup_done"], "since": now()}
+        st["owns"] = owns
+        return _slot_preparing(n), f"slot-{n} {tid} 잡기 preparing", True
+    rec = workspace.entry(data, n)
+    if rec["state"] == "preparing" and not rec.get("ready"):
+        raise _slot_preparing(n)
+    if rec["state"] == "preparing":
+        data["slots"][str(n)] = {k: v for k, v in {**rec, "state": "busy", "since": now()}.items() if k != "ready"}
+        st["workspace"] = {"slot": n, "branch": rec["branch"], "base_branch": rec["base_branch"],
+                           "root": str(workspace.work_root(p, n)), "merge": None}
+        if st["base"] is None:
+            st["base"] = rec["base"]
+        return None, f"slot-{n} {tid} 사용 busy", True
+    return None, None, False
+
+
 def _prepare_start(p, cfg, spec, choice, cli: dict, cap: Capacity | None = None, request: str | None = None) -> dict:
     """시작 예약(설계 5.4 1–4). 프로젝트 잠금 안에서 상태 → 잠금 → 결정 → 동시 수 상한 뒤 배정(5.9.4)을 보고 배정을
-    돌려준다. 기다려야 하면 아무것도 쓰지 않고 exit 3 agent_busy."""
+    돌려준다. 기다려야 하면 아무것도 쓰지 않고 exit 3 agent_busy.
+
+    작업 공간 태스크(설계 5.10.3)는 배정 뒤 슬롯을 잡는다(_take_slot). 예약을 쓰면 상태(owns)를 저장한 뒤 slots.json 을 쓰고
+    잠금을 놓은 다음 slot_preparing 을 올린다. slots.json 은 상태 쓰기가 끝난 뒤 같은 프로젝트 잠금 안에서 쓴다(상태 쓰기가
+    실패하면 슬롯도 그대로다)."""
     tid = spec.id
+    wait, line = None, None
     with state.project_lock(p):
         state.create(p, tid, spec.role)  # 사양만 있고 상태가 없으면 pending 으로 만든다
         with state.edit(p, tid) as st:
@@ -246,24 +308,36 @@ def _prepare_start(p, cfg, spec, choice, cli: dict, cap: Capacity | None = None,
             plc = _recovery_place(p, cfg, spec, rd) if recovering else crew.place(p, cfg, spec.role, choice.worker)
             if plc["kind"] == "wait":
                 raise _agent_busy(plc["reason"])
-            if not recovering:
-                st["role"] = spec.role  # 워커는 이 사양의 직무로 뜬다. planner 하나 검사가 저장된 직무를 본다
-                st.pop("start_cli", None)  # 기다리게 둔 start 의 옵션은 이 라운드로 끝난다(start_command)
-                head = gitio.head(p.root)
-                ch, ignored = _crew_choice(cfg, spec, cli, plc) if plc["kind"] == "crew" else (choice, None)
-                rd = _new_round(st, st["round"] + 1, head, ch)
-                _crew_round(rd, plc, ignored)
-                text = compose.work_spec(p, cfg, spec, rd, owns)
-                if st["base"] is None:
-                    st["base"] = head  # 태스크를 처음 띄울 때 한 번만
-                st["rounds"].append(rd)
-                st["round"] = rd["round"]
-            else:
-                stored = _spec_file(p, tid, rd["round"])  # base·round_base·사양은 그대로
-                text = stored.read_text(encoding="utf-8") if stored.is_file() else \
-                    compose.work_spec(p, cfg, spec, rd, owns)
-            st["owns"] = owns
-            _begin(p, st, rd, text, "start", **_req(request))
+            slots, keep = None, False
+            if cfg.workspace.covers(spec.role):
+                slots = workspace.load(p)
+                wait, line, keep = _take_slot(p, cfg, st, owns, slots)
+            if wait is None:
+                if not recovering:
+                    st["role"] = spec.role  # 워커는 이 사양의 직무로 뜬다. planner 하나 검사가 저장된 직무를 본다
+                    st.pop("start_cli", None)  # 기다리게 둔 start 의 옵션은 이 라운드로 끝난다(start_command)
+                    head = gitio.head(workspace.task_root(p, st))  # 작업 공간 태스크면 슬롯의 HEAD(설계 5.10.4)
+                    ch, ignored = _crew_choice(cfg, spec, cli, plc) if plc["kind"] == "crew" else (choice, None)
+                    rd = _new_round(st, st["round"] + 1, head, ch)
+                    _crew_round(rd, plc, ignored)
+                    text = compose.work_spec(p, cfg, spec, rd, owns, st)
+                    if st["base"] is None:
+                        st["base"] = head  # 태스크를 처음 띄울 때 한 번만
+                    st["rounds"].append(rd)
+                    st["round"] = rd["round"]
+                else:
+                    stored = _spec_file(p, tid, rd["round"])  # base·round_base·사양은 그대로
+                    text = stored.read_text(encoding="utf-8") if stored.is_file() else \
+                        compose.work_spec(p, cfg, spec, rd, owns, st)
+                st["owns"] = owns
+                _begin(p, st, rd, text, "start", **_req(request))
+        if keep:
+            workspace.save(p, slots)
+    if line:
+        from .drive import Drive  # drive 가 tasks 를 쓴다
+        Drive(p).log(line)
+    if wait is not None:
+        raise wait
     return plc
 
 
@@ -277,8 +351,11 @@ def run_work(p, cfg, h, tid: str, plc: dict | None = None) -> dict:
     살아 있는 세션은 --terminal 로 넣는다(5.9.2·5.9.3). 넣기가 일시 거부면 그 라운드에 transient 를 쓰고 그대로 실패,
     terminal_gone 이면 터미널을 잊고 같은 라운드를 새 세션으로 띄운다. working 뒤 고정 에이전트 기록(crew.after_launch)."""
     plc = plc or dict(crew.TEMP)
-    rd = state.require(p, tid)["rounds"][-1]
+    st = state.require(p, tid)
+    rd = st["rounds"][-1]
     args, where = cfg.args(rd["agent"]), {}
+    if st.get("workspace"):  # 작업 공간 태스크: 슬롯의 작업 루트와 슬롯 env 로 띄운다(설계 5.10.3 의 5)
+        where.update(cwd=workspace.task_root(p, st), env=workspace.slot_env(cfg, st["workspace"]["slot"]))
     if plc["kind"] == "crew":
         if plc["mode"] == "insert":
             where["same_terminal"] = plc["terminal"]
@@ -355,13 +432,23 @@ def start(p, tid: str, cli: dict, cfg=None, h=None, cap: Capacity | None = None,
     spec = specs.check(p, cfg, tid)
     choice = config.resolve(cfg, spec.role, spec.front, cli)
     h = h or Horch(p.horch_home)
-    plc = _prepare_start(p, cfg, spec, choice, cli, cap, request)
+    try:
+        plc = _prepare_start(p, cfg, spec, choice, cli, cap, request)
+    except HteamError as exc:
+        if exc.code == "base_detached":  # 잠금을 모두 놓은 뒤 메인에 올린다(설계 5.10.1·5.10.8). 관제 안에서만 불린다
+            from .drive import Drive  # drive 가 tasks 를 쓴다
+            Drive(p).decide("workspace_failed", tid, exc.message, commands=[f"hteam start {tid}"],
+                            detail={"kind": "base_moved", "detached": True})
+        raise
     return run_work(p, cfg, h, tid, plc)
 
 
 # hteam start 의 기다림(설계 5.4 의 6단계 문단): 처음 시작하는 태스크가 지금 시작할 수 없으면 pending 그대로 exit 0
-START_WAIT = {"deps_unmet": "deps", "owns_locked": "lock", "planner_busy": "lock", "agent_busy": "agent"}
-WAIT_TAIL = {"deps": "선행이 끝나면 관제가 띄운다", "lock": "잠금이 풀리면 관제가 띄운다", "agent": "에이전트가 비면 관제가 띄운다"}
+START_WAIT = {"deps_unmet": "deps", "owns_locked": "lock", "planner_busy": "lock", "agent_busy": "agent",
+              "slot_preparing": "slot_setup", "no_free_slot": "slot"}
+WAIT_TAIL = {"deps": "선행이 끝나면 관제가 띄운다", "lock": "잠금이 풀리면 관제가 띄운다", "agent": "에이전트가 비면 관제가 띄운다",
+             "slot_setup": "준비가 끝나면 관제가 띄운다", "slot": "슬롯이 비면 관제가 띄운다"}
+SLOT_WAIT = ("slot_preparing", "no_free_slot")  # 준비 실패 뒤(라운드 없는 launch_failed)의 start 도 기다림이다(설계 5.10.3)
 
 
 def _waiting(p, tid: str, reason: str, said: str, cli: dict) -> dict:
@@ -387,10 +474,11 @@ def start_command(p, tid: str, cli: dict, *, request: str | None = None) -> dict
         cli = st.get("start_cli") or {}
     if first and not deps_met(p, cfg, spec):
         return _waiting(p, tid, "deps", f"선행이 끝나지 않았다({_unmet_text(unmet_deps(p, cfg, spec), spec)})", cli)
+    unlaunched = st["status"] == "launch_failed" and not st["rounds"]  # 슬롯 준비가 실패했다(라운드 없음)
     try:
         return start(p, tid, cli, cfg=cfg, request=request)
     except HteamError as exc:
-        if first and exc.code in START_WAIT:
+        if exc.code in START_WAIT and (first or (unlaunched and exc.code in SLOT_WAIT)):
             return _waiting(p, tid, START_WAIT[exc.code], exc.message, cli)
         raise
 
@@ -471,7 +559,8 @@ def dropped_hint(tid: str, gone: dict[str, list[str]]) -> str:
 
 
 WAIT_CODES = {"owns_locked": "lock", "planner_busy": "lock", "launching": "launching", "parallel_limit": "limit",
-              "deps_unmet": "deps", "decision_pending": "decision", "decide_open": "decide", "agent_busy": "agent"}
+              "deps_unmet": "deps", "decision_pending": "decision", "decide_open": "decide", "agent_busy": "agent",
+              "slot_preparing": "slot_setup", "no_free_slot": "slot", "base_detached": "decide"}
 
 
 def _transient(p, tid: str) -> bool:
@@ -808,6 +897,19 @@ def _crew_fix(p, h, tid: str, member, st: dict, *, force: bool, from_queue: bool
     return None, False
 
 
+def _require_slot(p, st: dict) -> None:
+    """작업 공간 직무 태스크의 fix 는 그 태스크가 busy 슬롯을 쥘 때만 한다(설계 5.10.3·6.4). 준비 실패 뒤의 라운드 없는
+    launch_failed 등은 아무것도 바꾸지 않고 exit 3 slot_not_held: fix 는 슬롯을 잡지 않으므로 그대로 두면 슬롯 env·작업 공간 절
+    없이 메인 폴더에서 워커가 뜬다. 다시 시작은 hteam start T(슬롯을 다시 잡는다)."""
+    tid = st["id"]
+    data = workspace.load(p)
+    n = workspace.held_by(data, tid)
+    if n is None or workspace.entry(data, n)["state"] != "busy":
+        raise HteamError("slot_not_held", f"{tid} 는 작업 공간 슬롯을 쥐고 있지 않다(슬롯 준비가 끝나지 않았거나 실패했다). "
+                         "fix 는 슬롯 밖에서 새 라운드를 열지 않는다", CONFLICT, f"hteam start {tid}",
+                         data={"status": st["status"], "slot": n})
+
+
 def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: bool, cli: dict,
         expect_round: int | None = None, queue: bool = False, from_user: bool = False,
         extra_from: tuple[str, ...] = (), follower: bool = False, request: str | None = None,
@@ -871,6 +973,8 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
 
     first = state.require(p, tid)
     allowed(first)
+    if cfg.workspace.covers(spec.role):
+        _require_slot(p, first)
     last = state.current_round(first) or {}
     member = cfg.crew.get(crew.round_crew(last) or "")  # 설정에서 그 고정 에이전트를 지웠으면 임시 경로
     if member is not None and cli.get("worker") and cli["worker"] != last.get("agent"):
@@ -912,8 +1016,8 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
             # (수정 블록이 보강 결과를 계속 보이고, 다시 승인된 뒤 그 라운드의 제안을 보강 대상으로 보지 않는다)
             supplement = prior["supplement"]
         st["role"] = spec.role  # 첫 실행과 같이 워커가 뜨는 사양의 직무로 맞춘다. planner 하나 검사가 저장된 직무를 본다
-        rd = _new_round(st, st["round"] + 1, gitio.head(p.root), rchoice, note=note, supplement=supplement,
-                        coord_note=coord_note)
+        rd = _new_round(st, st["round"] + 1, gitio.head(workspace.task_root(p, st)), rchoice, note=note,
+                        supplement=supplement, coord_note=coord_note)
         _crew_round(rd, plc, ignored, forced)
         if from_user:
             rd["from_user"] = True  # 사용자 일괄 승인의 수정 요청(설계 11.4). 수정 블록이 사용자 요청으로 적는다
@@ -922,7 +1026,7 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
             rd["prior_verdict"], rd["prior_review_round"] = _last_review(st)
         if queue or defer:
             rd["queued"] = True
-        text = compose.work_spec(p, cfg, spec, rd, owns)
+        text = compose.work_spec(p, cfg, spec, rd, owns, st)
         st["rounds"].append(rd)
         st["round"] = rd["round"]
         st["owns"] = owns
@@ -995,7 +1099,7 @@ def _reuse_queued(p, cfg, spec, tid: str, sup: str, note: str | None, expect_rou
                 rd[key] = " / ".join(dict.fromkeys(x for x in parts if x))
                 if key == "note":
                     st["note"] = rd[key]
-            write_atomic(_spec_file(p, tid, rd["round"]), compose.work_spec(p, cfg, spec, rd, st.get("owns") or checked_owns(cfg, spec)))
+            write_atomic(_spec_file(p, tid, rd["round"]), compose.work_spec(p, cfg, spec, rd, st.get("owns") or checked_owns(cfg, spec), st))
             return {"task": tid, "round": rd["round"], "status": st["status"], "queued": True, "reused": True,
                     "next": [SHIM, "start-ready"],
                     "hint": "같은 보강의 대기 라운드에 메모를 더했다(새 라운드 없음). start-ready 가 선행이 다시 승인된 뒤 띄운다"}

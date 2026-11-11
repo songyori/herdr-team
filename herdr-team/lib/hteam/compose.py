@@ -1,7 +1,10 @@
-"""워커 사양 조립(설계 5.5)과 리뷰 프롬프트 조립(6.2). horch 프리앰블이 이 사양 앞에 붙는다."""
+"""워커 사양 조립(설계 5.5)과 리뷰 프롬프트 조립(6.2). horch 프리앰블이 이 사양 앞에 붙는다.
+
+작업 트리에서 읽는 것(이전 리뷰 파일, 디자인·문구 린트의 파일)은 그 태스크의 작업 루트(p.work_root)에서 읽는다(설계 5.10.2).
+사양·직무 문서·설정은 상태 루트(p.root)의 것이다."""
 from __future__ import annotations
 
-from . import designdiff, lint, specs, state, testgate, textlint
+from . import designdiff, lint, specs, state, testgate, textlint, workspace
 from .errors import USAGE, HteamError
 from .paths import SHIM, TEMPLATES, handoff_rel, report_rel, review_rel
 from .util import fill, show
@@ -63,9 +66,40 @@ def test_block(p, spec) -> str:
     return block.format(task_id=spec.id)
 
 
-def work_spec(p, cfg, spec, rd: dict, owns: list[str]) -> str:
-    """직무 문서 → 태스크 본문 → 선행 태스크 → 인수인계 줄(그 직무의 고정 에이전트가 있고 파일이 작업 트리에 있을 때) → owns 와
-    작업 규칙 → 테스트 절(test_block) → 수정 블록(수정 라운드)."""
+def workspace_lines(cfg, st: dict) -> list[str]:
+    """작업 공간 절의 줄(설계 5.10.5): 작업 루트와 브랜치, 커밋 규칙, 시험 환경(`[workspace.env]` 가 있을 때만, 이름 순서.
+    HTEAM_SLOT 은 보이지 않는다)."""
+    ws = st["workspace"]
+    lines = [f"이 태스크는 슬롯 worktree `{ws['root']}` 에서 한다. 브랜치는 `{ws['branch']}`(기준 `{ws['base_branch']}`)다. "
+             "이 폴더 밖(메인 폴더, 다른 슬롯)의 파일을 고치지 않는다.",
+             "커밋은 이 브랜치에 한다. 병합·push·브랜치 바꾸기·rebase 는 하지 않는다. 리뷰가 승인하면 관제가 병합한다."]
+    env = {k: v for k, v in workspace.slot_env(cfg, ws["slot"]).items() if k != "HTEAM_SLOT"}
+    if env:
+        lines.append(f"시험 환경(이 슬롯 전용): {', '.join(f'`{k}={env[k]}`' for k in sorted(env))}. 다른 값을 쓰지 않는다.")
+    return lines
+
+
+def workspace_section(cfg, st: dict) -> str:
+    """워커 사양의 작업 공간 절(설계 5.10.5). 작업 공간 태스크가 아니면 빈 글."""
+    if not st.get("workspace"):
+        return ""
+    return "## 작업 공간\n" + "\n".join(f"- {x}" for x in workspace_lines(cfg, st))
+
+
+def review_workspace(cfg, st: dict) -> str:
+    """리뷰 프롬프트 `## 태스크` 의 작업 공간 줄(설계 5.10.5 의 첫째·셋째 줄). 작업 공간 태스크가 아니면 빈 글."""
+    if not st.get("workspace"):
+        return ""
+    lines = workspace_lines(cfg, st)
+    return "".join(f"\n- {x}" for x in [lines[0], *lines[2:]])
+
+
+def work_spec(p, cfg, spec, rd: dict, owns: list[str], st: dict | None = None) -> str:
+    """직무 문서 → 태스크 본문 → 선행 태스크 → 인수인계 줄(그 직무의 고정 에이전트가 있고 파일이 작업 트리에 있을 때) → 작업
+    공간 절(st 가 작업 공간 태스크일 때, 설계 5.10.5) → owns 와 작업 규칙 → 테스트 절(test_block) → 수정 블록(수정 라운드).
+    st 가 있으면 이전 리뷰 파일은 그 태스크의 작업 루트에서 본다."""
+    if st is not None:
+        p = workspace.view(p, st)
     tid, n = spec.id, rd["round"]
     if spec.role in ASK_ROLES:
         ask_rule = (f"사용자에게 물어야 하면 `{SHIM} ask-user --task {tid} --json -` 로 묻는다(Bash `timeout: 600000`, "
@@ -84,6 +118,9 @@ def work_spec(p, cfg, spec, rd: dict, owns: list[str]) -> str:
     if member is not None and (p.root / handoff_rel(member.name)).is_file():  # 인수인계 줄(설계 5.5 의 7)
         parts += ["", f"먼저 `{handoff_rel(member.name)}` 를 읽는다. {member.title} 에이전트가 이 프로젝트에서 정한 결정과 규칙, "
                       "남은 일이 적혀 있다."]
+    section = workspace_section(cfg, st or {})
+    if section:
+        parts += ["", section]
     parts += ["", fill(_template("worker-rules.md"), owns=_bullets(owns), report=report_rel(tid), task_id=tid,
                        round=str(n), ask_rule=ask_rule).rstrip()]
     block = test_block(p, spec)
@@ -99,7 +136,7 @@ def work_spec(p, cfg, spec, rd: dict, owns: list[str]) -> str:
             said = "(이전 리뷰는 승인이었다)" if verdict == "APPROVE" else ""
             parts.append(f"사용자가 일괄 승인에서 수정을 요청했다{said}. 아래 사용자 요청을 모두 반영하고, "
                          f"요청마다 어떻게 반영했는지 보고서 `## r{n}` 절에 적는다.")
-        if (not rd.get("from_user") or verdict == "REQUEST_CHANGES") and (p.root / prior).is_file():
+        if (not rd.get("from_user") or verdict == "REQUEST_CHANGES") and (p.work_root / prior).is_file():
             # 사용자 요청 라운드여도 이전 리뷰가 수정 요청이었으면 그 지적은 아직 남아 있다. 막는 지적만 고친다(수렴형 리뷰,
             # 설계 5.5): P2 까지 고치면 새 diff 가 생겨 다음 라운드가 다시 넓어진다
             parts.append(f"`{prior}` 리뷰를 읽고 막는 지적(`## 지적 사항` 의 P1, `## 이전 지적 확인` 의 미해결, hteam 사전 "
@@ -164,8 +201,8 @@ def design_findings(p, files: list[str], shas: list[str]) -> list[str]:
     """디자인 절의 경고 목록(설계 11.6): diff 검사(designdiff, 대상 커밋 shas 의 지운 줄·추가한 줄) 먼저, 내용 검사(lint,
     files 는 시도 기록의 바뀐 파일) 뒤. 검사마다 guarded 로 따로 감싸고 합쳐서 MAX_FINDINGS 까지. `hteam lint --task` 의
     findings 도 이것이다."""
-    return lint.cap(guarded(lambda: designdiff.design_diff_lint(p.root, files, shas))
-                    + guarded(lambda: lint.design_findings(p.root, files)))
+    return lint.cap(guarded(lambda: designdiff.design_diff_lint(p.work_root, files, shas))
+                    + guarded(lambda: lint.design_findings(p.work_root, files)))
 
 
 def text_findings(p, files: list[str], shas: list[str]) -> list[str] | None:
@@ -173,7 +210,7 @@ def text_findings(p, files: list[str], shas: list[str]) -> list[str] | None:
     None(0.1.x 프로젝트)."""
     if not p.text_rules.is_file():
         return None
-    return guarded(lambda: textlint.text_lint(p.root, files, shas))
+    return guarded(lambda: textlint.text_lint(p.work_root, files, shas))
 
 
 def design_section(p, cfg, spec, files: list[str], shas: list[str], agent: str = "codex") -> str:
@@ -193,7 +230,7 @@ def text_section(p, files: list[str], shas: list[str]) -> str:
     if not p.text_rules.is_file():
         return ""
     try:
-        if not textlint.targets(p.root, files):
+        if not textlint.targets(p.work_root, files):
             return ""
     except Exception as exc:  # noqa: BLE001
         found = [failure(exc)]
@@ -244,8 +281,9 @@ def tests_section(tests: dict | None) -> str:
 def _group_task(p, tid: str) -> str:
     try:
         st, spec = state.require(p, tid), specs.load(p, tid)
-        commits = testgate.work_commits(p, st)
-        files = testgate.changed_files(p, commits)
+        q = workspace.view(p, st)  # 선행 태스크의 커밋은 그 태스크의 작업 루트에서 센다
+        commits = testgate.work_commits(q, st)
+        files = testgate.changed_files(q, commits)
     except (HteamError, OSError, ValueError):
         return f"- {tid} — 상태를 읽지 못했다"
     shown = ", ".join(show(f) for f in files[:GROUP_FILES_SHOWN]) or "없음"
@@ -308,7 +346,9 @@ def review_prompt(p, cfg, spec, rd: dict, att: dict, rounds: list[dict] | None =
     붙인다. 없는 절은 빈 문자열이다. 관문 결과는 시도 기록 inputs.tests 를 쓴다(관문을 다시 돌리지 않는다). 라운드 2 부터는
     테스트 절 다음에 라운드 절(round_section, rounds 는 상태의 라운드 기록)을 붙인다."""
     tid, n = spec.id, rd["round"]
-    prior = [review_rel(tid, r) for r in range(1, n) if (p.root / review_rel(tid, r)).is_file()]
+    st = state.load(p, tid) or {}  # 작업 공간 태스크면 이전 리뷰·린트는 슬롯에서 보고 작업 공간 줄을 넣는다(설계 5.10.5)
+    p = workspace.view(p, st)
+    prior = [review_rel(tid, r) for r in range(1, n) if (p.work_root / review_rel(tid, r)).is_file()]
     commits = att["inputs"]["commits"]
     files = att["inputs"]["files"]
     tests = att["inputs"].get("tests")
@@ -325,6 +365,7 @@ def review_prompt(p, cfg, spec, rd: dict, att: dict, rounds: list[dict] | None =
                 round=str(n), attempt=str(att["attempt"]), title=spec.title, review_file=att["file"],
                 spec_path=f".herdr-team/tasks/{tid}.md", role_doc=f".herdr-team/roles/{spec.role}.md",
                 report=report_rel(tid), prior=", ".join(f"`{x}`" for x in prior) or "없음", request=request,
+                workspace=review_workspace(cfg, st),
                 request_rule=request_rule, verify_rule=verify_rule(p, spec.role, tests), tests=tests_section(tests),
                 round_scope=round_section(p, tid, rd, rounds or [], commits, bool(asks)),
                 group=group_section(p, spec, tests),

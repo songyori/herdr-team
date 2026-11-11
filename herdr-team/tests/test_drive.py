@@ -81,7 +81,7 @@ class ConstantsTest(unittest.TestCase):
                          (10000, 1.0, 5.0, 60, 120, 180, 90, 0.2, 60, 1800, 1800, 1800, 1800, 3, 10000, 3, 60, 3, 5.0))
         self.assertEqual(drive.DECIDE_KINDS, ("worker_failed", "worker_question", "escalation", "max_rounds",
                                               "repeat_test_failure", "test_config", "planning_gaps",
-                                              "unknown_regression", "token_update"))
+                                              "unknown_regression", "token_update", "workspace_failed"))
 
 
 class LivenessTest(DriveCase):
