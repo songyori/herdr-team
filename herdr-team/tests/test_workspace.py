@@ -143,6 +143,20 @@ class SlotStateTest(TeamCase):
         self.assertEqual(workspace.work_root(self.p, 3), self.state_dir / "slots" / "slot-3")
         self.assertEqual(workspace.branch_of("T-012"), "herdr/T-012")
 
+    def test_own_worktree(self):
+        """슬롯 폴더에 git 을 하기 전의 확인: 그 폴더가 자기 worktree 의 맨 위인가(아니면 git 이 위로 올라가 메인을 본다)."""
+        top = workspace.folder(self.p, 1)
+        self.assertFalse(workspace.own_worktree(top))  # 없다
+        top.mkdir(parents=True)
+        self.assertFalse(workspace.own_worktree(top))  # 메인 저장소 안의 그냥 폴더
+        top.rmdir()
+        self.git("worktree", "add", "-q", "--detach", str(top), "HEAD")
+        self.assertTrue(workspace.own_worktree(top))
+        (top / "sub").mkdir()
+        self.assertFalse(workspace.own_worktree(top / "sub"))  # worktree 안의 하위 폴더는 맨 위가 아니다
+        (top / ".git").unlink()
+        self.assertFalse(workspace.own_worktree(top))  # .git 을 지웠다
+
     def test_slot_lock_nowait_and_busy(self):
         self.assertFalse(workspace.slot_busy(self.p, 1))
         with workspace.slot_lock(self.p, 1):
@@ -224,6 +238,26 @@ class PrepareTest(SlotCase):
         self.assertIsNone(workspace.held_by(self.slots(), "T-002"))  # 예약을 풀었다(다른 슬롯을 잡을 수 있다)
         self.assertEqual(self.task_state("T-002")["status"], "pending")
         self.assertTrue((slot / "junk.txt").exists())  # 지우지 않는다(slot reset 은 사용자 확인 뒤, Task 5)
+
+    def test_folder_that_is_not_a_worktree_is_set_aside(self):
+        """슬롯 폴더가 남았는데 worktree 가 아니면(.git 이 없다: worktree add 가 mkdir 직후 죽었거나 사용자가 지웠다) git 이
+        위로 올라가 메인 저장소를 본다. 메인 작업 트리에 git 쓰기를 하지 않고 슬롯을 dirty 로 둔다(태스크 리뷰 Minor 1)."""
+        slot = self.slot_root(1)
+        slot.mkdir(parents=True)
+        self.reserve("T-001")
+        before = (self.git("symbolic-ref", "--short", "HEAD").strip(), self.head())
+        code, out = self.prepare("T-001")
+        self.assertEqual(code, 3, out)
+        self.assertEqual((out["error"]["code"], out["kind"], out["slot"], out["reason"]),
+                         ("slot_dirty", "slot_dirty", 1, "not_worktree"))
+        self.assertNotIn("files", out)
+        self.assertEqual((self.git("symbolic-ref", "--short", "HEAD").strip(), self.head()), before)
+        self.assertNotIn("herdr/T-001", self.git("branch", "--list"))
+        rec = self.slots()["slots"]["1"]
+        self.assertEqual((rec["state"], rec["task"], rec.get("ready")), ("dirty", None, None))
+        self.assertIsNone(workspace.held_by(self.slots(), "T-001"))
+        self.assertEqual(self.task_state("T-001")["status"], "pending")
+        self.assertIsNone(self.marker_of(slot))
 
     def test_existing_branch_is_refused(self):
         self.git("branch", "herdr/T-001")

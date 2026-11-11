@@ -87,6 +87,15 @@ def work_root(p, n: int) -> Path:
     return folder(p, n) / gitio.top_prefix(p.root)
 
 
+def own_worktree(top) -> bool:
+    """top 이 자기 git worktree 의 맨 위인가(`rev-parse --show-toplevel` 이 top 과 같은 폴더). 슬롯 폴더에 git 을 부르기
+    전에 본다: `.git` 이 없으면(worktree add 가 mkdir 직후 죽었다, 사용자가 지웠다) git 이 위로 올라가 메인 저장소를 보고
+    그 브랜치·작업 트리를 바꾼다. 폴더가 없거나 `.git` 이 깨졌으면 False. 같은 폴더는 (st_dev, st_ino)로 견준다
+    (대소문자를 가리지 않는 파일 시스템의 철자 차이, firmlink)."""
+    found = gitio.worktree_top(top)
+    return found is not None and os.path.samefile(found, top)
+
+
 def task_root(p, st: dict) -> Path:
     """태스크가 도는 작업 루트. 작업 공간 태스크가 아니면 메인 프로젝트 루트다."""
     return Path(st["workspace"]["root"]) if st.get("workspace") else p.root
@@ -247,11 +256,16 @@ def _launch_failed(p, tid: str, event: str, **info) -> None:
         state.move(st, "launch_failed", event, **info)
 
 
-def _set_aside(p, n: int, tid: str, files: list[str]) -> None:
-    """새로 잡은 슬롯 폴더가 더럽다: 슬롯을 태스크 없는 dirty 로 두고 예약을 푼다(태스크는 pending 그대로). 파일은 건드리지
-    않는다."""
+def _set_aside(p, n: int, tid: str, files: list[str] | None) -> None:
+    """새로 잡은 슬롯 폴더를 쓸 수 없다(files: 커밋 안 된 변경. None 이면 폴더가 git worktree 가 아니다): 슬롯을 태스크
+    없는 dirty 로 두고 예약을 푼다(태스크는 pending 그대로). 파일은 건드리지 않는다."""
     with _reserved(p, n, tid) as rec:
         _reset(rec, state="dirty")
+    if files is None:
+        raise HteamError("slot_dirty", f"slot-{n} 폴더가 git worktree 가 아니어서(.git 이 없거나 깨졌다) {tid} 를 준비하지 "
+                         "않았다", CONFLICT, "사용자와 폴더를 확인한다(그 폴더에서 git 을 부르면 메인 저장소가 잡힌다). 쓸 "
+                         "것이 없으면 폴더를 치우고 git worktree prune 한다",
+                         data={"slot": n, "kind": "slot_dirty", "reason": "not_worktree"})
     raise HteamError("slot_dirty", f"slot-{n} 폴더에 커밋 안 된 변경이 있어 {tid} 를 준비하지 않았다: "
                      + ", ".join(show(f) for f in files[:5]), CONFLICT, f"사용자가 버려도 된다고 하면 hteam slot reset {n}",
                      data={"slot": n, "kind": "slot_dirty", "files": files[:DIRTY_SHOWN]})
@@ -294,6 +308,8 @@ def prepare(p, cfg, tid: str) -> dict:
         with state.project_lock(p):
             rec = _mine(load(p), n, tid)
         top, root, branch = folder(p, n), work_root(p, n), branch_of(tid)
+        if top.exists() and not own_worktree(top):  # git 을 부르면 메인 작업 트리가 바뀐다: 아무 git 도 하지 않는다
+            _set_aside(p, n, tid, None)
         ours = top.is_dir() and gitio.current_branch(top) == branch  # 앞 자식이 브랜치까지 했다
         if not top.exists():
             gitio.worktree_add(p.root, top, rec["base"])

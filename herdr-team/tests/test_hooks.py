@@ -843,6 +843,7 @@ class SlotHookTest(HookCase):
     def test_slot_worker_edit_rules(self):
         worker = self.worker()
         cases = [(self.slot1 / "src" / "a.py", None),                          # 자기 작업 루트의 제품 파일
+                 (self.slot1 / ".herdr-team" / "project.md", None),             # 자기 작업 루트의 설정 파일
                  (self.slot1 / ".herdr-team" / "state" / "slot.json", "deny"),  # 자기 작업 루트의 표시 파일
                  (self.slot2 / "src" / "a.py", "deny"),                         # 다른 슬롯(메인 state/ 안)
                  (self.state_dir / "run.json", "deny"),                         # 메인의 상태
@@ -855,6 +856,36 @@ class SlotHookTest(HookCase):
         self.assertIsNone(self.in_slot("guard", rel, self.slot1, terminal=worker))
         rel["tool_input"]["file_path"] = ".herdr-team/state/x.json"
         self.assertEqual(self.decision(self.in_slot("guard", rel, self.slot1, terminal=worker)), "deny")
+
+    def test_main_session_in_slot_keeps_main_rules(self):
+        """메인 역할 세션을 슬롯 루트에서 열어도 메인의 제품 편집 금지가 걸린다(Codex 커밋 리뷰 60ce7a6). 슬롯 전체가 메인의
+        `.herdr-team/` 아래이므로 제품·설정 판정은 작업 루트 기준이다: 슬롯의 설정 파일 자리는 메인 폴더에서와 같이 고칠 수
+        있다(설계 9.4 의 설정 파일 목록, 5.10.2 의 "파일 경로는 슬롯 기준")."""
+        for path in (self.slot1 / "src" / "a.py", self.slot1 / "README.md", self.proj / "src" / "a.py"):
+            with self.subTest(path=path):
+                self.assertEqual(self.decision(self.write(path, self.slot1, terminal=MAIN)), "deny")
+        rel = {"tool_name": "Write", "session_id": "w1", "tool_input": {"file_path": "src/b.py"}}  # cwd(작업 루트) 기준
+        self.assertEqual(self.decision(self.in_slot("guard", rel, self.slot1, terminal=MAIN)), "deny")
+        for name in (".herdr-team/project.md", ".herdr-team/tasks/T-001.md", ".claude/settings.json", "CLAUDE.md",
+                     "docs/superpowers/x.md"):
+            with self.subTest(name=name):
+                self.assertIsNone(self.write(self.slot1 / name, self.slot1, terminal=MAIN))
+                self.assertIsNone(self.edit(name, terminal=MAIN))  # 메인 폴더에서의 판정과 같다
+        self.assertEqual(self.decision(self.write(self.slot1 / ".herdr-team" / "state" / "slot.json", self.slot1,
+                                                  terminal=MAIN)), "deny")
+        (self.state_dir / "setup-mode").write_text("x")
+        self.assertIsNone(self.write(self.slot1 / "src" / "a.py", self.slot1, terminal=MAIN))
+
+    def test_slot_hook_errors_go_to_main_log(self):
+        """슬롯 세션의 훅 오류도 상태 루트(메인)의 state/hook-errors.log 에 남는다(태스크 리뷰 Minor 2)."""
+        (self.state_dir / "sessions").mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "sessions" / "bad").mkdir()  # 캐시 파일 자리에 폴더: 캐시 쓰기가 실패한다
+        out = self.in_slot("guard", {"tool_name": "Write", "session_id": "bad",
+                                     "tool_input": {"file_path": str(self.slot1 / "src" / "a.py")}}, self.slot1,
+                           terminal=MAIN)
+        self.assertIsNone(out)
+        self.assertIn("guard", self.hook_log())
+        self.assertFalse((self.slot1 / ".herdr-team" / "state" / "hook-errors.log").exists())
 
     def test_main_folder_session_still_guards_slots(self):
         # 표시 파일이 없는 메인 폴더 세션에게 슬롯은 state/ 안이다. 메인의 제품 편집 금지는 그대로다(회귀)

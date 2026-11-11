@@ -576,6 +576,13 @@ def delete_branch(root, name: str, *, force: bool = False) -> None:
     run(root, "branch", "-D" if force else "-d", name)
 
 
+def worktree_top(root) -> str | None:
+    """root 가 든 git 작업 트리의 최상위(`git rev-parse --show-toplevel`). 저장소가 아니거나 폴더가 없거나 `.git` 이
+    깨졌으면 None. root 에 `.git` 이 없으면 git 이 위로 올라가 바깥 저장소의 최상위를 낸다(부르는 쪽이 견준다)."""
+    proc = run(root, "rev-parse", "--show-toplevel", check=False, raw=True)
+    return _out_line(proc.stdout) if proc.returncode == 0 and proc.stdout.strip() else None
+
+
 def common_dir(root) -> str | None:
     """root 의 git common dir(`git rev-parse --git-common-dir` 을 root 기준으로 푼 실제 경로). worktree 들은 같은 값이다.
     저장소가 아니거나 폴더가 없으면 None."""

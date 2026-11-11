@@ -335,9 +335,13 @@ def guard(p, payload: dict):
         if kind != "unknown" and _in_state(p, real, rel):
             return deny("`.herdr-team/state/` 는 hteam 이 관리한다. 직접 고치지 않는다. 복구는 `hteam status` 의 next 를 따른다.")
         if role == "main":
-            in_team = kind != "unknown" and _below(real, p.team) is not None
             if kind == "unknown":  # setup-mode 에서도 거부한다
                 return deny(f"경로를 확인할 수 없다({raw!r}). 메인은 풀 수 없는 경로를 고치지 않는다.")
+            # 제품·설정 판정은 작업 루트 기준이다: 슬롯 전체가 메인의 .herdr-team/ 아래라 상태 루트 기준이면 슬롯의 제품
+            # 파일도 설정 파일로 보인다(Codex 커밋 리뷰 60ce7a6). 작업 루트 밖은 지금처럼 상태 루트 기준이다
+            own = _below(real, p.work_root) if p.work_root != p.root else None
+            base, rel = (p.work_root, own) if own is not None else (p.root, rel)
+            in_team = _below(real, base / ".herdr-team") is not None
             # 프로젝트 밖(스크래치 파일 등)은 이 프로젝트의 제품 파일이 아니므로 막지 않는다
             setup = in_team or rel in SETUP_FILES or (rel or "").startswith(SETUP_PREFIXES)
             if kind == "inside" and not setup and not p.setup_mode.exists():
@@ -453,12 +457,16 @@ def main() -> int:
         return 0
     if root is None:
         return 0
+    p = None
     try:
         _load()
-        out = HANDLERS[sys.argv[1]](project_at(root), payload)  # 작업 공간 슬롯이면 상태 루트는 메인이다(설계 5.10.2)
+        p = project_at(root)  # 작업 공간 슬롯이면 상태 루트는 메인이다(설계 5.10.2)
+        out = HANDLERS[sys.argv[1]](p, payload)
     except Exception as exc:  # noqa: BLE001  훅은 세션을 막지 않는다(hteam 을 가져오지 못한 것 포함)
         code = getattr(exc, "code", None)
-        log_error(root, (f"{code}\n" if isinstance(code, str) else "") + traceback.format_exc())
+        # 프로젝트를 찾았으면 상태 루트(슬롯 세션이면 메인)에 남긴다. 찾기 전 오류는 찾은 폴더에 남긴다
+        log_error(p.root if p is not None else root,
+                  (f"{code}\n" if isinstance(code, str) else "") + traceback.format_exc())
         return 0
     if out:
         print(json.dumps(out, ensure_ascii=False))
