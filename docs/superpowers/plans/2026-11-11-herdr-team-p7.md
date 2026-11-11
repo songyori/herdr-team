@@ -4630,6 +4630,7 @@ def _closable(p, issue: str, states: list[dict]) -> bool:
 
 Redmine 은 이 프로세스 안의 가짜 HTTP 서버다(요청을 남기고 이슈마다 응답 코드를 정한다). 관제는 이 프로세스 안에서 만든다
 (make_drive). 리뷰·전송 자식은 실제 hteam 하위 프로세스다(설계 8.8). 큐 항목의 꼴은 계획 헤더의 "기록·필드에 더하는 것" 이다."""
+import fcntl
 import json
 import re
 import socket
@@ -4673,15 +4674,15 @@ def parse_utc(text: str) -> float:
 class FakeRedmine:
     """PUT /issues/<N>.json·GET /users/current.json 을 받는 가짜 Redmine. codes[이슈] 는 그 이슈에 차례로 낼 응답 코드
     (다 쓰면 204). 요청마다 {method, path, key, body, type} 를 남긴다. 4xx·5xx 본문에는 받은 키를 넣는다(가리기 시험).
-    pads[이슈] 는 그 본문에서 키 앞에 둘 글자 수(200자 자르기 경계 시험). hold() 뒤의 PUT 은 요청을 남긴 뒤 release() 까지
-    응답을 미룬다(entered 는 PUT 을 하나라도 받았는지)."""
+    pads[이슈] 는 그 본문에서 키 앞에 둘 글자 수(200자 자르기 경계 시험). lock_path 를 정하면 PUT 을 받을 때마다 그 파일의
+    flock 을 비차단으로 시도해, 보내는 쪽이 쥐고 있었는지를 lock_held 에 남긴다(시간에 기대지 않는 전송자 하나 시험)."""
 
     def __init__(self):
         self.requests: list[dict] = []
         self.codes: dict[str, list[int]] = {}
         self.pads: dict[str, int] = {}
-        self.gate: threading.Event | None = None
-        self.entered = threading.Event()
+        self.lock_path: Path | None = None
+        self.lock_held: list[bool] = []
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -4705,9 +4706,15 @@ class FakeRedmine:
                 key = self.headers.get("X-Redmine-API-Key")
                 outer.requests.append({"method": "PUT", "path": self.path, "key": key,
                                        "body": json.loads(raw or b"null"), "type": self.headers.get("Content-Type")})
-                outer.entered.set()
-                if outer.gate is not None:
-                    outer.gate.wait(30)
+                if outer.lock_path is not None:  # 보내는 프로세스가 sync.lock 을 쥔 채 보내는지
+                    with open(outer.lock_path, "a") as fh:
+                        try:
+                            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        except BlockingIOError:
+                            outer.lock_held.append(True)
+                        else:
+                            fcntl.flock(fh, fcntl.LOCK_UN)
+                            outer.lock_held.append(False)
                 issue = self.path.removeprefix("/issues/").removesuffix(".json")
                 todo = outer.codes.get(issue) or []
                 code = todo.pop(0) if todo else 204
@@ -4719,15 +4726,7 @@ class FakeRedmine:
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
 
-    def hold(self) -> None:
-        self.gate = threading.Event()
-
-    def release(self) -> None:
-        if self.gate is not None:
-            self.gate.set()
-
     def close(self) -> None:
-        self.release()
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=10)
@@ -4947,24 +4946,25 @@ class SyncTest(RedmineMixin, TeamCase):
         self.assertFalse((folder / "000001.json").exists())
 
     def test_one_sender_at_a_time(self):
-        # 관제가 다시 떠 앞 관제의 전송 자식이 살아 있어도 둘이 같은 큐를 돌지 않는다(sync.lock, Codex 계획 리뷰 r1)
+        # 관제가 다시 떠 앞 관제의 전송 자식이 살아 있어도 둘이 같은 큐를 돌지 않는다(sync.lock, Codex 계획 리뷰 r1).
+        # 앞 전송자 대신 시험이 sync.lock 을 쥔다. 실제 HTTP 제한 시간과 경쟁하지 않는다(Codex 계획 리뷰 r2)
         self.put_item(1, "5712", "start", 2, "a")
         self.put_item(2, "5712", "done", 3, "b")
         self.put_item(3, "77", "start", 2, "c")
-        self.server.hold()
-        first = self.hteam_bg("redmine-sync")
-        deadline = time.monotonic() + 30
-        while not self.server.entered.wait(0.05):  # 첫 전송자가 첫 요청을 보내고 응답을 기다린다(잠금을 쥐었다)
-            self.assertIsNone(first.poll(), "첫 전송자가 요청 전에 끝났다")
-            self.assertLess(time.monotonic(), deadline)
+        lock = self.redmine_dir / "sync.lock"
+        with open(lock, "a") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            code, out = self.sync()
+            self.assertEqual(code, 0, out)
+            self.assertEqual((out.get("busy"), out["sent"], out["failed"], out["retry"], out["pending"]),
+                             (True, [], [], [], 3))
+            self.assertEqual(out["message"], "다른 hteam redmine-sync 가 보내는 중이라 보내지 않았다(state/redmine/sync.lock)")
+            self.assertEqual(self.server.puts(), [])  # 잠금을 쥔 쪽이 있으면 아무것도 보내지 않는다
+            self.assertEqual(len(self.queued()), 3)
+        self.server.lock_path = lock  # 보내는 동안 내내 sync.lock 을 쥐는지 PUT 마다 본다
         code, out = self.sync()
-        self.assertEqual(code, 0, out)
-        self.assertEqual((out.get("busy"), out["sent"], out["failed"], out["retry"], out["pending"]), (True, [], [], [], 3))
-        self.assertEqual(out["message"], "다른 hteam redmine-sync 가 보내는 중이라 보내지 않았다(state/redmine/sync.lock)")
-        self.assertEqual(len(self.server.puts()), 1)  # 두 번째는 아무것도 보내지 않았다
-        self.server.release()
-        code, out = self.finish(first)
         self.assertEqual((code, out.get("busy")), (0, False), out)
+        self.assertEqual(self.server.lock_held, [True, True, True])
         self.assertEqual([e["seq"] for e in out["sent"]], [1, 2, 3])
         self.assertEqual([(r["path"], r["body"]["issue"]["notes"]) for r in self.server.puts()],
                          [("/issues/5712.json", "a"), ("/issues/5712.json", "b"), ("/issues/77.json", "c")])  # 큐 순번 차례
@@ -5411,7 +5411,7 @@ class PlanIssueProgressTest(FlowCase):
 - [ ] **Step 2: 실패 확인**
 
 Run: `cd herdr-team && python3 -m unittest tests.test_redmine tests.test_approval.IssueLineTest tests.test_approval.RedmineDecisionTest tests.test_drive_flows.PlanIssueProgressTest 2>&1 | tail -5`
-Expected: `Ran 34 tests` / `FAILED (failures=29, errors=11)`(subTest 마다 센다). 대표 메시지: `AssertionError: 2 != 0 : {'ok': False, 'error': {'code': 'usage', 'message': "argument cmd: invalid choice: 'redmine-sync' …`(16건), `AttributeError: 'Drive' object has no attribute 'redmine_step'`, `AttributeError: 'Spec' object has no attribute 'issue'`, `ImportError: cannot import name 'redmine' from 'hteam'`, `KeyError: 'redmine_key'`, `AssertionError: Tuples differ: (0, 'working', None) != (0, 'waiting', 'slot_setup')`, `AssertionError: Lists differ: [] != [('start', '5712', 2, 'herdr-team: T-001 r…`(관제 흐름은 HEAD 에서 끝까지 돌고 큐만 비었다), `AssertionError: Lists differ: [] != [('closed', '5712', 'T-001', 5, 'T-001 가 끝나 종료한다.')]`(`RedmineDecisionTest`: design-decide 는 HEAD 에서 돌고 닫기만 없다), `AssertionError: … 첫 전송자가 요청 전에 끝났다`(`test_one_sender_at_a_time`: `redmine-sync` 가 없어 바로 끝난다). HEAD 에 공유 시험 도구와 이 태스크의 Step 1 블록만 적용한 트리에서 쟀다(앞 태스크 구현 없음). 앞 태스크(Task 2–7)를 구현한 트리에서는 `Spec.issue`·`slot_setup` 갈래가 이 태스크 기능의 실패(큐가 빈다)로 바뀐다.
+Expected: `Ran 34 tests` / `FAILED (failures=29, errors=11)`(subTest 마다 센다). 대표 메시지: `AssertionError: 2 != 0 : {'ok': False, 'error': {'code': 'usage', 'message': "argument cmd: invalid choice: 'redmine-sync' …`(17건, `test_one_sender_at_a_time` 포함), `AttributeError: 'Drive' object has no attribute 'redmine_step'`, `AttributeError: 'Spec' object has no attribute 'issue'`, `ImportError: cannot import name 'redmine' from 'hteam'`, `KeyError: 'redmine_key'`, `AssertionError: Tuples differ: (0, 'working', None) != (0, 'waiting', 'slot_setup')`, `AssertionError: Lists differ: [] != [('start', '5712', 2, 'herdr-team: T-001 r…`(관제 흐름은 HEAD 에서 끝까지 돌고 큐만 비었다), `AssertionError: Lists differ: [] != [('closed', '5712', 'T-001', 5, 'T-001 가 끝나 종료한다.')]`(`RedmineDecisionTest`: design-decide 는 HEAD 에서 돌고 닫기만 없다). HEAD 에 공유 시험 도구와 이 태스크의 Step 1 블록만 적용한 트리에서 쟀다(앞 태스크 구현 없음). 앞 태스크(Task 2–7)를 구현한 트리에서는 `Spec.issue`·`slot_setup` 갈래가 이 태스크 기능의 실패(큐가 빈다)로 바뀐다.
 
 - [ ] **Step 3: 구현**
 
@@ -6634,6 +6634,7 @@ Expected: 커밋 하나, grep 빈 출력, 리뷰 pane 주소. `hc wait <주소> 
 - 충돌 알림 복구는 outbox 의 `merge_conflict` detail(`base`·`files`)로 가린다. 같은 태스크가 다른 라운드에서 같은 기준·같은 파일로 다시 충돌하면(기준이 그동안 움직이지 않았고 워커가 기준 병합을 하지 않고 승인된 경우) 앞 decide 를 이번 것으로 보고 다시 올리지 않는다.
 - 작업 공간 직무 태스크를 shared 모드에서 시작한 뒤 worktree 모드로 바꾸면 그 태스크의 fix 는 `slot_not_held` 로 거부된다(설계에 모드 바꾸기 규칙이 없다. 메인이 drop 하고 새로 만든다).
 - 다른 전송자가 `sync.lock` 을 쥐고 있는 동안 관제는 틱마다 `busy` 로 바로 끝나는 전송 자식을 띄운다(보내지 않으므로 순서·중복에는 영향이 없다).
+- 깨진 `[workspace]` 표(Codex 계획 리뷰 r2, 가장자리): worktree 로 돌던 프로젝트의 `[workspace]` 값 하나가 운영 중에 틀어지면, 설정 검사를 하지 않는 `hteam test` 경로(`test_settings`)는 그 표를 기본값(shared)으로 본다. 그 동안 워커가 부른 `hteam test` 와 마무리 full 은 슬롯 env 없이 돈다. 관제·리뷰 관문은 검사한 설정을 쓰고 `status` 가 `config_error` 를 보이므로 사용자가 고친다. 0.4.0 대비 퇴행은 아니다(worktree 는 새 기능).
 
 확인하지 못한 것(실환경 Task 10 또는 구현 때 본다):
 
