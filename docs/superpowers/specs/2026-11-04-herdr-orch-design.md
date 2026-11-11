@@ -291,7 +291,7 @@ Dispatch:
 - Claude: `claude [--model M] [--effort E] [추가 인자...] -- "<프리앰블>"`
   - 처음 보는 폴더에서는 폴더 신뢰 확인 창에서 멈춘다(사전 검증 S1). 워커 `--cwd` 는 사용자가 이미 신뢰한 폴더를 쓴다.
 - Codex: `codex --no-daemon -s workspace-write -a never --add-dir <저장 루트> [-m M] [-c model_reasoning_effort=E] -c check_for_update_on_startup=false -c 'projects={"<cwd 실경로>"={trust_level="trusted"}}' [추가 인자...] -- "<프리앰블>"`
-  - 시작 창 막기(6단계 실환경, codex-cli 0.167.0): 처음 보는 폴더면 폴더 신뢰 창("Trust and continue"), 새 판이 있으면 업데이트 창이 뜨고 그동안 상태 보고가 없다. 숨은 워커는 사람이 볼 수도 없다. 그래서 `--cwd` 의 실경로를 이 실행에서만 신뢰하고(`~/.codex/config.toml` 은 쓰지 않는다, 실험에서 그대로였다) 시작 업데이트 확인을 끈다. Codex 는 신뢰를 실경로로 찾는다(`/tmp/…` 로 주면 `/private/tmp/…` 신뢰 창이 떴다). `projects."<경로>".trust_level` 점 키는 경로에 점이 있으면 듣지 않아 인라인 표 한 값으로 넘긴다(경로는 JSON 문자열 꼴. TOML 기본 문자열로도 읽힌다). 저장소 하위 폴더를 `--cwd` 로 줘도 그 경로 신뢰로 창이 없었다. 추가 인자가 뒤에 오므로 호출자가 같은 키를 덮을 수 있다.
+  - 시작 창 막기(6단계 실환경, codex-cli 0.167.0): 처음 보는 폴더면 폴더 신뢰 창("Trust and continue"), 새 판이 있으면 업데이트 창이 뜨고 그동안 상태 보고가 없다. 숨은 워커는 사람이 볼 수도 없다. 그래서 `--cwd` 의 실경로를 이 실행에서만 신뢰하고(`~/.codex/config.toml` 은 쓰지 않는다, 실험에서 그대로였다) 시작 업데이트 확인을 끈다. Codex 는 신뢰를 실경로로 찾는다(macOS 에서 `/tmp` 아래 경로로 주면 그 실경로(`/private` 로 시작)의 신뢰 창이 떴다). `projects."<경로>".trust_level` 점 키는 경로에 점이 있으면 듣지 않아 인라인 표 한 값으로 넘긴다(경로는 JSON 문자열 꼴. TOML 기본 문자열로도 읽힌다). 저장소 하위 폴더를 `--cwd` 로 줘도 그 경로 신뢰로 창이 없었다. 추가 인자가 뒤에 오므로 호출자가 같은 키를 덮을 수 있다.
   - `--no-daemon`: 없으면 Codex 의 명령이 hc 밖에서 돌아 `$HC_TERMINAL_ID` 가 없다.
   - `--add-dir`: Codex 샌드박스에서 저장소 DB 에 쓰게 한다.
   - `-a never`: 사람 없이 돈다. 샌드박스 밖 명령은 묻지 않고 실패한다.
