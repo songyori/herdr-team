@@ -119,15 +119,15 @@ class HorchClientTest(TeamCase):
         return path
 
     def test_registry_picks_scope_project_and_version(self):
-        old = self.install("old", "0.1.2")
-        user = self.install("user", "0.2.0")
-        other = self.install("other", "0.2.9")
-        mine = self.install("mine", "0.2.0")
-        local = self.install("local", "0.2.1")
+        old = self.install("old", "0.2.0")
+        user = self.install("user", "0.3.0")
+        other = self.install("other", "0.3.9")
+        mine = self.install("mine", "0.3.0")
+        local = self.install("local", "0.3.1")
         env = {k: v for k, v in os.environ.items() if k != "HERDR_ORCH_BIN"}
         with mock.patch.dict(os.environ, env, clear=True), \
                 mock.patch.object(horch_mod, "PLUGIN_ROOT", self.tmp / "x" / "herdr-team"):
-            entries = [{"scope": "user", "installPath": str(old), "version": "0.1.2"},
+            entries = [{"scope": "user", "installPath": str(old), "version": "0.2.0"},
                        {"scope": "project", "projectPath": str(self.tmp / "elsewhere"), "installPath": str(other)},
                        {"scope": "user", "installPath": str(user)}]
             os.environ["HTEAM_PLUGINS_JSON"] = str(self.registry(entries))
@@ -145,12 +145,12 @@ class HorchClientTest(TeamCase):
             with self.assertRaises(HteamError) as ctx:
                 horch_mod.find_horch(self.proj)
             self.assertEqual(ctx.exception.exit_code, 12)
-            self.assertIn("쓰지 않은 설치: herdr-orch@herdr-team user 0.1.2(0.2.0 보다 낮다)", ctx.exception.message)
+            self.assertIn("쓰지 않은 설치: herdr-orch@herdr-team user 0.2.0(0.3.0 보다 낮다)", ctx.exception.message)
 
     def test_corrupt_registry_entries_are_skipped(self):
         # 손상된 설치 기록 하나(자료형이 틀린 scope·projectPath·version·installPath)가 TypeError 로 고르기를 멈추지 않는다.
         # 그 항목만 이유와 함께 빼고 뒤의 정상 후보를 고른다
-        good = self.install("good", "0.2.0")
+        good = self.install("good", "0.3.0")
         env = {k: v for k, v in os.environ.items() if k != "HERDR_ORCH_BIN"}
         with mock.patch.dict(os.environ, env, clear=True), \
                 mock.patch.object(horch_mod, "PLUGIN_ROOT", self.tmp / "x" / "herdr-team"):
@@ -172,7 +172,7 @@ class HorchClientTest(TeamCase):
     def test_bad_values_in_registry_entries_are_skipped(self):
         # Codex 계획 r2: 자료형은 맞지만 값이 손상된 항목("1.2.²" 는 isdigit 가 참이라 int() 가 실패, 없는 사용자의 ~경로는
         # expanduser 가 RuntimeError)도 그 항목만 까닭과 함께 빼고 뒤의 정상 후보를 고른다
-        good = self.install("good", "0.2.0")
+        good = self.install("good", "0.3.0")
         odd = self.install("odd", "1.2.²")
         env = {k: v for k, v in os.environ.items() if k != "HERDR_ORCH_BIN"}
         with mock.patch.dict(os.environ, env, clear=True), \
@@ -204,7 +204,7 @@ class HorchClientTest(TeamCase):
     def test_call_ok_and_failure(self):
         with mock.patch.dict(os.environ, self.env, clear=True):
             h = horch_mod.Horch(self.horch_home)
-            self.assertEqual(h.ok("version")["version"][:4], "0.2.")  # 함께 배포하는 herdr-orch 0.2.0
+            self.assertEqual(h.ok("version")["version"][:4], "0.3.")  # 함께 배포하는 herdr-orch 0.3.0
             code, data = h.call("worker-list")
             self.assertEqual(code, 5)
             with self.assertRaises(HteamError) as ctx:

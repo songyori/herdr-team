@@ -81,8 +81,9 @@ class SchemaV3Test(HorchCase):
 
     def test_new_db_is_v3(self):
         s = self.open()
-        self.assertEqual(SCHEMA_VERSION, 3)
-        self.assertEqual(s.one("SELECT value FROM meta WHERE key='schema_version'")["value"], "3")
+        # v4(0.3.0, herdr-orch 설계 14.2)도 v3 열·인덱스를 그대로 둔다
+        self.assertGreaterEqual(SCHEMA_VERSION, 3)
+        self.assertEqual(s.one("SELECT value FROM meta WHERE key='schema_version'")["value"], str(SCHEMA_VERSION))
         cols = {r["name"] for r in s.all("PRAGMA table_info(dispatches)")}
         for c in V3_COLUMNS:
             self.assertIn(c, cols)
@@ -104,7 +105,8 @@ class SchemaV3Test(HorchCase):
               "VALUES ('dsp-1','task-1','run-1',1,'claude','/x','t9','active','t')")
         s.close()
         s2 = self.open()
-        self.assertEqual(s2.one("SELECT value FROM meta WHERE key='schema_version'")["value"], "3")
+        # 누적 마이그레이션: v2 → v3 → v4(herdr-orch 설계 14.2)
+        self.assertEqual(s2.one("SELECT value FROM meta WHERE key='schema_version'")["value"], str(SCHEMA_VERSION))
         row = s2.one("SELECT * FROM dispatches WHERE id='dsp-1'")
         self.assertEqual((row["persistent"], row["terminal_argv"], row["start_turn"], row["delivery"], row["seen_at"]),
                          (0, None, None, None, None))

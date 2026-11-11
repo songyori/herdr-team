@@ -6,7 +6,7 @@ import shlex
 import sys
 from pathlib import Path
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 HORCH_BIN = PLUGIN_ROOT / "bin" / "horch"
 

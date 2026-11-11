@@ -18,7 +18,7 @@ def _registry() -> Path:
                 or Path.home() / ".claude" / "plugins" / "installed_plugins.json")
 
 
-HORCH_MIN = "0.2.0"  # hteam 이 받는 가장 낮은 herdr-orch 버전(고정 터미널, 0.2.0)
+HORCH_MIN = "0.3.0"  # hteam 이 받는 가장 낮은 herdr-orch 버전(워커 환경 변수 --env, 0.3.0)
 SCOPE_RANK = {"local": 0, "project": 1, "user": 2}  # Claude Code 처럼 좁은 범위가 앞선다
 
 

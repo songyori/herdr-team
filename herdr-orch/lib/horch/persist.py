@@ -146,13 +146,13 @@ def start_on(store, run_id: str, terminal: str, *, spec, title, task_id, retry) 
             held = reservation(store, terminal)
             if held:
                 raise _busy(terminal, None, held["kind"])
-            task_id, attempt, title, spec = workers._task_for(store, run_id, task_id, title, spec, retry, ts)
-            # 떠 있는 세션을 그대로 쓰므로 에이전트·모델·effort·인자·cwd·argv 는 앞 고정 Dispatch 의 것이다
+            task_id, attempt, title, spec, _ = workers._task_for(store, run_id, task_id, title, spec, retry, ts)
+            # 떠 있는 세션을 그대로 쓰므로 에이전트·모델·effort·인자·cwd·argv·env 는 앞 고정 Dispatch 의 것이다(설계 14.1)
             store.run("INSERT INTO dispatches(id, task_id, run_id, attempt, agent, model, effort, agent_args, cwd, "
-                      "terminal, state, persistent, terminal_argv, launcher_pid, launcher_started, created_at) "
-                      "VALUES (?,?,?,?,?,?,?,?,?,?,'launching',1,?,?,?,?)",
+                      "terminal, state, persistent, terminal_argv, launcher_pid, launcher_started, created_at, env) "
+                      "VALUES (?,?,?,?,?,?,?,?,?,?,'launching',1,?,?,?,?,?)",
                       (dispatch_id, task_id, run_id, attempt, prev["agent"], prev["model"], prev["effort"],
-                       prev["agent_args"], prev["cwd"], terminal, prev["terminal_argv"], pid, started, ts))
+                       prev["agent_args"], prev["cwd"], terminal, prev["terminal_argv"], pid, started, ts, prev["env"]))
     except sqlite3.IntegrityError as exc:
         if "dispatches.terminal" in str(exc):  # dispatch_one_per_terminal
             raise _busy(terminal, _running_on(store, terminal)) from exc

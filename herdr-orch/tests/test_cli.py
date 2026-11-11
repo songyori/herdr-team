@@ -8,7 +8,7 @@ class CliTest(HorchCase):
     def test_version(self):
         code, out = self.horch("version")
         self.assertEqual(code, 0)
-        self.assertEqual(out, {"ok": True, "version": "0.2.0"})
+        self.assertEqual(out, {"ok": True, "version": "0.3.0"})
 
     def test_unserializable_success_is_internal_json(self):
         # 성공 봉투를 직렬화하다 실패해도 JSON 한 개(internal)로 알린다(traceback·빈 출력이 아니다)

@@ -19,6 +19,7 @@
    spec 은 혼자 읽고 일할 수 있어야 한다: 대상, 바꿀 것, 제약, 고쳐도 되는 범위, 관찰 가능한 완료 기준.
    워커는 Run 을 만든 터미널의 Herdr 탭에 pane 으로 붙는다(`placement: "none"` 이면 pane 없이 돈다).
    `worker-start` 결과의 `warning`(배치 문제)과 `warnings`(목록, 예: 영수증 기록 실패)가 있으면 사용자에게 알린다.
+   워커 에이전트에 환경 변수를 주려면 `--env KEY=VALUE` 를 되풀이한다(32개까지. `hc run` 터미널은 부른 셸의 환경을 물려받지 않는다). 가드가 에이전트를 실행하기 직전에 넣고 Dispatch 기록과 `worker-show` 의 `env` 에 남으므로 비밀값을 넘기지 않는다. `--task --retry` 에 주지 않으면 그 Task 의 마지막 값을 쓰고, `--terminal` 과는 같이 쓸 수 없다.
 4. `horch check --wait` 를 백그라운드로 띄운다(Claude Code 는 Bash `run_in_background: true`). launching·active 워커나 답 없는 질문이 있는 동안 항상 하나가 떠 있어야 한다. 메시지를 처리한 뒤, 그리고 턴을 끝내기 전에 다시 띄운다.
    `check --wait` 가 exit 5(`binding_moved`·`not_owner`)로 끝나면 이 터미널은 더는 그 Run 의 소유자가 아니다. 다시 띄우지 않고 사용자에게 알린다.
 5. 받은 `messages` 를 모두 처리한 뒤 `horch check --ack <delivery>` 로 다음 묶음을 받는다. ack 하기 전에는 같은 묶음이 다시 온다. `count` 가 0 이면 다시 `check --wait` 를 백그라운드로 띄운다.

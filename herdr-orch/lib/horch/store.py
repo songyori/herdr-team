@@ -10,7 +10,7 @@ from typing import Iterator
 
 from .errors import FAIL, HorchError
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # v3(설계 13.3) 열과 인덱스. 새 DB 의 DDL 과 v2 → v3 마이그레이션이 함께 쓴다
 V3_COLUMNS = {
@@ -38,7 +38,7 @@ DDL = [
         effort TEXT, agent_args TEXT, cwd TEXT NOT NULL, terminal TEXT, state TEXT NOT NULL, outcome TEXT, summary TEXT,
         report_path TEXT, files_modified TEXT, launch_argv TEXT, launcher_pid INTEGER, launcher_started TEXT,
         created_at TEXT NOT NULL, settled_at TEXT, closed_at TEXT, persistent INTEGER NOT NULL DEFAULT 0,
-        terminal_argv TEXT, start_turn INTEGER, delivery TEXT, seen_at TEXT)""",
+        terminal_argv TEXT, start_turn INTEGER, delivery TEXT, seen_at TEXT, env TEXT)""",
     "CREATE UNIQUE INDEX dispatch_one_running ON dispatches(task_id) WHERE state IN ('launching','active')",
     # 0.2.0 고정 터미널(설계 13.3): 한 터미널에 진행 중 Dispatch 는 하나다
     V3_INDEXES[0],
@@ -142,6 +142,12 @@ class Store:
                 for stmt in V3_INDEXES:
                     self.conn.execute(stmt)
                 self.conn.execute("UPDATE meta SET value='3' WHERE key='schema_version'")
+            if version < 4:
+                # v3 -> v4: 워커 환경 변수(설계 14.2). 없을 때만 더한다(v1·v2 로 되돌린 DB 에는 이미 있을 수 있다)
+                cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(dispatches)")}
+                if "env" not in cols:
+                    self.conn.execute("ALTER TABLE dispatches ADD COLUMN env TEXT")
+                self.conn.execute("UPDATE meta SET value='4' WHERE key='schema_version'")
 
     @contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:

@@ -41,12 +41,16 @@ def run(store, dispatch_id: str, argv: list[str]) -> None:
     if not argv:
         raise HorchError("usage", "에이전트 명령이 없다", USAGE)
     claim(store, dispatch_id, terminal)
+    # worker-start --env 값(설계 14.3). hc run 터미널은 부른 셸의 환경을 물려받지 않으므로 exec 직전에 더한다
+    env = store.one("SELECT env FROM dispatches WHERE id=?", (dispatch_id,))["env"]
     final = inject_codex_env(argv, terminal)
     store.close()
     # CPython 이 무시로 바꾼 SIGPIPE·SIGXFSZ 는 exec 뒤에도 남아 에이전트와 자식이 물려받으므로 되돌린다.
     for name in ("SIGPIPE", "SIGXFSZ"):
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), signal.SIG_DFL)
+    if env is not None:
+        os.environ.update(json.loads(env))  # 같은 이름은 덮어쓴다. 프리앰블·에이전트 인자에는 넣지 않는다
     try:
         os.execvp(final[0], final)
     except OSError as exc:

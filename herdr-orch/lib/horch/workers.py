@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sqlite3
 import time
@@ -16,6 +17,33 @@ from .store import write_atomic
 
 STATES = ("launching", "active", "launch_failed", "settled", "retained", "abandoned", "released")
 SWEEP_HC_TIMEOUT_S = 5.0  # sweep 안 hc 호출 하나의 최대 시간(hcio 기본 30초 대신)
+# worker-start --env(설계 14.1): 개수, 값의 UTF-8 바이트 수, 이름 형식
+ENV_MAX = 32
+ENV_VALUE_MAX = 1024
+ENV_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def parse_env(items: list[str]) -> dict[str, str] | None:
+    """--env KEY=VALUE 목록을 검사해 받은 차례의 dict 로 바꾼다(설계 14.1). 항목이 없으면 None. 틀리면 exit 2 usage."""
+    if not items:
+        return None
+    if len(items) > ENV_MAX:
+        raise HorchError("usage", f"--env 는 {ENV_MAX}개까지다({len(items)}개)", USAGE)
+    env: dict[str, str] = {}
+    for item in items:
+        if "=" not in item:
+            raise HorchError("usage", f"--env 는 KEY=VALUE 꼴이다: {item!r}", USAGE)
+        key, value = item.split("=", 1)  # 값에 = 가 있어도 된다
+        if not ENV_KEY_RE.fullmatch(key):
+            raise HorchError("usage", f"--env 이름 {key!r} 은 영문자·숫자·_ 로 쓰고 숫자로 시작하지 않는다", USAGE)
+        if key.startswith(("HC_", "HORCH_")):
+            raise HorchError("usage", f"--env 이름 {key} 은 HC_·HORCH_ 로 시작할 수 없다(가드와 판별이 쓴다)", USAGE)
+        if any(c in value for c in "\n\r\0") or len(value.encode("utf-8")) > ENV_VALUE_MAX:
+            raise HorchError("usage", f"--env {key} 의 값은 줄바꿈·NUL 없는 1 KiB(UTF-8 1024바이트) 이하다", USAGE)
+        if key in env:
+            raise HorchError("usage", f"--env {key} 가 두 번 나왔다", USAGE)
+        env[key] = value
+    return env
 
 
 def _hc_timeout(deadline: float | None) -> float | None:
@@ -120,15 +148,17 @@ def _require_owner(store, run_id: str) -> None:
                          "run-create 또는 run-use 를 먼저 한다")
 
 
-def _task_for(store, run_id: str, task_id: str | None, title, spec, retry: bool, ts: str) -> tuple[str, int, str, str]:
-    """트랜잭션 안에서 부른다. --task 면 재시도 허용 검사(설계 5장) 뒤 (Task, 다음 시도 번호, 제목, spec), 아니면 새 Task."""
+def _task_for(store, run_id: str, task_id: str | None, title, spec, retry: bool, ts: str,
+              env: str | None = None) -> tuple[str, int, str, str, str | None]:
+    """트랜잭션 안에서 부른다. --task 면 재시도 허용 검사(설계 5장) 뒤 (Task, 다음 시도 번호, 제목, spec, env), 아니면 새 Task.
+    env 는 기록할 dispatches.env(JSON 텍스트). --task --retry 에 주지 않았으면 그 Task 의 마지막 시도 값을 쓴다(설계 14.1)."""
     if task_id:
         task = store.one("SELECT * FROM tasks WHERE id=? AND run_id=?", (task_id, run_id))
         if not task:
             raise HorchError("unknown_task", f"이 Run 에 Task {task_id} 가 없다", USAGE)
         if task["status"] != "open":
             raise HorchError("task_settled", f"Task {task_id} 는 이미 끝났다. 새 Task 로 만든다", CONFLICT)
-        last = store.one("SELECT id, state FROM dispatches WHERE task_id=? ORDER BY attempt DESC LIMIT 1",
+        last = store.one("SELECT id, state, env FROM dispatches WHERE task_id=? ORDER BY attempt DESC LIMIT 1",
                          (task_id,))
         if last and last["state"] == "launch_failed" and not retry:
             raise HorchError("retry_required", f"Task {task_id} 의 직전 실행 {last['id']} 이 launch_failed 다",
@@ -138,29 +168,34 @@ def _task_for(store, run_id: str, task_id: str | None, title, spec, retry: bool,
                              CONFLICT)
         attempt = store.one("SELECT COALESCE(MAX(attempt), 0) + 1 AS a FROM dispatches WHERE task_id=?",
                             (task_id,))["a"]
-        return task_id, attempt, task["title"], task["spec"]
+        if retry and env is None and last:
+            env = last["env"]
+        return task_id, attempt, task["title"], task["spec"], env
     task_id = new_id("task")
     store.run("INSERT INTO tasks(id, run_id, title, spec, status, created_at) VALUES (?,?,?,?,'open',?)",
               (task_id, run_id, title, spec, ts))
-    return task_id, 1, title, spec
+    return task_id, 1, title, spec, env
 
 
 def _create(store, run_id: str, *, spec, title, agent, model, effort, extra, cwd, task_id,
-            retry, keep_open=False) -> tuple[str, str, str, str]:
-    """Task·Dispatch 를 한 트랜잭션에서 만든다. 재시도 허용 검사도 이 안에서 다시 한다."""
+            retry, keep_open=False, env: dict[str, str] | None = None) -> tuple[str, str, str, str]:
+    """Task·Dispatch 를 한 트랜잭션에서 만든다. 재시도 허용 검사와 env 물려받기도 이 안에서 한다."""
     pid, started = procs.me()
     given_task = bool(task_id)
     dispatch_id, ts = new_id("dsp"), now()
     try:
         with store.tx():
             _require_owner(store, run_id)
-            task_id, attempt, title, spec = _task_for(store, run_id, task_id, title, spec, retry, ts)
+            task_id, attempt, title, spec, env_text = _task_for(
+                store, run_id, task_id, title, spec, retry, ts,
+                None if env is None else json.dumps(env, ensure_ascii=False))
             # agent_args: 재시도 안내(worker-list next)가 같은 모델·인자로 다시 띄우도록 남긴다
             store.run("INSERT INTO dispatches(id, task_id, run_id, attempt, agent, model, effort, agent_args, cwd, "
-                      "state, persistent, launcher_pid, launcher_started, created_at) "
-                      "VALUES (?,?,?,?,?,?,?,?,?,'launching',?,?,?,?)",
+                      "state, persistent, launcher_pid, launcher_started, created_at, env) "
+                      "VALUES (?,?,?,?,?,?,?,?,?,'launching',?,?,?,?,?)",
                       (dispatch_id, task_id, run_id, attempt, agent, model, effort,
-                       json.dumps(list(extra), ensure_ascii=False), cwd, 1 if keep_open else 0, pid, started, ts))
+                       json.dumps(list(extra), ensure_ascii=False), cwd, 1 if keep_open else 0, pid, started, ts,
+                       env_text))
     except sqlite3.IntegrityError as exc:
         # 한 Task 에 실행 중 Dispatch 는 하나뿐이라는 부분 유일 인덱스 위반(또는 --task 지정)만 task_busy 다. 나머지는 버그라 그대로 올린다
         if not (given_task or "dispatches.task_id" in str(exc)):
@@ -196,8 +231,10 @@ def _check_task_args(task_id, spec, title) -> None:
 
 
 def start(store, run_id: str, *, spec, title, agent, model, effort, cwd, extra, task_id, retry,
-          keep_open: bool = False, tab: str | None = None, hidden: bool = False) -> dict:
-    """keep_open 은 고정 터미널로 띄운다(설계 13.4). tab 은 소유 space 의 그 탭에, hidden 은 herdr 라벨 없이 띄운다."""
+          keep_open: bool = False, tab: str | None = None, hidden: bool = False,
+          env: dict[str, str] | None = None) -> dict:
+    """keep_open 은 고정 터미널로 띄운다(설계 13.4). tab 은 소유 space 의 그 탭에, hidden 은 herdr 라벨 없이 띄운다.
+    env 는 가드가 에이전트 exec 직전에 환경에 더할 값이다(설계 14장)."""
     exe = agents.executable(agent)
     _check_task_args(task_id, spec, title)
     cwd_path = Path(cwd).expanduser().resolve()
@@ -209,7 +246,7 @@ def start(store, run_id: str, *, spec, title, agent, model, effort, cwd, extra, 
         reconcile_launching(store, run_id)
     task_id, dispatch_id, title, spec = _create(store, run_id, spec=spec, title=title, agent=agent, model=model,
                                                 effort=effort, extra=extra, cwd=str(cwd_path), task_id=task_id,
-                                                retry=retry, keep_open=keep_open)
+                                                retry=retry, keep_open=keep_open, env=env)
     _die_at("after_create")
     base = {"task": task_id, "dispatch": dispatch_id}
     progress: dict = {"ran": False, "terminal": None}  # hc run 이 성공했는지(성공 뒤에는 실패로 바꾸지 않는다)
@@ -374,7 +411,7 @@ def _row_json(r) -> dict:
             "files_modified": json.loads(r["files_modified"] or "[]"), "created_at": r["created_at"],
             "settled_at": r["settled_at"], "closed_at": r["closed_at"], "persistent": bool(r["persistent"]),
             "start_turn": r["start_turn"], "delivery": json.loads(r["delivery"]) if r["delivery"] else None,
-            "seen_at": r["seen_at"]}
+            "seen_at": r["seen_at"], "env": None if r["env"] is None else json.loads(r["env"])}
 
 
 def _attention(home, r, verdict: str | None, info: dict | None) -> tuple[str | None, list[str] | None]:
