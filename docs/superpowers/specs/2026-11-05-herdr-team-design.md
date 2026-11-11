@@ -367,7 +367,7 @@ owns = ["tests/**", "docs/qa/**"]
   - `crew.<이름>: <직무> 는 claude 만 된다(agent = "codex")`(director·designer, 1장 6단계 결정)
   - `crew.<이름>.model 을 정하지 못했다([crew.<이름>].model 또는 [defaults].<agent>_model)`, effort 도 같다
   - 모르는 키: `crew.<이름>: 모르는 키 <정렬한 키>`
-- `[workspace]`(7단계, 해당하는 것을 모두 모아 `bad_config`): `workspace.mode 는 shared·worktree 다`, `workspace.roles 에 정의되지 않은 직무가 있다: <목록>`, `workspace.slots 는 1–9 정수다`, `workspace.setup 은 비지 않은 문자열이다`(teardown 도 같다), `workspace.setup_timeout_min 은 1–120 정수다`, `workspace.env.<이름>: 이름은 대문자·숫자·_ 이고 HTEAM_·HC_·HORCH_ 로 시작하지 않으며 KEY·SECRET·TOKEN 을 담지 않는다`(Codex 기본 셸 정책이 그런 이름을 뺀다, herdr-orch 14.3), `workspace.env.<이름>: 값은 줄바꿈 없는 1 KiB 이하 문자열이다`, 모르는 키. mode 가 worktree 면 더 본다: `crew.<이름>: <직무> 는 작업 공간 직무다(worktree 모드에서는 임시 워커만 맡는다)`.
+- `[workspace]`(7단계, 해당하는 것을 모두 모아 `bad_config`): `workspace.mode 는 shared·worktree 다`, `workspace.roles 에 정의되지 않은 직무가 있다: <목록>`, `workspace.slots 는 1–9 정수다`, `workspace.setup 은 비지 않은 문자열이다`(teardown 도 같다), `workspace.setup_timeout_min 은 1–120 정수다`, `workspace.env.<이름>: 이름은 대문자·숫자·_ 이고 HTEAM_·HC_·HORCH_ 로 시작하지 않으며 KEY·SECRET·TOKEN 을 담지 않는다`(Codex 의 셸 환경 정책은 버전과 사용자 설정에 따라 그런 이름을 뺄 수 있다, herdr-orch 14.3), `workspace.env.<이름>: 값은 줄바꿈 없는 1 KiB 이하 문자열이다`, 모르는 키. mode 가 worktree 면 더 본다: `crew.<이름>: <직무> 는 작업 공간 직무다(worktree 모드에서는 임시 워커만 맡는다)`, `user_approval_roles 의 <직무> 는 작업 공간 직무다(worktree 모드에서는 승인 직무로 두지 않는다)`(5.10.6).
 - `[redmine]`(7단계): `redmine.url 은 http·https URL 이다`, `redmine.key_env 는 환경 변수 이름이다`, `redmine.env_file 은 프로젝트 안 상대 경로다`, `redmine.status 는 start·done·changes·closed 네 양의 정수다`, 모르는 키.
 - 경고(오류 아님, `status`·`doctor` 의 `warnings`): 고정 에이전트의 `agent` 가 그 `roles` 의 어느 직무의 작업 에이전트(`[roles.<직무>].worker`, 없으면 `[defaults] worker`)와도 같지 않으면 `crew.<이름>: 어느 직무의 작업 에이전트도 <agent> 가 아니다. 이 에이전트는 태스크를 받지 않는다(태스크 front matter 의 worker 로만 받는다)`. Codex 고정 에이전트를 쓰려면 그 직무 표에 `worker = "codex"` 를 둔다.
 - 모델·effort 값은 비지 않은 문자열인지만 검사하고 내용은 그대로 넘긴다(에이전트가 판단). 설정 파일을 읽지 못하면(디렉터리·권한) `bad_config`.
@@ -639,7 +639,7 @@ exclusive = false     # 선택, 기본 false. true 면 테스트 실행을 한 �
 - exclusive 잠금: `exclusive = true` 면 명령 한 번(시도 하나) 동안만 `.herdr-team/state/tests/.lock` 의 flock 을 쥔다. 비차단으로 0.2초마다 시도하고 대기 상한은 `timeout_min × 60` 초다. 넘으면 exit 4 `test_lock_timeout`(`테스트 잠금(exclusive)을 {N}초 안에 얻지 못했다. 다른 테스트 실행이 끝난 뒤 다시 한다`). 이 잠금은 비차단 시도라 hteam 의 다른 잠금(프로젝트 → finish → 태스크, 13장)과 교착하지 않는다.
 - quick(`run_quick`): 파일이 없으면 돌리지 않고 `{status: "skipped", exit: null, seconds: 0.0, command: null, log: null, tail: "", files: []}`(통과로 본다). 실행은 `{files}` 를 `"$@"` 로 바꾼 스크립트를 `/bin/sh -c <스크립트> sh <파일들>` 로 돌린다(파일 이름이 셸 문법으로 다시 읽히지 않는다). 기록·로그의 `command` 는 보이기용으로 `{files}` 를 셸 인용한 파일들로 바꾼 문자열이다. 1차(`-quick-a1`)가 `failed` 가 아니면(passed·timeout·unrunnable) 그대로 끝난다(시간 초과는 다시 돌리지 않는다). 1차가 `failed` 면 바로 2차(`-quick-a2`). 2차가 passed 면 `status: "flaky"` 와 `first: {exit, log}`(1차), 아니면 2차 결과다. 결과에 `files`.
 - full 은 한 번만 돈다.
-- 7단계 `full_if`: developer 태스크의 quick 파일 가운데 하나라도 `full_if` 에 맞으면 `hteam test T-xxx` 와 리뷰 관문(6.1 4a)이 quick 대신 full 을 한 번 돈다. 기록은 `full` 키이고 재사용은 tester 의 full 과 같다(같은 라운드·code_head·식별값). 실패·시간 초과는 quick 실패처럼 리뷰어 없이 반려한다(developer 리뷰는 묶음 리뷰가 아니다). 워커 사양의 developer 테스트 절에 "이 태스크가 `[test] full_if` 경로를 바꾸면 `hteam test T-xxx` 가 quick 대신 전체 테스트를 돈다(오래 걸리면 `run_in_background`)" 줄을 더한다.
+- 7단계 `full_if`: developer 태스크가 바꾼 경로(`changed_files`. 지우거나 옮긴 파일도 든다. 보고서 경로는 뺀다) 가운데 하나라도 `full_if` 에 맞으면 `hteam test T-xxx` 와 리뷰 관문(6.1 4a)이 quick 대신 full 을 한 번 돈다(Codex 설계 리뷰 r1: quick 파일은 지금 있는 파일만 남기므로 판정에 쓰지 않는다). 이 full 도 quick 사전 거부(`no_work_commit`·`uncommitted_owned`)를 먼저 한다(커밋한 내용으로 돈 결과만 남는다). 기록은 `full` 키이고 재사용은 tester 의 full 과 같다(같은 라운드·code_head·식별값). 실패·시간 초과는 quick 실패처럼 리뷰어 없이 반려한다(developer 리뷰는 묶음 리뷰가 아니다). 워커 사양의 developer 테스트 절에 "이 태스크가 `[test] full_if` 경로를 바꾸면 `hteam test T-xxx` 가 quick 대신 전체 테스트를 돈다(오래 걸리면 `run_in_background`)" 줄을 더한다.
 - 7단계 작업 공간: 작업 공간 태스크의 테스트는 cwd 가 그 슬롯의 작업 루트이고, 환경에 그 슬롯의 `[workspace.env]` 값과 `HTEAM_SLOT` 을 더한다. 메인 폴더에서 도는 테스트는 슬롯 0 값이다. 상태·기록·로그는 늘 메인 프로젝트의 `.herdr-team/state/` 에 둔다. worktree 모드의 마무리 full 은 슬롯에서 돈다(5.10.7). `[redmine] key_env` 변수는 뺄 변수에 더한다(8.12).
 
 기록(`run_task`·`run_final`):
@@ -664,6 +664,7 @@ exclusive = false     # 선택, 기본 false. true 면 테스트 실행을 한 �
 - `[test]` 확정은 실수 방지 수준이다(사용자 결정 2026-11-08, Codex 설계 리뷰 r2). 확정할 식별값을 프로젝트 안 outbox 항목에 두므로, 질문이 보인 뒤 outbox 를 일부러 바꾸는 워커(프롬프트 주입 포함)는 메인의 정상적인 확정 답으로 다른 명령을 확정 기록에 넣을 수 있다. 막지 않는다. (사용자 결정 2026-11-08: 실수 방지 수준) `[test]` 확정은 사용자가 모르는 새 명령이 리뷰 전 자동으로 도는 실수를 막는다. 프로젝트 안 상태를 일부러 바꾸는 워커는 막지 않는다(워커는 이미 프로젝트 상태를 셸로 바꿀 수 있다, 14장).
 - 확정 기록 갱신은 잠그지 않는다. 메인 세션 둘이 동시에 서로 다른 확정 답을 쓰면(읽기 → 더하기 → 교체가 겹친다) 한쪽 확정이 빠질 수 있다. 빠지면 관문이 건너뛰지만, 그 식별값의 질문은 이미 답해 관제는 다시 묻지 않고(8.4) `reask` 도 답한 질문은 내지 않는다(7.6). 사용자가 직접 다시 확정해야 한다: 메인이 `hteam test-confirm`(요청 큐, 7.1)으로 관제에 요청하면 관제가 새 확정 질문을 올린다(Codex 설계 리뷰 r2·r3, 기록만).
 - 워커의 `hteam test` 는 그 워커의 환경에서 돈다(Codex 워커도 우회로 돌아 샌드박스가 없다, 4.1). developer 는 통과 기록만 재사용하므로 워커 환경 탓의 실패는 리뷰 관문이 관제 환경에서 다시 돌린다. tester 의 full 은 상태와 관계없이 같은 라운드·같은 code_head 면 재사용하므로 환경 탓의 실패가 묶음 리뷰에 그대로 간다(리뷰어가 실행 환경 탓인지 가른다).
+- (7단계, Codex 설계 리뷰 r1, 기록만) `full_if` 는 식별값에 들지 않는다. `full_if` 만 바꾼 뒤의 `review --retry` 는 앞 시도의 quick 결과를 그대로 쓸 수 있다(새 라운드부터는 full 을 고른다).
 - 테스트가 추적 파일을 바꾸면(스냅숏 갱신 등) 관문이 변조 기준점(6.1 5)보다 먼저 돌아 변조가 아니다. 소유 경로 안이면 다음 리뷰 사전 검사가 커밋 안 된 변경으로 잡고, 밖이면 `dirty` 에만 남는다.
 
 ### 5.8 직무 문서의 테스트 규칙 (5단계)
@@ -871,7 +872,9 @@ worker_done 이 오면 관제가 `task = null` 로 비우고(entry 의 `task` �
 
 - 폴더: `<프로젝트>/.herdr-team/state/slots/slot-<N>`(N = 1–`slots`). `.herdr-team/state/` 는 git 제외라 메인 폴더의 `git status` 에 보이지 않는다. 신뢰한 프로젝트 아래 폴더라 Claude 가 신뢰 창 없이 연다(S1, 15.2). Codex 는 horch 가 실행마다 작업 폴더를 신뢰한다(herdr-orch 8장).
 - 프로젝트가 저장소의 하위 폴더면 슬롯은 저장소 전체의 worktree 이고, 작업 루트는 슬롯 아래 같은 하위 경로다(`gitio.top_prefix`).
-- 표시 파일: 작업 루트의 `.herdr-team/state/slot.json`(`{main_root, slot, task}`. git 제외 경로라 커밋되지 않는다). hteam 이 작업 루트에서 프로젝트를 찾으면(`paths.find_project`) 이 파일을 보고 메인 프로젝트로 바꾼다. 그래서 shim, 훅, 워커의 `hteam test`, `hteam ask-user` 가 메인의 상태를 쓴다. `main_root` 의 git common dir 이 그 슬롯의 것과 다르면(폴더를 옮겼다) 표시 파일을 무시한다. horch 명령은 프리앰블의 절대 경로·`--home` 을 쓰므로 그대로다.
+- 두 루트: 상태 루트(메인 프로젝트. `state/`, 역할 표시, 요청 큐, 테스트 기록)와 작업 루트(슬롯. 파일 읽기·쓰기, git, 시험)를 나눈다.
+- 표시 파일: 작업 루트의 `.herdr-team/state/slot.json`(`{main_root, slot, task}`. git 제외 경로라 커밋되지 않는다). 슬롯에는 커밋된 `.herdr-team/config.toml` 이 있어 hteam(`paths.find_project`)과 훅(`find_root`)이 먼저 슬롯을 프로젝트로 찾는다. 둘 다 표시 파일을 보면 상태 루트를 `main_root` 로, 작업 루트를 슬롯으로 둔다. 그래서 shim, 훅의 역할 판별, 워커의 `hteam test`, `hteam ask-user` 가 메인의 상태를 쓰고, 파일 경로·git·시험은 슬롯 기준이다. `main_root` 의 git common dir 이 그 슬롯의 것과 다르면(폴더를 옮겼다) 표시 파일을 무시한다. horch 명령은 프리앰블의 절대 경로·`--home` 을 쓰므로 그대로다.
+- 훅의 편집 보호(9.4, Codex 설계 리뷰 r1): "`.herdr-team/state/` 를 직접 고치지 않는다" 규칙은 상태 루트의 `state/` 에서 자기 작업 루트 아래 경로를 빼고 본다(슬롯의 제품 파일은 고칠 수 있고, 다른 슬롯은 막는다). 자기 작업 루트의 `.herdr-team/state/`(표시 파일)는 막는다. 메인의 제품 편집 금지는 메인 터미널에만 걸리므로 슬롯과 상관없다.
 - 상태 `state/slots.json`: `{"slots": {"1": {"state": "free"|"preparing"|"busy"|"dirty", "task", "branch", "base_branch", "base", "setup_done", "since"}}}`. 프로젝트 잠금 안에서 읽고 원자적으로 쓴다. 읽지 못하면 덮어쓰지 않고 exit 1 `bad_slots_file`.
 - 태스크 상태 파일에 `workspace: {slot, branch, base_branch, root, merge}` 를 더한다(`merge` 는 병합 커밋 sha 또는 null). `base`(5.3)는 브랜치를 딴 커밋이다.
 
@@ -879,14 +882,14 @@ worker_done 이 오면 관제가 `task = null` 로 비우고(entry 의 `task` �
 
 `start`(5.4)가 1–2(검사, 잠금)를 통과한 뒤:
 
-1. 슬롯 잡기: 이 태스크의 슬롯이 이미 있으면(복구·수정 라운드) 그것이다. 없으면 `free` 슬롯 가운데 가장 작은 번호를 `preparing` 으로 쓴다(태스크 ID 와 함께). 없으면 기다림(대기 사유 `slot`, `start-ready` 의 사유에 더한다).
+1. 슬롯 잡기: 이 태스크의 슬롯이 이미 있으면(복구·수정 라운드) 그것이다. 없으면 `free` 슬롯 가운데 가장 작은 번호를 `preparing` 으로 쓴다(태스크 ID 와 함께). 없으면 기다림(대기 사유 `slot`, `start-ready` 의 사유에 더한다). 슬롯을 잡은 태스크는 아직 `pending` 이어도 owns 잠금을 쥔 것으로 본다(5.4 의 2 의 잠금 검사가 `slots.json` 의 예약도 본다, Codex 설계 리뷰 r1). 그래서 owns 가 겹치는 두 태스크가 같은 옛 기준에서 각각 브랜치를 준비하지 않는다.
 2. 폴더: 없으면 `git worktree add --detach <폴더> <기준 브랜치 HEAD>`. 있으면 추적 파일 변경과 무시되지 않은 새 파일이 없어야 한다(`gitio.dirty`). 있으면 슬롯을 `dirty` 로, 태스크는 기다림(사유 `slot`)으로 두고 `workspace_failed`(`slot_dirty`)를 한 번 올린다.
 3. 브랜치: 처음이면 `git switch -c herdr/<T> <기준 브랜치 HEAD>`(같은 이름이 이미 있으면 `workspace_failed`(`branch_exists`)), 복구·수정 라운드면 `git switch herdr/<T>`. 그다음 표시 파일을 쓴다.
 4. setup: `[workspace] setup` 이 있고 슬롯 기록의 `setup_done` 이 이 태스크가 아니면 작업 루트에서 `/bin/sh -c` 로 돌린다. 환경은 5.7 의 테스트 환경 규칙(뺄 변수)에 그 슬롯의 env, `HTEAM_SLOT`, `HTEAM_MAIN_ROOT`(메인 프로젝트 루트), `HTEAM_SLOT_ROOT`(작업 루트)를 더한 것이다. 시간 상한 `setup_timeout_min`, 그룹 종료, 로그(`state/slots/logs/slot-<N>-setup-<시각>.log`)는 5.7 과 같다. 성공하면 `setup_done` 에 태스크 ID 를 쓴다(수정 라운드는 다시 돌리지 않는다). 실패·시간 초과면 `launch_failed` 와 `workspace_failed`(`setup_failed`, 로그 끝 60줄)다.
 5. 슬롯을 `busy` 로 쓰고 5.4 의 3 이후를 한다. horch 호출의 `--cwd` 는 작업 루트이고, `--env` 로 그 슬롯의 env 와 `HTEAM_SLOT` 을 넘긴다(herdr-orch 14장).
 
 - 1 은 프로젝트 잠금 안에서 한다. 2–4(준비)는 오래 걸릴 수 있어(setup) `start` 가 직접 하지 않는다: 슬롯이 `preparing` 이면 `start` 는 태스크를 `pending` 으로 둔 채 exit 0 `{"status": "waiting", "reason": "slot_setup"}` 을 돌려주고, 관제가 `hteam slot prepare <T>` 를 자식 프로세스로 돌린다(8.8, 한 슬롯에 하나). 준비가 끝나면 슬롯 기록에 `ready` 표시를 남기고, 다음 `start-ready`(또는 큐의 `start`)가 5 를 한다. 준비가 실패하면 슬롯을 `free`(폴더는 남긴다)로 되돌리고 4 의 `workspace_failed` 를 올린다.
-- 슬롯 기록을 먼저 쓰므로 관제가 중간에 죽어도 다음 재확인이 같은 슬롯으로 2 부터 이어 한다(준비 자식이 없으면 다시 띄운다).
+- 슬롯 기록을 먼저 쓰므로 관제가 중간에 죽어도 다음 재확인이 같은 슬롯으로 2 부터 이어 한다. 준비 자식은 도는 동안 슬롯 잠금 `state/slots/slot-<N>.lock`(flock)을 쥔다. 관제는 그 잠금을 비차단으로 시도해 쥐어지면(자식이 없다) 준비를 다시 띄우고, 못 쥐면(살아 있다) 기다린다. 놓기(5.10.6)와 마무리 full(5.10.7)도 슬롯을 쓰는 동안 같은 잠금을 쥔다.
 
 #### 5.10.4 리뷰
 
@@ -902,14 +905,15 @@ worker_done 이 오면 관제가 `task = null` 로 비우고(entry 의 `task` �
 - 시험 환경(이 슬롯 전용): `KCP_DB_PORT=54819`, `KCP_E2E_PORT_BASE=7100`. 다른 값을 쓰지 않는다.
 ```
 
-env 가 없으면 셋째 줄을 뺀다. 리뷰 프롬프트에도 첫째 줄(폴더·브랜치)과 셋째 줄을 넣는다.
+env 가 없으면 셋째 줄을 뺀다. 리뷰 프롬프트에도 첫째 줄(폴더·브랜치)과 셋째 줄을 넣는다. 기준 병합 라운드(5.10.6)는 둘째 줄을 그 라운드의 병합 지시로 바꾼다.
 
 #### 5.10.6 병합과 놓기
 
-- accept(6.4): 작업 공간 태스크는 `approved` → 병합 → `done` 이다(승인 직무면 `awaiting_user` 를 거쳐 사용자 승인 뒤 병합). 병합 전에는 `done` 이 아니므로 owns 잠금과 의존(5.3)이 병합까지 간다. 그래서 같은 파일을 바꾸는 두 브랜치가 동시에 살지 않고(마이그레이션처럼 순번이 있는 경로도 owns 로 한 줄로 선다), 후행 태스크는 선행이 병합된 기준 브랜치에서 브랜치를 딴다.
+- accept(6.4): 작업 공간 태스크는 `approved` → 병합 → `done` 이다. 작업 공간 직무는 승인 직무가 될 수 없다(4.2, Codex 설계 리뷰 r1: 승인 직무끼리는 선행이 `awaiting_user` 여도 후행이 시작하는데, 병합 전이라 후행 브랜치에 선행 코드가 없다). 병합 전에는 `done` 이 아니므로 owns 잠금과 의존(5.3)이 병합까지 간다. 그래서 같은 파일을 바꾸는 두 브랜치가 동시에 살지 않고(마이그레이션처럼 순번이 있는 경로도 owns 로 한 줄로 선다), 후행 태스크는 선행이 병합된 기준 브랜치에서 브랜치를 딴다.
 - 병합(관제, 프로젝트 잠금과 git 잠금 `state/git.lock` 안): 메인 폴더 브랜치가 그 태스크의 기준 브랜치가 아니면 `workspace_failed`(`base_moved`)다. 맞으면 메인 폴더에서 `git merge --no-ff -m "[T-xxx] merge: <제목>" herdr/T-xxx`.
-  - 충돌: `git merge --abort` 하고 `approved` 그대로 decide `merge_conflict`(충돌 파일)를 올린다. 메인은 수정 라운드(`fix --note "기준 브랜치 <이름> 을 이 브랜치에 병합하고 충돌을 푼다"`, 상한이면 `--force-round`)나 drop 을 고른다. 수정 라운드는 다시 리뷰를 거친다.
-  - 거부(index 에 올린 변경이 있다, 병합이 덮을 커밋 안 된 파일이 있다, `index.lock`): 아무것도 바꾸지 않고 다음 재확인에 다시 한다. 10분 넘게 거부되면 `workspace_failed`(`merge_blocked`, git 출력)를 한 번 올린다. 메인 세션이나 메인 폴더 고정 에이전트의 커밋과 겹칠 때 생긴다.
+  - 충돌: `git merge --abort` 하고 그 성공을 확인한다(실패하면 `merge_blocked`). 그다음 태스크를 `changes` 로 바꾸고 라운드 기록에 `merge_conflict: {base: <기준 브랜치 HEAD sha>, files}` 를 남긴 뒤 decide `merge_conflict` 를 올린다(Codex 설계 리뷰 r1: `fix` 는 `approved` 에서 할 수 없다). 메인은 `fix T-xxx --note "<지시>"`(상한이면 `--force-round`)나 drop 을 고른다.
+  - 기준 병합 라운드: 앞 라운드에 `merge_conflict` 가 있는 수정 라운드다. 그 라운드를 시작할 때 태스크의 `base` 를 기록한 sha 로 바꾼다. 워커 사양의 작업 공간 절 둘째 줄은 "이 라운드는 기준 커밋 `<sha>` 를 이 브랜치에 병합한다: `git merge --no-ff --no-commit <sha>` 뒤 충돌을 풀고 `[T-xxx] 기준 병합: <sha 7자>` 로 커밋한다. 그 밖의 병합·rebase·push 는 하지 않는다." 다. `base` 를 옮겼으므로 리뷰 대상 커밋(`base..HEAD` 의 `[T-xxx]`)에 기준 병합 커밋과 태스크의 앞 커밋이 들고, 바뀐 파일·사전 검사·관문은 지금 기준과 태스크 브랜치의 차이만 본다. 다른 태스크가 기준에 넣은 변경은 owns 밖으로 잡히지 않는다. 리뷰를 거친 뒤 accept 가 다시 병합한다.
+  - 거부(index 에 올린 변경이 있다, 병합이 덮을 커밋 안 된 파일이 있다, `index.lock`): 아무것도 바꾸지 않고 다음 재확인에 다시 한다. 10분 넘게 거부되면 `workspace_failed`(`merge_blocked`, git 출력)를 한 번 올린다. 메인 세션이나 메인 폴더 고정 에이전트의 커밋과 겹칠 때 생긴다. 메인 폴더에 끝나지 않은 병합(`MERGE_HEAD`)이 있으면 다시 시도하지 않고 바로 `merge_blocked` 를 올린다(관제가 병합 도중 죽었을 수 있다. 사용자가 정리한다).
   - 성공: 병합 커밋 sha 를 `workspace.merge` 에 쓰고 `done`. 그다음 슬롯을 놓는다.
 - 놓기(병합 뒤, drop 뒤): teardown 이 있으면 setup 과 같은 환경으로 돌린다(실패해도 놓기는 계속하고 로그·progress 한 줄). 슬롯에서 `git switch --detach` 한다. 병합한 브랜치는 `git branch -d` 로 지운다. 버린 태스크의 브랜치는 기록으로 남긴다. 그다음 슬롯을 `free` 로 쓴다. 버린 태스크의 슬롯에 커밋 안 된 변경이 있으면 `dirty` 로 두고 progress 로 알린다.
 - 놓기 도중 관제가 죽으면 재확인이 슬롯 기록(태스크가 `done`·`dropped` 인데 슬롯이 `busy`)을 보고 놓기를 이어 한다.
@@ -936,6 +940,7 @@ worktree 모드의 마무리 full(8.4 의 6)은 메인 폴더에서 돌리지 �
 - 기획·디자인 태스크(메인 폴더)는 지금처럼 리뷰 전에 기준 브랜치에 커밋한다.
 - 여러 태스크가 한 줄씩 더하는 공용 등록 파일(요청 R1)은 owns 를 나누지 않으면 그 태스크들이 한 줄로 선다.
 - 슬롯 워커도 같은 사용자 권한으로 돈다. 작업 공간 절은 실수 방지이고 경계가 아니다(14장).
+- (Codex 설계 리뷰 r1, 가장자리 경우라 기록만) 준비 중인 태스크를 drop 하면 준비 자식이 끝나기를 기다리지 않는다. 늦게 끝난 자식이 슬롯을 `ready` 로 쓸 수 있다(다음 재확인이 태스크 없는 `ready` 를 놓는다). 관제가 병합 커밋을 만든 뒤 태스크를 `done` 으로 쓰기 전에 죽으면 재확인이 병합된 브랜치를 보고 마저 쓴다고 보장하지 않는다(위 `MERGE_HEAD` 와 같이 `merge_blocked` 로 사람이 본다).
 
 ## 6. 교차 리뷰
 
@@ -1134,7 +1139,7 @@ Codex 리뷰어에게는 `AGENTS.md` 의 리뷰어 규칙도 적용된다(9.1). 
 ### 6.4 처리 (`accept`, `fix`, `drop`)
 
 - `hteam accept T [--round N]`: `approved` → `done`, 승인 직무면 `awaiting_user`. `awaiting_user` → `done`(사용자 승인 뒤). 작업 Dispatch 를 release 한다(실패하면 경고). 6단계: 고정 에이전트의 작업 Dispatch 는 release 해도 터미널이 남는다(herdr-orch 13.5). 태스크의 작업·리뷰 Dispatch 가 `launching`·`active` 면(리뷰는 retain 실패를 견디므로 승인 뒤에도 작업 워커가 살아 있을 수 있다) 바꾸지 않고 exit 3 이다(owns 잠금을 풀기 전에 `horch worker-abandon --kill` 뒤 `worker-release`, 또는 `drop --force`. 6단계: 고정 Dispatch 는 `--kill` 대신 쉬는 세션이면 `--keep-terminal`, 일하는 세션이면 `terminal-close --abandon`, 5.9.6). `horch worker-list` 를 읽지 못하면 살아 있는 워커가 없음을 확인할 수 없으므로 역시 바꾸지 않고 `horch_failed`(exit 1, horch 가 의존성 없음을 내면 12)로 끝난다.
-- 7단계: 작업 공간 태스크의 accept 는 `done` 으로 바꾸기 전에 기준 브랜치에 병합한다(5.10.6). 승인 직무면 `approved` → `awaiting_user` 는 지금처럼 하고, `awaiting_user` → `done` 때 병합한다. 병합하지 못하면 상태를 바꾸지 않고 exit 3 `merge_pending`(거부, 다시 시도한다) 또는 `merge_conflict`(decide)다. drop 은 슬롯을 놓는다(5.10.6).
+- 7단계: 작업 공간 태스크의 accept 는 `done` 으로 바꾸기 전에 기준 브랜치에 병합한다(5.10.6). 작업 공간 직무는 승인 직무가 될 수 없다(4.2). 병합이 거부되면 상태를 바꾸지 않고 exit 3 `merge_pending`(관제가 다시 시도한다), 충돌이면 `changes` 로 가고 decide `merge_conflict` 다. drop 은 슬롯을 놓는다(5.10.6).
 - `hteam fix T [--note "…"] [--supplement T-yyy] [--force-round] [--round N] [--model …] [--effort …] [--worker …]`: `changes`·`launch_failed`·`working`(작업 워커가 실패로 끝남)·`awaiting_user`(사용자 수정 요청) 에서 새 라운드를 띄운다. 입력 검사(owns 범위·잠금)를 먼저 하고, 이전 라운드의 작업 Dispatch 와 끝나지 않은 리뷰 Dispatch 를 정리한다(기록되지 않은 Dispatch 도 저장된 horch Task 나 실행 키로 찾는다. 정리를 확인한 뒤에만 새 라운드를 쓴다): `settled`·`retained`·`abandoned` 는 바로 release(release 가 살아 있는 터미널도 끈다), `active` 면 `worker-abandon --kill` 뒤 release. `round >= max_rounds` 이면 exit 3 과 `max_rounds`(`--force-round` 는 사용자가 계속하라고 했을 때 한 라운드만 넘긴다). `awaiting_user` 에서의 수정은 상한을 보지 않는다. `--supplement` 는 디렉터 보강을 반영하는 수정이라는 표시다(11.4). 6단계: 고정 에이전트 태스크는 정리 규칙이 다르다(5.9.5): 끝난 Dispatch 는 release(터미널은 남는다), `active` 이고 세션이 쉬면 `worker-abandon --keep-terminal`, 일하는 중이면 `--force` 가 있어야 하고 세션을 닫고 새로 띄운다(5.9.6). 새 라운드는 같은 에이전트에 넣거나 대기열에 넣는다.
 - `hteam drop T [--force]`: 태스크를 `dropped` 로. 끝나지 않은 작업 실행 키와 리뷰 시도 기록을 `canceled` 로 표시한다(이후 `start`·`review` 의 복구 대상이 아니다). `active` Dispatch 가 있으면 `--force` 가 있어야 하고 `worker-abandon --kill` 뒤 release 한다. `settled`·`retained`·`abandoned` 는 release 한다. `launch_failed` 는 건드리지 않는다(horch 가 가드가 거부한 터미널을 정리한다). 6단계: 고정 에이전트 태스크는 5.9.6. `launching` 이면 먼저 `horch worker-list` 로 조정하고, 그래도 `launching`(실행자가 살아 있음)이면 exit 3 으로 나중에 다시 하게 한다.
 - `fix`·`drop` 의 순서 규칙: 바꾸기 전에 거부할 것을 확인하고(입력, launching, `--force` 없는 active) → 현재 라운드의 끝나지 않은 실행 키·리뷰 시도의 `canceled` 를 먼저 저장하고(취소된 기록이 있는 라운드에는 `start`·`review` 가 Dispatch 를 띄우지 않는다) → 정리 대상을 다시 골라 정리하고 → 그다음에만 새 라운드나 `dropped` 를 쓴다. 정리 대상은 horch 의 실제 상태로 고른다: 모든 라운드의 실행 기록마다 그 horch Task(없으면 실행 키)의 모든 시도 가운데 끝나지 않은 것. `cleaned` 는 기록일 뿐 대상 선택에 쓰지 않는다. 어디서 멈춰도 같은 명령을 다시 부르면 이어 한다.
@@ -1311,7 +1316,7 @@ orca-team 0.7.0 `queue.py` 를 옮긴다(`lib/hteam/queue.py`). 메인은 horch 
 | `planning_gaps` | 문서로 답할 수 있으면 묶음 정리 태스크 사양에 넣는다(시작 전이면 사양 커밋, working 이면 `hteam scope`). 제품 결정이 필요한 항목은 모아 한 번에 묻고, 넣기로 하면 증분 기획 태스크(`plan: append`)를 만들어 시작한다 |
 | `unknown_regression` | 원인 태스크를 정해(모르면 사용자에게 묻는다) 회귀 수정 태스크를 만들어 시작한다: `hteam task new --role <원인 태스크 직무> --title "회귀 수정: <요약>" --owns "<원인 태스크 owns>"`, Change 첫 줄은 decide 의 `source`(예 `출처: T-xxx followups`), Acceptance 는 8.4 의 회귀 수정 두 줄. 커밋하고 `hteam start T-yyy` 한 뒤 닫는다 |
 | `token_update` | 관제가 기계적으로 하지 못한 디자인 보강 토큰 반영이다(8.9). UI 기반 개발 태스크가 done 이면 토큰 갱신 태스크(UI 기반과 같은 owns, `depends_on` 에 보강 태스크)를 만들고, 아직 시작하지 않은 화면 구현 태스크의 `depends_on` 에 더해 커밋한다. working 이면 `hteam scope`, 리뷰 중이면 결과를 기다린 뒤 정한다 |
-| `merge_conflict`(7단계) | 충돌 파일을 사용자에게 보이고 묻는다. 고치기로 하면 `hteam fix T-xxx --note "기준 브랜치 <이름> 을 이 브랜치에 병합하고 충돌을 푼다. <사용자 지시>"`(상한이면 `--force-round`), 버리기로 하면 `hteam drop T-xxx` |
+| `merge_conflict`(7단계) | 충돌 파일을 사용자에게 보이고 묻는다. 고치기로 하면 `hteam fix T-xxx --note "<충돌을 어떻게 풀지 사용자 지시>"`(상한이면 `--force-round`. 기준 병합 지시는 hteam 이 사양에 넣는다, 5.10.6), 버리기로 하면 `hteam drop T-xxx` |
 | `workspace_failed`(7단계) | `detail.kind` 로 가른다. `setup_failed` 는 로그 끝을 보이고 사용자가 setup 이나 환경을 고친 뒤 `hteam start T-xxx`. `slot_dirty` 는 그 슬롯의 `git status` 를 보이고, 사용자가 버려도 된다고 하면 `hteam slot reset <N>`. `branch_exists`·`base_moved`·`merge_blocked` 는 git 상태를 보이고 사용자에게 묻는다(메인 폴더를 기준 브랜치로 되돌리기, 남은 브랜치 지우기 등은 사용자가 정한다) |
 
 7단계 메인 규칙 줄: "`git commit` 이 `index.lock` 오류로 실패하면 몇 초 뒤 같은 명령을 다시 한다(관제의 병합과 겹쳤다)." "Redmine 을 쓰는 프로젝트(`[redmine]`)면 이슈 상태·노트는 관제가 바꾼다. 메인도 바꾸지 않는다. `hteam status` 의 `redmine.failed` 가 늘면 사용자에게 알린다." "사용자가 묶음이 끝난 뒤 push 하라고 정했으면 `done` 의 마지막 전체 테스트가 통과했을 때 push 한다(플러그인은 push 하지 않는다)." 는 프로젝트가 고를 줄이라 템플릿에는 주석 예시로만 둔다(앞 두 줄은 넣는다).
@@ -1729,7 +1734,7 @@ kind 는 orca 의 `DECIDE_KINDS` 와 같다: `worker_failed`, `worker_question`,
 - 키: 전송 자식만 읽는다. `env_file` 이 있으면 그 파일(프로젝트 기준, `KEY=VALUE` 줄, 앞뒤 따옴표 한 겹을 벗긴다)에서 `key_env` 이름의 값을 읽고, 없으면 관제 환경의 `key_env` 를 읽는다. 키를 찾지 못하면 보내지 않고 `status` 에 알린다. 키는 큐·로그·outbox·프롬프트·오류 글에 쓰지 않는다(HTTP 오류 본문에 키 값이 있으면 가린다). 테스트 명령·setup·teardown 환경에서 `key_env` 변수를 뺀다(5.7). horch 가 띄운 워커는 관제 환경을 물려받지 않는다(`hc run`).
 - 이슈 줄(워커 사양 5.5, 리뷰 프롬프트 6.2): `[redmine]` 이 있으면 "이 태스크는 Redmine 이슈 #N 이다. 이슈 상태와 노트는 관제가 바꾼다. 워커·리뷰어는 Redmine 을 바꾸지 않는다(프로젝트 문서에 다른 규칙이 있어도)." 없으면 "이 태스크는 이슈 #N 이다." 만.
 - `hteam status` 에 `redmine: {enabled, pending, failed, last_error}`(키는 없다). 일괄 승인 줄(11.4)과 progress 의 태스크 줄에 `#N` 을 붙인다.
-- 한계: Redmine 워크플로가 막는 전이(닫은 이슈를 진행중으로)는 실패 기록만 남는다. 이슈 하나를 여러 태스크가 나누면 노트가 섞인다. 묶음 tester 가 drop 되면 그 묶음의 이슈를 닫지 않는다(사람이 닫는다). 이슈를 만들거나 Redmine 에서 일을 가져오지 않는다(16장).
+- 한계: Redmine 워크플로가 막는 전이(닫은 이슈를 진행중으로)는 실패 기록만 남는다. 이슈 하나를 여러 태스크가 나누면 노트가 섞인다. 묶음 tester 가 drop 되면 그 묶음의 이슈를 닫지 않는다(사람이 닫는다). 이슈를 만들거나 Redmine 에서 일을 가져오지 않는다(16장). (Codex 설계 리뷰 r1, 가장자리 경우라 기록만) 관제가 상태 전이를 쓴 뒤 큐 항목을 쓰기 전에 죽으면 그 사건(종료 포함)이 빠지고, 전송이 성공한 뒤 항목을 지우기 전에 죽으면 같은 노트가 두 번 간다. 빠진 종료는 사람이 닫는다.
 
 ## 9. 시작, 점검, 훅
 
@@ -2407,7 +2412,7 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
 사전 검증:
 
 - S1(했다, 2026-11-11): 신뢰한 프로젝트(이 저장소) 아래 새 폴더에서 `claude` 를 시험 터미널로 띄우자 신뢰 창 없이 입력란이 떴다(hc 0.1.19, Claude Code 2.1.322). 시험 폴더·터미널은 지웠고 `~/.claude.json` 에 새 프로젝트 항목은 생기지 않았다(바뀐 것은 시작 횟수·캐시 같은 시작 기록뿐). 그래서 슬롯을 프로젝트 안에 둔다(5.10.2).
-- S2(구현 계획 첫 태스크 뒤): horch `--env` 로 띄운 Codex 워커의 셸 도구가 그 값을 보는지(`echo $<이름>`). 보지 못하면 Codex 에는 `-c shell_environment_policy.set.<이름>=<값>` 인자로도 넘긴다(계획에서 정한다).
+- S2(구현 계획 첫 태스크 뒤): horch `--env` 로 띄운 Codex 워커의 셸 도구가 그 값을 보는지(`echo $<이름>`). 기본 설정과, 사용자 `~/.codex/config.toml` 에 `shell_environment_policy`(`inherit`·`include_only`·`exclude`)가 있는 경우를 함께 본다(사용자 전역 파일은 바꾸지 않고 `-c` 로 시험한다). 보지 못하면 Codex 에는 `-c shell_environment_policy.set.<이름>=<값>` 인자로도 넘긴다. 그래도 빠지는 설정이면 doctor 가 경고하게 한다(계획에서 정한다).
 
 실환경(사용자 hc core 는 건드리지 않고 시험 터미널만 쓴다. 6단계 운영 규칙과 같다):
 
