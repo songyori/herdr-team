@@ -1,8 +1,11 @@
 """워커 사양 조립(설계 5.5)과 리뷰 프롬프트 조립(6.2). horch 프리앰블이 이 사양 앞에 붙는다.
 
 작업 트리에서 읽는 것(이전 리뷰 파일, 디자인·문구 린트의 파일)은 그 태스크의 작업 루트(p.work_root)에서 읽는다(설계 5.10.2).
-사양·직무 문서·설정은 상태 루트(p.root)의 것이다."""
+사양·직무 문서·설정은 상태 루트(p.root)의 것이다. 슬롯 태스크의 사양·프롬프트가 가리키는 상태 루트 파일(팀 파일, 상태 파일)은
+작업 루트에서 메인 루트로 가는 상대 경로다(p.state_ref, team_refs)."""
 from __future__ import annotations
+
+import re
 
 from . import designdiff, lint, specs, state, testgate, textlint, workspace
 from .errors import USAGE, HteamError
@@ -22,6 +25,17 @@ def role_doc(p, role: str) -> str:
         return path.read_text(encoding="utf-8").rstrip() + "\n"
     except FileNotFoundError:
         raise HteamError("no_role_doc", f"직무 문서가 없다: {path.relative_to(p.root)}", USAGE) from None
+
+
+TEAM_REF = re.compile(r"`\.herdr-team/(?!bin/)")  # 글 안의 팀 파일 경로. shim(`.herdr-team/bin/hteam`)은 슬롯 것을 부른다
+
+
+def team_refs(p, text: str) -> str:
+    """글(직무 문서·사양 본문·리뷰 기준 절) 안의 `` `.herdr-team/…` `` 경로를 그 세션이 여는 메인 사본 경로로 바꾼다(p.state_ref,
+    리뷰 반영 2차 G2). 두 루트가 같으면(shared, 메인 폴더 태스크) 그대로다."""
+    if p.work_root == p.root:
+        return text
+    return TEAM_REF.sub(lambda m: f"`{p.state_ref('.herdr-team')}/", text)
 
 
 def _bullets(items: list[str]) -> str:
@@ -106,8 +120,9 @@ def work_spec(p, cfg, spec, rd: dict, owns: list[str], st: dict | None = None) -
                     "직무 문서의 질문 형식). 메인에게 물을 것은 프리앰블의 ask 명령을 쓴다.")
     else:
         ask_rule = "막히면 프리앰블의 ask 명령으로 메인에게 묻고 답을 기다린다."
-    parts = [role_doc(p, spec.role), "---", "",
-             f"# 태스크 {tid} · 라운드 {n} — [{cfg.role_title(spec.role)}] {spec.title}", "", spec.body.strip(), ""]
+    parts = [team_refs(p, role_doc(p, spec.role)), "---", "",
+             f"# 태스크 {tid} · 라운드 {n} — [{cfg.role_title(spec.role)}] {spec.title}", "",
+             team_refs(p, spec.body.strip()), ""]
     parts.append("## 선행 태스크")
     if spec.depends_on:
         parts.append("먼저 `docs/planning/contracts.md`(있으면)와 선행 태스크의 보고서를 읽는다:")
@@ -347,7 +362,8 @@ def review_prompt(p, cfg, spec, rd: dict, att: dict, rounds: list[dict] | None =
     기준 뒤에 테스트 절(tests_section), 묶음 절(group_section), 디자인 절(design_section), 문구 절(text_section) 순서로
     붙인다. 없는 절은 빈 문자열이다. 관문 결과는 시도 기록 inputs.tests 를 쓴다(관문을 다시 돌리지 않는다). 라운드 2 부터는
     테스트 절 다음에 라운드 절(round_section, rounds 는 상태의 라운드 기록)을 붙인다. 리뷰어는 작업 루트에서 뜨므로 상태 루트
-    파일(사양·직무 문서·이번 라운드 작업 사양·관문 로그)은 p.state_ref 경로다(슬롯 태스크면 작업 루트에 없는 것은 절대 경로)."""
+    파일(사양·직무 문서·이번 라운드 작업 사양·관문 로그, 기준 절 안의 팀 파일)은 메인 사본을 가리킨다(p.state_ref·team_refs:
+    슬롯 태스크면 작업 루트에서 메인 루트로 가는 상대 경로)."""
     tid, n = spec.id, rd["round"]
     st = state.load(p, tid) or {}  # 작업 공간 태스크면 이전 리뷰·린트는 슬롯에서 보고 작업 공간 줄을 넣는다(설계 5.10.5)
     p = workspace.view(p, st)
@@ -360,7 +376,7 @@ def review_prompt(p, cfg, spec, rd: dict, att: dict, rounds: list[dict] | None =
     asks = round_requests(p, rd)
     if asks:
         labels = "·".join(dict.fromkeys(label for label, _ in asks))
-        work = p.state_ref(p.work_file(tid, n).relative_to(p.root).as_posix())  # 상태 루트에만 있다(슬롯이면 절대 경로)
+        work = p.state_ref(p.work_file(tid, n).relative_to(p.root).as_posix())  # 상태 루트에만 있다
         request = "".join(f"\n- 이번 라운드 {label}: {text}" for label, text in asks) + f"\n- 이번 라운드 작업 사양: `{work}`"
         request_rule = (f"\n5. 이번 라운드 요청(위 {labels})을 반영했는가. 요청이 사양의 Acceptance 를 바꾸면 요청을 따른 쪽을 "
                         "맞는 것으로 본다.")
@@ -373,7 +389,7 @@ def review_prompt(p, cfg, spec, rd: dict, att: dict, rounds: list[dict] | None =
                 request_rule=request_rule, verify_rule=verify_rule(p, spec.role, tests), tests=tests_section(tests, p),
                 round_scope=round_section(p, tid, rd, rounds or [], commits, bool(asks)),
                 group=group_section(p, spec, tests),
-                design=design_section(p, cfg, spec, files, shas, att.get("agent") or "codex"),
-                text=text_section(p, files, shas),
+                design=team_refs(p, design_section(p, cfg, spec, files, shas, att.get("agent") or "codex")),
+                text=team_refs(p, text_section(p, files, shas)),
                 commits="\n".join(f"- {c['sha'][:10]} {c['subject']}" for c in commits) or "- 없음",
                 files="\n".join(f"- `{show(f)}`" for f in files) or "- 없음").rstrip() + "\n"

@@ -277,8 +277,8 @@ class SlotReviewTest(WsCase):
         self.assertEqual((out["tamper"]["paths"], out["tamper"]["excluded_tasks"]), (["src/b/x.py"], []))
 
     def test_fix_round_review_prompt_state_files_open_from_slot(self):
-        # 리뷰어 cwd 는 슬롯이다. 상태 루트에만 있는 이번 라운드 작업 사양과 관문 로그는 슬롯에서 열리는 경로로 준다(Codex 커밋
-        # 리뷰 b916c8c P2). 저장소 파일(보고서·이전 리뷰)은 작업 루트 기준 그대로다
+        # 리뷰어 cwd 는 슬롯이다. 상태 루트에만 있는 이번 라운드 작업 사양과 관문 로그는 슬롯에서 메인 루트로 가는 상대 경로로
+        # 준다(Codex 커밋 리뷰 b916c8c P2, 2차 G1: 절대 경로를 넣지 않는다). 저장소 파일(보고서·이전 리뷰)은 작업 루트 기준이다
         self.use_gate()
         self.ws_start("T-001")
         self.work()
@@ -295,10 +295,41 @@ class SlotReviewTest(WsCase):
         prompt = (self.state_dir / "tasks" / "T-001" / "r2-review-a1.md").read_text(encoding="utf-8")
         work = re.search(r"^- 이번 라운드 작업 사양: `([^`]+)`$", prompt, re.M).group(1)
         log = re.search(r"^- quick 로그: (\S+)$", prompt, re.M).group(1)
-        self.assertEqual(work, str(self.state_dir / "tasks" / "T-001" / "r2-work.md"))
+        self.assertEqual(work, "../../../../.herdr-team/state/tasks/T-001/r2-work.md")
+        self.assertTrue(log.startswith("../../../../.herdr-team/state/tests/logs/T-001-r2-quick-a1-"), log)
         for path in (work, log):
             self.assertTrue((cwd / path).is_file(), path)
         self.assertIn("- 워커 보고서: `docs/tasks/T-001/report.md`\n- 이전 리뷰: `docs/reviews/T-001/r1.md`", prompt)
+        # 메인 절대 경로는 작업 공간 줄(설계 5.10.5 의 슬롯 폴더)에만 있다
+        rest = prompt.replace(REVIEW_LINES.format(root=self.slot_root(1), tid="T-001", port="8110"), "")
+        for main in {str(self.proj), str(self.p.root)}:
+            self.assertNotIn(main, rest)
+
+    def test_slot_prompts_point_team_files_at_main_copy(self):
+        # 상태 루트(메인)의 팀 파일이 기준이다(설계 5.10.2). 슬롯을 딴 뒤 메인에서 고친 사양·직무 문서를 슬롯 cwd 에서 연다.
+        # 직무 문서 본문의 `.herdr-team/` 팀 파일도 메인 사본을 가리킨다. shim(`.herdr-team/bin/hteam`)은 슬롯 것을 부른다(2차 G2)
+        doc = self.team / "roles" / "developer.md"
+        doc.write_text("# developer 직무 문서\n- `.herdr-team/project.md` 를 읽는다. 시험은 `.herdr-team/bin/hteam test` 로.\n",
+                       encoding="utf-8")
+        self.ws_start("T-001")
+        root = self.slot_root(1)
+        self.assertIn("- `../../../../.herdr-team/project.md` 를 읽는다. 시험은 `.herdr-team/bin/hteam test` 로.",
+                      self.round_spec())
+        self.assertEqual((root / "../../../../.herdr-team/project.md").read_text(encoding="utf-8"), "테스트 프로젝트\n")
+        self.work()
+        spec = (self.team / "tasks" / "T-001.md").read_text(encoding="utf-8")
+        self.commit(".herdr-team/tasks/T-001.md", spec + "\n고친 Acceptance\n", "spec: T-001 고침")  # 메인에서 고쳤다
+        doc.write_text("# developer 직무 문서(고침)\n", encoding="utf-8")
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual((code, out["status"]), (0, "reviewing"), out)
+        prompt = (self.state_dir / "tasks" / "T-001" / "r1-review-a1.md").read_text(encoding="utf-8")
+        spec_at = re.search(r"^- 사양: `([^`]+)`$", prompt, re.M).group(1)
+        role_at = re.search(r"^- 직무 문서: `([^`]+)`$", prompt, re.M).group(1)
+        self.assertEqual((spec_at, role_at), ("../../../../.herdr-team/tasks/T-001.md",
+                                              "../../../../.herdr-team/roles/developer.md"))
+        self.assertIn("고친 Acceptance", (root / spec_at).read_text(encoding="utf-8"))
+        self.assertEqual((root / role_at).read_text(encoding="utf-8"), "# developer 직무 문서(고침)\n")
+        self.assertNotIn("고친 Acceptance", (root / ".herdr-team" / "tasks" / "T-001.md").read_text(encoding="utf-8"))
 
     def test_main_folder_commit_during_review_is_not_tamper(self):
         self.ws_start("T-001")
@@ -333,8 +364,11 @@ class SlotReviewTest(WsCase):
         self.assertEqual(self.git_at(root, "log", "-1", "--format=%s").strip(), "[T-001] review r1: REQUEST_CHANGES")
         self.assertTrue((root / "docs" / "reviews" / "T-001" / "r1.md").is_file())
         self.assertEqual(self.head(), main_head)
-        text = (root / "docs" / "reviews" / "T-001" / "r1.md").read_text(encoding="utf-8")
+        text = self.git_at(root, "show", "HEAD:docs/reviews/T-001/r1.md")  # 커밋된 내용(병합으로 기준 브랜치에도 든다)
+        for main in {str(self.proj), str(self.p.root)}:
+            self.assertNotIn(main, text)  # 사용자 프로젝트 이력에 절대 경로를 남기지 않는다(2차 G1)
         log = re.search(r"^- quick 로그: (\S+)$", text, re.M).group(1)
+        self.assertTrue(log.startswith("../../../../.herdr-team/state/tests/logs/"), log)
         self.assertTrue((root / log).is_file(), log)  # 다음 라운드 워커(cwd 는 슬롯)가 이 반려 파일의 로그를 연다
 
     def test_worker_hteam_test_from_slot(self):
@@ -348,6 +382,28 @@ class SlotReviewTest(WsCase):
         self.assertEqual(self.env_lines(), ["1 8110"])
         self.assertTrue((self.state_dir / "tests" / "T-001.json").is_file())  # 기록은 메인 상태(설계 5.7 7단계)
         self.assertFalse((root / ".herdr-team" / "state" / "tests").exists())
+
+    def test_worker_hteam_test_logs_open_from_slot(self):
+        # 슬롯에서 부른 hteam test 의 로그 경로는 그 cwd 에서 열린다(메인 루트로 가는 상대 경로). 기록 파일은 상태 루트 기준
+        # 그대로다(2차 G3)
+        self.use_gate()
+        self.gate_modes("fail", "fail", "fail", "pass")
+        self.ws_start("T-001")
+        root = self.slot_root(1)
+        self.work()
+        code, out = self.hteam("test", "T-001", as_=None, cwd=root)
+        self.assertEqual(out["status"], "failed", out)
+        self.assertNotEqual(code, 0)
+        self.assertTrue(out["log"].startswith("../../../../.herdr-team/state/tests/logs/"), out)
+        self.assertTrue((root / out["log"]).is_file(), out["log"])
+        code, out = self.hteam("test", "T-001", as_=None, cwd=root)  # 1차 실패, 2차 통과(flaky): 첫 실행 로그도 같다
+        self.assertEqual((code, out["status"]), (0, "flaky"), out)
+        for log in (out["log"], out["first"]["log"]):
+            self.assertTrue(log.startswith("../../../../") and (root / log).is_file(), log)
+        rec = json.loads((self.state_dir / "tests" / "T-001.json").read_text(encoding="utf-8"))
+        self.assertTrue(rec["quick"]["log"].startswith(".herdr-team/state/tests/logs/"), rec)
+        code, out = self.hteam("test", "T-001", as_=None)  # 메인 폴더에서 부르면 지금처럼 상태 루트 기준
+        self.assertTrue(out["log"].startswith(".herdr-team/state/tests/logs/"), out)
 
     def test_review_refuses_slot_that_is_not_a_worktree(self):
         # 슬롯의 .git 이 사라졌으면 그 폴더에 git 을 부르지 않는다: git 이 위로 올라가 메인 저장소를 잡는다(workspace.own_worktree)

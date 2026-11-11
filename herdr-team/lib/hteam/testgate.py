@@ -667,11 +667,22 @@ def describe(entry: dict, kind: str, p=None) -> list[str]:
     return lines
 
 
+def shown_logs(p, out: dict) -> dict:
+    """CLI 출력의 로그 경로(`log`, flaky 의 `first.log`)를 부른 곳에서 열리는 경로로(p.state_ref: 슬롯에서 불렀으면 메인 루트로
+    가는 상대 경로, 리뷰 반영 2차 G3). 기록 파일(state/tests)은 상태 루트 기준 그대로다."""
+    shown = dict(out)
+    if shown.get("log"):
+        shown["log"] = p.state_ref(shown["log"])
+    if isinstance(shown.get("first"), dict) and shown["first"].get("log"):
+        shown["first"] = {**shown["first"], "log": p.state_ref(shown["first"]["log"])}
+    return shown
+
+
 def _cmd_test(args) -> dict:
     p = find_project(args.root)
     if args.task is None and not args.full:
         raise HteamError("usage", "태스크 ID 또는 --full 이 필요하다", USAGE)
-    out = run_task(p, args.task, "full" if args.full else "quick") if args.task else run_final(p)
+    out = shown_logs(p, run_task(p, args.task, "full" if args.full else "quick") if args.task else run_final(p))
     out["_exit"] = 0 if out["status"] in PASSED else FAIL
     return out
 

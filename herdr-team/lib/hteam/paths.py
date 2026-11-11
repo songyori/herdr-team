@@ -1,6 +1,7 @@
 """버전, 플러그인 경로, 대상 프로젝트 경로(설계 3.4)와 프로젝트 찾기(8.3 `--root`)."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from .errors import USAGE, HteamError
@@ -99,12 +100,13 @@ class Project:
         return self.roles / f"{role}.md"
 
     def state_ref(self, rel: str) -> str:
-        """세션(워커·리뷰어)에게 읽으라고 주는 상태 루트 파일 rel(프로젝트 기준 상대 경로)의 경로. 두 루트가 같거나 작업 루트에도
-        그 파일이 있으면(커밋된 파일) rel 그대로, 상태 루트에만 있으면(`.herdr-team/state/` 등) 절대 경로다. 슬롯 세션의 cwd 는
-        작업 루트다(설계 5.10.4, Codex 커밋 리뷰 b916c8c P2)."""
-        if self.work_root == self.root or (self.work_root / rel).exists():
+        """세션(워커·리뷰어)에게 주는 상태 루트(메인) 파일 rel(프로젝트 기준 상대 경로)의 경로. 두 루트가 같으면 rel 그대로,
+        다르면(슬롯) 작업 루트에서 메인 루트로 가는 상대 경로 뒤에 rel(`../../../../.herdr-team/state/…` 꼴)이다. 슬롯 세션의
+        cwd 는 작업 루트이고(설계 5.10.4), 상태 루트가 기준이다(5.10.2: 슬롯의 커밋된 팀 파일은 옛 사본일 수 있다). 프롬프트와
+        커밋되는 파일에 절대 경로를 넣지 않는다(Codex 커밋 리뷰 b916c8c P2, 리뷰 반영 2차 G1·G2)."""
+        if self.work_root == self.root:
             return rel
-        return (self.root / rel).as_posix()
+        return (Path(os.path.relpath(self.root, self.work_root)) / rel).as_posix()
 
 
 def report_rel(tid: str) -> str:
