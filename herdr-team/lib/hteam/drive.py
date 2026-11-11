@@ -669,8 +669,9 @@ class Drive:
             summary = exc.message
         if kind in wait["asked"]:
             return
-        detail = {k: v for k, v in exc.data.items() if k != "first"}
-        self.decide("workspace_failed", tid, summary, detail={**detail, "kind": kind})  # 먼저 알린다(잃지 않는다)
+        detail = {k: v for k, v in exc.data.items() if k not in ("first", "tail")}
+        tail = {"tail": exc.data["tail"]} if "tail" in exc.data else {}  # 훅이 병합 커밋을 거부했다: git 출력 끝
+        self.decide("workspace_failed", tid, summary, detail={**detail, "kind": kind}, **tail)  # 먼저 알린다(잃지 않는다)
         with state.edit(self.p, tid) as cur:
             mark = cur.setdefault("merge_wait", wait)
             mark["asked"] = [*mark.get("asked", []), kind]
@@ -985,8 +986,8 @@ class Drive:
             return
         if data.get("reason") == "not_worktree":
             self.progress(f"slot-{n} 폴더가 git worktree 가 아니어서(.git 이 없거나 깨졌다) {tid} 를 놓지 못하고 dirty 로 "
-                          "두었다. 그 폴더에서 git 을 부르지 않았다. 사용자와 폴더를 확인한다. 쓸 것이 없으면 폴더를 치우고 "
-                          f"git worktree prune 한 뒤 hteam slot reset {n}")
+                          "두었다. 그 폴더에서 teardown 도 git 도 부르지 않았다. 사용자와 폴더를 확인한다. 쓸 것이 없으면 폴더를 "
+                          f"치우고 git worktree prune 한 뒤 hteam slot reset {n}")
             return
         merged = (state.load(self.p, tid) or {}).get("status") == "done"
         why = f"{tid} 는 병합했다" if merged else f"{tid} 를 버렸다"

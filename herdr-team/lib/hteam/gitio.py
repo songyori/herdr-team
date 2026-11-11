@@ -631,3 +631,8 @@ def reset_hard(root) -> None:
 def clean_untracked(root) -> None:
     """`git clean -fd`(추적하지 않는 파일·폴더를 지운다. 무시된 파일은 남는다)."""
     run(root, "clean", "-fd", "-q")
+
+
+def worktree_prune(root) -> None:
+    """`git worktree prune`(폴더가 사라진 worktree 의 등록을 지운다). root 는 메인 저장소 폴더다."""
+    run(root, "worktree", "prune")

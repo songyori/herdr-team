@@ -343,14 +343,17 @@ def task_target(p, tid: str) -> tuple[dict, list[dict]]:
     return st, work_commits(workspace.view(p, st), st)
 
 
-def code_head(p, tid: str, commits: list[dict], base: str | None = None) -> str | None:
+def code_head(p, tid: str, commits: list[dict], base: str | None = None, *, merges: bool = False) -> str | None:
     """작업 커밋을 뒤에서부터 보며 보고서 경로 밖 파일(프로젝트 밖 `../` 포함)을 하나라도 바꾼 첫 커밋. 재사용 기준이다.
-    base 를 주면 병합 커밋은 base 와 HEAD 의 차이에 든 경로만 본다(review.path_reader)."""
+    base 를 주면 병합 커밋은 base 와 HEAD 의 차이에 든 경로만 본다(review.path_reader). merges(작업 공간 태스크)면 부모가
+    둘 이상인 커밋(기준 병합 커밋, 설계 5.10.6)은 걸러진 경로와 관계없이 코드를 바꾼 커밋으로 본다: 충돌을 태스크 쪽으로
+    풀어 기준에서 들어온 파일만 바뀌었어도 그 트리는 새 기준을 담는다(병합 전 관문 통과를 다시 쓰지 않게)."""
     from . import review
     prefix = gitio.top_prefix(p.work_root)
     read = review.path_reader(p, base)
     for c in reversed(commits):
-        if any(not _report(gitio.from_top(prefix, f), tid) for f in read(c["sha"])):
+        if (any(not _report(gitio.from_top(prefix, f), tid) for f in read(c["sha"]))
+                or (merges and len(gitio.parents(p.work_root, c["sha"])) > 1)):
             return c["sha"]
     return None
 
@@ -561,8 +564,8 @@ def record_task(p, cfg: GateConfig, st: dict, commits: list[dict], kind: str) ->
     if result["status"] == "unrunnable":
         raise _unrunnable(result)
     allowed = list(st.get("owns") or []) + [f"docs/tasks/{tid}/**"]
-    entry = {"round": rnd, "head": code_head(p, tid, commits, st["base"]), "config": digest(cfg), **result,
-             "dirty": dirty_files(p, allowed), "at": _local_now()}
+    entry = {"round": rnd, "head": code_head(p, tid, commits, st["base"], merges=bool(st.get("workspace"))),
+             "config": digest(cfg), **result, "dirty": dirty_files(p, allowed), "at": _local_now()}
     _save(p.tests / f"{tid}.json", kind, entry)
     return entry
 
@@ -615,7 +618,7 @@ def gate_results(p, st: dict, role: str, commits: list[dict]) -> dict | None:
         return None
     p = workspace.view(p, st)
     tid, value = st["id"], digest(cfg)
-    head = code_head(p, tid, commits, st["base"])
+    head = code_head(p, tid, commits, st["base"], merges=bool(st.get("workspace")))
     out = {"head": head, "config": value}
     if not is_approved(p, value):
         return {**out, "skipped": "unapproved"}
@@ -644,8 +647,8 @@ def retry_results(p, st: dict, role: str, commits: list[dict], prev: dict | None
         return None
     p = workspace.view(p, st)
     value = digest(cfg)
-    if (prev and prev.get("head") == code_head(p, st["id"], commits, st["base"]) and prev.get("config") == value
-            and bool(prev.get("skipped")) == (not is_approved(p, value))):
+    if (prev and prev.get("head") == code_head(p, st["id"], commits, st["base"], merges=bool(st.get("workspace")))
+            and prev.get("config") == value and bool(prev.get("skipped")) == (not is_approved(p, value))):
         return prev
     return gate_results(p, st, role, commits)
 

@@ -6,6 +6,7 @@
 실제 git worktree 를 시험 임시 저장소 안에 만든다. 관제는 이 프로세스 안(make_drive)이고 놓기 자식은 실제 hteam 하위 프로세스다
 (설계 8.8)."""
 import json
+import shutil
 import subprocess
 import time
 import unittest
@@ -363,6 +364,22 @@ class ConflictTest(MergeCase):
         self.assertEqual(self.decides("merge_conflict"), [])
         self.git("merge", "--abort")
 
+    def test_base_merge_that_keeps_the_task_side_reruns_quick(self):
+        # 충돌을 태스크 쪽 내용으로 풀면 병합 커밋의 바뀐 파일(기준 쪽 docs/other.md)이 path_reader 에서 모두 걸러진다. 그래도
+        # 병합한 트리는 새 기준을 담으므로 병합 전 quick 통과를 다시 쓰지 않는다(Codex 커밋 리뷰 P2, 리뷰 반영 H3)
+        base = self.conflicted()
+        self.assertEqual(self.hteam("fix", "T-001", "--note=우리 쪽(task)을 지킨다")[0], 0)
+        self.worker_base_merge(base, {"src/a/core.py": "task\n"})
+        merge = self.git_at(self.slot_root(1), "rev-parse", "HEAD").strip()
+        self.assertEqual(self.act_work("T-001", {})[0], 0)  # 보고서만 고친 r2 작업 커밋
+        calls = len(self.gate_calls())
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual((code, out.get("status")), (0, "reviewing"), out)
+        self.assertEqual(len(self.gate_calls()), calls + 1)  # 병합 전 통과 기록을 다시 쓰지 않았다
+        self.assertEqual(self.gate_calls()[-1]["args"], ["src/a/core.py"])
+        quick = json.loads((self.state_dir / "tests" / "T-001.json").read_text(encoding="utf-8"))["quick"]
+        self.assertEqual(quick["head"], merge)  # code_head 가 기준 병합 커밋이다
+
 
 class RefuseTest(MergeCase):
     """거부·MERGE_HEAD·base_moved(설계 5.10.6): 상태를 바꾸지 않고 다시 시도, 10분 뒤 한 번 올린다."""
@@ -420,6 +437,35 @@ class RefuseTest(MergeCase):
         self.git("switch", "-q", "main")
         self.assertEqual(self.d.accept_task("T-001")["status"], "done")
         self.assertEqual(self.git("branch", "--show-current").strip(), "main")
+
+    def test_hook_rejected_merge_is_blocked_at_once(self):
+        # commit-msg 훅이 병합 커밋을 거부하면 MERGE_HEAD 가 남고 충돌 파일은 없다. 충돌이 아니라 병합 거부다: 기다려도
+        # 풀리지 않으므로 바로 merge_blocked 를 한 번 올리고 상태·base 를 바꾸지 않는다(리뷰 반영 H7). --no-verify 는 쓰지 않는다
+        self.approved()
+        st0 = self.task_state("T-001")
+        hook = self.proj / ".git" / "hooks" / "commit-msg"  # 슬롯 worktree 도 같은 훅을 쓰므로 작업 커밋 뒤에 둔다
+        hook.parent.mkdir(exist_ok=True)
+        hook.write_text('#!/bin/sh\necho "x" >> "$OUT_DIR/hook.txt"\necho "커밋 메시지 규칙 위반: $(head -n 1 "$1")" >&2\n'
+                        'exit 1\n', encoding="utf-8")
+        hook.chmod(0o755)
+        before = self.head()
+        self.assertIsNone(self.d.accept_task("T-001"))
+        self.assertEqual(len(self.lines("hook.txt")), 1)  # 훅을 건너뛰지 않았다
+        [dec] = self.decides("workspace_failed")
+        self.assertEqual((dec["task"], dec["detail"]["kind"], dec["detail"]["slot"]), ("T-001", "merge_blocked", 1))
+        self.assertTrue(dec["summary"].startswith("T-001 병합 커밋을 git 훅이 거부했다"), dec["summary"])
+        self.assertIn("커밋 메시지 규칙 위반: [T-001] merge: 앱 만들기", dec["tail"])
+        self.assertEqual(self.decides("merge_conflict"), [])
+        st = self.task_state("T-001")
+        self.assertEqual((st["status"], st["round"], st["base"]), ("approved", st0["round"], st0["base"]))
+        self.assertNotIn("base_merge", st)
+        self.assertEqual(self.head(), before)
+        self.assertFalse(self.merging(self.proj))
+        self.assertEqual(self.git("status", "--porcelain"), "")
+        self.assertIsNone(self.d.accept_task("T-001"))
+        self.assertEqual(len(self.decides("workspace_failed")), 1)  # 한 번만
+        hook.unlink()
+        self.assertEqual(self.d.accept_task("T-001")["status"], "done")
 
 
 class DropReleaseTest(MergeCase):
@@ -557,6 +603,19 @@ class SlotResetTest(MergeCase):
         self.assertEqual(queue.recorded(self.p, {**reqs[0], "started_at": "2026-11-12T00:00:00Z"}),
                          {"recovered": True, "slot": 1, "state": "free"})
 
+    def test_reset_of_a_removed_folder_prunes_the_worktree(self):
+        # 사용자가 슬롯 폴더를 치웠다: git 의 worktree 등록이 남으면 다음 worktree add 가 "missing but already registered
+        # worktree" 로 실패한다. reset 이 메인 루트에서 git worktree prune 한다(리뷰 반영 H6)
+        slot = self.dirty_slot()
+        shutil.rmtree(slot)
+        code, out = self.hteam("slot", "reset", "1")
+        self.assertEqual((code, out["slot"], out["state"]), (0, 1, "free"), out)
+        self.write_spec("T-002", owns="src/b/**")
+        self.ws_start("T-002")  # 다음 준비가 그 슬롯에 worktree 를 다시 만든다
+        self.assertEqual((self.record(1)["state"], self.record(1)["task"]), ("busy", "T-002"))
+        self.assertEqual(self.git_at(slot, "branch", "--show-current").strip(), "herdr/T-002")
+        self.assertTrue(workspace.own_worktree(slot))
+
 
 class FinalSlotTest(MergeCase):
     """worktree 모드의 마무리 full(설계 5.10.7): 빈 슬롯에서 기준 HEAD 로 setup → full → teardown."""
@@ -601,6 +660,29 @@ class FinalSlotTest(MergeCase):
         self.assertEqual((dec["task"], dec["detail"]["kind"]), (None, "setup_failed"))
         self.assertIn("설치 실패: 1", dec["tail"])
 
+    def test_dirty_free_slot_is_not_used(self):
+        # free 슬롯에 추적 파일 변경이 남았다: git switch --detach 는 충돌하지 않는 변경을 들고 가므로 그 슬롯에서 full 을
+        # 돌리면 슬롯에만 있는 변경으로 거짓 통과한다. 쓰지 않고 dirty 로 둔다(Codex 커밋 리뷰 P2, 리뷰 반영 H2)
+        self.assertEqual(self.hteam("test", "--full")[0], 0)  # slot-1 폴더를 만들고 free 로 돌아간다
+        slot = self.slot_root(1)
+        (slot / "src/a/core.py").write_text("슬롯에만 남은 변경\n", encoding="utf-8")
+        data = self.slots()
+        data["slots"]["2"] = {"state": "busy", "task": "T-009", "branch": "herdr/T-009", "base_branch": "main",
+                              "base": self.head(), "setup_done": "T-009", "since": "2026-11-12T00:00:00Z"}
+        (self.state_dir / "slots.json").write_text(json.dumps(data), encoding="utf-8")  # free 슬롯은 slot-1 하나
+        calls = len(self.gate_calls())
+        code, out = self.hteam("test", "--full")
+        self.assertEqual((code, out["error"]["code"], out["kind"], out["slot"]), (3, "slot_dirty", "slot_dirty", 1),
+                         out)
+        self.assertEqual(out["files"], ["src/a/core.py"])
+        self.assertEqual(len(self.gate_calls()), calls)  # full 을 돌리지 않았다
+        self.assertEqual(len(self.lines("setup.txt")), 1)  # setup 도 돌리지 않았다
+        self.assertEqual((self.record(1)["state"], self.record(1)["task"]), ("dirty", None))
+        self.assertEqual((slot / "src/a/core.py").read_text(encoding="utf-8"), "슬롯에만 남은 변경\n")  # 건드리지 않는다
+        self.d.final_done(code, out, "")
+        [dec] = self.decides("workspace_failed")
+        self.assertEqual((dec["task"], dec["detail"]["kind"], dec["detail"]["slot"]), (None, "slot_dirty", 1))
+
 
 class WorkspaceStatusTest(MergeCase):
     """hteam status 의 workspace(설계 5.10.8)."""
@@ -617,6 +699,64 @@ class WorkspaceStatusTest(MergeCase):
         self.assertEqual(code, 0, out)
         self.assertEqual(out["workspace"], {"mode": "worktree", "slots": []})
         self.assertTrue(any(w.startswith("작업 공간 기록: ") for w in out["warnings"]), out.get("warnings"))
+
+    def test_slot_keys_that_are_not_slot_numbers_are_a_warning(self):
+        # 슬롯 키는 1–9 정수 문자열이다. 아니면 bad_slots_file(엄격 읽기)이고 status 는 경고로 보인다(리뷰 반영 H4)
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        for key in ("bad", "0", "10", "01"):
+            with self.subTest(key=key):
+                (self.state_dir / "slots.json").write_text(json.dumps({"slots": {key: {}}}), encoding="utf-8")
+                code, out = self.hteam("status", as_="main")
+                self.assertEqual(code, 0, out)
+                self.assertEqual(out["workspace"], {"mode": "worktree", "slots": []})
+                [warning] = [w for w in out["warnings"] if w.startswith("작업 공간 기록: ")]
+                self.assertIn("state/slots.json 을 읽지 못했다", warning)
+
+
+class NotWorktreeTest(MergeCase):
+    """슬롯 폴더가 자기 git worktree 가 아닐 때(.git 이 없다) 놓기·slot reset·마무리 full 은 그 폴더에서 teardown·setup·git
+    을 부르지 않는다: 부르면 git 이 위로 올라가 메인 저장소를 잡는다(Codex 커밋 리뷰 P1, 리뷰 반영 H1·H5). 메인의 커밋 안 된
+    변경·브랜치·HEAD 가 그대로인지 본다."""
+
+    gate = True
+
+    def break_slot(self, n: int = 1) -> str:
+        """슬롯 n 의 .git 을 지우고 메인에 커밋 안 된 변경을 둔다. 메인 HEAD 를 돌려준다."""
+        (self.slot_root(n) / ".git").unlink()
+        (self.proj / "docs/other.md").write_text("사람이 고치는 중\n", encoding="utf-8")
+        return self.head()
+
+    def assert_main_kept(self, head: str) -> None:
+        self.assertEqual((self.proj / "docs/other.md").read_text(encoding="utf-8"), "사람이 고치는 중\n")
+        self.assertEqual(self.git("branch", "--show-current").strip(), "main")
+        self.assertEqual(self.head(), head)
+
+    def test_release_and_reset_leave_the_main_repo_alone(self):
+        (self.out / "teardown.sh").write_text("git reset --hard -q\n" + TEARDOWN_SH, encoding="utf-8")
+        self.ws_start("T-001")
+        self.assertEqual(self.hteam("drop", "T-001", "--force")[0], 0)
+        head = self.break_slot()
+        code, out = self.hteam("slot", "release", "T-001")
+        self.assertEqual((code, out["state"], out["reason"], out["teardown"]), (0, "dirty", "not_worktree", None), out)
+        self.assertEqual(self.lines("teardown.txt"), [])  # teardown 을 돌리지 않았다
+        self.assertEqual((self.record(1)["state"], self.record(1)["task"]), ("dirty", None))
+        self.assert_main_kept(head)
+        code, out = self.hteam("slot", "reset", "1")
+        self.assertEqual((code, out["error"]["code"], out["slot"]), (1, "slot_not_worktree", 1), out)
+        self.assertEqual(self.record(1)["state"], "dirty")
+        self.assert_main_kept(head)
+
+    def test_final_full_leaves_the_main_repo_alone(self):
+        self.assertEqual(self.hteam("test", "--full")[0], 0)  # slot-1 폴더를 만들고 free 로 돌아간다
+        head = self.break_slot()
+        calls = len(self.gate_calls())
+        code, out = self.hteam("test", "--full")
+        self.assertEqual((code, out["error"]["code"], out["slot"], out["reason"]), (3, "slot_dirty", 1, "not_worktree"),
+                         out)
+        self.assertEqual(len(self.gate_calls()), calls)
+        self.assertEqual(len(self.lines("setup.txt")), 1)  # setup 도 돌리지 않았다
+        self.assertEqual((self.record(1)["state"], self.record(1)["task"]), ("dirty", None))
+        self.assert_main_kept(head)
 
 
 class SharedMergeTest(MergeCase):
