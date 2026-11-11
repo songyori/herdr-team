@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import time
 
@@ -82,6 +83,14 @@ def head(root) -> str:
 
 def is_repo(root) -> bool:
     return run(root, "rev-parse", "--is-inside-work-tree", check=False).stdout.strip() == "true"
+
+
+def version(root) -> tuple[str, tuple[int, int, int] | None]:
+    """`git --version` 의 첫 줄과 그 안 첫 `x.y[.z]` 를 정수 셋으로(셋째가 없으면 0. 찾지 못하면 None). doctor 의 worktree
+    점검(설계 9.2)이 쓴다. git 이 없거나 실패하면 run 의 HteamError 그대로다."""
+    first = (run(root, "--version").stdout.strip().splitlines() or [""])[0]
+    m = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", first)
+    return first, (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)) if m else None
 
 
 def literal(path: str) -> str:

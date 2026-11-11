@@ -143,7 +143,7 @@ class ScaffoldTest(TeamCase):
         shim = str(self.proj / ".herdr-team/bin/hteam")
         env = dict(self.env, HERDR_TEAM_PLUGIN_ROOT=str(ROOT))
         out = subprocess.run([sys.executable, shim, "version"], capture_output=True, text=True, env=env)
-        self.assertEqual(json.loads(out.stdout)["version"], "0.4.0")
+        self.assertEqual(json.loads(out.stdout)["version"], "0.5.0")
         registry = self.tmp / "installed.json"
         registry.write_text(json.dumps({"plugins": {"herdr-team@herdr-team": [{"installPath": str(ROOT)}]}}))
         env = dict(self.env, HTEAM_PLUGINS_JSON=str(registry))
@@ -852,3 +852,139 @@ class UpDriveTest(SetupCase):
         self.assertEqual((code, raced["error"]["code"]), (3, "launch_raced"), raced)
         self.assertEqual(len(self.run_calls()), 1)
         self.assertEqual(self.run_json()["drive_terminal"], out["terminal"])
+
+
+from tests.helpers import WS_CONFIG  # noqa: E402  (Append 블록, 7단계)
+
+
+class WorkspaceDoctorTest(TeamCase):
+    """doctor 의 worktree 점검(설계 9.2 의 7단계 줄): git 2.23 이상·첫 커밋(오류), dirty 슬롯(경고). shared 면 점검이 없다."""
+
+    def checks(self, env=None):
+        code, out = self.hteam("doctor", as_="main", env=env)
+        return code, out, {c["name"]: c for c in out["checks"]}
+
+    def test_shared_has_no_workspace_checks(self):
+        # 회귀: [workspace] 가 없으면 0.4.0 과 같은 점검 목록이다
+        self.init_project()
+        code, out, checks = self.checks()
+        self.assertEqual(code, 0, out)
+        self.assertEqual([n for n in checks if n.startswith("workspace_")], [])
+
+    def test_worktree_mode_passes(self):
+        self.init_project(WS_CONFIG)
+        code, out, checks = self.checks()
+        self.assertEqual(code, 0, out)
+        self.assertEqual([n for n in checks if n.startswith("workspace_")],
+                         ["workspace_git", "workspace_head", "workspace_slots"])
+        self.assertEqual((checks["workspace_git"]["ok"], checks["workspace_git"]["level"]), (True, "error"))
+        self.assertRegex(checks["workspace_git"]["detail"], r"^git \d+\.\d+\.\d+$")
+        self.assertEqual((checks["workspace_head"]["ok"], checks["workspace_head"]["detail"]), (True, "첫 커밋이 있다"))
+        self.assertEqual((checks["workspace_slots"]["ok"], checks["workspace_slots"]["level"],
+                          checks["workspace_slots"]["detail"]), (True, "warning", "dirty 슬롯이 없다"))
+
+    def test_old_git_is_an_error(self):
+        self.init_project(WS_CONFIG)
+        wrap = self.tmp / "oldgit"
+        wrap.mkdir()
+        real = shutil.which("git", path=self.env["PATH"])
+        (wrap / "git").write_text('#!/bin/sh\nfor a in "$@"; do\n  if [ "$a" = --version ]; then echo "git version 2.20.1"; '
+                                  f'exit 0; fi\ndone\nexec "{real}" "$@"\n', encoding="utf-8")
+        (wrap / "git").chmod(0o755)
+        code, out, checks = self.checks(env={"PATH": f"{wrap}{os.pathsep}{self.env['PATH']}"})
+        self.assertEqual((code, out["error"]["code"]), (1, "unhealthy"), out)
+        self.assertEqual((checks["workspace_git"]["ok"], checks["workspace_git"]["detail"]),
+                         (False, "worktree 모드에는 git 2.23 이상이 필요하다(git switch·git worktree): 지금 git version 2.20.1"))
+        bad = {c["name"] for c in out["checks"] if not c["ok"] and c["level"] == "error"}
+        self.assertEqual(bad, {"workspace_git"})
+
+    def test_no_first_commit_is_an_error(self):
+        self.init_project(WS_CONFIG, commit=False)
+        self.git("update-ref", "-d", "HEAD")  # HEAD 가 가리키는 브랜치를 지운다: 커밋이 없는 저장소와 같다
+        code, out, checks = self.checks()
+        self.assertEqual((code, out["error"]["code"]), (1, "unhealthy"), out)
+        self.assertEqual((checks["workspace_head"]["ok"], checks["workspace_head"]["detail"]),
+                         (False, "커밋이 없다. worktree 모드는 첫 커밋에서 슬롯을 만든다: git commit --allow-empty -m init"))
+        bad = {c["name"] for c in out["checks"] if not c["ok"] and c["level"] == "error"}
+        self.assertEqual(bad, {"workspace_head"})
+
+    def test_dirty_slot_is_a_warning(self):
+        self.init_project(WS_CONFIG)
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        free = {"task": None, "branch": None, "base_branch": None, "base": None, "setup_done": None,
+                "since": "2026-11-12T00:00:00Z"}
+        (self.state_dir / "slots.json").write_text(json.dumps({"slots": {
+            "1": {**free, "state": "busy", "task": "T-001", "branch": "herdr/T-001", "base_branch": "main",
+                  "base": self.head(), "setup_done": "T-001"},
+            "2": {**free, "state": "dirty"}}}), encoding="utf-8")
+        code, out, checks = self.checks()
+        self.assertEqual(code, 0, out)  # 경고는 doctor 를 실패시키지 않는다
+        slot = checks["workspace_slots"]
+        self.assertEqual((slot["ok"], slot["level"]), (False, "warning"))
+        self.assertEqual(slot["detail"], "dirty 슬롯: 2(.herdr-team/state/slots/slot-2). 커밋 안 된 변경이 남았다. "
+                         "git -C <슬롯 폴더> status 로 보고, 사용자가 버려도 된다고 하면 hteam slot reset <번호>")
+
+    def test_unreadable_slots_file_is_a_warning(self):
+        self.init_project(WS_CONFIG)
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "slots.json").write_text("{깨짐", encoding="utf-8")
+        code, out, checks = self.checks()
+        self.assertEqual(code, 0, out)
+        slot = checks["workspace_slots"]
+        self.assertEqual((slot["ok"], slot["level"]), (False, "warning"))
+        self.assertTrue(slot["detail"].startswith("state/slots.json 을 읽지 못했다: "), slot)
+
+
+CODEX_ENV_POLICY = ("Codex 의 shell_environment_policy(include_only) 가 [workspace.env] 값을 Codex 셸에서 뺄 수 있다. "
+                    "사용자 설정을 확인한다")
+
+
+class CodexEnvPolicyDoctorTest(TeamCase):
+    """사전 검증 S2(설계 15.2): include_only 가 있으면 horch 가 -c shell_environment_policy.set 으로 넘긴 값도 Codex 셸에서
+    빠진다. worktree 모드이고 [workspace.env] 가 있을 때만 사용자 ~/.codex/config.toml 을 읽기만 해 경고한다(시험 HOME)."""
+
+    def codex_config(self, text: str) -> Path:
+        path = self.tmp / "home" / ".codex" / "config.toml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def checks(self):
+        code, out = self.hteam("doctor", as_="main")
+        return code, out, {c["name"]: c for c in out["checks"]}
+
+    def test_include_only_is_a_warning(self):
+        self.init_project(WS_CONFIG)
+        path = self.codex_config('[shell_environment_policy]\ninherit = "core"\ninclude_only = ["PATH", "HOME"]\n')
+        before = path.read_bytes()
+        code, out, checks = self.checks()
+        self.assertEqual(code, 0, out)  # 경고는 doctor 를 실패시키지 않는다
+        policy = checks["codex_env_policy"]
+        self.assertEqual((policy["ok"], policy["level"], policy["detail"]), (False, "warning", CODEX_ENV_POLICY))
+        names = [c["name"] for c in out["checks"]]
+        self.assertEqual(names.index("codex_env_policy"), names.index("workspace_slots") + 1)
+        self.assertEqual(path.read_bytes(), before)  # 읽기만 한다
+
+    def test_no_warning_without_include_only(self):
+        self.init_project(WS_CONFIG)
+        for text in (None, '[shell_environment_policy]\ninherit = "core"\n', "include_only = 깨진 TOML\n",
+                     '[shell_environment_policy]\ninclude_only = []\n', 'shell_environment_policy = "core"\n'):
+            with self.subTest(text):
+                path = self.tmp / "home" / ".codex" / "config.toml"
+                if text is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    self.codex_config(text)
+                code, out, checks = self.checks()
+                self.assertEqual(code, 0, out)
+                self.assertNotIn("codex_env_policy", checks)
+
+    def test_no_warning_when_env_is_not_used(self):
+        self.codex_config('[shell_environment_policy]\ninclude_only = ["PATH"]\n')
+        for cfg in (BASE_CONFIG, BASE_CONFIG + '\n[workspace]\nmode = "worktree"\nslots = 2\n',
+                    BASE_CONFIG + '\n[workspace]\nmode = "shared"\n\n[workspace.env]\nHT_PORT = "81{slot}0"\n'):
+            with self.subTest(cfg[len(BASE_CONFIG):]):
+                self.init_project(cfg)
+                code, out, checks = self.checks()
+                self.assertEqual(code, 0, out)
+                self.assertNotIn("codex_env_policy", checks)

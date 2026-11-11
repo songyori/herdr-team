@@ -10,9 +10,10 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 from pathlib import Path
 
-from . import browser, config, drive, gitio, herdr, image, outbox, redmine
+from . import browser, config, drive, gitio, herdr, image, outbox, redmine, workspace
 from .browser import BROWSER_SERVER
 from .errors import CONFLICT, FAIL, TIMEOUT, USAGE, HteamError
 from .horch import Horch
@@ -87,6 +88,65 @@ def _codex_browser(root: Path) -> dict:
     return _check("codex_browser", True, f"{BROWSER_SERVER} 정의·npx·샌드박스 우회가 있다", "warning")
 
 
+WORKSPACE_GIT_MIN = (2, 23, 0)  # git switch·git worktree(설계 9.2 7단계)
+SLOTS_REL = ".herdr-team/state/slots"
+CODEX_ENV_POLICY = ("Codex 의 shell_environment_policy(include_only) 가 [workspace.env] 값을 Codex 셸에서 뺄 수 있다. "
+                    "사용자 설정을 확인한다")
+
+
+def _codex_include_only() -> bool:
+    """사용자 ~/.codex/config.toml 의 shell_environment_policy.include_only 가 비어 있지 않은가(읽기만 한다). 파일이 없거나
+    읽지 못하면 False(경고하지 않는다). 사전 검증 S2: include_only 는 horch 가 `-c shell_environment_policy.set.<이름>` 으로
+    넘긴 값도 Codex 셸에서 뺀다."""
+    home = Path(os.environ.get("HOME") or Path.home())
+    try:
+        data = tomllib.loads((home / ".codex" / "config.toml").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return False
+    policy = data.get("shell_environment_policy")
+    return isinstance(policy, dict) and bool(policy.get("include_only"))
+
+
+def _workspace_checks(root: Path, cfg) -> list[dict]:
+    """worktree 모드의 점검(설계 9.2 7단계): git 2.23 이상·첫 커밋(오류), dirty 슬롯(경고). 설정을 읽지 못했거나(cfg None)
+    shared 면 없다(0.4.0 과 같은 점검 목록). git 이 PATH 에 없으면 앞 `git` 점검이 이미 오류라 git 점검 둘을 넣지 않는다.
+    [workspace.env] 가 있으면 사용자 Codex 셸 환경 정책(include_only)도 경고로 본다(사전 검증 S2)."""
+    if cfg is None or not cfg.workspace.on:
+        return []
+    checks = []
+    if shutil.which("git"):
+        try:
+            line, ver = gitio.version(root)
+            ok = ver is not None and ver >= WORKSPACE_GIT_MIN
+            checks.append(_check("workspace_git", ok, "git {}.{}.{}".format(*ver) if ok else
+                                 f"worktree 모드에는 git 2.23 이상이 필요하다(git switch·git worktree): 지금 {line}"))
+        except HteamError as exc:
+            checks.append(_check("workspace_git", False, exc.message))
+        try:
+            if not gitio.is_repo(root):
+                checks.append(_check("workspace_head", False,
+                                     "git 저장소가 아니다. worktree 모드는 git 저장소와 첫 커밋이 필요하다"))
+            elif not gitio.has_head(root):
+                checks.append(_check("workspace_head", False, "커밋이 없다. worktree 모드는 첫 커밋에서 슬롯을 만든다: "
+                                     "git commit --allow-empty -m init"))
+            else:
+                checks.append(_check("workspace_head", True, "첫 커밋이 있다"))
+        except HteamError as exc:
+            checks.append(_check("workspace_head", False, exc.message))
+    try:
+        data = workspace.load(Project(root))
+        dirty = sorted(int(n) for n, rec in data["slots"].items() if rec.get("state") == "dirty")
+        checks.append(_check("workspace_slots", not dirty, "dirty 슬롯이 없다" if not dirty else
+                             "dirty 슬롯: " + ", ".join(f"{n}({SLOTS_REL}/slot-{n})" for n in dirty) +
+                             ". 커밋 안 된 변경이 남았다. git -C <슬롯 폴더> status 로 보고, 사용자가 버려도 된다고 하면 "
+                             "hteam slot reset <번호>", "warning"))
+    except HteamError as exc:
+        checks.append(_check("workspace_slots", False, exc.message, "warning"))
+    if cfg.workspace.env and _codex_include_only():
+        checks.append(_check("codex_env_policy", False, CODEX_ENV_POLICY, "warning"))
+    return checks
+
+
 def _horch_checks(root: Path) -> list[dict]:
     """horch 찾기와 horch doctor. horch 항목은 늘 하나다(찾은 뒤 doctor 가 실패해도 두 번 적지 않는다)."""
     home = root / ".herdr-team" / "state" / "horch"
@@ -155,11 +215,12 @@ def doctor(root: Path) -> dict:
     checks.append(_check("chrome_devtools_mcp", _chrome_mcp(root), "디렉터 레퍼런스 캡처에 쓴다(없으면 링크만 남긴다)",
                          "warning"))
     checks.append(_codex_browser(root))
-    cfg = None  # 설정을 읽지 못하는 것은 doctor 의 점검이 아니다(설정 경고·Redmine 점검을 하지 않는다)
+    cfg = None  # 설정을 읽지 못하는 것은 doctor 의 점검이 아니다(설정 경고·작업 공간·Redmine 점검을 하지 않는다)
     try:
         cfg = config.load(Project(root))
     except HteamError:
         pass
+    checks += _workspace_checks(root, cfg)  # 설계 9.2 7단계: worktree 모드만
     if cfg is not None and cfg.redmine is not None:  # 설계 9.2 7단계: 경고만
         checks += redmine.checks(Project(root), cfg)
     warnings: list[str] = config.crew_warnings(cfg) if cfg is not None else []  # 설정 경고(설계 4.2)

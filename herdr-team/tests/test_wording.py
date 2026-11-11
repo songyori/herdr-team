@@ -11,7 +11,8 @@ from hteam.paths import Project
 TEMPLATE_DOCS = sorted([*(ROOT / "templates").rglob("*.md"), *(ROOT / "skills").rglob("*.md")])
 REMOVED = re.compile(r"hteam (tell|notify|wait|which|bind|applied)\b|design-review --decide|up --force")
 DECIDE_KINDS = ("worker_failed", "worker_question", "escalation", "max_rounds", "repeat_test_failure", "test_config",
-                "planning_gaps", "unknown_regression", "token_update")
+                "planning_gaps", "unknown_regression", "token_update",
+                "merge_conflict", "workspace_failed")  # 7단계 작업 공간(설계 5.10.8·7.7)
 
 
 def read(rel: str) -> str:
@@ -91,7 +92,7 @@ class MainRulesTest(unittest.TestCase):
                 "front matter 에 `plan: append`",
                 '`.herdr-team/bin/hteam scope T-xxx "<내용>"`',
                 "- 큐 명령(`start`, `start-ready`, `fix`, `accept`, `drop`, `review --retry`, `design-decide`, `scope`, "
-                "`agent reset`, `test-confirm`)은 관제 큐를 거친다.",
+                "`agent reset`, `test-confirm`, `slot reset`)은 관제 큐를 거친다.",
                 "- `horch` 와 `hteam drive` 를 직접 부르지 않는다(훅이 막는다).",
                 "`status: orphaned` 면 `/herdr-team:up` 을 한다.",
                 '`decide`: 아래 "decide 처리 기준"대로 처리하고 `.herdr-team/bin/hteam answer <id> "<처리 내용>"` 으로 닫는다.',
@@ -102,7 +103,7 @@ class MainRulesTest(unittest.TestCase):
             self.assertIn(needle, rules)
         self.assertNotIn("tell", rules)
 
-    def test_decide_table_has_the_nine_kinds(self):
+    def test_decide_table_has_the_kinds(self):
         table = self.section("decide 처리 기준")
         self.assertIn("decide 에 적힌 `files` 만 읽고 `commands` 가운데 하나로 처리한다. 사용자에게 물을 때는 AskUserQuestion 을 "
                       "직접 쓴다(질문 하나, 선택지 2–4개, 추천 하나).", table)
@@ -223,7 +224,7 @@ class ReadmeTest(unittest.TestCase):
     def test_readme_describes_drive_crew_and_upgrade(self):
         text = (REPO / "README.md").read_text(encoding="utf-8")
         for needle in ("### 관제와 고정 에이전트", "### 리뷰 보기 pane", "그 pane 에서 친 키는 리뷰어에 들어간다", "`ctrl+\\`",
-                       "### 관제 복구", "`[drive] auto_up = false`", "herdr-orch 0.2.0 이상", "#### 0.3.0 → 0.4.0",
+                       "### 관제 복구", "`[drive] auto_up = false`", "herdr-orch 0.3.0 이상", "#### 0.3.0 → 0.4.0",
                        "이전하지 않는다", "`config.toml` 을 지운 뒤 `/herdr-team:init`", "`drive_down`", "`drive_hung`"):
             self.assertIn(needle, text)
         head = text[:text.index("### 이미 세팅한 프로젝트 업그레이드")]
@@ -319,3 +320,146 @@ class WorkSpecP7Test(TeamCase):
         (self.proj / "docs/handoff/production.md").write_text("# 인수인계\n", encoding="utf-8")
         text = self.spec(front={"issue": "5712"}, config_text=CREW_CONFIG)
         self.assertIn("남은 일이 적혀 있다.\n\n이 태스크는 이슈 #5712 이다.\n\n" + RULES_HEAD, text)
+
+
+# --- 7단계 문구(설계 7.7·9.1 의 4a·5.5·6.2·8.12·14장, Task 9) ---
+P7_MERGE_ROW = ('| `merge_conflict` | 충돌 파일을 사용자에게 보이고 묻는다. 고치기로 하면 `hteam fix T-xxx --note "<충돌을 어떻게 '
+                '풀지 사용자 지시>"`(상한이면 `--force-round`. 기준 병합 지시는 hteam 이 사양에 넣는다), 버리기로 하면 '
+                '`hteam drop T-xxx` |')
+P7_WORKSPACE_ROW = ("| `workspace_failed` | `detail.kind` 로 가른다. `setup_failed` 는 로그 끝을 보이고 사용자가 setup 이나 환경을 "
+                    "고친 뒤 `hteam start T-xxx`. `slot_dirty` 는 그 슬롯의 `git status` 를 보이고, 사용자가 버려도 된다고 하면 "
+                    "`hteam slot reset <N>`. `branch_exists`·`base_moved`·`merge_blocked` 는 git 상태를 보이고 사용자에게 "
+                    "묻는다(메인 폴더를 기준 브랜치로 되돌리기, 남은 브랜치 지우기 등은 사용자가 정한다) |")
+P7_INDEX_LOCK = "- `git commit` 이 `index.lock` 오류로 실패하면 몇 초 뒤 같은 명령을 다시 한다(관제의 병합과 겹쳤다)."
+P7_REDMINE_RULE = ("- Redmine 을 쓰는 프로젝트(`[redmine]`)면 이슈 상태·노트는 관제가 바꾼다. 메인도 바꾸지 않는다. "
+                   "`hteam status` 의 `redmine.failed` 가 늘면 사용자에게 알린다.")
+P7_PUSH = ("- 사용자가 묶음이 끝난 뒤 push 하라고 정했으면 `done` 의 마지막 전체 테스트가 통과했을 때 push 한다"
+           "(플러그인은 push 하지 않는다).")
+P7_AGENTS_PRIORITY = ("- 프리앰블·사양·리뷰 프롬프트가 정한 보고서·리뷰 파일 경로와 형식, 커밋 형식, 판정 표기, done 방법, git 쓰기 "
+                      "금지는 이 저장소의 다른 문서(AGENTS.md 의 다른 절, CLAUDE.md 등)의 규칙보다 앞선다(다른 보고서 경로·이슈 "
+                      "트래커 갱신 규칙과 부딪칠 때). 코드·문구·디자인 기준은 프로젝트 문서도 따른다.")
+P7_AGENTS_ISSUE = ("- 이슈 트래커는 사양·리뷰 프롬프트의 이슈 줄을 따른다. 관제가 바꾼다고 적혀 있으면 이슈 상태·노트를 바꾸지 "
+                   "않는다(이 저장소 문서에 다른 갱신 규칙이 있어도).")
+P7_AGENTS_WORKSPACE = ("- 사양에 `## 작업 공간` 절이 있으면 그 슬롯 worktree 에서만 일하고 그 브랜치에 커밋한다. 그 폴더 밖(메인 "
+                       "폴더, 다른 슬롯)의 파일을 고치지 않는다. 병합·push·브랜치 바꾸기·rebase 는 그 절이 시킨 것만 한다(리뷰가 "
+                       "승인하면 관제가 병합한다).")
+P7_AGENTS_REVIEWER = ("- 리뷰 프롬프트가 슬롯 worktree 를 가리키면 그 폴더에서 리뷰한다(파일 읽기·git 조회·확인 명령 모두. 메인 "
+                      "폴더에는 아직 병합되지 않았다).")
+P7_RULES_WORKSPACE = ("사양에 작업 공간 절(슬롯 worktree 와 브랜치)이 있으면 그 폴더에서만 일하고 그 브랜치에 커밋한다. 그 폴더 "
+                      "밖(메인 폴더, 다른 슬롯)은 고치지 않고, 병합·push·브랜치 바꾸기·rebase 는 그 절이 시킨 것만 한다.")
+P7_RULES_ISSUE = ("이슈 트래커의 이슈 상태·노트는 사양의 이슈 줄을 따른다. 관제가 바꾼다고 적혀 있으면 바꾸지 않는다(프로젝트 "
+                  "문서에 다른 갱신 규칙이 있어도).")
+
+
+class MainRulesP7Test(unittest.TestCase):
+    """7단계 메인 규칙(설계 7.7): decide 두 줄, index.lock 다시 시도, Redmine 줄, push 는 주석 예시, 큐의 slot reset, 위치."""
+
+    def setUp(self):
+        self.main = read("templates/CLAUDE.section.md")
+
+    def between(self, start: str, end: str | None = None) -> str:
+        i = self.main.index(start)
+        return self.main[i:self.main.index(end, i) if end else len(self.main)]
+
+    def test_decide_rows_at_the_end_of_the_table(self):
+        table = self.between("### decide 처리 기준\n", "### 질문 표시 규칙\n")
+        rows = [ln for ln in table.splitlines() if ln.startswith("| `")]
+        self.assertEqual(rows[-2:], [P7_MERGE_ROW, P7_WORKSPACE_ROW])
+        self.assertTrue(rows[-3].startswith("| `token_update` |"))
+
+    def test_main_rule_lines(self):
+        rules = self.between("### 메인 규칙\n", "### decide 처리 기준\n")
+        self.assertIn("`hteam answer` 로 닫는다.\n" + P7_INDEX_LOCK + "\n" + P7_REDMINE_RULE + "\n", rules)
+
+    def test_push_line_is_only_a_comment_example(self):
+        comment = self.between("<!-- 프로젝트가 고를 줄(예)", "-->")
+        self.assertIn(P7_PUSH, comment)
+        self.assertEqual(self.main.count(P7_PUSH), 1)  # 주석 밖에는 없다(프로젝트가 고른다)
+        self.assertLess(self.main.index(P7_REDMINE_RULE), self.main.index("<!-- 프로젝트가 고를 줄(예)"))
+
+    def test_locations(self):
+        where = self.between("### 위치\n")
+        for needle in ("관제 `[drive]`, 작업 공간 `[workspace]`, Redmine `[redmine]`)",
+                       "- 작업 공간 슬롯 `.herdr-team/state/slots/slot-<N>`(태스크 브랜치 `herdr/T-xxx`, 슬롯 상태 "
+                       "`.herdr-team/state/slots.json`), 리뷰 프로젝트 점검표 `.herdr-team/review-extra.md`(있으면 리뷰 "
+                       "프롬프트에 붙는다), Redmine 전송 기록 `.herdr-team/state/redmine/`."):
+            self.assertIn(needle, where)
+
+
+class AgentsRulesP7Test(unittest.TestCase):
+    """Codex 규칙(AGENTS.md 절)과 작업 규칙의 작업 공간·이슈·우선순위 줄(설계 15.3 의 7 의 8, 5.5, 6.2, 8.12)."""
+
+    @staticmethod
+    def part(text: str, title: str) -> str:
+        start = text.index(f"## {title}\n")
+        nxt = text.find("\n## ", start + 1)
+        return text[start:nxt if nxt != -1 else len(text)]
+
+    def test_agents_section(self):
+        agents = read("templates/AGENTS.section.md")
+        common = self.part(agents, "공통")
+        self.assertIn("(관제가 메인에 올리고, 메인이 답한다).\n" + P7_AGENTS_PRIORITY + "\n" + P7_AGENTS_ISSUE + "\n", common)
+        self.assertIn("같은 작업 폴더에서 다른 워커가 동시에 일한다.\n" + P7_AGENTS_WORKSPACE + "\n",
+                      self.part(agents, "작업 워커"))
+        self.assertIn("다른 파일을 만들거나 고치거나 지우지 않는다.\n" + P7_AGENTS_REVIEWER + "\n", self.part(agents, "리뷰어"))
+
+    def test_worker_rules(self):
+        rules = read("templates/worker-rules.md")
+        self.assertIn("`git add .` 를 쓰지 않는다. " + P7_RULES_WORKSPACE + "\n2. 커밋은 경로를 지정한다", rules)
+        self.assertIn("남은 위험, 가정. " + P7_RULES_ISSUE + "\n4. ", rules)
+        # 모든 워커 사양에 들어가는 글이다. 설정에 기대는 낱말(Redmine, 절 머리)을 쓰지 않아 설정이 없으면 뜻이 그대로다
+        self.assertNotIn("Redmine", rules)
+        self.assertNotIn("## 작업 공간", rules)
+
+
+class InitSkillP7Test(unittest.TestCase):
+    """init 4단계의 작업 공간·Redmine 줄(설계 9.1 의 4a)."""
+
+    def test_rows_in_the_same_table(self):
+        init = read("skills/init/SKILL.md")
+        step = init[init.index("## 4. 판단이 필요한 한 단계\n"):init.index("## 5. 관제\n")]
+        for needle in ("- 작업 공간(`[workspace]`, 기본 끔): 병렬 개발이 필요한지 본다(동시에 개발 태스크를 둘 이상 돌리고 시험이 "
+                       "DB·포트를 쓰는지).", '`mode = "worktree"`', "`[crew.*]` 의 `roles` 에서 빼고 `user_approval_roles` 에 두지 "
+                       "않는다", "시험 도구 설정(vitest·jest·ESLint·`tsconfig.json`·pytest 등)에서 `.herdr-team/` 를 빼자고 함께 "
+                       "제안한다", "`workspace_git`·`workspace_head`", "- Redmine 연동(`[redmine]`, 기본 끔):", "`key_env`",
+                       "`env_file`", "**API 키 값은 묻지도 받지도 않는다.**", "- 작업 공간·Redmine 은 승인한 것만"):
+            self.assertIn(needle, step)
+        self.assertLess(step.index("- 작업 공간(`[workspace]`"), step.index("- AskUserQuestion 한 번으로 승인받는다."))
+        self.assertIn("- Redmine API 키 값을 묻거나 받거나 `config.toml` 에 쓰기.", init[init.index("## 하지 않는 것\n"):])
+
+
+class ReadmeP7Test(unittest.TestCase):
+    """README 의 7단계 절(설계 15.3 의 7 의 8, 5.10.9·14장 7단계 줄)."""
+
+    def setUp(self):
+        self.text = (REPO / "README.md").read_text(encoding="utf-8")
+
+    def test_version_table_matches_plugins(self):
+        market = json.loads((REPO / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
+        for entry in market["plugins"]:
+            self.assertIn(f"| `{entry['name']}` | {entry['version']} |", self.text)
+        self.assertIn("- herdr-team 을 쓰려면 herdr-orch 0.3.0 이상도 함께 설치한다.", self.text)
+
+    def test_sections(self):
+        for needle in ("### 작업 공간(선택, 병렬 개발)", "### 리뷰 점검표와 우선순위", "### Redmine 연동(선택)",
+                       "시험 도구 설정에서 `.herdr-team/` 를 뺀다", "`hteam slot reset <N>`", "`.herdr-team/review-extra.md`",
+                       "`tester_paths`", "`full_if`", "`git worktree remove <폴더>`", "`worker-start --env KEY=VALUE`",
+                       "`slot reset`)은 파일 큐", "키 값은 init 이 묻지 않는다"):
+            self.assertIn(needle, self.text)
+        recovery = self.text.index("### 관제 복구")
+        for title in ("### 작업 공간(선택, 병렬 개발)", "### 리뷰 점검표와 우선순위", "### Redmine 연동(선택)"):
+            self.assertLess(self.text.index(title), recovery)
+
+    def test_security_lines(self):
+        sec = self.text[self.text.index("### herdr-team 보안 주의"):self.text.index("### 이미 세팅한 프로젝트 업그레이드")]
+        for needle in ("작업 공간 setup·teardown 은 `config.toml` 의 셸 문자열이고 관제 권한", "슬롯 워커도 같은 사용자 권한으로 돌아",
+                       "`hteam slot reset` 은 슬롯의 커밋 안 된 변경을 지운다", "Redmine API 키는 전송 자식만 읽고",
+                       "`env_file` 은 git 제외여야 한다"):
+            self.assertIn(needle, sec)
+
+    def test_upgrade_section(self):
+        self.assertLess(self.text.index("#### 0.4.0 → 0.5.0"), self.text.index("#### 0.3.0 → 0.4.0"))
+        part = self.text[self.text.index("#### 0.4.0 → 0.5.0"):self.text.index("#### 0.3.0 → 0.4.0")]
+        for needle in ("플러그인만 올리면 된다(herdr-orch 0.3.0 과 함께). 새 기능은 설정으로 켜고, 켜지 않으면 0.4.0 과 같이 돈다.",
+                       "`[workspace]`", "`[redmine]`", "`manual`", "`merge_conflict`·`workspace_failed`"):
+            self.assertIn(needle, part)
