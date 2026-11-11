@@ -1045,3 +1045,15 @@ class ReconcileOrderTest(FlowCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlanIssueProgressTest(FlowCase):
+    """기획 적용 progress 의 태스크 줄 이슈 번호(설계 8.12, 7단계). tasks.toml 의 issue 는 Task 2 가 사양으로 옮긴다."""
+
+    def test_progress_line_shows_issue(self):
+        plan = PLAN_TWO.replace('title = "저장 모듈"\n', 'title = "저장 모듈"\nissue = 5712\n')
+        self.commit("docs/planning/tasks.toml", plan, "[T-001] 기획")
+        self.task("T-001", "planner")
+        self.d.apply_plan("T-001")
+        self.assertEqual(self.progress(),
+                         ["기획 적용: T-002 #5712 [developer] 저장 모듈; T-003 [developer] 할 일 화면 ← T-002"])

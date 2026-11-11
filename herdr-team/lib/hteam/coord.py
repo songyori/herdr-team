@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import time
 
-from . import approval, config, crew, dispatch, drive, outbox, roles, state, tasks, testgate, workspace
+from . import approval, config, crew, dispatch, drive, outbox, redmine, roles, state, tasks, testgate, workspace
 from .errors import HteamError
 from .horch import Horch
 from .paths import SHIM, find_project
@@ -424,6 +424,8 @@ def status(p) -> dict:
            "open_questions": questions, "unread_outbox": outbox.unread(p), "test_gate": testgate.gate_state(p)}
     if slots is not None:
         out["workspace"] = slots
+    if cfg is not None and cfg.redmine is not None:  # [redmine] 이 있을 때만 키가 있다. 키 값은 읽지 않는다(설계 8.12)
+        out["redmine"] = redmine.summary(p, cfg)
     if warnings:
         out["warnings"] = warnings
     return out

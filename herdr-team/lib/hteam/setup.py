@@ -12,7 +12,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import browser, config, drive, gitio, herdr, image, outbox
+from . import browser, config, drive, gitio, herdr, image, outbox, redmine
 from .browser import BROWSER_SERVER
 from .errors import CONFLICT, FAIL, TIMEOUT, USAGE, HteamError
 from .horch import Horch
@@ -155,11 +155,14 @@ def doctor(root: Path) -> dict:
     checks.append(_check("chrome_devtools_mcp", _chrome_mcp(root), "디렉터 레퍼런스 캡처에 쓴다(없으면 링크만 남긴다)",
                          "warning"))
     checks.append(_codex_browser(root))
-    warnings: list[str] = []  # 설정 경고(설계 4.2). 설정을 읽지 못하는 것은 doctor 의 점검이 아니다
+    cfg = None  # 설정을 읽지 못하는 것은 doctor 의 점검이 아니다(설정 경고·Redmine 점검을 하지 않는다)
     try:
-        warnings = config.crew_warnings(config.load(Project(root)))
+        cfg = config.load(Project(root))
     except HteamError:
         pass
+    if cfg is not None and cfg.redmine is not None:  # 설계 9.2 7단계: 경고만
+        checks += redmine.checks(Project(root), cfg)
+    warnings: list[str] = config.crew_warnings(cfg) if cfg is not None else []  # 설정 경고(설계 4.2)
     if not all(c["ok"] for c in checks if c["level"] == "error"):
         raise HteamError("unhealthy", "필수 점검이 실패했다", FAIL, data={"checks": checks, "warnings": warnings})
     return {"healthy": True, "checks": checks, "warnings": warnings}

@@ -77,6 +77,15 @@ class Project:
         self.slots_dir = self.state / "slots"
         self.slot_logs = self.slots_dir / "logs"
         self.git_lock = self.state / "git.lock"
+        # Redmine 연동(설계 8.12): 관제가 쓰는 사건 큐와 그 순번·잠금, 보내지 못한 항목, 전송자 하나의 잠금, 마지막 전송 결과.
+        # 만드는 것은 redmine.enqueue·sync 다([redmine] 이 없으면 만들지 않는다)
+        self.redmine_dir = self.state / "redmine"
+        self.redmine_queue = self.redmine_dir / "queue"
+        self.redmine_failed = self.redmine_dir / "failed"
+        self.redmine_lock = self.redmine_dir / "queue.lock"
+        self.redmine_sync_lock = self.redmine_dir / "sync.lock"
+        self.redmine_seq = self.redmine_dir / "seq"
+        self.redmine_status = self.redmine_dir / "status.json"
 
     def ensure_state(self) -> None:
         for folder in (self.state, self.task_states, self.answers, self.sessions):

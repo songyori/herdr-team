@@ -1718,3 +1718,45 @@ class QueuedNoteDecisionTest(DecisionCase):
         self.assertEqual((rd["note"], rd.get("coord_note"), rd.get("from_user")),
                          ("실제 사용자 요청", "코디네이터 지시", True))
         self.assertNotIn("queued_fix", st)
+
+
+REDMINE_QUEUE_ONLY = """
+[redmine]
+url = "http://127.0.0.1:9"
+key_env = "HT_REDMINE_KEY"
+status = { start = 2, done = 3, changes = 4, closed = 5 }
+"""
+
+
+class RedmineDecisionTest(DecisionCase):
+    """사용자 일괄 승인(design-decide)으로 done 이 된 승인 직무 태스크도 이슈를 닫는다(설계 8.12 의 닫는 때, Task 8 Rules 2 의 7,
+    Codex 계획 리뷰 r1). approval._apply 는 관제의 after_accept 를 거치지 않는다. 큐에 쓰기만 본다(전송하지 않는다)."""
+    config = APPROVAL + REDMINE_QUEUE_ONLY
+
+    def test_decision_accept_queues_the_close(self):
+        self.task("T-001", "awaiting_user", title="로그인 화면")
+        self.write_spec("T-001", "designer", title="로그인 화면", owns="docs/design/screens/t-001/**",
+                        front={"issue": "5712"}, commit=False)
+        self.assertEqual(self.review()[1].get("id"), "out-0001")
+        code, out = self.decide("out-0001", {})
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.task_state("T-001")["status"], "done")
+        folder = self.state_dir / "redmine" / "queue"
+        items = [json.loads(f.read_text(encoding="utf-8")) for f in sorted(folder.glob("*.json"))] \
+            if folder.is_dir() else []
+        self.assertEqual([(i["event"], i["issue"], i["task"], i["status_id"], i["notes"]) for i in items],
+                         [("closed", "5712", "T-001", 5, "T-001 가 끝나 종료한다.")])
+
+
+class IssueLineTest(ApprovalCase):
+    """일괄 승인 줄의 이슈 번호(설계 5.1·8.12, 7단계): issue 가 있는 태스크만 ID 뒤에 `#N`. [redmine] 과 상관없다."""
+
+    def test_issue_number_follows_task_id(self):
+        self.task("T-001", "awaiting_user", title="로그인 화면")
+        self.task("T-002", "awaiting_user", title="목록 화면")
+        self.write_spec("T-001", "designer", title="로그인 화면", owns="docs/design/screens/t-001/**",
+                        front={"issue": "5712"}, commit=False)
+        render = approval.render(self.p, config.load(self.p),
+                                 [state.load(self.p, "T-001"), state.load(self.p, "T-002")])
+        self.assertIn("- T-001 #5712 r1 [디자인] 로그인 화면: docs/tasks/T-001/report.md", render["context"])
+        self.assertIn("- T-002 r1 [디자인] 목록 화면: docs/tasks/T-002/report.md", render["context"])

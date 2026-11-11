@@ -19,7 +19,7 @@ import subprocess
 import sys
 import time
 
-from . import config, dispatch, followups, gitio, herdr, outbox, procs, specs, state, testgate, workspace
+from . import config, dispatch, followups, gitio, herdr, outbox, procs, redmine, specs, state, testgate, workspace
 from .errors import CONFLICT, DENIED, FAIL, MISSING, TIMEOUT, USAGE, HteamError
 from .globs import matches_any
 from .horch import Horch
@@ -192,7 +192,8 @@ class Drive:
         self._raised: set[tuple[str, str]] = set()  # 올린 격리 실패(키, 문구). 이 프로세스 안의 기억
         self._failed: set[tuple[str | None, str]] = set()  # 올린 관제 절차 실패(태스크, 문구). 이 프로세스 안의 기억
         self._horch: Horch | None = None
-        # 돌고 있는 자식(설계 8.8): {키: {proc, args, out, err}}. 키는 review:<T>, final, 작업 공간 준비·놓기 slot:<N>
+        # 돌고 있는 자식(설계 8.8): {키: {proc, args, out, err}}. 키는 review:<T>, final, 작업 공간 준비·놓기 slot:<N>,
+        # Redmine 전송 redmine
         self.jobs: dict[str, dict] = {}
         self.rows: list[dict] = []  # 마지막 워커 목록(재확인). locate 가 기록 전 Dispatch 를 제목으로 찾을 때 쓴다
         self.retry_reviews: set[str] = set()  # 관문 잠금 대기 초과로 미룬 리뷰(8.7 의 4)
@@ -409,6 +410,7 @@ class Drive:
         if st["status"] != "working":
             return  # 재확인이 맞춘다
         if body.get("outcome") == "succeeded":
+            redmine.worked(self.p, config.load(self.p), st, body)  # 설계 8.12: 작업을 마쳤다
             self.start_review(tid)
             return
         self.decide("worker_failed", tid, str(body.get("summary") or "")[:300] or "워커가 실패를 보고했다",
@@ -557,8 +559,10 @@ class Drive:
             return
         self.log(f"{tid} r{res['round']} {res['verdict']}")
         if res["status"] == "approved":
+            redmine.approved(self.p, config.load(self.p), state.require(self.p, tid))  # 설계 8.12: 리뷰 승인
             self.accept_task(tid)
         elif res["status"] == "changes":
+            redmine.reviewer_changes(self.p, config.load(self.p), state.require(self.p, tid))  # 설계 8.12: 수정 요청
             self._reviewer_changes(tid, res.get("warnings") or [])
 
     def _review_failure(self, tid: str, exc: HteamError, rnd: int, attempt) -> None:
@@ -615,6 +619,7 @@ class Drive:
             return
         if code == 0:
             if data.get("status") == "changes":
+                redmine.hteam_changes(self.p, config.load(self.p), state.require(self.p, tid))  # 설계 8.12: hteam 반려
                 self.hteam_changes(tid)
             elif data.get("tests_skipped"):
                 self.confirm_test()
@@ -696,7 +701,8 @@ class Drive:
 
     def after_accept(self, tid: str, res: dict) -> None:
         """accept 뒤(설계 8.6, 관제 판정 경로와 큐 accept 모두): release 실패 progress, 작업 공간 병합 로그·충돌 decide,
-        직무·결과별 다음 자리, start-ready, 끝에 슬롯 놓기(release_step)."""
+        직무·결과별 다음 자리, done 이면 Redmine 이슈 닫기(redmine.close_for, 설계 8.12), start-ready, 끝에 슬롯 놓기
+        (release_step)."""
         for warning in res.get("warnings") or []:
             self.progress(f"{tid} 워커 해제 실패: {str(warning)[:200]}")
         if res.get("merge"):
@@ -711,6 +717,8 @@ class Drive:
             self.batch_done(tid)
         elif res.get("status") == "awaiting_user":
             self.design_step()
+        if res.get("status") == "done":  # 설계 8.12: 닫는 때. 묶음 처리가 만든 회귀 수정·정리 태스크가 먼저 생겨야 미룬다
+            redmine.close_for(self.p, config.load(self.p), tid)
         self.start_ready()
         self.isolated("slots", self.release_step)
 
@@ -894,6 +902,9 @@ class Drive:
                 done = self._release_done if step == "release" else self._slot_done
                 self.isolated(f"job:{key}",
                               lambda n=n, tid=tid, code=code, out=out, done=done: done(n, tid, code, _last_json(out)))
+            elif key == "redmine":
+                self.isolated(f"job:{key}",
+                              lambda code=code, out=out, err=err: self.redmine_done(code, _last_json(out) or {}, err))
 
     def _review_done(self, tid: str, code: int, out: str, args: list[str] | None = None, rnd: int | None = None) -> None:
         """리뷰 자식이 끝났다: 도는 동안 올린 decide 의 표시를 먼저 쓰고(그 뒤 결과 처리가 쓰는 새 표시가 이긴다) 결과를 처리한다.
@@ -911,6 +922,29 @@ class Drive:
             self.on_review_result(tid, code, _last_json(out))
         finally:
             self._job_args.pop(tid, None)
+
+    # --- Redmine 전송(8.12, 8.8) ---
+    def redmine_step(self) -> None:
+        """[redmine] 이 있고 지금 보낼 항목이 있고(redmine.due) 전송 자식이 없으면 `hteam redmine-sync`(키 redmine)를 띄운다.
+        큐가 비었으면 설정을 읽지 않는다([redmine] 이 없으면 큐 폴더가 없다)."""
+        if self.running("redmine") or not any(self.p.redmine_queue.glob("*.json")):
+            return
+        if config.load(self.p).redmine is None or not redmine.due(self.p):
+            return
+        self.spawn("redmine", ["redmine-sync"])
+
+    def redmine_done(self, code: int, out: dict, err: str) -> None:
+        """전송 자식이 끝났다: 보내지 못한 항목마다 drive.log(설계 8.11, 키는 남기지 않는다), failed 로 옮긴 항목마다 progress
+        한 번(다시 보낼 항목은 로그만). busy 결과는 목록이 비어 아무것도 쓰지 않는다(다음 틱이 다시 띄운다)."""
+        failed, retry = list(out.get("failed") or []), list(out.get("retry") or [])
+        for e in sorted(failed + retry, key=lambda e: e.get("seq") or 0):
+            self.log(f"redmine #{e.get('issue')} {e.get('event')} 실패 {e.get('status')}")
+        for e in failed:
+            self.progress(f"Redmine 이슈 #{e.get('issue')} 갱신 실패({e.get('event')}, {e.get('status')}): "
+                          f"{str(e.get('error') or '')[:200]}. .herdr-team/state/redmine/failed/"
+                          f"{int(e.get('seq') or 0):06d}.json 에 남겼다")
+        if code != 0:
+            self.log(f"redmine-sync 실패(exit {code}): {err.strip()[-200:]}")
 
     # --- 작업 공간 준비(5.10.3, 8.8) ---
     def slot_step(self) -> None:
@@ -1366,19 +1400,20 @@ class Drive:
     # --- 관제가 만드는 태스크(8.9 의 1–5) ---
     def create_task(self, *, role: str, title: str, target: str, change: str, acceptance: list[str],
                     owns: list[str] | None = None, depends: list[str] | None = None,
-                    plan_append: bool = False) -> str | None:
+                    plan_append: bool = False, issue: str | None = None) -> str | None:
         """`task new` 와 같은 함수로 다음 ID 의 사양과 pending 상태를 만들고(직무·owns 검사. 입력 오류는 사양을 쓰기 전에
         그대로 올린다) 네 절을 채워 덮어쓴다. acceptance 의 `{tid}` 는 새 ID 로 바꾼다. 사양 검사가 실패하면 커밋하지 않고
         decide escalation 뒤 None(덮어쓴 파일은 커밋 안 된 채 남는다). 통과하면 `spec: <T>` 경로 지정 커밋과 로그 뒤 ID.
-        시작은 부른 쪽이 start_ready 로 한다."""
+        시작은 부른 쪽이 start_ready 로 한다. issue 가 있으면 front matter 에 쓴다(물려받은 Redmine 이슈, 설계 5.1)."""
         cfg = config.load(self.p)
         tid = specs.new(self.p, cfg, role, title, owns, depends)["id"]
         rel = self._spec_rel(tid)
         lines = [line.replace("{tid}", tid) for line in acceptance]
         body = (f"## Target\n{target}\n\n## Change\n{change}\n\n## Constraints\n{CONSTRAINTS}\n\n## Acceptance\n"
                 + "".join(f"- {line}\n" for line in lines))
+        front = {**({"plan": "append"} if plan_append else {}), **({"issue": issue} if issue else {})}
         write_atomic(self.p.spec_path(tid), specs.render(tid, role, title, body, owns=owns, depends=depends,
-                                                         front={"plan": "append"} if plan_append else None))
+                                                         front=front or None))
         try:
             specs.check(self.p, cfg, tid)
         except HteamError as exc:
@@ -1410,7 +1445,8 @@ class Drive:
             if testgate.gate_state(self.p)["state"] == "approved":
                 acceptance.append(REGRESSION_TEST)
             tid = self.create_task(role=cause["role"], title="회귀 수정: " + item["text"][:40], target=", ".join(owns),
-                                   change=f"{src}\n{item['text']}", acceptance=acceptance, owns=owns)
+                                   change=f"{src}\n{item['text']}", acceptance=acceptance, owns=owns,
+                                   issue=redmine.issue_of(self.p, causes[0]))  # 원인 태스크의 issue(설계 5.1)
             if tid:
                 made.append(tid)
         by_role: dict[str, list[dict]] = {}  # 항목을 낸 리뷰의 태스크 직무(처음 나온 순서)
@@ -1420,9 +1456,11 @@ class Drive:
             owners = dict.fromkeys(i["task"] for i in items)
             owns = sorted({o for t in owners for o in state.require(self.p, t).get("owns") or []})
             change = src + "".join(f"\n- {i['id'] or '-'}: {i['text']}" for i in items)
+            # 항목을 낸 태스크가 하나일 때만 그 issue(원인이 여럿이면 넣지 않는다, 설계 5.1)
+            issue = redmine.issue_of(self.p, next(iter(owners))) if len(owners) == 1 else None
             try:
                 tid = self.create_task(role=role, title=f"묶음 정리: {key}", target=", ".join(owns), change=change,
-                                       acceptance=[CLEANUP_ACCEPT], owns=owns)
+                                       acceptance=[CLEANUP_ACCEPT], owns=owns, issue=issue)
             except HteamError as exc:
                 if exc.exit_code == MISSING:
                     raise
@@ -1617,7 +1655,8 @@ class Drive:
             parts = []
             for item in res["applied"]:
                 sp = specs.load(self.p, item["id"])
-                parts.append(f"{sp.id} [{sp.role}] {sp.title}" + (f" ← {', '.join(sp.depends_on)}" if sp.depends_on else ""))
+                parts.append(f"{sp.id}{' #' + sp.issue if sp.issue else ''} [{sp.role}] {sp.title}"
+                             + (f" ← {', '.join(sp.depends_on)}" if sp.depends_on else ""))
             self.progress("기획 적용: " + "; ".join(parts) if parts else f"기획 적용: {tid} 가 새 태스크를 더하지 않았다")
         with state.edit(self.p, tid) as cur:
             cur["plan_applied"] = True
@@ -1785,13 +1824,15 @@ class Drive:
                 raise
 
     def tick(self) -> None:
-        """설계 8.5 의 틱 순서. 단계마다 격리한다(reap_jobs·reset_step·view_step 은 그 안에서 항목마다)."""
+        """설계 8.5 의 틱 순서. 단계마다 격리한다(reap_jobs·reset_step·view_step 은 그 안에서 항목마다). 거둔 뒤 Redmine 전송
+        자식을 띄운다(설계 8.8·8.12)."""
         self.heartbeat()
         self.isolated("check", self.check_mail)
         done = self.isolated("queue", self.run_queue)
         if done:
             self.isolated("start_ready", self.start_ready)  # 끝에 slot_step
         self.reap_jobs()
+        self.isolated("redmine", self.redmine_step)
         self.heartbeat()
         self.reset_step()
         self.view_step()

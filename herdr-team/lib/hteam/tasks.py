@@ -9,7 +9,7 @@ import contextlib
 import os
 from typing import Iterator
 
-from . import compose, config, crew, dispatch, gitio, outbox, plan, procs, queue, roles, specs, state, workspace
+from . import compose, config, crew, dispatch, gitio, outbox, plan, procs, queue, redmine, roles, specs, state, workspace
 from .errors import CONFLICT, FAIL, MISSING, USAGE, HteamError
 from .globs import any_overlap, within
 from .horch import Horch, failure
@@ -392,6 +392,7 @@ def run_work(p, cfg, h, tid: str, plc: dict | None = None) -> dict:
     except HteamError as exc:
         dispatch.left_running(exc, res, h)
         raise
+    redmine.started(p, cfg, st)  # 설계 8.12: 라운드 시작(start·fix·대기열·복구 모두 이 자리를 지난다)
     if plc["kind"] == "crew":
         crew.after_launch(p, plc, tid, rd, res)
     out = {"task": tid, "round": rd["round"], "status": "working", "agent": rd["agent"], "model": rd["model"],
@@ -1300,6 +1301,8 @@ def accept(p, tid: str, expect_round: int | None = None, decision: str | None = 
                 if outcome:
                     cur["workspace"]["merge"] = outcome["sha"]
                 state.move(cur, to, "accept", **({"merge": outcome["sha"]} if outcome else {}), **_req(request))
+    if outcome and outcome["result"] == "merged":  # 설계 8.12: 병합 노트(workspace.merge 를 쓴 뒤)
+        redmine.merged(p, cfg, state.require(p, tid))
     crew.unqueue(p, tid)
     out = {"task": tid, "status": to, "warnings": warnings}
     if outcome and outcome["result"] == "merged":
@@ -1389,6 +1392,7 @@ def drop(p, tid: str, force: bool, expect_round: int | None = None, request: str
         if rec is not None and rec["state"] == "preparing" and not rec.get("ready"):
             data["slots"][str(n)] = {**workspace.SLOT_DEFAULT, "setup_done": rec["setup_done"], "since": now()}
             workspace.save(p, data)  # 프로젝트 잠금 안(_closing)
+    redmine.dropped(p, config.load(p), cur)  # 설계 8.12: drop 노트(상태를 바꾸지 않는다)
     crew.unqueue(p, tid)
     crew.free(p, tid)
     out = {"task": tid, "status": "dropped", "released": released}

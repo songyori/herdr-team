@@ -31,7 +31,7 @@ import json
 import re
 import sys
 
-from . import config, dispatch, outbox, queue, roles, specs, state, tasks
+from . import config, dispatch, outbox, queue, redmine, roles, specs, state, tasks
 from .errors import CONFLICT, FAIL, USAGE, HteamError
 from .paths import SHIM, find_project, report_rel
 from .util import bad_side_file, die_at, now, read_json_strict, write_json
@@ -378,10 +378,11 @@ def _system_urls(p) -> set[str]:
     return {u for line in text.splitlines() if "design_system_url" in line for u in _urls(line)}
 
 
-def link(p, tid: str) -> str:
-    """태스크 보고서의 마지막 claude.ai URL. `design_system_url` 줄과 디자인 시스템 URL 은 뺀다. 없으면 보고서 경로."""
+def link(p, tid: str, root=None) -> str:
+    """태스크 보고서의 마지막 claude.ai URL. `design_system_url` 줄과 디자인 시스템 URL 은 뺀다. 없으면 보고서 경로.
+    보고서는 root(없으면 프로젝트 루트)에서 읽는다(작업 공간 태스크의 병합 전 보고서, 설계 8.12)."""
     try:
-        text = (p.root / report_rel(tid)).read_text(encoding="utf-8")
+        text = ((root or p.root) / report_rel(tid)).read_text(encoding="utf-8")
     except (OSError, ValueError):
         return report_rel(tid)
     skip = _system_urls(p)
@@ -390,13 +391,17 @@ def link(p, tid: str) -> str:
 
 
 def _line(p, cfg, st: dict) -> str:
+    """승인 묶음의 태스크 줄. 사양에 issue 가 있으면 ID 뒤에 ` #N`([redmine] 과 상관없다, 설계 5.1·8.12)."""
+    issue = None
     try:
-        title = specs.load(p, st["id"]).title
+        spec = specs.load(p, st["id"])
+        title, issue = spec.title, spec.issue
     except HteamError:
         title = "(사양을 읽지 못했다)"
     if len(title) > TITLE_MAX:
         title = title[:TITLE_MAX - 1] + "…"
-    return f"- {st['id']} r{st['round']} [{cfg.role_title(st['role'])}] {title}: {link(p, st['id'])}"
+    number = f" #{issue}" if issue else ""
+    return f"- {st['id']}{number} r{st['round']} [{cfg.role_title(st['role'])}] {title}: {link(p, st['id'])}"
 
 
 def _tail(rest: list[str]) -> str:
@@ -668,7 +673,10 @@ def _stopped(exc: HteamError, oid: str) -> HteamError:
 def _apply(p, oid: str, d: dict, nowait: bool = False) -> dict:
     """기록한 결정을 그대로 한다. 기록한 라운드가 이미 지났거나 닫힌 항목은 한 것으로 본다(다시 하지 않는다). 다른 오류는
     거기서 멈춘다(다시 부르면 이어 한다). 다 하면 결정에 done 을 적고 그 답을 applied 로 적는다. nowait(관제 안)면 fix·accept
-    가 finish 잠금을 기다리지 않는다(review_busy 로 멈추고 다음에 이어 한다, 설계 8.5)."""
+    가 finish 잠금을 기다리지 않는다(review_busy 로 멈추고 다음에 이어 한다, 설계 8.5). accept 가 done 으로 만든 태스크마다
+    Redmine 이슈를 닫을지 본다(관제의 after_accept 와 같은 redmine.close_for, 설계 8.12). 이미 끝나 넘긴 태스크는 다시 보지
+    않는다."""
+    cfg = config.load(p)
     fixed: list[dict] = []
     accepted: list[str] = []
     passed: list[str] = []
@@ -684,8 +692,10 @@ def _apply(p, oid: str, d: dict, nowait: bool = False) -> dict:
         die_at("decision_after_fix")
     for e in d["accept"]:
         try:
-            tasks.accept(p, e["task"], expect_round=e["round"], decision=oid, nowait=nowait)
+            res = tasks.accept(p, e["task"], expect_round=e["round"], decision=oid, nowait=nowait)
             accepted.append(e["task"])
+            if res["status"] == "done":
+                redmine.close_for(p, cfg, e["task"])
         except HteamError as exc:
             if exc.code not in ("round_changed", "task_closed"):
                 raise _stopped(exc, oid)
