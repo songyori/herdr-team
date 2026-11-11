@@ -990,9 +990,12 @@ class Drive:
         if data["state"] != "dirty":
             return
         if data.get("reason") == "not_worktree":
-            self.progress(f"slot-{n} 폴더가 git worktree 가 아니어서(.git 이 없거나 깨졌다) {tid} 를 놓지 못하고 dirty 로 "
-                          "두었다. 그 폴더에서 teardown 도 git 도 부르지 않았다. 사용자와 폴더를 확인한다. 쓸 것이 없으면 폴더를 "
-                          f"치우고 git worktree prune 한 뒤 hteam slot reset {n}")
+            # teardown 결과가 있으면 teardown 이 .git 을 지웠다(teardown 뒤 다시 본 것)
+            first, skipped = (("폴더가 teardown 뒤 git worktree 가 아니게 되어", "teardown 뒤 git 은") if td is not None
+                              else ("폴더가 git worktree 가 아니어서", "그 폴더에서 teardown 도 git 도"))
+            self.progress(f"slot-{n} {first}(.git 이 없거나 깨졌다) {tid} 를 놓지 못하고 dirty 로 두었다. {skipped} 부르지 "
+                          "않았다. 사용자와 폴더를 확인한다. 쓸 것이 없으면 폴더를 치우고 git worktree prune 한 뒤 hteam slot "
+                          f"reset {n}")
             return
         merged = (state.load(self.p, tid) or {}).get("status") == "done"
         why = f"{tid} 는 병합했다" if merged else f"{tid} 를 버렸다"

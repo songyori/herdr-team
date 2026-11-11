@@ -261,6 +261,29 @@ class ConflictTest(MergeCase):
         st = self.task_state("T-001")
         self.assertEqual((st["status"], st["round"]), ("changes", 1))
 
+    def test_recorded_rerere_resolution_is_still_a_conflict(self):
+        # rerere(enabled·autoupdate)에 같은 충돌의 해결이 기록돼 있으면 git 이 그 해결을 스테이징해 충돌 파일이 비지만 exit 1·
+        # MERGE_HEAD 가 남는다. 훅 거부로 오판하지 않게 hteam 의 병합은 그 실행에만 rerere 를 끈다(리뷰 반영 2 I2)
+        self.git("config", "rerere.enabled", "true")
+        self.git("config", "rerere.autoupdate", "true")
+        self.approved(files={"src/a/core.py": "task\n"})
+        base = self.commit("src/a/core.py", "main\n", "사람: core")
+        proc = subprocess.run(["git", "-C", str(self.proj), "merge", "--no-ff", "-m", "사람의 병합", "herdr/T-001"],
+                              capture_output=True, text=True, env=self.env)
+        self.assertNotEqual(proc.returncode, 0, proc.stdout)  # 사람이 같은 충돌을 한 번 풀어 rerere 가 기록했다
+        (self.proj / "src/a/core.py").write_text("사람이 푼 것\n", encoding="utf-8")
+        self.git("add", "--", "src/a/core.py")
+        self.git("commit", "-q", "--no-edit")
+        self.git("reset", "-q", "--hard", base)  # 그 병합은 버렸다
+        self.assertTrue(any((self.proj / ".git" / "rr-cache").iterdir()))
+        res = self.d.accept_task("T-001")
+        conflict = {"base": base, "files": ["src/a/core.py"]}
+        self.assertEqual((res["status"], res["merge_conflict"]), ("changes", conflict), res)
+        self.assertEqual(self.decides("workspace_failed"), [])
+        self.assertEqual(self.head(), base)
+        self.assertFalse(self.merging(self.proj))
+        self.assertEqual(self.git("config", "rerere.enabled").strip(), "true")  # 사용자 설정은 바꾸지 않는다
+
     def cli_conflicted(self) -> str:
         """conflicted() 와 같은 충돌을 관제 안의 CLI accept 로 만든다: 충돌 전이는 쓰고 decide 는 올리지 않는다(after_accept 를
         거치지 않는다). 충돌 전이 뒤 decide 를 올리기 전에 관제가 죽은 것과 같다. 충돌 때의 기준 HEAD 를 돌려준다."""
@@ -466,6 +489,31 @@ class RefuseTest(MergeCase):
         self.assertEqual(len(self.decides("workspace_failed")), 1)  # 한 번만
         hook.unlink()
         self.assertEqual(self.d.accept_task("T-001")["status"], "done")
+
+    def test_hook_error_survives_a_long_merge_output(self):
+        # 70개 파일을 자동 병합하면 stdout 의 `Auto-merging` 줄이 tail(60줄)을 채운다. 훅의 stderr 끝을 따로 둔다(리뷰 반영 2 I3)
+        names = [f"src/a/m{i:02}.py" for i in range(70)]
+        for rel in names:
+            (self.proj / rel).write_text("1\n2\n3\n4\n5\n6\n7\n", encoding="utf-8")
+        self.git("add", "--", "src/a")
+        self.git("commit", "-q", "-m", "chore: 파일 70개")
+        self.approved(files={rel: "task\n2\n3\n4\n5\n6\n7\n" for rel in names})
+        for rel in names:
+            (self.proj / rel).write_text("1\n2\n3\n4\n5\n6\nmain\n", encoding="utf-8")
+        self.git("commit", "-q", "-am", "사람: 끝 줄")
+        hook = self.proj / ".git" / "hooks" / "commit-msg"
+        hook.parent.mkdir(exist_ok=True)
+        hook.write_text('#!/bin/sh\necho "훅 오류 첫 줄: 병합 메시지 규칙" >&2\necho "훅 오류 둘째 줄: 이슈 번호가 없다" >&2\n'
+                        "exit 1\n", encoding="utf-8")
+        hook.chmod(0o755)
+        self.assertIsNone(self.d.accept_task("T-001"))
+        [dec] = self.decides("workspace_failed")
+        self.assertEqual(dec["detail"]["kind"], "merge_blocked")
+        self.assertIn("훅 오류 첫 줄: 병합 메시지 규칙\n훅 오류 둘째 줄: 이슈 번호가 없다", dec["tail"])
+        self.assertNotIn("Auto-merging", dec["tail"])
+        self.assertIn("): 훅 오류 첫 줄: 병합 메시지 규칙", dec["summary"])
+        self.assertFalse(self.merging(self.proj))
+        hook.unlink()
 
 
 class DropReleaseTest(MergeCase):
@@ -755,6 +803,46 @@ class NotWorktreeTest(MergeCase):
                          out)
         self.assertEqual(len(self.gate_calls()), calls)
         self.assertEqual(len(self.lines("setup.txt")), 1)  # setup 도 돌리지 않았다
+        self.assertEqual((self.record(1)["state"], self.record(1)["task"]), ("dirty", None))
+        self.assert_main_kept(head)
+
+    def test_teardown_that_removes_git_leaves_the_main_repo_alone(self):
+        # teardown 이 슬롯의 .git 을 지우면 훅 전 검사만 통과하고 그 뒤 switch --detach 가 메인을 detached HEAD 로 바꾸고 슬롯은
+        # free 로 적혔다(Codex 커밋 리뷰 6084c33 P1, 리뷰 반영 2 I1). teardown 직후 다시 보고 git 없이 dirty(not_worktree)
+        (self.out / "teardown.sh").write_text("rm -f .git\n" + TEARDOWN_SH, encoding="utf-8")
+        self.ws_start("T-001")
+        self.assertEqual(self.act_work("T-001", {"src/a/x.py": "x\n"})[0], 0)
+        self.assertEqual(self.hteam("drop", "T-001")[0], 0)
+        (self.proj / "docs/other.md").write_text("사람이 고치는 중\n", encoding="utf-8")
+        head = self.head()
+        self.d.reconcile()
+        self.wait_jobs()
+        slot1 = [line for line in self.lines("teardown.txt") if line.startswith("1|")]  # slot-2 는 관제의 마무리 full
+        self.assertEqual(len(slot1), 1)  # teardown 은 돌았다
+        self.assert_main_kept(head)
+        self.assertEqual((self.record(1)["state"], self.record(1)["task"]), ("dirty", None))
+        self.assertTrue(self.has_branch("herdr/T-001"))
+        [line] = [b for b in self.progress() if b.startswith("slot-1 폴더가 teardown 뒤 git worktree 가 아니게 되어")]
+        self.assertIn("teardown 뒤 git 은 부르지 않았다", line)
+        self.assertIn("slot-1 T-001 놓기 dirty", self.log_text())
+        code, out = self.hteam("slot", "release", "T-001")  # 기록이 이 태스크의 것이 아니다: 다시 돌지 않는다
+        self.assertEqual((code, out["state"]), (0, None), out)
+        self.assertEqual([line for line in self.lines("teardown.txt") if line.startswith("1|")], slot1)
+
+    def test_final_full_setup_that_removes_git_leaves_the_main_repo_alone(self):
+        # 마무리 full 의 setup 이 .git 을 지우면 full(과 그 git 조회)이 메인 저장소를 본다. setup 직후 다시 보고 full·teardown
+        # 없이 slot_dirty(not_worktree)(리뷰 반영 2 I1)
+        (self.out / "setup.sh").write_text("rm -f .git\n" + SETUP_SH, encoding="utf-8")
+        (self.proj / "docs/other.md").write_text("사람이 고치는 중\n", encoding="utf-8")
+        head = self.head()
+        calls = len(self.gate_calls())
+        code, out = self.hteam("test", "--full")
+        self.assertEqual((code, out["error"]["code"], out["slot"], out["reason"]), (3, "slot_dirty", 1, "not_worktree"),
+                         out)
+        self.assertIn("setup 뒤", out["error"]["message"])
+        self.assertEqual(len(self.gate_calls()), calls)  # full 을 돌리지 않았다
+        self.assertEqual(len(self.lines("setup.txt")), 1)
+        self.assertEqual(self.lines("teardown.txt"), [])  # teardown 도 그 폴더에서 돌리지 않는다
         self.assertEqual((self.record(1)["state"], self.record(1)["task"]), ("dirty", None))
         self.assert_main_kept(head)
 

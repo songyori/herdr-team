@@ -298,6 +298,35 @@ class PrepareTest(SlotCase):
         self.assertEqual(code, 0, out)
         self.assertEqual((out["slot"], out["branch"]), (2, "herdr/T-001"))
 
+    def assert_setup_broke_the_slot(self, fail: bool) -> None:
+        """setup 이 슬롯의 .git 을 지운다(fail 이면 그 뒤 실패한다). setup 뒤 git 을 부르면 위로 올라가 메인 저장소를 잡는다
+        (실패 갈래의 switch --detach 는 메인을 detached HEAD 로 바꾼다). setup 직후 worktree 를 다시 보고 git 없이 슬롯을
+        dirty(not_worktree)로 둔다(Codex 커밋 리뷰 6084c33 P1, 리뷰 반영 2 I1)."""
+        (self.out / "setup.sh").write_text("rm -f .git\n" + SETUP_SH, encoding="utf-8")
+        if fail:
+            (self.out / "fail").write_text("", encoding="utf-8")
+        (self.proj / "README.md").write_text("사람이 고치는 중\n", encoding="utf-8")
+        self.reserve("T-001")
+        before = (self.git("symbolic-ref", "--short", "HEAD").strip(), self.head())
+        code, out = self.prepare("T-001")
+        self.assertEqual(code, 3, out)
+        self.assertEqual((out["error"]["code"], out["kind"], out["slot"], out["reason"]),
+                         ("slot_dirty", "slot_dirty", 1, "not_worktree"))
+        self.assertIn("setup 뒤", out["error"]["message"])
+        self.assertEqual((self.git("symbolic-ref", "--short", "HEAD").strip(), self.head()), before)  # 메인은 그대로
+        self.assertEqual((self.proj / "README.md").read_text(encoding="utf-8"), "사람이 고치는 중\n")
+        self.assertEqual(len(self.setup_lines()), 0 if fail else 1)  # setup 은 돌았다
+        rec = self.slots()["slots"]["1"]
+        self.assertEqual((rec["state"], rec["task"], rec.get("ready"), rec["setup_done"]), ("dirty", None, None, None))
+        self.assertIsNone(workspace.held_by(self.slots(), "T-001"))
+        self.assertEqual(self.task_state("T-001")["status"], "pending")
+
+    def test_setup_that_removes_git_is_not_ready(self):
+        self.assert_setup_broke_the_slot(fail=False)
+
+    def test_failed_setup_that_removes_git_leaves_the_main_repo_alone(self):
+        self.assert_setup_broke_the_slot(fail=True)
+
     def test_death_after_branch_resumes(self):
         self.reserve("T-001")
         code, _ = self.prepare("T-001", env={"HTEAM_TEST_DIE_AT": "slot_branch_made"})

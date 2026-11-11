@@ -601,9 +601,11 @@ def common_dir(root) -> str | None:
 # --- 병합과 슬롯 정리(설계 5.10.6·5.10.8) ---
 
 def merge_no_ff(root, branch: str, message: str) -> subprocess.CompletedProcess:
-    """`git merge --no-ff -m <message> <branch>`(병합 커밋. check 없이 결과를 돌려준다: 충돌·거부는 부르는 쪽이 MERGE_HEAD
-    로 가른다). -m 이 있으면 git 은 편집기를 열지 않는다."""
-    return run(root, "merge", "--no-ff", "-m", message, branch, check=False)
+    """`git -c rerere.enabled=false merge --no-ff -m <message> <branch>`(병합 커밋. check 없이 결과를 돌려준다: 충돌·거부는
+    부르는 쪽이 MERGE_HEAD 로 가른다). -m 이 있으면 git 은 편집기를 열지 않는다. rerere 는 이 실행에만 끈다(사용자 설정은
+    그대로): 기록된 해결을 rerere.autoupdate 가 스테이징하면 충돌 파일이 비어 훅 거부와 갈리지 않고, 관제의 병합 결과가
+    사용자 rr-cache 에 따라 달라진다."""
+    return run(root, "-c", "rerere.enabled=false", "merge", "--no-ff", "-m", message, branch, check=False)
 
 
 def merge_head(root) -> str | None:
