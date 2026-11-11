@@ -4,7 +4,7 @@
 
 **Goal:** 설계 15.3 의 7번을 만든다: 다른 프로젝트가 보낸 보완 요청서(2026-11-11)를 검토해 받은 것(설계 1장 "보완 요청 처리 (7단계)" 표)이다. 병렬 개발용 작업 공간(`[workspace] mode = "worktree"`: 개발 단계 직무 태스크를 슬롯 worktree·태스크 브랜치에서 돌리고 accept 때 기준 브랜치에 `--no-ff` 로 병합한다, 슬롯마다 시험 환경 변수와 setup·teardown), tester 시험 경로 `[test] tester_paths` 와 `full_if`, 리뷰의 프로젝트 점검표(`.herdr-team/review-extra.md`)·우선순위 줄·재검증 문구, 선택 적용 Redmine 연동(`[redmine]`, 관제가 이슈 상태·노트를 바꾼다), herdr-orch 의 워커 환경 변수(`worker-start --env`)다. 한 주기로 herdr-orch 0.2.0 → 0.3.0, herdr-team 0.4.0 → 0.5.0 이다. 새 기능은 설정이 있을 때만 켜진다: 설정이 없는 프로젝트는 0.4.0 과 같이 돈다(회귀 시험으로 지킨다). 실환경은 설계 15.2 의 7단계(사전 검증 S2, 작업 공간 흐름, 가짜 Redmine 서버, shared 회귀)를 본다. main 병합은 계획 밖이다(컨트롤러가 한다).
 
-**Architecture:** herdr-orch 는 `worker-start --env KEY=VALUE`(되풀이)를 받아 스키마 v4 의 `dispatches.env` 에 JSON 으로 기록하고, `launch-guard` 가 가드 등록 뒤 `os.execvp` 바로 앞에서 `os.environ` 에 더한다(`hc run` 터미널은 부른 셸 환경을 물려받지 않는다). herdr-team 은 새 모듈 둘을 더한다. `workspace.py` 는 작업 공간이다: `state/slots.json`(슬롯 `free`·`preparing`·`busy`·`dirty`)과 슬롯 잠금(`state/slots/slot-<N>.lock`), 슬롯 폴더 `.herdr-team/state/slots/slot-<N>`(저장소 전체의 worktree), 태스크 브랜치 `herdr/T-xxx`, 작업 루트의 표시 파일 `.herdr-team/state/slot.json`(`{main_root, slot, task}`)이다. `start` 는 프로젝트 잠금 안에서 슬롯을 예약만 하고(예약이 owns 잠금을 쥔다) 대기 사유 `slot_setup` 으로 돌아오며, 관제가 자식 `hteam slot prepare T` 로 폴더·브랜치·표시 파일·setup 을 하고(슬롯 잠금을 쥔 채), 다음 `start` 가 슬롯을 `busy` 로 바꾸고 horch 를 `--cwd <작업 루트> --env <슬롯 env>` 로 부른다. 리뷰의 git 조회·관문 테스트·리뷰 커밋·변조 기준점·리뷰어는 작업 루트에서 돈다. accept 는 관제가 메인 폴더에서 `git merge --no-ff` 로 병합한 뒤 `done` 이고(거부면 다시 시도, 10분 넘으면 `workspace_failed`(`merge_blocked`)), 충돌이면 되돌리고 `changes`·`base_merge`·base 이동·decide `merge_conflict` 다. 기준 병합 라운드는 사양에 병합 지시를 넣고 리뷰 시작이 그 병합 커밋을 보면 `base_merge` 를 지운다. 놓기(teardown → `git switch --detach` → 브랜치 지우기 → `free`)와 마무리 full(빈 슬롯에서)도 슬롯 잠금을 쥔 자식이다. `hteam` 과 훅은 슬롯 안에서 불려도 표시 파일로 상태 루트(메인)와 작업 루트(슬롯)를 나눈다. `redmine.py` 는 Redmine 이다: 관제가 사건마다 `state/redmine/queue/<순번>.json` 을 쓰고, 자식 `hteam redmine-sync` 만 키를 읽어 순번 순으로 `PUT /issues/<N>.json` 을 보낸다(2xx 지움, 4xx `failed/`, 연결 실패·5xx 는 1·2·5·10분 뒤 다시, 24시간이면 `failed/`). 리뷰 프롬프트는 우선순위 줄·`## 프로젝트 점검표`·이슈 줄을, 라운드 절 2 는 재검증 범위를, 워커 사양은 우선순위 줄·작업 공간 절·이슈 줄·`full_if` 줄을 더한다. 테스트 관문은 developer 태스크가 바꾼 경로가 `full_if` 에 맞으면 quick 대신 full 을 돈다.
+**Architecture:** herdr-orch 는 `worker-start --env KEY=VALUE`(되풀이)를 받아 스키마 v4 의 `dispatches.env` 에 JSON 으로 기록하고, `launch-guard` 가 가드 등록 뒤 `os.execvp` 바로 앞에서 `os.environ` 에 더한다(`hc run` 터미널은 부른 셸 환경을 물려받지 않는다). herdr-team 은 새 모듈 둘을 더한다. `workspace.py` 는 작업 공간이다: `state/slots.json`(슬롯 `free`·`preparing`·`busy`·`dirty`)과 슬롯 잠금(`state/slots/slot-<N>.lock`), 슬롯 폴더 `.herdr-team/state/slots/slot-<N>`(저장소 전체의 worktree), 태스크 브랜치 `herdr/T-xxx`, 작업 루트의 표시 파일 `.herdr-team/state/slot.json`(`{main_root, slot, task}`)이다. `start` 는 프로젝트 잠금 안에서 슬롯을 예약만 하고(예약이 owns 잠금을 쥔다) 대기 사유 `slot_setup` 으로 돌아오며, 관제가 자식 `hteam slot prepare T` 로 폴더·브랜치·표시 파일·setup 을 하고(슬롯 잠금을 쥔 채), 다음 `start` 가 슬롯을 `busy` 로 바꾸고 horch 를 `--cwd <작업 루트> --env <슬롯 env>` 로 부른다. 리뷰의 git 조회·관문 테스트·리뷰 커밋·변조 기준점·리뷰어는 작업 루트에서 돈다. accept 는 관제가 메인 폴더에서 `git merge --no-ff` 로 병합한 뒤 `done` 이고(거부면 다시 시도, 10분 넘으면 `workspace_failed`(`merge_blocked`)), 충돌이면 되돌리고 `changes`·`base_merge`·base 이동·decide `merge_conflict` 다. 기준 병합 라운드는 사양에 병합 지시를 넣고 리뷰 시작이 그 병합 커밋을 보면 `base_merge` 를 지운다. 놓기(teardown → 작업 트리 검사 → `git switch --detach` → 브랜치 지우기 → `free`, 끝나지 않은 병합·버린 태스크의 변경이 있으면 `dirty`)와 마무리 full(빈 슬롯에서)도 슬롯 잠금을 쥔 자식이다. `hteam` 과 훅은 슬롯 안에서 불려도 표시 파일로 상태 루트(메인)와 작업 루트(슬롯)를 나눈다. `redmine.py` 는 Redmine 이다: 관제가 사건마다 `state/redmine/queue/<순번>.json` 을 쓰고, 자식 `hteam redmine-sync` 만 키를 읽어 순번 순으로 `PUT /issues/<N>.json` 을 보낸다(2xx 지움, 4xx `failed/`, 연결 실패·5xx 는 1·2·5·10분 뒤 다시, 24시간이면 `failed/`). 리뷰 프롬프트는 우선순위 줄·`## 프로젝트 점검표`·이슈 줄을, 라운드 절 2 는 재검증 범위를, 워커 사양은 우선순위 줄·작업 공간 절·이슈 줄·`full_if` 줄을 더한다. 테스트 관문은 developer 태스크가 바꾼 경로가 `full_if` 에 맞으면 quick 대신 full 을 돈다.
 
 **Tech Stack:** Python 3.11+ 표준 라이브러리(sqlite3, tomllib, json, fcntl, signal, subprocess, re, urllib.request, http.server(시험), threading(시험), unittest, unittest.mock), git 2.23 이상(`git worktree`·`git switch`·`git merge`), herdr-core `hc`(시험은 가짜), Claude Code·Codex CLI(실환경 Task 10 만).
 
@@ -24,12 +24,12 @@
 - 모든 명령은 stdout 에 JSON 한 개를 쓴다: 성공 `{"ok": true, ...}`, 실패 `{"ok": false, "error": {"code", "message", "hint"}, ...}`(오류의 `data` 는 최상위에 합친다). `hteam drive` 는 지금처럼 끝날 때만 JSON 한 줄이다. 오류는 `error.code` 로 가른다.
 - exit 코드는 horch 와 같다: 0 성공, 1 실패·확인 불가, 2 입력 오류, 3 상태 충돌, 4 대기 시간 초과, 5 권한 없음, 12 의존 프로그램 없음. `--root` 는 하위 명령 앞에 둔다.
 - 권한 확인(실수 방지용, 설계 8.3): 관제 판별은 6단계 그대로다. 새 명령 `slot prepare`·`slot release`·`redmine-sync` 는 관제만 한다(관제 밖에서 부르면 exit 5 `drive_only`). `slot reset` 은 큐 명령이다(관제에서 부르면 바로, 메인에서 부르면 요청 큐로, 설계 7.1·5.10.8).
-- 상태 쓰기와 잠금 순서: **슬롯 잠금(`state/slots/slot-<N>.lock`) → 프로젝트(`state/lock`) → git 잠금(`state/git.lock`) → finish(`state/tasks/T-xxx.finish.lock`) → 태스크(`state/tasks/T-xxx.lock`)**. 슬롯 잠금은 준비·놓기·마무리 full 자식이 그 슬롯을 쓰는 동안 쥔다. 프로젝트 잠금을 쥔 쪽(관제, `start`)은 슬롯 잠금을 비차단으로만 시도한다(못 쥐면 자식이 산 것으로 보고 기다린다, 설계 5.10.3). `state/slots.json` 은 프로젝트 잠금 안에서 엄격하게 읽고(읽지 못하면 덮어쓰지 않고 exit 1 `bad_slots_file`) 임시 파일 + `os.replace` 로 쓴다. git 잠금은 병합(Task 5)만 쓴다. Redmine 큐 순번은 `state/redmine/queue.lock` 안에서 정한다(그 안에서 다른 잠금을 잡지 않는다). `state/crew.json`·요청 큐·run.json 잠금은 6단계 그대로다. 관제 안에서 부르는 `fix`·`accept`·`drop`·`review-finish` 의 `nowait`(설계 8.5)도 그대로다.
+- 상태 쓰기와 잠금 순서: **슬롯 잠금(`state/slots/slot-<N>.lock`) → 프로젝트(`state/lock`) → git 잠금(`state/git.lock`) → finish(`state/tasks/T-xxx.finish.lock`) → 태스크(`state/tasks/T-xxx.lock`)**. 슬롯 잠금은 준비·놓기·마무리 full 자식이 그 슬롯을 쓰는 동안 쥔다. 프로젝트 잠금을 쥔 쪽(관제, `start`)은 슬롯 잠금을 비차단으로만 시도한다(못 쥐면 자식이 산 것으로 보고 기다린다, 설계 5.10.3). `state/slots.json` 은 프로젝트 잠금 안에서 엄격하게 읽고(읽지 못하면 덮어쓰지 않고 exit 1 `bad_slots_file`) 임시 파일 + `os.replace` 로 쓴다. git 잠금은 병합(Task 5)만 쓴다. Redmine 큐 순번은 `state/redmine/queue.lock` 안에서 정한다(그 안에서 다른 잠금을 잡지 않는다). 전송 자식 `hteam redmine-sync` 는 실행 내내 `state/redmine/sync.lock` 을 비차단으로 쥔다(못 쥐면 보내지 않고 끝난다, Task 8). 차례는 `sync.lock` → `queue.lock` 만 된다(sync.lock 을 쥔 채 queue.lock 을 잠깐 쥘 수 있고, 반대 차례는 없다. sync.lock 을 쥔 채 슬롯·프로젝트·태스크 잠금을 잡지 않는다). `state/crew.json`·요청 큐·run.json 잠금은 6단계 그대로다. 관제 안에서 부르는 `fix`·`accept`·`drop`·`review-finish` 의 `nowait`(설계 8.5)도 그대로다.
 - 손상된 기록을 없는 것으로 보지 않는다(6단계 그대로): 확정 기록·답 파일·상태 파일·`slots.json`·슬롯 표시 파일은 엄격 읽기(표시 파일이 깨졌거나 `main_root` 의 git common dir 이 다르면 표시 파일을 무시한다, 설계 5.10.2). Redmine 큐 항목이 깨졌으면 `failed/` 로 옮기고 다음으로 간다(Task 8).
 - 사용자·워커 글은 `--옵션=값` 한 인자로 넘긴다(`--body=`·`--note=`·`--env=`). 경로는 손실 없이 다룬다. 커밋은 늘 경로 지정(`git add -- <경로>` + `git commit -m … -- <경로>`). 예외는 설계 5.10.6 의 기준 병합 커밋 하나(워커가 한다. hteam 은 하지 않는다)와 관제의 `git merge --no-ff`(병합 커밋)다.
 - `hc run` 은 늘 `--no-notify` 를 붙인다(지금 그대로).
 - 시각: 태스크 상태·outbox·요청 파일·`slots.json` 의 `since`·Redmine 큐의 `at` 은 UTC `%Y-%m-%dT%H:%M:%SZ`(`util.now`). drive.log·로그 파일 이름 시각은 지금 규칙 그대로(`util.local_now`, `%Y%m%d-%H%M%S`).
-- 설계의 7단계 값(그대로 쓴다): `[workspace]` 기본 `mode = "shared"`·`roles = ["developer", "tester"]`·`slots = 2`(1–9)·`setup_timeout_min = 20`(1–120), env 이름 `^[A-Z][A-Z0-9_]*$` 이고 `HTEAM_`·`HC_`·`HORCH_` 로 시작하지 않고 `KEY`·`SECRET`·`TOKEN` 을 담지 않는다, env 값은 줄바꿈 없는 1 KiB 이하, horch `--env` 32개·KEY `^[A-Za-z_][A-Za-z0-9_]*$`(`HC_`·`HORCH_` 아님)·VALUE 1 KiB(줄바꿈·NUL 없음), 병합 거부 상한 `MERGE_BLOCKED_S = 600`, Redmine 재시도 간격 `RETRY_S = (60, 120, 300, 600)`(그 뒤는 600)·포기 `GIVE_UP_S = 86400`·요청 제한 10초·doctor 5초, `review-extra.md` 6000자, P1 줄 최대 5개·줄마다 200자, done 요약 300자, decide kind 둘(`merge_conflict`·`workspace_failed`, `detail.kind` 는 `setup_failed`·`slot_dirty`·`branch_exists`·`base_moved`·`merge_blocked`), 문구 원문(설계 4.2·5.1·5.2·5.5·5.7·5.10.5·5.10.6·6.2·7.7·8.11·8.12 의 따옴표 안 문장).
+- 설계의 7단계 값(그대로 쓴다): `[workspace]` 기본 `mode = "shared"`·`roles = ["developer", "tester"]`·`slots = 2`(1–9)·`setup_timeout_min = 20`(1–120), env 이름 `^[A-Z][A-Z0-9_]*$` 이고 `HTEAM_`·`HC_`·`HORCH_` 로 시작하지 않고 `KEY`·`SECRET`·`TOKEN` 을 담지 않는다, env 값은 줄바꿈 없는 1 KiB 이하(계획이 더한 것: NUL 없음, 항목 31개 이하. `HTEAM_SLOT` 을 더해 horch `--env` 32개 안이다, Task 2), horch `--env` 32개·KEY `^[A-Za-z_][A-Za-z0-9_]*$`(`HC_`·`HORCH_` 아님)·VALUE 1 KiB(줄바꿈·NUL 없음), 병합 거부 상한 `MERGE_BLOCKED_S = 600`, Redmine 재시도 간격 `RETRY_S = (60, 120, 300, 600)`(그 뒤는 600)·포기 `GIVE_UP_S = 86400`·요청 제한 10초·doctor 5초, `review-extra.md` 6000자, P1 줄 최대 5개·줄마다 200자, done 요약 300자, decide kind 둘(`merge_conflict`·`workspace_failed`, `detail.kind` 는 `setup_failed`·`slot_dirty`·`branch_exists`·`base_moved`·`merge_blocked`), 문구 원문(설계 4.2·5.1·5.2·5.5·5.7·5.10.5·5.10.6·6.2·7.7·8.11·8.12 의 따옴표 안 문장).
 - 시험용 환경 변수: 6단계 것 그대로. 새로 더하지 않는다: 10분·24시간·재시도 간격은 시험이 상태 파일·큐 항목의 시각을 옛 시각으로 쓴다. 죽음 재현은 지금처럼 `HTEAM_TEST_DIE_AT`(지점 이름은 태스크가 정한다).
 - 문서·메시지·주석은 한국어. 명령·코드 식별자는 원문. 템플릿에 물결표 범위(`\d~\d`)를 쓰지 않는다.
 - 저장소는 공개될 수 있다. 커밋 전에 `git grep -n -I -P '/[U]sers/|/private/[t]mp|~[/]Workspace' -- . ':!.codex-reviews'` 가 아무것도 찾지 않아야 한다. 템플릿·스킬은 `tests/test_setup.py` 의 `test_no_personal_paths_or_trust_all` 이 `/[h]ome/` 까지 본다.
@@ -58,7 +58,8 @@ herdr-orch/
     test_store.py·test_meta.py(Task 1)
 herdr-team/
   lib/hteam/
-    config.py      Workspace·Redmine, [workspace]·[redmine] 검사, worktree 모드의 crew·승인 직무 검사(Task 2)
+    config.py      Workspace·Redmine, [workspace]·[redmine] 검사, worktree 모드의 crew·승인 직무 검사, 검사 없이 읽는
+                   TestSettings·test_settings·redmine_key_env(Task 2)
     specs.py       Spec.issue, issue 검사(Task 2)
     plan.py        tasks.toml issue·plan apply 복사, 묶음 규칙 1 의 tester_paths(Task 2)
     testgate.py    tester_paths·full_if 형식(Task 2), child_env(Task 3), 작업 루트·슬롯 env 실행(Task 4), full_if 관문·
@@ -67,17 +68,17 @@ herdr-team/
                    env 인자(Task 4), 병합·놓기·reset·재확인 도우미(Task 5)
     paths.py       Project(work_root)·find_project 의 표시 파일·슬롯 경로(Task 3), redmine 경로(Task 8), VERSION 0.5.0(Task 9)
     gitio.py       worktree·switch·branch·symbolic-ref·common dir(Task 3), merge·abort·reset·clean·MERGE_HEAD(Task 5)
-    tasks.py       시작의 슬롯 예약·대기 사유 slot·slot_setup·잠금 검사의 예약(Task 4), accept 병합·drop 놓기(Task 5)
+    tasks.py       시작의 슬롯 예약·대기 사유 slot·slot_setup·잠금 검사의 예약·fix 의 슬롯 확인(Task 4), accept 병합·drop 놓기(Task 5)
     crew.py        place 의 0(Task 4)
     dispatch.py    launch 의 cwd·env(Task 4)
     review.py      작업 루트의 git·관문·리뷰 커밋·변조 기준점·리뷰어 cwd·env(Task 4), base_merge 지우기(Task 5),
                    점검표·우선순위·이슈 줄(Task 7)
     compose.py     작업 공간 절(Task 4), 기준 병합 줄(Task 5), full_if 줄(Task 6), 우선순위·이슈 줄(Task 7)
-    drive.py       준비 자식·workspace_failed(Task 4), 병합·충돌·놓기·재확인·마무리 슬롯·merge_conflict(Task 5),
+    drive.py       준비 자식·workspace_failed·decide files 의 슬롯 경로(Task 4), 병합·충돌·놓기·재확인·마무리 슬롯·merge_conflict(Task 5),
                    Redmine 사건·전송 자식(Task 8)
     queue.py       slot reset(Task 5)
     coord.py       status 의 workspace(Task 5)·redmine(Task 8)
-    approval.py    일괄 승인 줄의 #N(Task 8)
+    approval.py    일괄 승인 줄의 #N, 결정의 accept 뒤 Redmine 닫기(Task 8)
     redmine.py     새로: 큐·전송·키·가리기·요약(Task 8)
     setup.py       doctor 의 Redmine(Task 8)·worktree(Task 9)
     cli.py         COMMAND_MODULES 의 workspace(Task 3)·redmine(Task 8)
@@ -120,7 +121,7 @@ docs/superpowers/specs/2026-11-05-herdr-team-design.md   머리 상태 줄과 15
 - 작업 루트의 `.herdr-team/state/slot.json`(표시 파일, Task 3): `{"main_root": "<메인 프로젝트 루트>", "slot": N, "task": "T-xxx"}`.
 - 태스크 상태(Task 4·5): `workspace: {"slot", "branch", "base_branch", "root", "merge"}`(`root` 는 작업 루트 절대 경로, `merge` 는 병합 커밋 sha 또는 null), `base_merge`(풀어야 할 기준 커밋 sha, 기준 병합 라운드 동안만), `merge_wait: {since, asked: [kind]}`(첫 병합 거부 시각과 이미 올린 `workspace_failed` kind, Task 5), 라운드 기록의 `merge_conflict: {base, files}`·`base_merge`·`merge_resume`(Task 5).
 - 테스트 기록(Task 6): developer 태스크의 `full_if` full 은 `state/tests/T-xxx.json` 의 `full` 키(tester full 과 같은 꼴)에 `reason: "full_if"`, `matched: [<경로>]` 를 더한다.
-- `state/redmine/`(Task 8): `queue/<NNNNNN>.json`(`{seq, issue, task, event, status_id, notes, at}` + 재시도 `tries`·`next_at`·`last_error`), `failed/<NNNNNN>.json`(같은 꼴 + `error`), `queue.lock`, `seq`.
+- `state/redmine/`(Task 8): `queue/<NNNNNN>.json`(`{seq, issue, task, event, status_id, notes, at}` + 재시도 `tries`·`next_at`·`last_error`), `failed/<NNNNNN>.json`(같은 꼴 + `error`), `queue.lock`, `sync.lock`(전송자 하나), `seq`.
 - outbox(Task 4·5): decide `workspace_failed`(`detail: {kind, slot, …}`, `tail`)·`merge_conflict`(`detail: {base, files}`).
 - `hteam status`(Task 5·8): 켜졌을 때만 `workspace: {mode, slots: [{n, state, task, branch}]}`, `redmine: {enabled, pending, failed, last_error}`.
 
@@ -133,12 +134,13 @@ docs/superpowers/specs/2026-11-05-herdr-team-design.md   머리 상태 줄과 15
 - `testgate.GateConfig.tester_paths: tuple[str, ...] | None`, `GateConfig.full_if: tuple[str, ...]`(Task 2, 없으면 None·빈 튜플). `digest` 에 들지 않는다.
 - `paths.Project(root, work_root=None)`(Task 3): `root` 는 상태 루트(메인 프로젝트), `work_root` 는 작업 루트(기본 root). 새 경로 `slots_file`(`state/slots.json`), `slots_dir`(`state/slots`), `slot_logs`(`state/slots/logs`), `git_lock`(`state/git.lock`). `find_project` 는 찾은 폴더의 표시 파일이 맞으면 `Project(main_root, work_root=<찾은 폴더>)`.
 - `workspace.py`(Task 3): `MARKER_REL = ".herdr-team/state/slot.json"`, `branch_of(tid) -> str`(`herdr/T-xxx`), `load(p) -> dict`(엄격, `bad_slots_file`), `entry(data, n) -> dict`(빈 번호는 free 기본값), `save(p, data)`(프로젝트 잠금 안), `held_by(data, tid) -> int | None`, `folder(p, n) -> Path`, `work_root(p, n) -> Path`(폴더 + `gitio.top_prefix`), `task_root(p, st) -> Path`(`st["workspace"]["root"]`, 없으면 `p.root`), `slot_env(cfg, n) -> dict[str, str]`(`[workspace.env]` 의 `{slot}` 을 채운 값 + `HTEAM_SLOT`), `task_env(p, cfg, st) -> dict[str, str]`(작업 공간 태스크면 그 슬롯의 `slot_env`, worktree 모드의 메인 폴더 태스크면 `slot_env(cfg, 0)`, shared 면 빈 dict), `slot_lock(p, n, *, nowait=False)`(컨텍스트 관리자. nowait 에 못 쥐면 exit 3 `slot_locked`), `slot_busy(p, n) -> bool`(비차단 시도로 자식이 쥐었는지), `marker(root) -> dict | None`, `run_hook(p, cfg, n, kind, tid) -> dict`(`kind` 는 `"setup"`·`"teardown"`, 결과 `{status: "passed"|"failed"|"timeout"|"unrunnable", exit, seconds, log, tail}`), `prepare(p, cfg, tid) -> dict`(`hteam slot prepare` 의 몸통). CLI `hteam slot prepare T`(관제만).
-- `testgate.child_env(cfg, extra=None) -> dict[str, str]`(Task 3): 지금 `_env()` 의 뺄 변수(`DROP_ENV`)를 뺀 환경에 extra 를 더한다. 테스트 명령과 setup·teardown 이 같이 쓴다. Task 6 이 `cfg.redmine.key_env` 도 뺀다.
+- `testgate.child_env(cfg, extra=None) -> dict[str, str]`(Task 3): 지금 `_env()` 의 뺄 변수(`DROP_ENV`)를 뺀 환경에 extra 를 더한다. 테스트 명령과 setup·teardown 이 같이 쓴다. Task 6 이 `cfg.redmine.key_env` 도 뺀다. `cfg` 는 `config.Config`·`config.TestSettings`(Task 2, `hteam test` 가 검사 없이 읽은 설정) 또는 None.
+- `config.TestSettings`·`config.test_settings(p)`·`config.redmine_key_env(p)`(Task 2): `hteam test` 가 `config.load` 없이 쓰는 `workspace`·`redmine.key_env`(설정이 깨져도 `hteam test` 가 돈다, 설계 4.2). `workspace.slot_env`·`task_env`·`run_hook`·`claim_final`·`testgate.child_env` 의 `cfg` 는 `Config` 또는 이것이다.
 - `dispatch.launch(…, cwd: Path | None = None, env: dict[str, str] | None = None)`(Task 4): `--cwd` 는 cwd(없으면 `p.root`), env 가 있으면 이름 순서로 `--env=KEY=VALUE`. 리뷰어도 같은 인자.
 - 대기 사유(Task 4): `start` 의 waiting `reason` 과 `start-ready` 의 `waiting[].reason` 에 `slot`(빈 슬롯 없음)·`slot_setup`(준비 중). 그 HteamError code 는 `no_free_slot`·`slot_preparing`(exit 3).
 - 관제 자식 키(Task 4·5·8, 설계 8.8): 슬롯 준비·놓기는 `slot:<N>`, worktree 마무리 full 은 지금 `final`, Redmine 전송은 `redmine`.
 - `drive.DECIDE_KINDS` 에 Task 4 가 `workspace_failed`, Task 5 가 `merge_conflict` 를 더한다.
-- `redmine.py`(Task 8): `enqueue(p, cfg, st_or_tid, event, *, notes, issue=None)`, `sync(p, cfg) -> dict`, `read_key(p, cfg) -> str | None`, `mask(text, key) -> str`, `summary(p, cfg) -> dict`. 사건 이름 `start`·`done`·`changes`·`approve`·`merged`·`closed`·`drop`.
+- `redmine.py`(Task 8): `enqueue(p, cfg, st_or_tid, event, *, notes, issue=None)`, `sync(p, cfg) -> dict`(`sync.lock` 을 쥔 전송자 하나만 보낸다), `read_key(p, cfg) -> str | None`, `mask(text, key) -> str`, `summary(p, cfg) -> dict`. 사건 이름 `start`·`done`·`changes`·`approve`·`merged`·`closed`·`drop`.
 
 ### 공유 시험 도구(Task 3 이 helpers.py 에 넣는다)
 
@@ -157,7 +159,7 @@ docs/superpowers/specs/2026-11-05-herdr-team-design.md   머리 상태 줄과 15
 
 - 브리프의 열 태스크를 그대로 두고 두 군데를 옮겼다. (1) `HORCH_MIN = "0.3.0"` 을 Task 9 에서 Task 1 로 옮겼다. herdr-team 의 `test_versions_match` 가 `HORCH_MIN` 이 함께 배포하는 herdr-orch 버전과 같기를 요구해, herdr-orch 를 0.3.0 으로 올리는 커밋에서 함께 바꿔야 그 사이 시험이 통과한다(6단계와 같은 까닭). (2) 브리프 Task 6 의 "작업 루트 cwd·슬롯 env·`HTEAM_SLOT`" 을 Task 4 로 옮겼다. 작업 공간 태스크의 리뷰 관문은 태스크 브랜치의 커밋을 슬롯에서 세고 돌려야 하므로(설계 5.10.4), 그것 없이는 Task 4 의 리뷰 흐름 시험(슬롯의 작업 커밋 → 관문 → 리뷰어)이 `no_work_commit` 로 끝난다. Task 6 은 `full_if`·key_env·developer 테스트 절 줄만 맡는다. 리뷰 프롬프트의 작업 공간 줄(5.10.4·5.10.5 의 첫째·셋째 줄)도 Task 4 에 둔다(Task 7 은 작업 공간과 상관없는 문구).
 - S2(설계 15.2)는 Task 1 커밋 바로 뒤에 컨트롤러가 한다. 절차는 Task 10 Step 2 이고, 결과가 "Codex 셸이 값을 보지 못한다" 면 Task 1 에 덧붙임 커밋(`shell_environment_policy.set` 인자)을, 그래도 빠지는 정책이면 Task 9 의 doctor 경고를 더한다.
-- 2 는 herdr-orch 와 무관하다. 3 은 2 의 `Config.workspace` 를 쓴다. 4 는 1 의 `--env`, 2 의 `covers`·worktree 모드 crew 검사, 3 의 `workspace.py`·표시 파일·`slot prepare` 를 쓴다. 5 는 4 의 시작·작업 루트·상태 `workspace` 를 쓴다. 6 은 2 의 `GateConfig.full_if`·`Config.redmine`, 3 의 `child_env`, 4 의 작업 루트 관문 위에 얹힌다. 7 은 2 의 `Spec.issue`·`Config.redmine` 을 쓴다. 8 은 2 의 `[redmine]`·`issue`, 5 의 병합 성공 지점, 6 의 key_env 빼기, 7 의 이슈 줄을 쓴다. 9 는 1–8 의 이름(decide kind, 큐 명령 `slot reset`, status 필드)을 문서에 적는다. 10 은 1–9 를 모두 쓴다.
+- 2 는 herdr-orch 와 무관하다. 3 은 2 의 `Config.workspace` 를 쓴다. 4 는 1 의 `--env`, 2 의 `covers`·worktree 모드 crew 검사·`test_settings`, 3 의 `workspace.py`·표시 파일·`slot prepare` 를 쓴다. 5 는 4 의 시작·작업 루트·상태 `workspace` 를 쓴다. 6 은 2 의 `GateConfig.full_if`·`Config.redmine`·`test_settings`, 3 의 `child_env`, 4 의 작업 루트 관문 위에 얹힌다. 7 은 2 의 `Spec.issue`·`Config.redmine` 을 쓴다. 8 은 2 의 `[redmine]`·`issue`, 5 의 병합 성공 지점, 6 의 key_env 빼기, 7 의 이슈 줄을 쓴다. 9 는 1–8 의 이름(decide kind, 큐 명령 `slot reset`, status 필드)을 문서에 적는다. 10 은 1–9 를 모두 쓴다.
 - 각 태스크의 "찾을 내용"은 앞 태스크를 모두 적용한 뒤의 파일이다. 계획의 시험·도구·템플릿 블록은 de385e7 을 새로 복사한 작업 트리에 Task 1–9 를 차례로 적용해 모두 정확히 한 번씩 맞는 것을 확인했다(자체 검토, 보고서 참고). 각 태스크 Step 2 의 Expected 는 de385e7 에 그 태스크의 Step 1 블록만 적용한 트리(구현 코드 없음)에서 쟀다. Task 4 부터는 Task 3 의 공유 시험 도구 편집 셋을, Task 5 는 Task 4 의 `ws_start`·`DECIDE_KINDS` 기대값 편집도 먼저 적용했다(각 Step 2 에 적었다). 앞 태스크를 건너뛰고 쟀으므로 숫자는 순서대로 적용한 트리와 다를 수 있다. 앞 태스크의 구현이 있으면 실패 수와 대표 메시지가 달라진다(대개 앞 태스크 기능이 없어 생긴 오류(`bad_config`, `unknown command`, `ImportError`)가 그 태스크 기능의 실패로 바뀐다).
 
 ---
@@ -220,10 +222,14 @@ WATCH = "HT_PORT,HTEAM_SLOT,HT_URL,HT_EMPTY"  # 가짜 에이전트가 보고할
 
 
 class EnvCase(HorchCase):
-    """소유자 t100(spA·tbA). 소유자는 working 이라 깨우기 글을 받지 않는다(test_persist 와 같다)."""
+    """소유자 t100(spA·tbA). 소유자는 working 이라 깨우기 글을 받지 않는다(test_persist 와 같다).
+    시험이 보는 이름(WATCH 와 HT_DB)은 바깥 환경에서 지운다: 슬롯 터미널처럼 그 이름이 이미 있는 환경에서 돌려도 결과가 같다
+    (HorchCase 는 바깥 환경을 물려받는다)."""
 
     def setUp(self):
         super().setUp()
+        for name in (*WATCH.split(","), "HT_DB"):
+            self.env.pop(name, None)
         self.run_id = self.make_owner("t100", "spA", "tbA")
         self.update_terminal("t100", status="working")
 
@@ -665,13 +671,13 @@ Expected: ast 오류 없음, grep 빈 출력, 커밋 하나. 구현자는 여기
 설계 4.1·4.2 의 7단계 설정(`[workspace]`, `[redmine]`), 5.1·5.2 의 `issue`, 5.2 묶음 규칙 1 의 7단계 문장, 5.7 의 `tester_paths`·`full_if` 형식을 만든다. 이 태스크는 값을 읽고 검사해 다른 태스크가 쓸 모양(`config.Workspace`·`config.Redmine`·`Config.workspace`·`Config.redmine`, `Spec.issue`, `GateConfig.tester_paths`·`full_if`)만 만든다. 그 값으로 슬롯을 돌리거나(Task 3–5) `full_if` 로 full 을 돌리거나(Task 6) 이슈 줄을 보이거나(Task 7) Redmine 을 바꾸는(Task 8) 일은 하지 않는다. 표가 없으면 `Config.workspace` 는 shared 기본값, `Config.redmine` 은 None 이고 나머지 출력은 0.4.0 그대로다. 묶음 규칙 1 은 `tester_paths` 가 있을 때만 바뀐다. `tester_paths`·`full_if` 는 돌릴 명령을 바꾸지 않으므로 확정 식별값(`testgate.digest`)에 넣지 않는다(이미 한 확정이 그대로 맞는다). 템플릿 `config.toml` 에는 두 표를 주석 예시로만 둔다(init 이 묻는다, 설계 9.1 의 4a 는 Task 9).
 
 **Files:**
-- Modify: `herdr-team/lib/hteam/config.py`(`Workspace`·`Redmine`, `[workspace]`·`[redmine]` 검사, worktree 모드의 crew·승인 직무 검사, `Config.workspace`·`Config.redmine`), `herdr-team/lib/hteam/specs.py`(`ISSUE_RE`·`issue_value`, `Spec.issue`, issue 검사), `herdr-team/lib/hteam/plan.py`(tasks.toml `issue` 형식·사양 front matter 복사, 묶음 규칙 1 의 `tester_paths`), `herdr-team/lib/hteam/testgate.py`(`KEYS`, `GateConfig.tester_paths`·`full_if`, 형식 문구, `confirm_section`), `herdr-team/templates/config.toml`(주석 예시)
+- Modify: `herdr-team/lib/hteam/config.py`(`Workspace`·`Redmine`, `[workspace]`·`[redmine]` 검사, worktree 모드의 crew·승인 직무 검사, `Config.workspace`·`Config.redmine`, 검사 없이 읽는 `TestSettings`·`test_settings`·`redmine_key_env`), `herdr-team/lib/hteam/specs.py`(`ISSUE_RE`·`issue_value`, `Spec.issue`, issue 검사), `herdr-team/lib/hteam/plan.py`(tasks.toml `issue` 형식·사양 front matter 복사, 묶음 규칙 1 의 `tester_paths`), `herdr-team/lib/hteam/testgate.py`(`KEYS`, `GateConfig.tester_paths`·`full_if`, 형식 문구, `confirm_section`), `herdr-team/templates/config.toml`(주석 예시)
 - Test: `herdr-team/tests/test_config.py`·`herdr-team/tests/test_state_specs.py`·`herdr-team/tests/test_plan.py`·`herdr-team/tests/test_testgate.py`(새 클래스 덧붙이기)
 
 **Interfaces:**
 - Consumes: `config.validate`·`build`·`load`·`_table`·`_str_list`·`_pos_int`·`_nonempty`, `globs.owns_problem`, `specs.parse`·`problems`·`render`, `plan._fields`·`validate`·`group_problems`·`_spec_text`·`_roundtrip`·`digest`, `testgate.config_problems`·`parse_config`·`normalized`·`digest`·`confirm_section`.
 - Produces:
-  - `config.py` 상수: `WORKSPACE_MODES = ("shared", "worktree")`, `WORKSPACE_ROLES = ("developer", "tester")`(기본 roles), `WORKSPACE_KEYS = ("mode", "roles", "slots", "setup", "teardown", "setup_timeout_min", "env")`, `ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")`, `ENV_NAME_PREFIXES = ("HTEAM_", "HC_", "HORCH_")`, `ENV_NAME_WORDS = ("KEY", "SECRET", "TOKEN")`, `ENV_VALUE_MAX = 1024`(UTF-8 바이트), `REDMINE_KEYS = ("url", "key_env", "env_file", "status")`, `REDMINE_STATUS = ("start", "done", "changes", "closed")`, `ENV_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")`(`key_env`).
+  - `config.py` 상수: `WORKSPACE_MODES = ("shared", "worktree")`, `WORKSPACE_ROLES = ("developer", "tester")`(기본 roles), `WORKSPACE_KEYS = ("mode", "roles", "slots", "setup", "teardown", "setup_timeout_min", "env")`, `ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")`, `ENV_NAME_PREFIXES = ("HTEAM_", "HC_", "HORCH_")`, `ENV_NAME_WORDS = ("KEY", "SECRET", "TOKEN")`, `ENV_VALUE_MAX = 1024`(UTF-8 바이트), `WORKSPACE_ENV_MAX = 31`(워커에는 `HTEAM_SLOT` 을 더해 horch `--env` 로 넘기므로 Task 1 의 `ENV_MAX = 32` 보다 하나 적다, Codex 계획 리뷰 r1), `REDMINE_KEYS = ("url", "key_env", "env_file", "status")`, `REDMINE_STATUS = ("start", "done", "changes", "closed")`, `ENV_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")`(`key_env`).
   - `config.Workspace`(frozen dataclass, 모든 필드 기본값): `mode: str = "shared"`, `roles: tuple[str, ...] = WORKSPACE_ROLES`, `slots: int = 2`, `setup: str | None = None`, `teardown: str | None = None`, `setup_timeout_min: int = 20`, `env: dict[str, str] = field(default_factory=dict)`(값의 `{slot}` 은 그대로). 속성 `on -> bool`(`mode == "worktree"`), 메서드 `covers(role: str) -> bool`(`on and role in roles`).
   - `config.Redmine`(frozen dataclass): `url: str`(끝의 `/` 를 모두 뗀 값), `key_env: str`, `env_file: str | None`, `status: dict[str, int]`(`start`·`done`·`changes`·`closed`).
   - `Config` 에 필드 `workspace: Workspace = field(default_factory=Workspace)`, `redmine: Redmine | None = None` 를 맨 뒤에 더한다. `build` 가 채운다: `[workspace]` 가 없으면 `Workspace()`, 있으면 그 값(키가 없으면 기본값. `roles` 가 없으면 `WORKSPACE_ROLES` 가운데 `[roles]` 에 정의된 것만 설정 순서가 아니라 `WORKSPACE_ROLES` 순서로). `[redmine]` 이 없으면 None.
@@ -682,10 +688,16 @@ Expected: ast 오류 없음, grep 빈 출력, 커밋 하나. 구현자는 여기
     - `workspace.roles 에 정의되지 않은 직무가 있다: <목록>`(목록은 쓴 순서, `, ` 로 잇는다)
     - `workspace.slots 는 1–9 정수다`, `workspace.setup 은 비지 않은 문자열이다`, `workspace.teardown 은 비지 않은 문자열이다`, `workspace.setup_timeout_min 은 1–120 정수다`(정수는 bool 이 아니다)
     - `workspace.env.<이름>: 이름은 대문자·숫자·_ 이고 HTEAM_·HC_·HORCH_ 로 시작하지 않으며 KEY·SECRET·TOKEN 을 담지 않는다`
-    - `workspace.env.<이름>: 값은 줄바꿈 없는 1 KiB 이하 문자열이다`(문자열이 아님, `splitlines` 가 나누는 줄바꿈이 있음, UTF-8 1024 바이트 넘음. 빈 문자열은 된다)
+    - `workspace.env.<이름>: 값은 줄바꿈 없는 1 KiB 이하 문자열이다`(문자열이 아님, `splitlines` 가 나누는 줄바꿈이 있음, NUL(`\x00`)이 있음, UTF-8 1024 바이트 넘음. 빈 문자열은 된다. NUL 은 subprocess 환경과 horch `--env` 검사가 받지 않는다, Codex 계획 리뷰 r1)
+    - `workspace.env 는 31개 이하다(HTEAM_SLOT 을 더해 horch --env 32개 안이다)`(`[workspace.env]` 표의 항목이 `WORKSPACE_ENV_MAX` 보다 많을 때 한 줄. 항목마다의 검사는 그대로 한다)
     - `workspace: 모르는 키 <정렬한 키>`
     - worktree 모드에서만: `crew.<이름>: <직무> 는 작업 공간 직무다(worktree 모드에서는 임시 워커만 맡는다)`(그 고정 에이전트의 roles 가운데 작업 공간 직무마다, roles 순서), `user_approval_roles 의 <직무> 는 작업 공간 직무다(worktree 모드에서는 승인 직무로 두지 않는다)`(목록 순서)
     - `redmine.url 은 http·https URL 이다`, `redmine.key_env 는 환경 변수 이름이다`, `redmine.env_file 은 프로젝트 안 상대 경로다`, `redmine.status 는 start·done·changes·closed 네 양의 정수다`, `redmine: 모르는 키 <정렬한 키>`
+  - 테스트 실행 설정(Rules 11, Codex 계획 리뷰 r1. `hteam test` 는 설정이 깨져도 돈다):
+    - `config.RedmineKey`(frozen dataclass): `key_env: str`.
+    - `config.TestSettings`(frozen dataclass): `workspace: Workspace = field(default_factory=Workspace)`, `redmine: RedmineKey | None = None`. `Config` 와 같은 이름의 두 속성만 가진다. 테스트 명령·setup·teardown 의 환경과 위치를 정하는 함수(Task 3 의 `workspace.slot_env`·`task_env`·`run_hook`, Task 5 의 `claim_final`, `testgate.child_env`)는 `cfg.workspace` 와 `cfg.redmine.key_env` 만 쓰므로 `Config` 대신 이것을 받아도 된다.
+    - `config.redmine_key_env(p) -> str | None`: config.toml 을 `tomllib` 로 읽어 `redmine` 표의 `key_env` 가 `ENV_VAR_RE` 에 맞는 문자열이면 그 이름. 파일 없음·읽기 실패·TOML 오류·표 없음·형식 틀림이면 None. `validate` 를 부르지 않고 예외를 내지 않는다.
+    - `config.test_settings(p) -> TestSettings`: config.toml 을 검사 없이 한 번 읽는다(읽지 못하면 빈 표로 본다). `workspace` 는 `[workspace]` 표가 Rules 2 의 검사(그 표만. 다른 표와 Rules 3 은 보지 않는다)를 통과하면 `build` 와 같은 `Workspace`, 아니면(표 없음·표가 아님·그 표의 오류) `Workspace()`. `redmine` 은 `redmine_key_env(p)` 가 있으면 `RedmineKey(그 이름)`, 없으면 None. 예외를 내지 않는다.
   - `specs.ISSUE_RE = re.compile(r"#?([0-9]{1,9})")`, `specs.issue_value(value) -> str | None`: bool 이면 None, int 면 `str(value)` 로 본 뒤, 문자열이면 `ISSUE_RE.fullmatch(value.strip())` 의 숫자(앞 `#` 를 뗀 값, 앞자리 0 은 그대로), 아니면 None. 사양 front matter 와 tasks.toml 이 같이 쓴다.
   - `specs.Spec.issue: str | None = None`(`depends_on` 다음 필드). `parse` 가 `issue_value(front.get("issue"))` 로 채운다. `front["issue"]` 는 쓴 값 그대로다.
   - `specs.problems` 문구(원문): `issue 는 숫자 1–9자리 이슈 번호다(앞의 # 는 뗀다): <repr(쓴 값)>`(front matter 에 `issue` 가 있는데 `Spec.issue` 가 None). `start`·`specs.check` 는 지금처럼 exit 2 `bad_spec`.
@@ -699,7 +711,7 @@ Expected: ast 오류 없음, grep 빈 출력, 커밋 하나. 구현자는 여기
 **Rules:**
 
 1. 검사 차례(설계 4.2): `validate` 의 지금 검사(`_crew` 까지) 뒤에 `_workspace` → (worktree 모드면) 작업 공간 직무 검사 → `_redmine` 을 부른다. 모두 `errors` 에 모은다(앞 오류가 있어도 계속 본다). 문구 차례는 Interfaces 의 차례(같은 종류 안에서는 표의 키 순서)다. 시험은 차례가 아니라 들어 있는지와 개수를 본다.
-2. `[workspace]`(설계 4.1·4.2): 표가 아니면 그 한 줄로 끝낸다. `mode` 가 없으면 shared, 있으면 `WORKSPACE_MODES` 안이어야 한다. `roles` 가 있으면 비지 않은 직무 이름 목록이고 각 이름이 `[roles]` 에 있어야 한다. `slots`(1–9)·`setup_timeout_min`(1–120)은 bool 이 아닌 정수다. `setup`·`teardown` 은 있으면 비지 않은 문자열(`strip` 뒤)이다. `env` 가 있으면 표이고 항목마다 이름(`ENV_NAME_RE` 에 맞고 `ENV_NAME_PREFIXES` 로 시작하지 않고 `ENV_NAME_WORDS` 를 부분 문자열로도 담지 않는다)과 값(문자열, 한 줄, UTF-8 1024 바이트 이하)을 따로 본다. 한 항목에 둘 다 틀리면 두 줄이다. 모르는 키는 `WORKSPACE_KEYS` 밖이다. `mode = "shared"` 거나 `mode` 가 없어도 나머지 키는 같은 검사를 한다(검사만 하고 쓰지 않는다, 설계 4.1).
+2. `[workspace]`(설계 4.1·4.2): 표가 아니면 그 한 줄로 끝낸다. `mode` 가 없으면 shared, 있으면 `WORKSPACE_MODES` 안이어야 한다. `roles` 가 있으면 비지 않은 직무 이름 목록이고 각 이름이 `[roles]` 에 있어야 한다. `slots`(1–9)·`setup_timeout_min`(1–120)은 bool 이 아닌 정수다. `setup`·`teardown` 은 있으면 비지 않은 문자열(`strip` 뒤)이다. `env` 가 있으면 표이고 항목마다 이름(`ENV_NAME_RE` 에 맞고 `ENV_NAME_PREFIXES` 로 시작하지 않고 `ENV_NAME_WORDS` 를 부분 문자열로도 담지 않는다)과 값(문자열, 한 줄, NUL 없음, UTF-8 1024 바이트 이하)을 따로 본다. 한 항목에 둘 다 틀리면 두 줄이다. 항목이 `WORKSPACE_ENV_MAX`(31)보다 많으면 개수 문구 한 줄을 더한다(워커·리뷰어·테스트에는 `HTEAM_SLOT` 이 더해져 horch `--env` 상한 32 를 넘지 않게. 설정 검사를 통과한 뒤 setup 까지 마치고 워커를 띄울 때 usage 로 막히지 않는다). 모르는 키는 `WORKSPACE_KEYS` 밖이다. `mode = "shared"` 거나 `mode` 가 없어도 나머지 키는 같은 검사를 한다(검사만 하고 쓰지 않는다, 설계 4.1).
 3. 작업 공간 직무 검사(설계 4.2·5.10.6, Codex 설계 리뷰 r1): `mode == "worktree"` 일 때만, 작업 공간 직무(검사를 통과한 `roles` 또는 기본값을 정의된 직무로 거른 것)에 대해 `[crew.*]` 의 표마다 `roles` 가 문자열 목록이면 그 가운데 작업 공간 직무마다 `crew.<이름>: …` 한 줄, `user_approval_roles` 가 문자열 목록이면 그 가운데 작업 공간 직무마다 한 줄. shared 면 보지 않는다.
 4. 기본 roles: `roles` 키가 없으면 `WORKSPACE_ROLES` 가운데 `[roles]` 에 정의된 직무만이다(tester 직무가 없는 프로젝트는 `("developer",)`, 둘 다 없으면 빈 튜플이고 그러면 worktree 모드여도 슬롯에서 도는 직무가 없다. 설계에 없는 경우라 오류로 하지 않는다). `[workspace]` 표가 아예 없으면 `Workspace()`(roles 기본값 그대로. shared 라 쓰이지 않는다).
 5. `[redmine]`(설계 4.1·4.2·8.12): 표가 있으면 `url`·`key_env`·`status` 는 반드시 있고 `env_file` 은 선택이다. `url`: 문자열, 공백 문자가 없고, `urllib.parse.urlsplit` 의 scheme 이 `http`·`https`, netloc 이 비지 않았다. 없거나 틀리면 그 문구. `key_env`: `ENV_VAR_RE` 에 맞는 문자열. `env_file`: 비지 않은 한 줄 문자열이고, `~` 로 시작하지 않고, `PurePosixPath` 가 절대 경로가 아니고 `..` 마디가 없다. `status`: 키가 정확히 `REDMINE_STATUS` 넷인 표이고 값마다 `_pos_int`. 모르는 키는 `REDMINE_KEYS` 밖이다. `build` 의 `url` 은 `rstrip("/")`, 다른 값은 그대로, `status` 는 `{k: status[k] for k in REDMINE_STATUS}`.
@@ -708,6 +720,7 @@ Expected: ast 오류 없음, grep 빈 출력, 커밋 하나. 구현자는 여기
 8. 묶음 규칙 1(설계 5.2 의 7단계 문장): `validate` 는 `test` 가 표이고 형식 검사를 통과했을 때(그래서 묶음 규칙을 볼 때) `tester_paths = test.get("tester_paths")` 를 `group_problems(keys, fresh, tester_paths)` 에 넘긴다. QA 보고서 경로 `docs/qa/{key}.md` 는 바꾸지 않는다(묶음 후속이 읽는다, 설계 8.4). 규칙 2·3·4 는 그대로다.
 9. `[test]` 의 두 키(설계 5.7): `config_problems` 가 Interfaces 의 문구로 형식을 본다(다른 문제와 함께 모은다). `parse_config` 는 `tester_paths` 를 튜플(없으면 None)로, `full_if` 를 튜플(없으면 `()`)로 둔다. 두 키는 `normalized`·`digest` 에 넣지 않는다. `confirm_section` 에만 보인다. `hteam test`·리뷰 관문은 이 태스크에서 두 키를 쓰지 않는다(`full_if` 실행은 Task 6).
 10. 템플릿(설계 4.1 "템플릿에는 주석 예시만 둔다"): 주석 블록은 Step 1 의 원문 그대로다. 예시 env 이름은 프로젝트 이름이 없는 `APP_DB_PORT`·`APP_E2E_PORT_BASE` 다(설계의 `KCP_…` 는 요청 프로젝트의 이름이라 일반 이름으로 바꿨다). 템플릿의 고정 에이전트(production 의 developer, test 의 tester)는 그대로라, worktree 예시를 그대로 풀면 Rules 3 의 검사가 막는다. 주석이 그 직무를 crew·승인 직무에서 빼라고 적는다(init 이 제안한다, 설계 9.1 의 4a).
+11. 테스트 실행 설정(설계 4.2 "설정을 읽지 않는 명령(… 5단계의 `test` …)은 설정이 깨져도 동작한다", 5.7 의 7단계 작업 공간 줄과 key_env 줄, Codex 계획 리뷰 r1): `hteam test` 는 7단계에도 `config.load` 를 부르지 않는다. 그래도 작업 공간 태스크의 테스트는 슬롯 env 가, 마무리 full 은 슬롯이, 테스트 환경은 key_env 빼기가 필요하므로 그 값만 `test_settings(p)` 로 검사 없이 읽는다. 이 태스크는 함수만 만들고, 쓰는 곳은 Task 4(`record_task` 의 슬롯 env)·Task 5(`run_final` 의 슬롯)·Task 6(`execute` 의 key_env 빼기)이다. 관제·준비·놓기 자식처럼 `config.load` 로 이미 설정을 가진 곳은 그 `Config` 를 그대로 넘긴다. `[workspace]` 표가 깨졌으면 shared 로 본다(그때는 관제도 설정을 읽지 못해 멈춰 있다. 계획 끝 한계). key_env 는 `[redmine]` 의 다른 키가 틀려도 이름만 맞으면 뺀다(키가 테스트 명령으로 가지 않는 쪽을 고른다).
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
@@ -740,6 +753,7 @@ status = { start = 2, done = 3, changes = 4, closed = 5 }
 
 NAME_RULE = "이름은 대문자·숫자·_ 이고 HTEAM_·HC_·HORCH_ 로 시작하지 않으며 KEY·SECRET·TOKEN 을 담지 않는다"
 VALUE_RULE = "값은 줄바꿈 없는 1 KiB 이하 문자열이다"
+ENV_COUNT_RULE = "workspace.env 는 31개 이하다(HTEAM_SLOT 을 더해 horch --env 32개 안이다)"
 
 
 class WorkspaceConfigTest(TeamCase):
@@ -842,6 +856,19 @@ OK_PORT = "81{{slot}}0"
         self.assertEqual(self.errors(BASE_CONFIG + f'\n[workspace]\n[workspace.env]\nA_PORT = "{"가" * 342}"\n'),
                          [f"workspace.env.A_PORT: {VALUE_RULE}"])
 
+    def test_env_count_leaves_room_for_hteam_slot(self):
+        # 워커에는 HTEAM_SLOT 을 더해 horch --env 로 넘긴다(상한 32, orch 설계 14.1). 그래서 [workspace.env] 는 31개까지다
+        many = "".join(f'A{i}_PORT = "1"\n' for i in range(31))
+        ws = self.load(BASE_CONFIG + '\n[workspace]\nmode = "worktree"\n[workspace.env]\n' + many).workspace
+        self.assertEqual(len(ws.env), 31)
+        self.assertEqual(self.errors(BASE_CONFIG + '\n[workspace]\nmode = "worktree"\n[workspace.env]\n' + many
+                                     + 'A31_PORT = "1"\n'), [ENV_COUNT_RULE])
+
+    def test_nul_in_value_is_refused(self):
+        # TOML 의 \u0000 은 문자열로 읽힌다. subprocess 환경과 horch --env 가 받지 않으므로 설정 검사에서 막는다
+        self.assertEqual(self.errors(BASE_CONFIG + '\n[workspace]\n[workspace.env]\nA_PORT = "81\\u00000"\n'),
+                         [f"workspace.env.A_PORT: {VALUE_RULE}"])
+
     def test_shapes(self):
         self.assertIn("[workspace] 는 표여야 한다", self.errors("workspace = 1\n" + BASE_CONFIG))
         self.assertIn("[workspace.env] 는 표여야 한다", self.errors(BASE_CONFIG + "\n[workspace]\nenv = 1\n"))
@@ -932,6 +959,44 @@ class RedmineConfigTest(TeamCase):
         self.assertEqual(self.errors("redmine = 1\n" + BASE_CONFIG), ["[redmine] 는 표여야 한다"])
         self.assertEqual(self.load(BASE_CONFIG + self.table(env_file='"config/redmine.env"')).redmine.env_file,
                          "config/redmine.env")
+
+
+class TestSettingsReadTest(TeamCase):
+    """hteam test 가 쓰는 설정(Rules 11, 설계 4.2: hteam test 는 설정이 깨져도 돈다. Codex 계획 리뷰 r1): config.toml 을
+    검사 없이 읽고 예외를 내지 않는다. 슬롯 env 를 정하는 [workspace] 와 뺄 key_env 이름만 본다."""
+
+    def read(self, text: str | None):
+        """config.toml 을 text 로 쓰고(None 이면 지운다) (test_settings, redmine_key_env)."""
+        self.init_project(config=text or BASE_CONFIG, commit=False)
+        if text is None:
+            (self.team / "config.toml").unlink()
+        p = Project(self.proj)
+        return config.test_settings(p), config.redmine_key_env(p)
+
+    def test_valid_config_gives_the_same_values(self):
+        got, name = self.read(BASE_CONFIG + WS_TABLE + REDMINE_TABLE)
+        self.assertEqual(got.workspace, config.load(Project(self.proj)).workspace)
+        self.assertEqual((got.redmine, name), (config.RedmineKey("REDMINE_API_KEY"), "REDMINE_API_KEY"))
+
+    def test_errors_elsewhere_do_not_matter(self):
+        text = (BASE_CONFIG.replace("max_parallel = 4", "max_parallel = 0") + WS_TABLE
+                + REDMINE_TABLE.replace('url = "https://redmine.example.com/"', 'url = "ftp://x"'))
+        got, name = self.read(text)
+        with self.assertRaises(HteamError):
+            config.load(Project(self.proj))  # 전체 검사는 실패한다
+        self.assertEqual((got.workspace.mode, got.workspace.slots, got.workspace.env["APP_DB_PORT"]),
+                         ("worktree", 3, "548{slot}9"))
+        self.assertEqual((got.redmine, name), (config.RedmineKey("REDMINE_API_KEY"), "REDMINE_API_KEY"))
+
+    def test_unreadable_or_broken_tables_fall_back(self):
+        cases = {"no_file": None, "toml": "max_parallel = [\n", "no_tables": BASE_CONFIG,
+                 "bad_workspace": BASE_CONFIG + '\n[workspace]\nmode = "worktree"\nslots = 10\n',
+                 "workspace_not_table": "workspace = 1\n" + BASE_CONFIG,
+                 "bad_key_env": BASE_CONFIG + '\n[redmine]\nkey_env = "1KEY"\n',
+                 "redmine_not_table": "redmine = 1\n" + BASE_CONFIG}
+        for case, text in cases.items():
+            with self.subTest(case=case):
+                self.assertEqual(self.read(text), (config.TestSettings(), None))
 
 
 class TemplateSevenExampleTest(unittest.TestCase):
@@ -1242,7 +1307,7 @@ enabled = true
 - [ ] **Step 2: 실패 확인**
 
 Run: `cd herdr-team && python3 -m unittest tests.test_config tests.test_state_specs tests.test_plan tests.test_testgate 2>&1 | tail -6`
-Expected: `Ran 188 tests` / `FAILED (failures=47, errors=31)`(subTest 마다 센다). 실패는 모두 새 클래스(`WorkspaceConfigTest`·`RedmineConfigTest`·`TemplateSevenExampleTest`·`IssueSpecTest`·`IssuePlanTest`·`TesterPathsTest` 의 셋·`SevenKeysTest`·`SevenKeysApprovalTest`)다. 대표 메시지: `AssertionError: HteamError not raised`(36건, 검사가 없다), `AttributeError: module 'hteam.specs' has no attribute 'issue_value'`, `AttributeError: 'Config' object has no attribute 'workspace'`, `AttributeError: 'Spec' object has no attribute 'issue'`, `AssertionError: Lists differ: ['[test]: 모르는 키 tester_paths'] != ['[test]: tester_paths 는 {key} 를 한 번씩 담은 경로 목록이다']`, `TypeError: group_problems() takes 2 positional arguments but 3 were given`, `['a: 모르는 필드 issue', …] != []`. `TesterPathsTest.test_without_tester_paths_the_rule_is_unchanged` 는 회귀 시험이라 이 단계에서도 통과한다. HEAD 에 이 태스크의 Step 1 블록만 적용한 트리에서 쟀다(계획 작성 때 스크래치의 시범 구현으로 이 시험들과 `test_interview`·`test_setup` 이 모두 통과하는 것을 확인했다. 시범 코드는 계획에 넣지 않았다).
+Expected: `Ran 193 tests` / `FAILED (failures=48, errors=41)`(subTest 마다 센다). 실패는 모두 새 클래스(`WorkspaceConfigTest`·`RedmineConfigTest`·`TestSettingsReadTest`·`TemplateSevenExampleTest`·`IssueSpecTest`·`IssuePlanTest`·`TesterPathsTest` 의 셋·`SevenKeysTest`·`SevenKeysApprovalTest`)다. 대표 메시지: `AssertionError: HteamError not raised`(37건, 검사가 없다. NUL 값 포함), `AttributeError: module 'hteam.config' has no attribute 'test_settings'`(9건), `AttributeError: module 'hteam.specs' has no attribute 'issue_value'`, `AttributeError: 'Config' object has no attribute 'workspace'`, `AttributeError: 'Spec' object has no attribute 'issue'`, `AssertionError: Lists differ: ['[test]: 모르는 키 tester_paths'] != ['[test]: tester_paths 는 {key} 를 한 번씩 담은 경로 목록이다']`, `TypeError: group_problems() takes 2 positional arguments but 3 were given`, `['a: 모르는 필드 issue', …] != []`. `TesterPathsTest.test_without_tester_paths_the_rule_is_unchanged` 는 회귀 시험이라 이 단계에서도 통과한다. HEAD 에 이 태스크의 Step 1 블록만 적용한 트리에서 쟀다(계획 작성 때 스크래치의 시범 구현으로 이 시험들과 `test_interview`·`test_setup` 이 모두 통과하는 것을 확인했다. 시범 코드는 계획에 넣지 않았다).
 
 - [ ] **Step 3: 구현**
 
@@ -1285,7 +1350,7 @@ decide 는 이 태스크가 올리지 않는다. `slot prepare` 의 실패 출�
 - Test: `herdr-team/tests/test_workspace.py`(새로), `herdr-team/tests/test_hooks.py`(Append)
 
 **Interfaces:**
-- Consumes: Task 2 의 `config.Workspace`(`on`, `setup`, `teardown`, `setup_timeout_min`, `env`)와 `Config.workspace`, `state.project_lock`·`edit`·`require`·`move`·`check_id`·`ID_RE`, `roles.require_drive`, `gitio.run`·`dirty`·`top_prefix`, `testgate.kill_group`·`read_tail`·`DROP_ENV`, `util.write_atomic`·`write_json`·`now`·`die_at`, `paths.find_project`.
+- Consumes: Task 2 의 `config.Workspace`(`on`, `setup`, `teardown`, `setup_timeout_min`, `env`)와 `Config.workspace`·`config.TestSettings`, `state.project_lock`·`edit`·`require`·`move`·`check_id`·`ID_RE`, `roles.require_drive`, `gitio.run`·`dirty`·`top_prefix`, `testgate.kill_group`·`read_tail`·`DROP_ENV`, `util.write_atomic`·`write_json`·`now`·`die_at`, `paths.find_project`.
 - Produces:
   - `paths.Project(root, work_root=None)`: `root` 는 상태 루트(메인 프로젝트, 지금 그대로 `resolve()`), `work_root` 는 작업 루트(`resolve()`, 기본 `root`). 새 경로: `slots_file = state/slots.json`, `slots_dir = state/slots`, `slot_logs = state/slots/logs`, `git_lock = state/git.lock`. 다른 경로(상태·태스크·horch home·sessions 등)는 모두 `root` 기준 그대로다.
   - `paths.project_at(folder) -> Project`: `folder` 는 `.herdr-team/config.toml` 이 있는 폴더. `workspace.marker(folder)` 가 dict 면 `Project(marker["main_root"], work_root=folder)`, 아니면 `Project(folder)`. `find_project(arg)` 는 찾은 폴더(`--root` 든 cwd 에서 위로 찾은 것이든)를 이것으로 바꾼다(오류 문구·code 는 지금 그대로).
@@ -1298,7 +1363,7 @@ decide 는 이 태스크가 올리지 않는다. `slot prepare` 의 실패 출�
     - `held_by(data, tid) -> int | None`: `task == tid` 인 슬롯 번호(가장 작은 것).
     - `folder(p, n) -> Path`: `p.slots_dir / f"slot-{n}"`. `work_root(p, n) -> Path`: `folder(p, n) / gitio.top_prefix(p.root)`(프로젝트가 저장소 루트면 폴더 그대로).
     - `task_root(p, st) -> Path`: `Path(st["workspace"]["root"])`, `workspace` 가 없으면 `p.root`.
-    - `slot_env(cfg, n) -> dict[str, str]`: `[workspace.env]` 값의 `{slot}` 을 `str(n)` 으로 바꾼 것 + `HTEAM_SLOT = str(n)`.
+    - `slot_env(cfg, n) -> dict[str, str]`: `[workspace.env]` 값의 `{slot}` 을 `str(n)` 으로 바꾼 것 + `HTEAM_SLOT = str(n)`. 이 모듈의 `cfg` 는 `config.Config` 또는 Task 2 의 `config.TestSettings` 다(`cfg.workspace` 와 `cfg.redmine.key_env` 만 쓴다).
     - `task_env(p, cfg, st) -> dict[str, str]`: `st` 에 `workspace` 가 있으면 `slot_env(cfg, st["workspace"]["slot"])`, 없고 `cfg.workspace.on` 이면 `slot_env(cfg, 0)`(메인 폴더, 설계 5.7 7단계), shared 면 `{}`.
     - `slot_lock(p, n, *, nowait=False)`: 컨텍스트 관리자. `state/slots/slot-<N>.lock` 에 `fcntl.flock(LOCK_EX)`. nowait 면 `LOCK_NB` 이고 못 쥐면 exit 3 `slot_locked`(`slot-<N> 을 다른 hteam 자식(준비·놓기·마무리 full)이 쓰는 중이다`, hint `끝나면 관제가 다시 본다`).
     - `slot_busy(p, n) -> bool`: `slot_lock(p, n, nowait=True)` 를 잠깐 쥐어 본다. 못 쥐면 True.
@@ -1315,7 +1380,7 @@ decide 는 이 태스크가 올리지 않는다. `slot prepare` 의 실패 출�
       - git 실패는 지금 `git_failed`(exit 1) 그대로.
   - CLI `hteam slot prepare T`(관제만): 관제가 아니면 exit 5 `drive_only`(지금 `roles.require_drive`), `T` 꼴이 아니면 exit 2 `bad_task_id`, `config.load` 뒤 `cfg.workspace.on` 이 아니면 exit 3 `workspace_off`(`작업 공간이 꺼져 있다(config.toml [workspace] mode = "worktree" 가 아니다)`). 파서는 `slot` 아래 하위 명령(`prepare`. Task 5 가 `release`·`reset` 을 더한다).
   - `gitio`(이 태스크가 쓰는 것만): `worktree_add(root, folder, commit)`(`git worktree add --detach <folder> <commit>`), `switch_new(root, branch, start)`(`git switch -c`), `switch(root, branch)`, `switch_detach(root)`(`git switch --detach`), `branch_exists(root, name) -> bool`(`git show-ref --verify --quiet refs/heads/<name>`, exit 1 은 False), `branch_tip(root, name) -> str | None`, `current_branch(root) -> str | None`(`git symbolic-ref -q --short HEAD`, detached 면 None), `delete_branch(root, name, *, force=False)`(`git branch -d|-D`), `common_dir(root) -> str | None`(`git rev-parse --git-common-dir` 을 root 기준으로 푼 실제 경로, 저장소가 아니면 None).
-  - `testgate.child_env(cfg=None, extra=None) -> dict[str, str]`: `os.environ` 에서 `DROP_ENV` 를 뺀 것에 extra 를 더한다. `cfg` 는 `config.Config` 또는 None(테스트 관문은 config.toml 을 읽지 않고 부를 수 있다). 이 태스크에서는 cfg 를 쓰지 않는다(Task 6 이 `cfg.redmine.key_env` 를 뺀다). `execute` 는 지금 `_env()` 자리에서 `child_env(None)` 을 쓴다(동작 그대로).
+  - `testgate.child_env(cfg=None, extra=None) -> dict[str, str]`: `os.environ` 에서 `DROP_ENV` 를 뺀 것에 extra 를 더한다. `cfg` 는 `config.Config`·`config.TestSettings`(Task 2) 또는 None(`hteam test` 는 `config.load` 를 부르지 않는다, 설계 4.2). 이 태스크에서는 cfg 를 쓰지 않는다(Task 6 이 `cfg.redmine.key_env` 를 뺀다). `execute` 는 지금 `_env()` 자리에서 `child_env(None)` 을 쓴다(동작 그대로).
   - 훅: `main()` 이 `Project(root)` 대신 `project_at(root)` 로 프로젝트를 만든다. `where` 의 상대 경로 기준은 `cwd`, 없으면 `p.work_root`. `_in_state(p, real, rel)` 은 Rules 10.
   - 시험용 죽음·멈춤 지점(`HTEAM_TEST_DIE_AT`·`HTEAM_TEST_PAUSE_AT`): `slot_prepare_locked`(슬롯 잠금을 쥔 직후), `slot_worktree_added`(worktree add 뒤), `slot_branch_made`(브랜치를 만들거나 바꾼 뒤, 표시 파일 전), `slot_setup_done`(`setup_done` 을 쓴 뒤, `ready` 전).
 - 잠금: 준비는 슬롯 잠금(내내) → 프로젝트 잠금(`slots.json` 을 다시 읽고 고치는 짧은 구간만) → 태스크 잠금(`launch_failed` 를 쓸 때). 슬롯 잠금을 쥔 채 git·setup 을 하는 동안에는 프로젝트 잠금을 쥐지 않는다. setup·teardown 자식은 잠금 기술자를 물려받지 않는다(`subprocess.Popen` 의 `close_fds` 기본값. 데몬을 띄우는 setup 이 잠금을 쥔 채 남지 않게).
@@ -2027,17 +2092,18 @@ Expected: ast 오류 없음, grep 빈 출력, 커밋 하나. 구현자는 여기
 병합·놓기·drop·`slot reset`·`status` 의 `workspace`·마무리 full·`merge_conflict` 는 Task 5 다. 이 태스크는 accept 를 바꾸지 않는다(시험의 accept 도 없다). `full_if` 는 Task 6, 이슈 줄은 Task 7 이고, 이 태스크의 작업 루트 규칙 위에 얹힌다. 브리프 Task 6 의 "작업 루트 cwd·슬롯 env·`HTEAM_SLOT`" 을 여기로 옮겼다(헤더 "태스크 순서와 의존"). 헤더 "공유 시험 도구" 의 `ws_start` 도 이 태스크가 넣는다(Task 5·6·8 의 시험이 쓴다).
 
 **Files:**
-- Modify: `herdr-team/lib/hteam/crew.py`(place 의 0), `herdr-team/lib/hteam/tasks.py`(`_prepare_start` 의 슬롯 잡기, `lock_conflicts` 의 예약, `start`·`start_command`·`start_ready` 의 대기 사유, `run_work`·`fix` 의 작업 루트), `herdr-team/lib/hteam/workspace.py`(`view`, `env_args`), `herdr-team/lib/hteam/dispatch.py`(`launch` 의 cwd·env), `herdr-team/lib/hteam/review.py`(작업 루트, 리뷰어 cwd·env), `herdr-team/lib/hteam/testgate.py`(작업 루트, `execute`·`attempt`·`run_quick` 의 cwd·env), `herdr-team/lib/hteam/compose.py`(작업 공간 절·리뷰 줄, 작업 루트의 이전 리뷰·린트), `herdr-team/lib/hteam/drive.py`(`DECIDE_KINDS`, `slot_step`, 준비 자식 거두기, 틱·재확인 자리), `herdr-team/templates/review-prompt.md`(`{{workspace}}` 자리), `herdr-team/tests/helpers.py`(`ws_start`, 공유 시험 도구)
+- Modify: `herdr-team/lib/hteam/crew.py`(place 의 0), `herdr-team/lib/hteam/tasks.py`(`_prepare_start` 의 슬롯 잡기, `lock_conflicts` 의 예약, `start`·`start_command`·`start_ready` 의 대기 사유, `run_work`·`fix` 의 작업 루트, `fix` 의 슬롯 확인), `herdr-team/lib/hteam/workspace.py`(`view`, `env_args`), `herdr-team/lib/hteam/dispatch.py`(`launch` 의 cwd·env), `herdr-team/lib/hteam/review.py`(작업 루트, 리뷰어 cwd·env), `herdr-team/lib/hteam/testgate.py`(작업 루트, `execute`·`attempt`·`run_quick` 의 cwd·env), `herdr-team/lib/hteam/compose.py`(작업 공간 절·리뷰 줄, 작업 루트의 이전 리뷰·린트), `herdr-team/lib/hteam/drive.py`(`DECIDE_KINDS`, `slot_step`, 준비 자식 거두기, 틱·재확인 자리, decide `files` 의 작업 루트 산출물), `herdr-team/templates/review-prompt.md`(`{{workspace}}` 자리), `herdr-team/tests/helpers.py`(`ws_start`, 공유 시험 도구)
 - Test: `herdr-team/tests/test_workspace_flow.py`(새로), `herdr-team/tests/test_drive.py`(`DECIDE_KINDS` 기대값 Edit)
 
 **Interfaces:**
-- Consumes: Task 1 의 `worker-start --env=KEY=VALUE`(되풀이)·`--task --retry` 의 env·`worker-show` 행의 `env`, Task 2 의 `cfg.workspace.covers(role)`·`on`·`slots`·`env`, Task 3 의 `workspace.load`·`entry`·`save`·`held_by`·`branch_of`·`SLOT_DEFAULT`·`work_root`·`task_root`·`slot_env`·`task_env`·`slot_busy`, `paths.Project(root, work_root=)`·`project_at`, `gitio.current_branch`, `hteam slot prepare T` 의 성공 출력 `{task, slot, root, branch, base_branch, base, setup, ready}` 과 실패(`slot_dirty`·`branch_exists`·`setup_failed`·`slot_locked`·`slot_not_reserved`, data 의 `kind`·`slot`·`files`·`branch`·`status`·`exit`·`log`·`tail`), `testgate.child_env(cfg, extra)`, 6단계의 `Drive.spawn`·`reap_jobs`·`decide`·`log`·`_files`·`start_ready`·`reconcile`·`procedure_failed`, `outbox.open_decide`.
+- Consumes: Task 1 의 `worker-start --env=KEY=VALUE`(되풀이)·`--task --retry` 의 env·`worker-show` 행의 `env`, Task 2 의 `cfg.workspace.covers(role)`·`on`·`slots`·`env`, Task 3 의 `workspace.load`·`entry`·`save`·`held_by`·`branch_of`·`SLOT_DEFAULT`·`work_root`·`task_root`·`slot_env`·`task_env`·`slot_busy`, `paths.Project(root, work_root=)`·`project_at`, `gitio.current_branch`, `hteam slot prepare T` 의 성공 출력 `{task, slot, root, branch, base_branch, base, setup, ready}` 과 실패(`slot_dirty`·`branch_exists`·`setup_failed`·`slot_locked`·`slot_not_reserved`, data 의 `kind`·`slot`·`files`·`branch`·`status`·`exit`·`log`·`tail`), `testgate.child_env(cfg, extra)`, Task 2 의 `config.test_settings`, 6단계의 `Drive.spawn`·`reap_jobs`·`decide`·`log`·`_files`·`_grounds`·`start_ready`·`reconcile`·`procedure_failed`, `outbox.open_decide`, `paths.report_rel`·`review_rel`.
 - Produces:
   - `crew.place(p, cfg, role, worker, *, crew_name=None)`: 맨 앞에서 `cfg.workspace.covers(role)` 면 `dict(TEMP)`(5.9.4 의 0). `crew_name`(같은 라운드 복구)이 와도 같다.
   - `start` 의 슬롯 잡기 오류(exit 3, `_prepare_start` 가 낸다. 문구 원문):
     - `slot_preparing`: `작업 공간 slot-{n} 을 준비하는 중이다(관제가 hteam slot prepare 를 돌린다)`, hint `준비가 끝나면 관제가 띄운다`.
     - `no_free_slot`: `빈 작업 공간 슬롯이 없다(slots = {cfg.workspace.slots})`, hint `슬롯이 비면 관제가 띄운다`.
     - `base_detached`: `메인 폴더가 detached HEAD 라 {tid} 의 작업 공간 슬롯을 잡지 않았다(기준 브랜치가 없다). 메인 폴더를 기준 브랜치로 되돌린 뒤 다시 시작한다`, hint `메인 폴더에서 git switch <기준 브랜치> 뒤 hteam start {tid}`.
+  - `tasks.fix` 의 슬롯 확인(Rules 12, Codex 계획 리뷰 r1): `cfg.workspace.covers(spec.role)` 인 태스크면 `first`(상태)를 읽고 `allowed(first)` 를 본 바로 뒤, 이전 Dispatch 를 정리하거나(`_close_round`) 무엇을 쓰기 전에 `workspace.load(p)` 에서 그 태스크가 쥔 슬롯(`held_by`)의 기록이 `busy` 인지 본다. 아니면 아무것도 바꾸지 않고 exit 3 `slot_not_held`: `{tid} 는 작업 공간 슬롯을 쥐고 있지 않다(슬롯 준비가 끝나지 않았거나 실패했다). fix 는 슬롯 밖에서 새 라운드를 열지 않는다`, hint `hteam start {tid}`, data `{"status": <상태>, "slot": <쥔 슬롯 번호 또는 null>}`. shared·작업 공간 직무가 아닌 태스크는 보지 않는다(`slots.json` 을 읽지 않는다).
   - `tasks.START_WAIT` 에 `slot_preparing: "slot_setup"`, `no_free_slot: "slot"`. `WAIT_TAIL` 에 `slot_setup: "준비가 끝나면 관제가 띄운다"`, `slot: "슬롯이 비면 관제가 띄운다"`. `WAIT_CODES` 에 `slot_preparing: "slot_setup"`, `no_free_slot: "slot"`, `base_detached: "decide"`. `start_command` 는 이 둘(`slot_preparing`·`no_free_slot`)을 처음 시작(pending)뿐 아니라 라운드 없는 `launch_failed`(준비 실패 뒤)에서도 waiting 으로 바꾼다. 결과 예: `{"ok": true, "id": "T-001", "status": "waiting", "reason": "slot_setup", "message": "T-001: 작업 공간 slot-1 을 준비하는 중이다(관제가 hteam slot prepare 를 돌린다). pending 으로 두었다. 준비가 끝나면 관제가 띄운다"}`.
   - 예약 기록(Task 3 노트의 꼴, `state/slots.json`): `{"state": "preparing", "task": T, "branch": "herdr/T", "base_branch": <git symbolic-ref --short HEAD>, "base": <메인 HEAD sha>, "setup_done": <그 슬롯의 앞 값>, "since": now()}`. 태스크 상태에는 같은 쓰기 구간에서 `owns` 만 쓴다(`pending` 그대로, 라운드 없음).
   - busy 로 바꿀 때: 슬롯 기록 `{**기록, "state": "busy", "since": now()}` 에서 `ready` 를 뗀다. 태스크 상태 `workspace = {"slot": n, "branch": 기록의 branch, "base_branch": 기록의 base_branch, "root": str(workspace.work_root(p, n)), "merge": null}`, `base` 가 None 이면 기록의 `base`. 새 라운드의 `round_base` 는 작업 루트의 HEAD(`gitio.head(<작업 루트>)`). fix 의 새 라운드도 같다.
@@ -2060,10 +2126,11 @@ Expected: ast 오류 없음, grep 빈 출력, 커밋 하나. 구현자는 여기
     - `testgate.py`: `code_head`·`quick_files`(작업 루트에 파일로 있는 것)·`check_committed`·`dirty_files`·`execute` 의 cwd. 들어가는 곳: `run_task`·`gate_results`·`retry_results`·`record_task`. `[test]` 설정(`load_config`)은 메인 프로젝트의 커밋된 HEAD 에서 읽는다(아래 Rules 7).
     - `compose.py`: `work_spec` 의 이전 리뷰 파일 확인, `review_prompt` 의 이전 리뷰 목록, `design_section`·`text_section` 의 린트(작업 트리 파일 읽기).
     - `tasks.py`: `_prepare_start`·`fix` 의 `round_base`, `run_work` 의 horch `cwd`·`env`.
-  - `testgate.execute(p, command, log, timeout_s, ok_exit, args=(), shown=None, *, cwd=None, env=None)`: cwd 는 `cwd or p.work_root`, 환경은 `child_env(None, env)`. `attempt(…, *, cwd=None, env=None)`·`run_quick(p, cfg, files, name, *, cwd=None, env=None)` 는 그대로 넘긴다. 태스크 관문(`record_task`)은 `env = workspace.task_env(p, config.load(p), st)` 다(shared 면 빈 dict 이라 지금과 같다).
+  - `testgate.execute(p, command, log, timeout_s, ok_exit, args=(), shown=None, *, cwd=None, env=None)`: cwd 는 `cwd or p.work_root`, 환경은 `child_env(None, env)`. `attempt(…, *, cwd=None, env=None)`·`run_quick(p, cfg, files, name, *, cwd=None, env=None)` 는 그대로 넘긴다. 태스크 관문(`record_task`)은 `env = workspace.task_env(p, config.test_settings(p), st)` 다(Task 2 Rules 11: `hteam test` 와 리뷰 관문이 같이 지나는 자리라 `config.load` 를 부르지 않는다. 설정이 깨져도 `hteam test` 가 돈다, 설계 4.2. shared 면 빈 dict 이라 지금과 같다).
   - 리뷰어: `_launch_attempt` 가 `dispatch.launch(…, cwd=p.work_root, env=workspace.slot_env(cfg, n) if 작업 공간 태스크 else None)`. 작업: `run_work` 도 같다(같은 라운드 복구 포함).
   - 관제(drive.py):
     - `DECIDE_KINDS` 끝에 `"workspace_failed"`.
+    - decide `files` 의 작업 루트 산출물(Rules 13, Codex 계획 리뷰 r1): `Drive._work_files(st, *rels) -> list[str]` 는 태스크 산출물을 그 태스크의 작업 루트(`workspace.task_root(p, st)`)에서 찾아 있는 것만 메인 루트 기준 posix 경로(`(task_root / rel).relative_to(p.root)`, 슬롯이면 `.herdr-team/state/slots/slot-<N>/<rel>`)로 낸다. 산출물은 지금 코드에서 작업 트리에 생기는 둘이다: 보고서 `paths.report_rel(tid)`(`docs/tasks/T-xxx/report.md`, 워커가 쓴다)와 리뷰 결과·hteam 반려 파일 `paths.review_rel(tid, n)`(`docs/reviews/T-xxx/rN.md`, `review._finish`·`_precheck_fail` 이 작업 루트에 쓴다). `_files(*rels)` 는 지금처럼 메인 루트에서 본다: 사양 `.herdr-team/tasks/T-xxx.md`(`_grounds` 의 첫째), `GROUNDS`(기획 문서), 직무 문서·`project.md`, `docs/planning/tasks.toml`, 슬롯 로그(`state/slots/logs/…`). 바꾸는 자리: escalation·`worker_failed`·`worker_question` 의 `self._files(*self._grounds(tid))` 는 `self._files(<사양>) + self._work_files(st, report_rel(tid))`(차례는 지금 그대로: 사양, 보고서, 그다음 GROUNDS…), `_max_rounds`·`hteam_changes` 의 repeat_test_failure 는 `self._work_files(st, review_rel(tid, st["round"]))`. 작업 공간 태스크가 아니거나 병합한 뒤(`task_root` 가 `p.root`)면 지금과 같은 목록이다.
     - `Drive.slot_step() -> None`: `slots.json` 의 `preparing` 이고 `ready` 가 아닌 기록마다(번호 순), 키 `slot:<N>` 의 자식이 없고, 그 태스크에 열린 decide 가 없고(`outbox.open_decide`), `workspace.slot_busy(p, n)` 가 거짓이면 `spawn(f"slot:{n}", ["slot", "prepare", T])` 하고 로그 `slot-<N> <T> 준비 시작`.
     - `reap_jobs` 의 `slot:<N>` 갈래 → `Drive._slot_done(n, tid, code, data)`(격리 키 `job:slot:<N>`. `tid` 는 자식 인자의 셋째, data 는 stdout 의 마지막 JSON 객체):
       - 성공: 로그 `slot-<N> <T> 준비 ready`(`setup` 이 None 이 아니면 `slot-<N> <T> 준비 ready(setup passed)`) 뒤 `start_ready()`(격리 키 `start_ready`).
@@ -2091,11 +2158,13 @@ Expected: ast 오류 없음, grep 빈 출력, 커밋 하나. 구현자는 여기
 4. horch(5.10.3 의 5, 5.10.4): 작업(`run_work`)과 리뷰어(`_launch_attempt`)는 작업 공간 태스크면 `cwd = <작업 루트>`, `env = workspace.slot_env(cfg, slot)`(값의 `{slot}` 을 채운 `[workspace.env]` + `HTEAM_SLOT`)로 띄운다. 같은 라운드 복구(`--task --retry`)·fix 의 새 라운드도 같은 인자다(horch 가 물려받아도 hteam 이 늘 넘긴다). shared·메인 폴더 태스크는 지금 그대로(`--cwd <프로젝트 루트>`, `--env` 없음).
 5. 사양(5.10.5, 5.5 의 8): 작업 공간 절은 인수인계 줄과 작업 규칙 사이다. env 가 없으면 셋째 줄을 뺀다. 리뷰 프롬프트에는 첫째·셋째 줄을 `## 태스크` 의 이전 리뷰 줄 뒤에 글머리 줄로 넣는다.
 6. 작업 루트(5.10.2 두 루트, 5.10.4, 6.1 7단계 줄): 태스크의 git 조회·작업 트리 파일 읽기·쓰기·커밋은 그 태스크의 작업 루트(`workspace.view(p, st).work_root`)에서 한다. 리뷰 파일 커밋 `[T-xxx] review rN:` 과 관문 반려 커밋은 태스크 브랜치에 쌓인다(병합 때 기준 브랜치로 들어간다, Task 5). 변조 기준점은 슬롯의 HEAD·작업 트리다: 메인 폴더나 다른 슬롯의 커밋은 이 슬롯의 HEAD 를 움직이지 않으므로 변조가 아니다. 상태(`state/`)·테스트 기록·로그·확정 기록은 늘 메인의 것이다(5.7 7단계 줄). 슬롯 안에서 부른 `hteam test T` 는 `find_project` 가 메인 상태를 돌려주고(Task 3), 위치는 `p.work_root`(찾은 폴더)가 아니라 태스크 상태의 `workspace.root` 로 정한다.
-7. 관문(5.7 7단계 작업 공간 문단): 작업 공간 태스크의 테스트는 cwd 가 작업 루트이고 환경은 `child_env(None, workspace.task_env(p, cfg, st))`(그 슬롯의 env 와 `HTEAM_SLOT`). worktree 모드의 메인 폴더 태스크(작업 공간 직무가 아닌데 관문이 있는 경우)는 슬롯 0 값이다. `[test]` 설정은 지금처럼 커밋된 HEAD 에서 읽되 메인 프로젝트(상태 루트)의 HEAD 다: 설정은 기획 태스크가 기준 브랜치에 커밋하고(메인 폴더), 확정 기록은 그 식별값이다. 태스크 브랜치는 그보다 뒤처질 수 있다.
+7. 관문(5.7 7단계 작업 공간 문단): 작업 공간 태스크의 테스트는 cwd 가 작업 루트이고 환경은 `child_env(None, workspace.task_env(p, config.test_settings(p), st))`(그 슬롯의 env 와 `HTEAM_SLOT`. 설정은 검사 없이 읽는다, Task 2 Rules 11). worktree 모드의 메인 폴더 태스크(작업 공간 직무가 아닌데 관문이 있는 경우)는 슬롯 0 값이다. `[test]` 설정은 지금처럼 커밋된 HEAD 에서 읽되 메인 프로젝트(상태 루트)의 HEAD 다: 설정은 기획 태스크가 기준 브랜치에 커밋하고(메인 폴더), 확정 기록은 그 식별값이다. 태스크 브랜치는 그보다 뒤처질 수 있다.
 8. detached HEAD(5.10.1): 처음 시작하는 작업 공간 태스크의 기준 브랜치가 없으면 예약하지 않는다. `tasks.start` 가 잠금 밖에서 decide `workspace_failed`(`detail.kind` 는 `base_moved`, `detached: true`)를 올린 뒤 `base_detached` 를 올린다. 열린 decide 가 있는 동안 start-ready 는 그 태스크를 띄우지 않는다(대기 사유 `decide`, `WAIT_CODES`). 메인이 고친 뒤 부르는 `hteam start T` 는 열린 decide 를 보지 않는다(지금 규칙).
 9. 준비 자식(5.10.3 끝 두 문단, 8.8): 관제는 `slot_step` 으로 예약마다 준비를 띄운다(한 슬롯에 하나: 키 `slot:<N>` 과 슬롯 잠금 비차단 시도). 관제가 죽어 자식만 남았으면 슬롯 잠금이 쥐어져 있어 기다리고, 자식도 죽었으면 다음 재확인이 다시 띄운다(준비는 이어 하기 안전, Task 3 Rules 8). 그 태스크에 열린 decide 가 있으면 띄우지 않는다(같은 실패를 되풀이하지 않게).
 10. 준비 실패(5.10.3 의 2·4, 5.10.8): 거두기 규칙은 Interfaces. `setup_failed`·`branch_exists` 는 Task 3 이 슬롯을 `free`, 태스크를 라운드 없는 `launch_failed` 로 썼다. decide 가 태스크에 붙어 start-ready 가 곧바로 다시 띄우지 않는다. 메인이 사용자와 고친 뒤 `hteam start T` 를 부르면 다시 예약한다(`start_command` 가 라운드 없는 `launch_failed` 도 waiting 으로). `slot_dirty` 는 슬롯이 `dirty`·태스크 없음이 되고 태스크는 `pending` 이라 바로 다음 슬롯을 잡을 수 있다(decide 는 태스크 없이 한 번. 그 슬롯은 dirty 라 다시 잡히지 않는다).
 11. 회귀(헤더 "기본값"): `cfg.workspace.covers` 가 거짓이면 이 태스크의 모든 갈래를 지나지 않는다: `slots.json` 을 읽지도 쓰지도 않고(`lock_conflicts` 는 파일이 없으면 지금 그대로), horch 인자·사양·프롬프트·관문 위치가 지금과 같다(`{{workspace}}` 는 빈 글, `p.work_root == p.root`).
+12. fix 는 슬롯을 잡지 않는다(5.10.3, 6.4, Codex 계획 리뷰 r1): 준비 실패(`setup_failed`·`branch_exists`)는 라운드·`workspace` 없는 `launch_failed` 이고 `FIX_FROM` 에 든다. 그대로 fix 하면 `_prepare_start` 를 거치지 않아 슬롯 env·작업 공간 절 없이 메인 폴더에서 워커가 뜬다. 그래서 작업 공간 직무 태스크의 fix 는 그 태스크가 `busy` 슬롯을 쥘 때만 하고, 아니면 상태를 바꾸기 전에 `slot_not_held` 로 거부한다(Interfaces). 다시 시작은 `hteam start T`(Rules 2 가 슬롯을 다시 잡는다)다. 관제의 자동 fix 는 이 경우를 부르지 않는다: 라운드 없는 `launch_failed` 는 `Drive._launch_failed` 가 건너뛰고, 준비 실패 decide 의 commands 는 `hteam start T` 다. 병합 충돌 뒤의 `changes`·작업 중·리뷰 반려는 슬롯이 `busy` 라 지금처럼 fix 한다.
+13. decide 근거 파일(8.10 "decide 의 files 만 읽는다", 5.10.2 두 루트): 병합 전 작업 공간 태스크의 보고서·리뷰 파일은 슬롯에만 있으므로 관제 decide 의 `files` 는 그 슬롯 경로다(Interfaces 의 `_work_files`). 메인은 메인 루트 기준 경로를 그대로 연다. 사양·기획 문서·직무 문서·설정·로그는 메인 것이다.
 
 핵심 조각(그대로 옮기지 않아도 된다) — `_prepare_start` 의 슬롯 잡기(Rules 2. 프로젝트 잠금·태스크 잠금 안, 배정 뒤):
 
@@ -2654,6 +2723,30 @@ class DrivePrepareTest(EventCase):
                            ["hteam start T-001"])])
         st = self.task_state("T-001")
         self.assertEqual((st["status"], st["rounds"], st["decide"]), ("launch_failed", [], dec[0]["id"]))
+        # 슬롯을 쥐지 않은 작업 공간 태스크의 fix 는 상태를 바꾸기 전에 거부한다(메인 폴더에서 워커를 띄우지 않는다, Rules 12)
+        code, out = self.hteam("fix", "T-001", "--note=다시 한다")
+        self.assertEqual((code, out["error"]["code"], out["error"]["hint"]), (3, "slot_not_held", "hteam start T-001"), out)
+        self.assertEqual(self.task_state("T-001"), st)
+        self.assertFalse([c for c in self.hc_calls() if c[:1] == ["run"]])
+        self.git("branch", "-D", "herdr/T-001")  # 사용자가 남은 브랜치를 지웠다. start 는 지금처럼 슬롯을 다시 잡는다
+        code, out = self.hteam("start", "T-001")
+        self.assertEqual((code, out["status"], out["reason"]), (0, "waiting", "slot_setup"), out)
+        self.assertEqual((self.slots()["slots"]["1"]["state"], self.slots()["slots"]["1"]["task"]), ("preparing", "T-001"))
+
+    def test_decide_files_point_at_the_slot_copy(self):
+        # 병합 전 보고서는 슬롯에만 있다. decide files 는 메인이 열 수 있는 슬롯 경로다(Rules 13, Codex 계획 리뷰 r1)
+        self.hteam("start", "T-001")
+        self.d.slot_step()
+        self.wait_jobs()
+        did = self.work_dispatch("T-001")
+        code, out = self.act_work("T-001", outcome="failed")
+        self.assertEqual(code, 0, out)
+        self.d.handle(self.done_msg(did, "failed", summary="빌드가 안 된다"))
+        (e,) = self.decides()
+        report = ".herdr-team/state/slots/slot-1/docs/tasks/T-001/report.md"
+        self.assertEqual((e["kind"], e["files"]), ("worker_failed", [".herdr-team/tasks/T-001.md", report]))
+        self.assertTrue((self.proj / report).is_file())
+        self.assertFalse((self.proj / "docs/tasks/T-001/report.md").exists())
 
 
 class DriveSetupFailTest(EventCase):
@@ -2682,6 +2775,10 @@ class DriveSetupFailTest(EventCase):
         self.assertEqual((st["status"], st["rounds"], st["decide"]), ("launch_failed", [], e["id"]))
         self.assertEqual(self.slots()["slots"]["1"]["state"], "free")
         self.assertEqual(self.logged("slot-1 T-001 준비 setup_failed"), 1)
+        code, out = self.hteam("fix", "T-001", "--note=다시 한다")  # 슬롯 없이 메인 폴더에서 띄우지 않는다(Rules 12)
+        self.assertEqual((code, out["error"]["code"]), (3, "slot_not_held"), out)
+        self.assertEqual(self.task_state("T-001"), st)
+        self.assertFalse([c for c in self.hc_calls() if c[:1] == ["run"]])
         res = self.d.start_ready()  # 라운드 없는 launch_failed 를 곧바로 다시 띄우지 않는다(열린 decide)
         self.assertEqual([(w["task"], w["reason"]) for w in res["waiting"]], [("T-001", "decide")])
         self.d.slot_step()
@@ -2716,7 +2813,7 @@ if __name__ == "__main__":
 - [ ] **Step 2: 실패 확인**
 
 Run: `cd herdr-team && python3 -m unittest tests.test_workspace_flow tests.test_drive 2>&1 | tail -5`
-Expected: `Ran 56 tests` / `FAILED (failures=17, errors=9)`. 대표 메시지: `AssertionError: Tuples differ: (0, 'working', None) != (0, 'waiting', 'slot_setup')`(`ws_start` 의 첫 start 가 지금처럼 워커를 띄운다, 11건), `KeyError: 'reason'`(4건)·`KeyError: 'error'`, `AttributeError: 'Drive' object has no attribute 'slot_step'`(4건), `argument cmd: invalid choice: 'slot'`, `{'kind': 'crew', …} != {'kind': 'temp', 'crew': None}`, `Tuples differ: ('wor[109 chars]aps', 'unknown_regression', 'token_update') != (…, 'workspace_failed')`(test_drive). HEAD 에 공유 시험 도구(Task 3 의 helpers 편집 셋)와 이 태스크의 Step 1 블록만 적용한 트리에서 쟀다(Task 1–3 구현 없음). 회귀 시험 둘(`SharedRegressionTest`·`SharedModeTableTest`)은 이 단계에서도 통과한다. 계획 작성 때 Task 1·3 의 시범 구현 위에 이 태스크의 시범 구현(계획에 넣지 않았다)으로 이 56개가 `OK` 인 것을 확인했다.
+Expected: `Ran 57 tests` / `FAILED (failures=17, errors=10)`. 대표 메시지: `AssertionError: Tuples differ: (0, 'working', None) != (0, 'waiting', 'slot_setup')`(`ws_start` 의 첫 start 가 지금처럼 워커를 띄운다, 11건), `KeyError: 'reason'`(4건)·`KeyError: 'error'`, `AttributeError: 'Drive' object has no attribute 'slot_step'`(5건. 준비 실패 뒤 fix 거부·decide files 의 슬롯 경로 시험도 여기서 멈춘다), `argument cmd: invalid choice: 'slot'`, `{'kind': 'crew', …} != {'kind': 'temp', 'crew': None}`, `Tuples differ: ('wor[109 chars]aps', 'unknown_regression', 'token_update') != (…, 'workspace_failed')`(test_drive). HEAD 에 공유 시험 도구(Task 3 의 helpers 편집 셋)와 이 태스크의 Step 1 블록만 적용한 트리에서 쟀다(Task 1–3 구현 없음). 회귀 시험 둘(`SharedRegressionTest`·`SharedModeTableTest`)은 이 단계에서도 통과한다. 계획 작성 때 Task 1·3 의 시범 구현 위에 이 태스크의 시범 구현(계획에 넣지 않았다)으로 이 56개가 `OK` 인 것을 확인했다.
 
 - [ ] **Step 3: 구현**
 
@@ -2759,7 +2856,7 @@ Expected: ast 오류 없음, grep 빈 출력. 구현자는 여기서 멈춘다(�
 
 ### Task 5: 작업 공간 흐름 2 — accept 의 `--no-ff` 병합·충돌·거부, 기준 병합 라운드, 놓기, 준비 중 drop, 마무리 full 의 슬롯, `slot reset`, `status` 의 `workspace`
 
-설계 5.10.6–5.10.8 과 6.4 의 7단계 줄을 만든다. 작업 공간 태스크의 accept 는 `approved` → 병합 → `done` 이다. 관제가 프로젝트 잠금과 git 잠금(`state/git.lock`) 안에서 메인 폴더의 기준 브랜치에 `git merge --no-ff -m "[T-xxx] merge: <제목>" herdr/T-xxx` 한다. 충돌이면 `git merge --abort` 와 그 성공을 확인한 뒤 태스크를 `changes` 로 두고 라운드 기록에 `merge_conflict`, 상태에 풀어야 할 기준 병합 `base_merge`, `base` 를 그 기준 sha 로 옮긴 뒤 decide `merge_conflict` 를 올린다. 거부(index 에 올린 변경, 병합이 덮을 커밋 안 된 파일, `index.lock`)는 상태를 바꾸지 않고 다음 재확인에 다시 하고, 10분 넘게 거부되면 `workspace_failed`(`merge_blocked`)를 한 번 올린다. 메인 폴더에 끝나지 않은 병합(`MERGE_HEAD`)이 있거나 메인 폴더 브랜치가 기준 브랜치가 아니면 시도하지 않고 바로 `workspace_failed`(`merge_blocked`·`base_moved`)다. 기준 병합 라운드는 사양의 작업 공간 절 둘째 줄이 병합 지시이고, 리뷰 시작이 그 기준을 부모로 가진 `[T-xxx]` 커밋을 보면 `base_merge` 를 지운다. 바뀐 파일·사전 검사·관문은 옮긴 base 와 태스크 브랜치의 차이만 본다. 병합 뒤와 drop 뒤에는 관제 자식 `hteam slot release T` 가 슬롯 잠금을 쥐고 teardown → `git switch --detach` → (병합한 브랜치면) `git branch -d` → `free`(버린 태스크 슬롯에 커밋 안 된 변경이 있으면 `dirty`)를 하고, 재확인이 끊긴 놓기를 잇는다. 준비가 끝나지 않은 예약은 drop 이 바로 푼다. worktree 모드의 마무리 full 은 빈 슬롯 하나에서 기준 HEAD 로 setup → full → teardown 을 한다(메인 폴더에서 시험을 돌리지 않는다). 메인 큐 명령 `hteam slot reset <N>` 은 `dirty` 이고 태스크 없는 슬롯만 `git reset --hard`·`git clean -fd` 뒤 `free` 로 쓴다. `hteam status` 는 worktree 모드에서만 `workspace` 를 보인다.
+설계 5.10.6–5.10.8 과 6.4 의 7단계 줄을 만든다. 작업 공간 태스크의 accept 는 `approved` → 병합 → `done` 이다. 관제가 프로젝트 잠금과 git 잠금(`state/git.lock`) 안에서 메인 폴더의 기준 브랜치에 `git merge --no-ff -m "[T-xxx] merge: <제목>" herdr/T-xxx` 한다. 충돌이면 `git merge --abort` 와 그 성공을 확인한 뒤 태스크를 `changes` 로 두고 라운드 기록에 `merge_conflict`, 상태에 풀어야 할 기준 병합 `base_merge`, `base` 를 그 기준 sha 로 옮긴 뒤 decide `merge_conflict` 를 올린다. 거부(index 에 올린 변경, 병합이 덮을 커밋 안 된 파일, `index.lock`)는 상태를 바꾸지 않고 다음 재확인에 다시 하고, 10분 넘게 거부되면 `workspace_failed`(`merge_blocked`)를 한 번 올린다. 메인 폴더에 끝나지 않은 병합(`MERGE_HEAD`)이 있거나 메인 폴더 브랜치가 기준 브랜치가 아니면 시도하지 않고 바로 `workspace_failed`(`merge_blocked`·`base_moved`)다. 기준 병합 라운드는 사양의 작업 공간 절 둘째 줄이 병합 지시이고, 리뷰 시작이 그 기준을 부모로 가진 `[T-xxx]` 커밋을 보면 `base_merge` 를 지운다. 바뀐 파일·사전 검사·관문은 옮긴 base 와 태스크 브랜치의 차이만 본다. 병합 뒤와 drop 뒤에는 관제 자식 `hteam slot release T` 가 슬롯 잠금을 쥐고 teardown → 작업 트리 검사 → `git switch --detach` → (병합한 브랜치면) `git branch -d` → `free` 를 하고(슬롯에 끝나지 않은 병합이 있거나 버린 태스크 슬롯에 커밋 안 된 변경이 있으면 switch 하지 않고 `dirty`), 재확인이 끊긴 놓기를 잇는다. 준비가 끝나지 않은 예약은 drop 이 바로 푼다. worktree 모드의 마무리 full 은 빈 슬롯 하나에서 기준 HEAD 로 setup → full → teardown 을 한다(메인 폴더에서 시험을 돌리지 않는다). 메인 큐 명령 `hteam slot reset <N>` 은 `dirty` 이고 태스크 없는 슬롯만 `git reset --hard`·`git clean -fd` 뒤 `free` 로 쓴다. `hteam status` 는 worktree 모드에서만 `workspace` 를 보인다.
 
 설계 5.10.9 의 기록만 한 한계(준비 중 drop 의 늦은 완료, 관제가 병합 커밋을 만든 뒤 태스크를 `done` 으로 쓰기 전에 죽음)는 고치지 않는다. 다만 이 계획에서는 준비가 끝나지 않은 예약을 drop 이 바로 지우므로(Rules 9) Task 3 의 준비 자식이 늦게 끝나도 슬롯 기록에 쓰지 않는다(Task 3 Rules 4).
 
@@ -2777,7 +2874,7 @@ Expected: ast 오류 없음, grep 빈 출력. 구현자는 여기서 멈춘다(�
     - `base_moved`: `메인 폴더 브랜치가 <지금 브랜치 또는 "detached HEAD"> 라 <T> 를 기준 브랜치 <기준> 에 병합하지 않았다`, hint `메인 폴더를 기준 브랜치로 되돌릴지 사용자에게 묻는다`, data `{"kind": "base_moved", "slot", "branch": <지금 브랜치 또는 null>, "base_branch"}`.
   - `tasks.accept(…)` 결과: 병합하면 `{"task", "status": "done", "warnings", "merge": <sha>}`, 충돌이면 `{"task", "status": "changes", "warnings", "merge_conflict": {"base", "files"}}`(exit 0). 위 세 오류는 그대로 올라간다(exit 3). 작업 공간 태스크가 아니면 지금 그대로(`merge` 키 없음).
   - 태스크 상태: `merge_wait = {"since": <첫 거부 시각 UTC>, "asked": [<올린 workspace_failed 의 kind>]}`(거부 동안만, 병합·충돌이면 지운다), `base_merge`(기준 병합 라운드 동안), 라운드 기록 `merge_conflict = {"base", "files"}`, 새 라운드 기록 `base_merge`(그 라운드가 풀 sha)·`merge_resume`(true, 슬롯의 `MERGE_HEAD` 가 그 sha 일 때만). history 사건: 병합 `accept`(`merge: <sha>`), 충돌 `merge_conflict`(`base`, `files`).
-  - `workspace.release(p, cfg, tid) -> dict`(Rules 7): 결과 `{"task", "slot": N | null, "state": "free"|"dirty"|null, "teardown": <run_hook 결과> | null, "branch_deleted": bool, "dirty": [<경로 앞 20개>]}`. 그 태스크가 쥔 슬롯이 없으면 `{"task", "slot": null, "state": null, "teardown": null, "branch_deleted": false, "dirty": []}`(exit 0). 태스크가 `done`·`dropped` 가 아니면 exit 3 `task_open`(`<T> 는 <상태> 다. 슬롯은 병합하거나 버린 뒤에 놓는다`). 슬롯 잠금은 nowait(못 쥐면 Task 3 의 `slot_locked`).
+  - `workspace.release(p, cfg, tid) -> dict`(Rules 7): 결과 `{"task", "slot": N | null, "state": "free"|"dirty"|null, "teardown": <run_hook 결과> | null, "branch_deleted": bool, "dirty": [<경로 앞 20개>]}`. `state: "dirty"` 면 `dirty` 는 슬롯의 `gitio.dirty(folder, ["."])`(끝나지 않은 병합이면 충돌 파일과 병합이 올린 파일도 든다)이고 `branch_deleted` 는 false 다. 그 태스크가 쥔 슬롯이 없으면 `{"task", "slot": null, "state": null, "teardown": null, "branch_deleted": false, "dirty": []}`(exit 0). 태스크가 `done`·`dropped` 가 아니면 exit 3 `task_open`(`<T> 는 <상태> 다. 슬롯은 병합하거나 버린 뒤에 놓는다`). 슬롯 잠금은 nowait(못 쥐면 Task 3 의 `slot_locked`).
   - `workspace.reset(p, cfg, n, *, request=None) -> dict`: 결과 `{"slot": N, "state": "free"}`. 오류: exit 2 `bad_slot`(`슬롯 번호는 1–<slots> 다: <값>`), exit 3 `slot_not_dirty`(`slot-<N> 은 <state>(<태스크 또는 "태스크 없음">)라 reset 하지 않는다(dirty 이고 태스크가 없을 때만)`), Task 3 의 `slot_locked`·`workspace_off`. 슬롯 기록에 `reset_request`(큐 요청 id)를 남긴다(재실행 막기).
   - `workspace.claim_final(p, cfg) -> tuple[int, str]`(프로젝트 잠금 안, `free` 이거나 `{"state": "busy", "task": null, "use": "final"}` 인데 잠금이 풀린 가장 작은 번호를 `{**SLOT_DEFAULT, "state": "busy", "use": "final", "base": <메인 HEAD>, "since"}` 로 쓰고 (번호, base)), 없으면 exit 3 `no_free_slot`(`빈 슬롯이 없다(slot-1–<slots> 을 모두 쓰는 중이다). 마무리 full 은 슬롯이 비면 다시 한다`). `free_final(p, n)`(그 기록을 `{**SLOT_DEFAULT, "since"}` 로).
   - `workspace.status_view(p, cfg) -> dict`: `{"mode": "worktree", "slots": [{"n", "state", "task", "branch"}]}`(1–`slots` 와 기록에 있는 번호, 번호순). `workspace.releasable(p) -> list[tuple[int, str]]`: 기록의 `task` 가 `done`·`dropped` 이고 기록이 `busy` 이거나 `ready` 인 `preparing` 인 (번호, 태스크).
@@ -2790,7 +2887,7 @@ Expected: ast 오류 없음, grep 빈 출력. 구현자는 여기서 멈춘다(�
     - `merge_conflict`: summary `기준 브랜치 <기준> 에 병합하다 충돌했다(<n>개 파일: <앞 다섯, 쉼표>). 되돌렸다`, `detail {"base", "files"}`, commands `[self._fix_cmd(st, "<충돌을 어떻게 풀지 사용자 지시>"), "hteam drop <T>"]`(상한이면 `--force-round` 가 붙는다).
     - `workspace_failed`(병합 쪽): summary 는 위 오류 message, `detail {"kind", "slot", …오류 data}`, commands 없음(설계 7.7: 사용자에게 묻는다).
   - drive.log(설계 8.11): `<T> 병합 <sha 7자>`, `<T> 병합 거부: <git 출력 첫 줄 120자>`(첫 거부만), `<T> 병합 충돌: <파일 앞 다섯, 쉼표>`, `<T> 병합 못 함(<kind>): <message 120자>`, `slot-<N> <T> 놓기 시작`, `slot-<N> <T> 놓기 <free|dirty>`(teardown 이 passed 가 아니면 뒤에 ` (teardown <status>)`), `slot-<N> <T> 놓기 실패: <code>: <message 120자>`, `마지막 전체 테스트: 빈 슬롯이 없어 다음 확인 때 다시 한다`.
-  - progress: teardown 실패 `slot-<N> <T> teardown 이 <status>(exit <exit>)로 끝났다(놓기는 마쳤다). 로그: <log>`, dirty `slot-<N> 에 커밋 안 된 변경이 남아 dirty 로 두었다(<T> 를 버렸다): <앞 다섯, 쉼표>. 사용자가 버려도 된다고 하면 hteam slot reset <N>`.
+  - progress: teardown 실패 `slot-<N> <T> teardown 이 <status>(exit <exit>)로 끝났다(놓기는 마쳤다). 로그: <log>`, dirty `slot-<N> 에 커밋 안 된 변경이 남아 dirty 로 두었다(<T> 를 버렸다): <앞 다섯, 쉼표>. 사용자가 버려도 된다고 하면 hteam slot reset <N>`(태스크가 `done` 이면 괄호가 `<T> 는 병합했다`, 바뀐 경로가 없으면 `<앞 다섯>` 자리가 `git switch 가 거부했다`).
   - `queue.QUEUE_COMMANDS` 에 `"slot reset"`(`"agent reset"` 다음), `EXECUTORS["slot reset"]`, `recorded` 의 `slot reset`(그 슬롯 기록의 `reset_request` 가 요청 id 면 `{"recovered": true, "slot": N, "state": <기록 state>}`). `roles.DRIVE_ONLY_MESSAGE` 의 목록 `…, agent reset, slot reset, test-confirm 이다`.
   - `hteam status`: `cfg.workspace.on` 일 때만 `workspace`(`status_view`). `slots.json` 을 읽지 못하면 `workspace: {"mode": "worktree", "slots": []}` 와 `warnings` 의 `작업 공간 기록: <message>`(status 는 실패하지 않는다).
   - `hteam test --full`(worktree 모드): 결과·`final.json` 의 `full` 에 `slot`. `head` 는 그 슬롯에서 돌린 커밋(메인 HEAD). setup 실패면 exit 1 `setup_failed`(Task 3 과 같은 data, `slot`·`kind`), 빈 슬롯이 없으면 exit 3 `no_free_slot`.
@@ -2804,12 +2901,12 @@ Expected: ast 오류 없음, grep 빈 출력. 구현자는 여기서 멈춘다(�
 2. `merge`(5.10.6): git 잠금을 쥔다. ① `gitio.merge_head(p.root)` 가 있으면 시도하지 않고 `merge_blocked`. ② `gitio.current_branch(p.root) != ws["base_branch"]` 면 `base_moved`. ③ `base = gitio.head(p.root)`, `gitio.merge_no_ff(p.root, ws["branch"], f"[{T}] merge: {사양 제목}")`. exit 0 이면 `merged`(sha 는 새 HEAD). ④ exit 0 이 아니고 `merge_head` 가 생겼으면 충돌: 충돌 파일을 `unmerged` 로 모으고 `merge_abort` 한 뒤 `merge_head` 가 아직 있으면 `merge_blocked`(abort 실패), 없으면 `conflict`. ⑤ 그 밖(병합이 시작되지 않았다: index 에 올린 변경, 덮을 커밋 안 된 파일, `index.lock`)은 `merge_pending`. 출력은 stderr·stdout 을 합친 글이다. 메시지 문구를 해석하지 않는다(로캘을 타지 않게 `MERGE_HEAD` 로 가른다).
 3. 거부 기록: `tasks.accept` 는 `merge` 의 세 오류를 받으면 태스크 잠금 안에서 `merge_wait` 가 없을 때만 `{"since": now(), "asked": []}` 를 쓰고(상태·라운드는 바꾸지 않는다) data 에 `first`(이번에 만들었는지)를 더해 그대로 올린다.
 4. 충돌 전이(5.10.6): `conflict` 결과면 같은 태스크 잠금 쓰기에서 라운드 기록 `merge_conflict = {base, files}`, `base_merge = base`, `base = base`, `merge_wait` 지우기, `approved` → `changes`(사건 `merge_conflict`). `workspace.merge` 는 null 그대로, 슬롯은 태스크가 쥔 채다(`busy`). 결과 `{"status": "changes", "merge_conflict": {…}}`.
-5. 관제(8.6·8.10): `accept_task` 는 `merge_pending`·`merge_blocked`·`base_moved` 를 관제 절차 실패로 올리지 않고 `merge_refused(tid, exc)` 로 넘긴다: `merge_pending` 이면 `first` 일 때만 로그 `<T> 병합 거부: …`, `merge_wait.since` 가 `MERGE_BLOCKED_S` 보다 오래됐고 `asked` 에 `merge_blocked` 가 없으면 decide `workspace_failed`(kind `merge_blocked`, summary `<T> 병합이 10분 넘게 거부됐다: <output 첫 줄>`, detail 에 `output`)를 올리고 `asked` 에 더한다. `merge_blocked`·`base_moved` 는 로그 `<T> 병합 못 함(<kind>): …` 와, `asked` 에 그 kind 가 없을 때만 decide `workspace_failed`(summary 는 오류 message) 한 번. 태스크는 `approved` 그대로라 decide 가 열린 동안 재확인이 accept 를 다시 하지 않고(지금 `open_decide` 규칙), 답한 뒤 재확인(8.7 표의 `approved` → accept)이 다시 병합한다. `after_accept` 는 `res["merge"]` 면 로그 `<T> 병합 <sha 7자>`, `res["merge_conflict"]` 면 로그 `<T> 병합 충돌: …` 와 decide `merge_conflict` 를 올린 뒤 지금 처리(직무별 다음 자리, start-ready)를 하고, 끝에 `release_step()`. `reconcile_task` 의 `changes` 갈래는 라운드 기록에 `merge_conflict` 가 있으면 자동 fix 를 하지 않는다: 이 라운드에 decide 를 올린 적이 없으면(`decide_round != round`) decide `merge_conflict` 를 올리고(병합 충돌 전이 뒤 decide 전에 관제가 죽은 경우), 있으면 그대로 둔다(메인이 fix·drop 한다).
+5. 관제(8.6·8.10): `accept_task` 는 `merge_pending`·`merge_blocked`·`base_moved` 를 관제 절차 실패로 올리지 않고 `merge_refused(tid, exc)` 로 넘긴다: `merge_pending` 이면 `first` 일 때만 로그 `<T> 병합 거부: …`, `merge_wait.since` 가 `MERGE_BLOCKED_S` 보다 오래됐고 `asked` 에 `merge_blocked` 가 없으면 decide `workspace_failed`(kind `merge_blocked`, summary `<T> 병합이 10분 넘게 거부됐다: <output 첫 줄>`, detail 에 `output`)를 올리고 `asked` 에 더한다(decide 를 쓴 뒤 `asked` 를 저장한다. 그 사이 중단되면 다음 재확인이 같은 decide 를 한 번 더 올릴 수 있지만 잃지 않는다, Codex 계획 리뷰 r1). `merge_blocked`·`base_moved` 는 로그 `<T> 병합 못 함(<kind>): …` 와, `asked` 에 그 kind 가 없을 때만 decide `workspace_failed`(summary 는 오류 message) 한 번. 태스크는 `approved` 그대로라 decide 가 열린 동안 재확인이 accept 를 다시 하지 않고(지금 `open_decide` 규칙), 답한 뒤 재확인(8.7 표의 `approved` → accept)이 다시 병합한다. `after_accept` 는 `res["merge"]` 면 로그 `<T> 병합 <sha 7자>`, `res["merge_conflict"]` 면 로그 `<T> 병합 충돌: …` 와 decide `merge_conflict` 를 올린 뒤 지금 처리(직무별 다음 자리, start-ready)를 하고, 끝에 `release_step()`. `reconcile_task` 의 `changes` 갈래는 라운드 기록에 `merge_conflict` 가 있으면 자동 fix 를 하지 않는다: 이 충돌의 decide 가 outbox 에 없으면(지금 있는 `outbox.read_outbox(p)` 에 `type == "decide"`·`kind == "merge_conflict"`·`task == T`·`detail == 라운드 기록의 merge_conflict` 인 항목이 없으면) decide `merge_conflict` 를 올리고(병합 충돌 전이 뒤 decide 전에 관제가 죽은 경우), 있으면 그대로 둔다(메인이 fix·drop 한다). `decide_round == round` 로 가리지 않는다: 그 표시는 같은 라운드의 다른 decide(답한 `worker_question` 등)에도 남는다(Codex 계획 리뷰 r1). 새 상태 필드는 쓰지 않는다.
 6. 기준 병합 라운드(5.10.6): `tasks.fix` 가 새 라운드 기록을 쓸 때(지금 잠금 안) 태스크 상태에 `base_merge` 가 있으면 라운드에 `base_merge` 를 옮기고, 그 슬롯의 `gitio.merge_head(<작업 루트>) == base_merge` 면 `merge_resume: true` 를 쓴다. 사양은 Interfaces 의 `compose` 규칙으로 만든다(같은 라운드 복구는 저장된 사양 그대로). 리뷰 시작(6.1, `--retry` 가 아닌 새 시도. 사전 검사보다 먼저): 상태에 `base_merge` 가 있고 대상 커밋 가운데 `gitio.parents(<작업 루트>, sha)` 에 그 sha 가 든 커밋이 있으면 태스크 잠금 안에서 `base_merge` 를 지운다(사전 검사·관문 결과와 상관없다). 그래서 워커가 커밋 전에 죽어 새 라운드가 열려도 표시가 남아 같은 지시를 받는다. 바뀐 파일(`review.changed_files`, 그것을 쓰는 사전 검사·관문의 quick 파일·`code_head`)은 부모가 둘 이상인 커밋에서 `diff_names(<작업 루트>, st["base"], "HEAD")` 에 든 경로만 센다(설계 "지금 기준과 태스크 브랜치의 차이만"). 사전 검사의 owns 밖 판정은 지금처럼 `differs(base, HEAD)` 라 다른 태스크·사람이 기준에 넣은 변경은 잡히지 않는다.
-7. 놓기(5.10.6, `workspace.release`): 프로젝트 잠금 안에서 `held_by` 로 그 태스크의 슬롯을 찾는다(없으면 할 일 없음). 태스크가 `done`·`dropped` 가 아니면 `task_open`. 슬롯 잠금(nowait)을 쥔 뒤 기록이 아직 그 태스크의 것인지 다시 본다. ① `cfg.workspace.teardown` 이 있으면 `run_hook(p, cfg, n, "teardown", tid)`(실패해도 계속, 결과를 출력에. 죽음 지점 `slot_release_teardown`). ② 슬롯 폴더에서 `gitio.switch_detach(folder)`. ③ 태스크가 `done` 이고 `branch_exists` 면 메인 폴더에서 `delete_branch(p.root, branch)`(`-d`. 실패하면 `branch_deleted: false` 로 두고 계속). `dropped` 면 브랜치를 남긴다. 죽음 지점 `slot_release_detached`. ④ 프로젝트 잠금 안에서 기록을 다시 보고, `dropped` 이고 `gitio.dirty(folder, ["."])` 가 있으면 `{**SLOT_DEFAULT, "state": "dirty", "since"}`, 아니면 `{**SLOT_DEFAULT, "since"}`(`setup_done` 은 null: teardown 했으니 다음 태스크가 setup 을 다시 한다). 슬롯 폴더와 무시된 파일은 지우지 않는다. 다시 불러도 같은 결과로 잇는다(teardown 은 다시 돈다).
+7. 놓기(5.10.6, `workspace.release`): 프로젝트 잠금 안에서 `held_by` 로 그 태스크의 슬롯을 찾는다(없으면 할 일 없음). 태스크가 `done`·`dropped` 가 아니면 `task_open`. 슬롯 잠금(nowait)을 쥔 뒤 기록이 아직 그 태스크의 것인지 다시 본다. ① `cfg.workspace.teardown` 이 있으면 `run_hook(p, cfg, n, "teardown", tid)`(실패해도 계속, 결과를 출력에. 죽음 지점 `slot_release_teardown`). ② 작업 트리 검사(switch 보다 먼저, Codex 계획 리뷰 r1): 슬롯 폴더에 끝나지 않은 병합(`gitio.merge_head(folder)`, 예: 기준 병합 라운드 도중의 drop)이 있거나, 태스크가 `dropped` 이고 `gitio.dirty(folder, ["."])` 가 있으면 ⑤ 로 간다. git 은 병합 중 `switch` 를 거부하므로("cannot switch branch while merging") switch 를 먼저 하면 슬롯이 `busy` 로 남고 재확인이 같은 실패를 되풀이한다. ③ 깨끗하면 슬롯 폴더에서 `gitio.switch_detach(folder)`. 이 switch 가 실패해도(`git_failed`) ⑤ 로 간다(다시 시도하지 않는다). 태스크가 `done` 이고 `branch_exists` 면 메인 폴더에서 `delete_branch(p.root, branch)`(`-d`. 실패하면 `branch_deleted: false` 로 두고 계속). `dropped` 면 브랜치를 남긴다. 죽음 지점 `slot_release_detached`. ④ 프로젝트 잠금 안에서 기록을 다시 보고 `{**SLOT_DEFAULT, "since"}`(free. `setup_done` 은 null: teardown 했으니 다음 태스크가 setup 을 다시 한다). ⑤ 남기기: switch·브랜치 지우기를 하지 않고(브랜치·병합 상태·파일을 그대로 둔다) 프로젝트 잠금 안에서 기록을 `{**SLOT_DEFAULT, "state": "dirty", "since"}`(태스크 연결을 푼다)로 쓴다. 알림은 설계 5.10.6 "버린 태스크의 슬롯에 커밋 안 된 변경이 있으면 `dirty` 로 두고 progress 로 알린다" 그대로 Rules 8 의 progress(dirty) 한 번이다(기록이 태스크 없는 `dirty` 라 `releasable` 에 다시 들지 않는다). 정리는 메인이 사용자 확인 뒤 부르는 `slot reset <N>` 이다(Rules 11 의 `reset_hard` 가 `MERGE_HEAD` 도 지운다. git 2.50 에서 확인했다). 슬롯 폴더와 무시된 파일은 지우지 않는다. 다시 불러도 같은 결과로 잇는다(teardown 은 다시 돈다).
 8. 관제의 놓기(8.8): `release_step()` 은 `workspace.releasable(p)` 의 (번호, 태스크)마다 `slot:<N>` 자식이 없고 `slot_busy` 가 아니면 `spawn(f"slot:{n}", ["slot", "release", T])` 와 로그 `slot-<N> <T> 놓기 시작`. `after_accept` 끝, 큐 `drop` 실행 뒤(`queue._x_drop` 이 결과를 돌려주기 전에 격리 `release:<T>` 로), 재확인의 태스크별 처리 뒤(격리 `slots`, `batches` 앞)에서 부른다. 그래서 놓기 도중 관제나 자식이 죽어도 다음 재확인이 잇는다(태스크가 `done`·`dropped` 인데 슬롯이 `busy`). 거두기(`_release_done`): exit 0 이면 로그 `slot-<N> <T> 놓기 <state>`, teardown 이 passed 가 아니면 progress(teardown 실패), `dirty` 면 progress(dirty). `slot_locked` 는 아무것도 하지 않는다(다음 재확인). 그 밖은 로그 `놓기 실패`.
 9. drop(5.10.6·5.10.9): `tasks.drop` 의 마지막 전이(`_closing` 의 프로젝트 잠금 안)에서 그 태스크가 쥔 슬롯 기록이 `ready` 없는 `preparing` 이면 `{**SLOT_DEFAULT, "setup_done": <그대로>, "since"}` 로 바로 푼다(준비 자식을 기다리지 않는다. 늦게 끝난 자식은 Task 3 Rules 4 로 쓰지 않는다. 그 자식이 만든 브랜치·setup 결과는 남는다: 한계). `busy` 나 `ready` 인 `preparing` 은 그대로 두고 관제의 놓기(Rules 8)가 teardown 과 함께 놓는다. `slots.json` 을 읽지 못하면 drop 이 `bad_slots_file` 로 끝난다(엄격 읽기). Redmine `drop` 사건(Task 8)은 dropped 쓰기 직후다.
-10. 마무리 full(5.10.7): `testgate.run_final` 은 `config.load(p)` 의 `workspace.on` 이면 메인 폴더에서 돌리지 않는다. `claim_final` → 그 슬롯 잠금(nowait) → 폴더가 없으면 `worktree_add(p.root, folder, base)`, 있으면 `switch_detach(folder, base)` → setup(있으면. 실패면 `free_final` 하고 `setup_failed`, teardown 은 돌리지 않는다: 준비와 같다) → full(`attempt` 를 `cwd=work_root(p, n)`, `env=slot_env(cfg, n)` 으로) → teardown(있으면, 결과는 쓰지 않는다) → `free_final`. 기록은 지금 꼴에 `head = base`, `head_moved`(끝날 때 메인 HEAD 가 다르면 그 sha), `dirty`(작업 루트 기준), `slot` 을 더한다. 빈 슬롯이 없으면 `no_free_slot`. 관제 `final_done`: exit 3 `no_free_slot` 이면 로그만 남기고 끝낸다(다음 재확인의 `finish_step` 이 다시 띄운다). exit 1 `setup_failed` 면 decide `workspace_failed`(task 없음, kind `setup_failed`, `tail`)를 올리고 지금 실패처럼 `final_failed`·`final_decide` 를 쓴다(답하기 전에는 다시 돌리지 않는다). shared 면 지금 그대로(메인 폴더).
+10. 마무리 full(5.10.7): `testgate.run_final` 은 `config.test_settings(p)`(Task 2 Rules 11. `hteam test --full` 은 `config.load` 를 부르지 않는다, 설계 4.2)의 `workspace.on` 이면 메인 폴더에서 돌리지 않는다. 아래의 `cfg` 는 그 `TestSettings` 다. `claim_final` → 그 슬롯 잠금(nowait) → 폴더가 없으면 `worktree_add(p.root, folder, base)`, 있으면 `switch_detach(folder, base)` → setup(있으면. 실패면 `free_final` 하고 `setup_failed`, teardown 은 돌리지 않는다: 준비와 같다) → full(`attempt` 를 `cwd=work_root(p, n)`, `env=slot_env(cfg, n)` 으로) → teardown(있으면, 결과는 쓰지 않는다) → `free_final`. 기록은 지금 꼴에 `head = base`, `head_moved`(끝날 때 메인 HEAD 가 다르면 그 sha), `dirty`(작업 루트 기준), `slot` 을 더한다. 빈 슬롯이 없으면 `no_free_slot`. 관제 `final_done`: exit 3 `no_free_slot` 이면 로그만 남기고 끝낸다(다음 재확인의 `finish_step` 이 다시 띄운다). exit 1 `setup_failed` 면 decide `workspace_failed`(task 없음, kind `setup_failed`, `tail`)를 올리고 지금 실패처럼 `final_failed`·`final_decide` 를 쓴다(답하기 전에는 다시 돌리지 않는다). shared 면 지금 그대로(메인 폴더).
 11. `slot reset`(5.10.8): `reset` 은 모드 검사(shared 면 `workspace_off`) → 번호 검사(1–`slots` 의 정수 문자열, 아니면 `bad_slot`) → 슬롯 잠금(nowait) → 프로젝트 잠금 안에서 기록이 `dirty` 이고 `task` 가 없을 때만 슬롯 폴더에서 `reset_hard` 와 `clean_untracked` 를 한 뒤 `{**SLOT_DEFAULT, "since", "reset_request": request}`. 되돌릴 수 없으므로 메인은 사용자 확인 뒤에만 부른다(Task 9 의 메인 규칙). 큐 실행(`_x_slot_reset`)은 `request=req["id"]` 를 넘기고, `recorded` 는 그 슬롯 기록의 `reset_request` 로 복구한다.
 12. status(5.10.8): 위 Interfaces. `[workspace]` 가 없거나 shared 면 키가 없다.
 13. 회귀(헤더 "기본값"): shared 프로젝트의 accept 는 병합하지 않고(결과에 `merge` 없음, 메인 HEAD 에 병합 커밋 없음) `done`, 상태에 `workspace`·`merge_wait` 가 없다. `slots.json`·`state/slots/` 를 만들지 않는다. 마무리 full 은 메인 폴더(`slot` 없음). `slot reset`·`slot release` 는 `workspace_off`.
@@ -2882,9 +2979,9 @@ def merge_refused(self, tid: str, exc: HteamError) -> None:
         summary = exc.message
     if kind in wait["asked"]:
         return
-    with state.edit(self.p, tid) as cur:
+    self.decide("workspace_failed", tid, summary, detail={**exc.data, "kind": kind})  # 먼저 알린다(잃지 않는다)
+    with state.edit(self.p, tid) as cur:  # 그 뒤 표시. 그 사이 중단되면 다음 재확인이 한 번 더 알릴 수 있다(계획 끝 한계)
         cur.setdefault("merge_wait", wait)["asked"] = [*cur["merge_wait"].get("asked", []), kind]
-    self.decide("workspace_failed", tid, summary, detail={**exc.data, "kind": kind})
 ```
 
 - [ ] **Step 1: 실패하는 테스트 작성**
@@ -3154,18 +3251,51 @@ class ConflictTest(MergeCase):
         st = self.task_state("T-001")
         self.assertEqual((st["status"], st["round"]), ("changes", 1))
 
+    def cli_conflicted(self) -> str:
+        """conflicted() 와 같은 충돌을 관제 안의 CLI accept 로 만든다: 충돌 전이는 쓰고 decide 는 올리지 않는다(after_accept 를
+        거치지 않는다). 충돌 전이 뒤 decide 를 올리기 전에 관제가 죽은 것과 같다. 충돌 때의 기준 HEAD 를 돌려준다."""
+        self.approved(files={"src/a/core.py": "task\n"})
+        self.commit("src/a/core.py", "main\n", "사람: core")
+        base = self.commit("docs/other.md", "o2\n", "사람: other")
+        code, out = self.hteam("accept", "T-001")
+        self.assertEqual((code, out["status"]), (0, "changes"), out)
+        self.assertEqual(self.decides("merge_conflict"), [])
+        return base
+
     def test_conflict_without_decide_is_decided_by_reconcile(self):
-        base = self.conflicted()
-        with state.edit(self.p, "T-001") as st:  # 충돌 전이 뒤 decide 를 올리기 전에 관제가 죽었다(표시가 없다)
-            st.pop("decide", None)
-            st.pop("decide_round", None)
+        base = self.cli_conflicted()
         self.d.reconcile()
-        decs = self.decides("merge_conflict")
-        self.assertEqual(len(decs), 2)
-        self.assertEqual(decs[-1]["detail"], {"base": base, "files": ["src/a/core.py"]})
+        [dec] = self.decides("merge_conflict")
+        self.assertEqual((dec["task"], dec["detail"]), ("T-001", {"base": base, "files": ["src/a/core.py"]}))
         self.assertEqual(self.task_state("T-001")["round"], 1)  # 자동 fix 를 하지 않는다
-        self.d.reconcile()  # 이번에는 이 라운드에 올린 decide 가 있다
-        self.assertEqual(len(self.decides("merge_conflict")), 2)
+        self.d.reconcile()  # 이번에는 outbox 에 이 충돌의 decide 가 있다
+        self.assertEqual(len(self.decides("merge_conflict")), 1)
+
+    def test_answered_question_in_the_round_does_not_hide_the_conflict(self):
+        # 같은 라운드에 답한 다른 decide(worker_question)의 decide_round 가 남아 있어도 재확인이 충돌 decide 를 올린다
+        # (outbox 의 kind·task·detail 로 가린다, Codex 계획 리뷰 r1)
+        self.ws_start("T-001")
+        oid = self.d.decide("worker_question", "T-001", "어느 쪽으로 하나", question="어느 쪽으로 하나")
+        (self.state_dir / "answers").mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "answers" / f"{oid}.json").write_text(
+            json.dumps({"id": oid, "answer": "앞쪽", "at": "2026-11-12T00:00:00Z"}), encoding="utf-8")
+        self.assertEqual(self.task_state("T-001")["decide_round"], 1)
+        code, out = self.act_work("T-001", {"src/a/core.py": "task\n"})
+        self.assertEqual(code, 0, out)
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual((code, out.get("status")), (0, "reviewing"), out)
+        self.assertEqual(self.act_review("T-001", "APPROVE")[0], 0)
+        code, out = self.hteam("review-finish", "T-001")
+        self.assertEqual((code, out.get("status")), (0, "approved"), out)
+        self.commit("src/a/core.py", "main\n", "사람: core")
+        code, out = self.hteam("accept", "T-001")  # 충돌 전이만 쓴다(decide 없음)
+        self.assertEqual((code, out["status"]), (0, "changes"), out)
+        st = self.task_state("T-001")
+        self.assertEqual((st["round"], st["decide_round"]), (1, 1))  # 앞 질문의 표시가 남았다
+        self.d.reconcile()
+        [dec] = self.decides("merge_conflict")
+        self.assertEqual(dec["detail"]["files"], ["src/a/core.py"])
+        self.assertEqual(self.task_state("T-001")["round"], 1)
 
     def test_base_merge_round_instruction_review_and_merge(self):
         base = self.conflicted()
@@ -3312,6 +3442,38 @@ class DropReleaseTest(MergeCase):
         self.assertEqual(line, "slot-1 에 커밋 안 된 변경이 남아 dirty 로 두었다(T-001 를 버렸다): src/a/tmp.py. "
                                "사용자가 버려도 된다고 하면 hteam slot reset 1")
         self.assertIn("slot-1 T-001 놓기 dirty", self.log_text())
+
+    def test_drop_during_base_merge_leaves_the_slot_dirty_for_reset(self):
+        # 기준 병합 라운드 도중(슬롯에 MERGE_HEAD) drop: git 은 병합 중 switch 를 거부하므로 switch 하지 않고 dirty 로 남긴다
+        # (Rules 7, Codex 계획 리뷰 r1). 재확인은 놓기를 되풀이하지 않고 slot reset 이 정리한다
+        self.approved(files={"src/a/core.py": "task\n"})
+        self.commit("src/a/core.py", "main\n", "사람: core")
+        base = self.commit("docs/other.md", "o2\n", "사람: other")
+        self.assertEqual(self.d.accept_task("T-001")["status"], "changes")
+        self.assertEqual(self.hteam("fix", "T-001", "--note=합친다")[0], 0)
+        self.worker_base_merge(base, {}, commit=False)  # 워커가 병합을 시작한 채 끝났다(충돌이 남았다)
+        slot = self.slot_root(1)
+        self.assertTrue(self.merging(slot))
+        code, out = self.hteam("drop", "T-001", "--force")
+        self.assertEqual((code, out["status"]), (0, "dropped"), out)
+        self.d.reconcile()
+        self.wait_jobs()
+        rec = self.record(1)
+        self.assertEqual((rec["state"], rec["task"]), ("dirty", None))
+        self.assertTrue(self.merging(slot))  # 병합 상태·브랜치·파일은 그대로 둔다(사용자가 보고 정한다)
+        self.assertEqual(self.git_at(slot, "branch", "--show-current").strip(), "herdr/T-001")
+        [line] = [b for b in self.progress() if b.startswith("slot-1 에 커밋 안 된 변경이 남아")]
+        self.assertIn("dirty 로 두었다(T-001 를 버렸다): ", line)
+        self.assertIn("src/a/core.py", line)
+        self.assertTrue(line.endswith("사용자가 버려도 된다고 하면 hteam slot reset 1"), line)
+        self.assertEqual(self.log_text().count("slot-1 T-001 놓기 dirty"), 1)
+        self.d.reconcile()  # 태스크 없는 dirty 슬롯은 놓을 것이 아니다(같은 실패를 되풀이하지 않는다)
+        self.assertEqual(self.d.jobs, {})
+        self.assertEqual(len(self.lines("teardown.txt")), 1)
+        code, out = self.hteam("slot", "reset", "1")
+        self.assertEqual((code, out["slot"], out["state"]), (0, 1, "free"), out)
+        self.assertFalse(self.merging(slot))  # git reset --hard 가 끝나지 않은 병합도 지운다
+        self.assertEqual(self.git_at(slot, "status", "--porcelain").strip(), "")
 
     def test_drop_while_preparing_frees_the_reservation(self):
         code, out = self.hteam("start", "T-001")
@@ -3520,7 +3682,7 @@ if __name__ == "__main__":
 - [ ] **Step 2: 실패 확인**
 
 Run: `cd herdr-team && python3 -m unittest tests.test_workspace_merge tests.test_drive tests.test_queue 2>&1 | tail -5`
-Expected: `Ran 56 tests` / `FAILED (failures=8, errors=1)`(subTest 마다 센다). 오류 하나는 새 모듈의 `ImportError: cannot import name 'workspace' from 'hteam'`(Task 3 의 모듈이 없다. 구현이 있으면 이 모듈의 시험 25개가 기능 실패로 바뀐다), 실패는 `test_time_constants_and_kinds` 의 `Tuples differ: (… 'token_update') != (… 'token_update', 'workspace_failed', 'merge_conflict')` 하나와 `test_drive_only_commands`·`test_drive_only_commands_from_main` 의 `… agent reset, test-confirm 이다') != (… agent reset, slot reset, test-confirm 이다')` 일곱이다. HEAD 에 공유 시험 도구 편집(Task 3 의 셋, Task 4 의 `ws_start`)과 Task 4 의 `DECIDE_KINDS` 기대값 Edit 과 이 태스크의 Step 1 블록만 적용한 트리에서 쟀다(앞 태스크 구현 없음).
+Expected: `Ran 56 tests` / `FAILED (failures=8, errors=1)`(subTest 마다 센다). 오류 하나는 새 모듈의 `ImportError: cannot import name 'workspace' from 'hteam'`(Task 3 의 모듈이 없다. 구현이 있으면 이 모듈의 시험 27개가 기능 실패로 바뀐다), 실패는 `test_time_constants_and_kinds` 의 `Tuples differ: (… 'token_update') != (… 'token_update', 'workspace_failed', 'merge_conflict')` 하나와 `test_drive_only_commands`·`test_drive_only_commands_from_main` 의 `… agent reset, test-confirm 이다') != (… agent reset, slot reset, test-confirm 이다')` 일곱이다. HEAD 에 공유 시험 도구 편집(Task 3 의 셋, Task 4 의 `ws_start`)과 Task 4 의 `DECIDE_KINDS` 기대값 Edit 과 이 태스크의 Step 1 블록만 적용한 트리에서 쟀다(앞 태스크 구현 없음).
 
 - [ ] **Step 3: 구현**
 
@@ -3565,7 +3727,7 @@ Expected: ast 오류 없음, grep 빈 출력. 구현자는 여기서 멈춘다(�
 - Test: `herdr-team/tests/test_testgate.py`·`herdr-team/tests/test_review.py`·`herdr-team/tests/test_drive_events.py`·`herdr-team/tests/test_start.py`(Append)
 
 **Interfaces:**
-- Consumes: Task 2 의 `testgate.GateConfig.full_if: tuple[str, ...]`(없으면 빈 튜플, `digest` 에 들지 않는다)과 `config.Config.redmine`(`Redmine.key_env`), Task 3 의 `testgate.child_env(cfg, extra=None)`, Task 4 의 테스트 실행 규칙(테스트 명령을 돌리는 곳이 `config.load(p)` 의 설정과 작업 루트·`workspace.task_env` 를 `execute` 에 넘긴다), 지금의 `testgate.check_committed`·`record_task`·`gate_results`·`retry_results`·`describe`·`summary`, `review._precheck_fail`·`_gate_text`, `compose.test_block`·`tests_section`·`GROUP_FILES_SHOWN`, `drive.Drive.hteam_changes`·`_same_gate_failure`, `globs.matches_any`.
+- Consumes: Task 2 의 `testgate.GateConfig.full_if: tuple[str, ...]`(없으면 빈 튜플, `digest` 에 들지 않는다)과 `config.Config.redmine`(`Redmine.key_env`), Task 3 의 `testgate.child_env(cfg, extra=None)`, Task 2 의 `config.test_settings`·`TestSettings`·`redmine_key_env`(Rules 11: `hteam test` 는 `config.load` 를 부르지 않는다), Task 4 의 테스트 실행 규칙(테스트 명령을 돌리는 곳이 작업 루트와 `workspace.task_env(p, config.test_settings(p), st)` 를 `execute` 에 넘긴다), 지금의 `testgate.check_committed`·`record_task`·`gate_results`·`retry_results`·`describe`·`summary`, `review._precheck_fail`·`_gate_text`, `compose.test_block`·`tests_section`·`GROUP_FILES_SHOWN`, `drive.Drive.hteam_changes`·`_same_gate_failure`, `globs.matches_any`.
 - Produces:
   - `testgate.full_if_matches(p, cfg: GateConfig, st: dict, commits: list[dict]) -> list[str]`: 직무(`st["role"]`)가 `developer` 이고 `cfg.full_if` 가 비지 않았을 때만 본다. 아니면 `[]`. `changed_files(p, commits)` 가운데 `_report(path, tid)`(태스크 보고서 폴더·`docs/qa/`)가 아니고 `../` 로 시작하지 않으며 `matches_any(path, cfg.full_if)` 인 것, 정렬.
   - `testgate.matched_text(matched: list[str]) -> str`: 앞 15개를 `show()` 로 `, ` 이어 붙이고 넘으면 ` 외 N개`. 반려 파일·프롬프트가 같이 쓴다.
@@ -3573,7 +3735,7 @@ Expected: ast 오류 없음, grep 빈 출력. 구현자는 여기서 멈춘다(�
   - `testgate.run_task(p, tid, kind)`: kind 가 `quick` 이고 `full_if_matches` 가 비지 않으면 `record_task(…, "full", matched=…)` 를 하고 결과 `kind` 는 `"full"`. 출력 `{"task", "kind": "full", "round", "head", "config", "command", "log", "status", "exit", "seconds", "tail", "reason": "full_if", "matched", "dirty", "at"}`. exit 는 지금처럼 status 가 `passed`·`flaky`·`skipped` 면 0, 아니면 1.
   - `testgate.gate_results(p, st, role, commits)`: developer 이고 `full_if_matches` 가 비지 않으면 저장된 `full` 이 같은 라운드(`st["round"] or 1`)·같은 code_head·같은 식별값이면(상태와 관계없이) 그것을, 아니면 `record_task(…, "full", matched=…)` 를 쓰고 `{"head", "config", "full": <기록>, "full_if": <matched>}` 를 돌려준다. `full_if` 키는 이번 대상 커밋으로 잰 matched 다(재사용한 기록이 `--full` 로 직접 돈 것이어도 있다). 확정 전 건너뛰기(`skipped: "unapproved"`)는 지금처럼 이것보다 먼저다. tester 와 매치 없는 developer 는 지금 그대로. `retry_results` 는 바꾸지 않는다(같은 입력이면 앞 시도의 `inputs.tests` 를 그대로, 다르면 `gate_results`).
   - `testgate.gate_failed(tests: dict | None) -> bool`: developer 관문을 리뷰어 없이 반려할 결과인가: quick 이 있고 `passed`·`flaky`·`skipped` 가 아니거나, `full_if` 가 있고 full 이 `passed`·`flaky`·`skipped` 가 아니다. tester 결과(`full_if` 키 없음)는 반려하지 않는다. 지금의 `failed_quick` 을 이것으로 바꾼다(부르는 곳은 `review.py` 둘뿐이다).
-  - `testgate.child_env(cfg, extra=None)`: Task 3 의 동작에 더해 `cfg.redmine` 이 있으면 `cfg.redmine.key_env` 이름을 뺀다. 빼기는 extra 를 더한 뒤 마지막에 한다(어떤 경로로도 그 이름이 테스트 명령·setup·teardown 에 가지 않는다). `child_env` 를 부르는 모든 곳(테스트 명령 `execute`, 작업 공간 `run_hook`)이 `config.load(p)` 로 읽은 설정을 넘긴다(Task 3·4 에 설정 없이 부르는 곳이 남았으면 이 태스크가 바꾼다). 그래서 `hteam test` 는 config.toml 을 읽는다(읽지 못하면 다른 명령처럼 exit 2 `bad_config`. 5단계 "config.toml 을 읽지 않는다" 는 7단계에 바뀐다, 계획이 정한 것).
+  - `testgate.child_env(cfg, extra=None)`: Task 3 의 동작에 더해 `cfg` 의 `redmine` 이 있으면 `cfg.redmine.key_env` 이름을 뺀다(`cfg` 는 `config.Config` 또는 Task 2 의 `config.TestSettings`. 둘 다 `redmine.key_env` 가 그 이름이다). 빼기는 extra 를 더한 뒤 마지막에 한다(어떤 경로로도 그 이름이 테스트 명령·setup·teardown 에 가지 않는다). 부르는 곳(Codex 계획 리뷰 r1): 테스트 명령 `execute` 는 `child_env(config.test_settings(p), env)` 다. `hteam test`(quick·full·마무리 full)와 리뷰 관문이 함께 지나는 자리라 `config.load` 를 부르지 않는다: `hteam test` 는 7단계에도 설정이 깨져도 지금처럼 돌고(설계 4.2·5.7 의 5단계 규칙 그대로, 회귀 시험 `BrokenConfigGateTest`), `[redmine]` 의 다른 키가 틀려도 `key_env` 이름이 맞으면 그 이름을 뺀다(`KeyEnvBrokenConfigTest`). 리뷰 관문은 리뷰가 이미 `config.load` 로 검사를 통과시킨 설정이라 같은 이름이다. 작업 공간 `run_hook` 은 받은 `cfg`(준비·놓기 자식은 `config.load` 의 `Config`, 마무리 full 은 Task 5 의 `TestSettings`)로 `child_env(cfg, …)` 를 부른다(Task 3 에 `child_env(None, …)` 로 남은 곳이 있으면 이 태스크가 바꾼다).
   - 문구(원문):
     - `review.GATE_FULL_PROBLEM = "hteam 테스트 관문: full_if 경로를 바꿔 돌린 전체 테스트(full)가 통과하지 못했다."`, `review.gate_problem(tests) -> str`(`tests.get("full_if")` 면 `GATE_FULL_PROBLEM`, 아니면 지금 `GATE_PROBLEM`).
     - 반려 파일(full): 지금 `_gate_text` 와 같은 틀에서 `## 지적 사항` 의 P1 이 `GATE_FULL_PROBLEM`, `## 테스트 관문` 줄이 `testgate.describe(full, "full")` 의 줄들 다음 `full_if 에 맞은 경로: <matched_text>`, 출력 끝은 full 의 tail. 나머지(머리, "고친 뒤 `<SHIM> test T-xxx` 로 다시 확인한다.", 탓이 아닐 때 문장, VERDICT)는 그대로.
@@ -3599,7 +3761,7 @@ Expected: ast 오류 없음, grep 빈 출력. 구현자는 여기서 멈춘다(�
 5. 관제(설계 8.6): `hteam_changes` 는 `prechecks == [GATE_FULL_PROBLEM]` 이면 note `GATE_FULL_NOTE.format(file=review_rel(tid, round))` 로 fix 한다. `_same_gate_failure` 는 최근 두 판정 라운드가 모두 hteam 반려이고 `prechecks` 가 같은 관문 문구 하나(`[GATE_PROBLEM]` 또는 `[GATE_FULL_PROBLEM]`)이며 그 종류(quick·full)의 tail 이 숫자만 빼고 같으면 그 종류를 돌려준다(아니면 None). decide 요약은 repeat 요약 문구에 그 종류를 넣는다. quick 이 한 라운드, full 이 다음 라운드면 repeat 이 아니다.
 6. 리뷰 프롬프트(설계 6.2): `tests_section` 은 `tests.get("full_if")` 면 `## hteam 테스트 결과` 머리 다음 `FULL_IF_TESTS`(paths 는 `matched_text`) 한 줄과 `describe(full, "full")` 줄들이다(`templates/review-tests.md` 는 quick 문장이라 쓰지 않는다. 템플릿은 바꾸지 않는다). 그 밖은 지금 그대로. `verify_rule` 은 바꾸지 않는다(관문 결과가 있으므로 `VERIFY_GATED`).
 7. 워커 사양(설계 5.7 끝 문장, 5.5): `test_block` 은 developer 이고 확정한 HEAD `[test]` 에 `full_if` 가 있으면 developer 블록의 둘째 줄("- done 전에 …다시 돌린다.") 바로 뒤에 `FULL_IF_LINE`(task_id 를 채운다)을 넣는다. tester·확정 대기 블록과 `full_if` 가 없는 developer 블록은 지금 그대로다.
-8. 환경(설계 5.7 끝, 8.12): `child_env` 의 key_env 빼기(Interfaces). 테스트 명령(quick·full·마무리 full)과 작업 공간 setup·teardown 이 모두 `child_env` 를 거친다. `[redmine]` 이 없으면 지금과 같다(그 이름의 변수도 그대로 넘어간다).
+8. 환경(설계 5.7 끝, 8.12): `child_env` 의 key_env 빼기(Interfaces). 테스트 명령(quick·full·마무리 full)과 작업 공간 setup·teardown 이 모두 `child_env` 를 거친다. `[redmine]` 이 없으면 지금과 같다(그 이름의 변수도 그대로 넘어간다). 테스트 명령 쪽은 설정을 검사 없이 읽으므로(`config.test_settings`) 설정이 깨진 프로젝트에서도 `hteam test` 가 `bad_config` 로 막히지 않는다(설계 4.2 "설정을 읽지 않는 명령(… 5단계의 `test` …)은 설정이 깨져도 동작한다").
 9. 한계(설계 5.7 13장 줄, 고치지 않는다): `full_if` 는 식별값에 들지 않는다. `full_if` 만 바꾼 뒤의 `review --retry` 는 앞 시도의 결과를 그대로 쓸 수 있다(새 라운드부터 full 을 고른다). 같은 라운드에 developer 가 `--full` 로 직접 돌린 full 기록도 같은 키라 관문이 재사용한다.
 
 핵심 조각(그대로 옮기지 않아도 된다) — 관문의 developer 갈래:
@@ -3620,6 +3782,7 @@ if role == DEVELOPER_ROLE and (matched := full_if_matches(p, cfg, st, commits)):
 
 ```python
 from tests.helpers import BASE_CONFIG, WS_CONFIG
+from hteam import config  # noqa: E402
 
 # [redmine] 표(설계 4.1). 이 태스크의 시험은 key_env 만 쓴다(주소는 쓰지 않는 닫힌 포트)
 REDMINE_TABLE = """
@@ -3756,6 +3919,37 @@ class KeyEnvSharedTest(_KeyEnvCase):
 
     def test_without_redmine_the_variable_passes(self):
         self.assertEqual(self.full_saw(), "k-secret|keep")
+
+
+class KeyEnvBrokenConfigTest(_KeyEnvCase):
+    """설정이 깨져도(여기서는 [redmine] 의 url) hteam test 는 돌고 key_env 이름은 뺀다(Task 2 Rules 11, Codex 계획 리뷰 r1)."""
+    redmine = REDMINE_TABLE.replace('url = "http://127.0.0.1:9"', 'url = "ftp://127.0.0.1:9"')
+
+    def test_broken_config_still_drops_the_key(self):
+        with self.assertRaises(HteamError):
+            config.load(self.p)  # 전체 검사는 실패한다
+        self.assertEqual(self.full_saw(), "없음|keep")
+
+
+class BrokenConfigGateTest(GateCase):
+    """회귀: hteam test 는 config.toml 을 검사하지 않는다(설계 4.2·5.7 의 5단계 규칙, Codex 계획 리뷰 r1). 새 표가 없는
+    프로젝트에서 다른 키가 틀렸거나 TOML 이 깨져도 확정된 quick·full 이 지금처럼 돈다(bad_config 가 아니다)."""
+
+    def check(self, text: str) -> None:
+        self.use_gate()
+        self.started()
+        self.commit("src/a.py", "a\n", "[T-001] a")
+        (self.team / "config.toml").write_text(text, encoding="utf-8")
+        for args in (("T-001",), ("--full",)):
+            with self.subTest(args=args):
+                code, out = self.run_test(*args)
+                self.assertEqual((code, out.get("status")), (0, "passed"), out)
+
+    def test_other_key_broken(self):
+        self.check(BASE_CONFIG.replace("max_parallel = 4", "max_parallel = 0"))
+
+    def test_toml_broken(self):
+        self.check("max_parallel = [\n")
 
 
 class KeyEnvSetupTest(TeamCase):
@@ -3913,11 +4107,11 @@ class FullIfLineTest(StartCase):
 - [ ] **Step 2: 실패 확인**
 
 Run: `cd herdr-team && python3 -m unittest tests.test_testgate tests.test_review.FullIfGateTest tests.test_drive_events.FullIfEventTest tests.test_start.FullIfLineTest 2>&1 | tail -5`
-Expected: `Ran 50 tests` / `FAILED (failures=2, errors=14)`. 대표 메시지: `hteam.errors.HteamError: docs/planning/tasks.toml [test] 검증 실패: [test]: 모르는 키 full_if`(14건. `full_if` 를 쓰는 클래스의 setUp 이 확정 기록을 쓸 때 지금 `[test]` 검사가 거부한다. `test_review` 의 `GateCase.tester` 도우미가 `tester` 로 시험에 잡혀 그 하나가 셈에 든다), `AssertionError: 'k-secret|keep' != '없음|keep'`(key_env 를 빼지 않는다), `AssertionError: Tuples differ: (0, 'working', None) != (0, 'waiting', 'slot_setup')`(지금은 `[workspace]` 를 모르는 표로 넘겨 바로 띄운다). 회귀 시험(`FullIfOffTest`, `KeyEnvSharedTest`)과 기존 `test_testgate` 시험은 이 단계에서도 통과한다. HEAD 에 공유 시험 도구와 이 태스크의 Step 1 블록만 적용한 트리에서 쟀다(Task 2–4 구현 없음). Task 2–4 를 구현한 트리에서는 `full_if` 형식 오류가 이 태스크 기능의 실패(`('quick', …) != ('full', …)`, `KeyError: 'reason'`, `{'quick': 'passed'} != {'full': 'passed'}` 등)로 바뀐다.
+Expected: `Ran 53 tests` / `FAILED (failures=3, errors=14)`. 대표 메시지: `hteam.errors.HteamError: docs/planning/tasks.toml [test] 검증 실패: [test]: 모르는 키 full_if`(14건. `full_if` 를 쓰는 클래스의 setUp 이 확정 기록을 쓸 때 지금 `[test]` 검사가 거부한다. `test_review` 의 `GateCase.tester` 도우미가 `tester` 로 시험에 잡혀 그 하나가 셈에 든다), `AssertionError: 'k-secret|keep' != '없음|keep'`(key_env 를 빼지 않는다), `AssertionError: HteamError not raised`(`KeyEnvBrokenConfigTest`: 지금 검사는 `[redmine]` 을 모른다), `AssertionError: Tuples differ: (0, 'working', None) != (0, 'waiting', 'slot_setup')`(지금은 `[workspace]` 를 모르는 표로 넘겨 바로 띄운다). 회귀 시험(`FullIfOffTest`, `KeyEnvSharedTest`, 설정이 깨져도 `hteam test` 가 도는 `BrokenConfigGateTest` 둘)과 기존 `test_testgate` 시험은 이 단계에서도 통과한다. HEAD 에 공유 시험 도구와 이 태스크의 Step 1 블록만 적용한 트리에서 쟀다(Task 2–4 구현 없음). Task 2–4 를 구현한 트리에서는 `full_if` 형식 오류가 이 태스크 기능의 실패(`('quick', …) != ('full', …)`, `KeyError: 'reason'`, `{'quick': 'passed'} != {'full': 'passed'}` 등)로 바뀐다.
 
 - [ ] **Step 3: 구현**
 
-Rules 1–9 와 Interfaces 대로 `testgate.py`·`review.py`·`compose.py`·`drive.py` 를 고친다. git 은 `gitio` 로만, 테스트 명령은 `testgate.py` 의 `execute` 로만 돈다. `failed_quick` 을 `gate_failed` 로 바꾸고 `review.py` 의 두 자리를 함께 고친다. `child_env` 를 부르는 곳이 설정을 넘기는지(Task 3 의 `run_hook`, Task 4 의 테스트 실행) 확인하고, 넘기지 않는 곳이 있으면 `config.load(p)` 로 읽어 넘긴다. 템플릿(`templates/review-tests.md`)은 바꾸지 않는다.
+Rules 1–9 와 Interfaces 대로 `testgate.py`·`review.py`·`compose.py`·`drive.py` 를 고친다. git 은 `gitio` 로만, 테스트 명령은 `testgate.py` 의 `execute` 로만 돈다. `failed_quick` 을 `gate_failed` 로 바꾸고 `review.py` 의 두 자리를 함께 고친다. `child_env` 를 부르는 곳이 설정을 넘기는지(Task 3 의 `run_hook` 은 받은 `cfg`, Task 4 의 테스트 실행 `execute` 는 `config.test_settings(p)`) 확인한다. `hteam test` 가 지나는 자리에서는 `config.load` 를 부르지 않는다(Task 2 Rules 11, `BrokenConfigGateTest`). 템플릿(`templates/review-tests.md`)은 바꾸지 않는다.
 
 - [ ] **Step 4: 통과 확인**
 
@@ -4274,27 +4468,27 @@ Expected: ast 오류 없음, grep 빈 출력. 구현자는 여기서 멈춘다(�
 
 **Files:**
 - Create: `herdr-team/lib/hteam/redmine.py`, `herdr-team/tests/test_redmine.py`
-- Modify: `herdr-team/lib/hteam/paths.py`(Redmine 경로), `herdr-team/lib/hteam/drive.py`(사건 자리·`redmine_step`·`redmine_done`·tick·reap_jobs, `create_task` 의 `issue`, `_make_followups` 의 물려받기, `apply_plan` progress 의 `#N`), `herdr-team/lib/hteam/tasks.py`(`run_work` 의 start 사건, `drop` 의 drop 사건), Task 5 의 병합 성공 지점(merged 사건), `herdr-team/lib/hteam/approval.py`(`link` 의 `root`, `_line` 의 `#N`), `herdr-team/lib/hteam/coord.py`(status 의 `redmine`), `herdr-team/lib/hteam/setup.py`(doctor 의 Redmine 점검), `herdr-team/lib/hteam/cli.py`(COMMAND_MODULES 의 `redmine`)
+- Modify: `herdr-team/lib/hteam/paths.py`(Redmine 경로), `herdr-team/lib/hteam/drive.py`(사건 자리·`redmine_step`·`redmine_done`·tick·reap_jobs, `create_task` 의 `issue`, `_make_followups` 의 물려받기, `apply_plan` progress 의 `#N`), `herdr-team/lib/hteam/tasks.py`(`run_work` 의 start 사건, `drop` 의 drop 사건), Task 5 의 병합 성공 지점(merged 사건), `herdr-team/lib/hteam/approval.py`(`link` 의 `root`, `_line` 의 `#N`, `_apply` 의 닫기), `herdr-team/lib/hteam/coord.py`(status 의 `redmine`), `herdr-team/lib/hteam/setup.py`(doctor 의 Redmine 점검), `herdr-team/lib/hteam/cli.py`(COMMAND_MODULES 의 `redmine`)
 - Test: `herdr-team/tests/test_redmine.py`(새로), `herdr-team/tests/test_approval.py`·`herdr-team/tests/test_drive_flows.py`(Append)
 
 **Interfaces:**
 - Consumes: `config.Config.redmine`(`url`·`key_env`·`env_file`·`status`), `specs.load(p, tid).issue`·`.depends_on`·`.front["plan_key"]`·`specs.render(front=…)`, `state.all_states`·`state.require`·`state.current_round`·`state.latest_attempt`, `workspace.task_root(p, st)`(Task 3), `approval.AGENT_NAMES`, `review.FINDINGS_RE`·`review.BROAD_P1_RE`·`review.NONE_LINE_RE`, `paths.report_rel`·`review_rel`, `roles.require_drive`, `util.now`·`age_seconds`·`write_atomic`·`write_json`·`read_json`·`flock`, `gitio.tracked`, `Drive.spawn`·`running`·`log`·`progress`·`isolated`, `testgate.TESTER_ROLE`, Task 5 의 병합 성공 지점과 상태 `workspace.base_branch`·`workspace.merge`.
 - Produces:
-  - `paths.Project` 의 새 경로: `redmine_dir`(`state/redmine`), `redmine_queue`(`state/redmine/queue`), `redmine_failed`(`state/redmine/failed`), `redmine_lock`(`state/redmine/queue.lock`), `redmine_seq`(`state/redmine/seq`), `redmine_status`(`state/redmine/status.json`). 만드는 것은 `enqueue`·`sync` 다(꺼져 있으면 폴더를 만들지 않는다).
-  - `redmine.py` 상수: `EVENTS = {"start": "start", "done": "done", "changes": "changes", "approve": None, "merged": None, "closed": "closed", "drop": None}`(사건 → `[redmine].status` 의 키, None 은 상태를 바꾸지 않는다), `RETRY_S = (60, 120, 300, 600)`(그 뒤는 600), `GIVE_UP_S = 86400`, `TIMEOUT_S = 10`(PUT), `DOCTOR_TIMEOUT_S = 5`(GET), `SUMMARY_MAX = 300`, `P1_LINES = 5`, `P1_WIDTH = 200`, `MASK = "***"`.
+  - `paths.Project` 의 새 경로: `redmine_dir`(`state/redmine`), `redmine_queue`(`state/redmine/queue`), `redmine_failed`(`state/redmine/failed`), `redmine_lock`(`state/redmine/queue.lock`), `redmine_sync_lock`(`state/redmine/sync.lock`, 전송자 하나만, Rules 6), `redmine_seq`(`state/redmine/seq`), `redmine_status`(`state/redmine/status.json`). 만드는 것은 `enqueue`·`sync` 다(꺼져 있으면 폴더를 만들지 않는다).
+  - `redmine.py` 상수: `EVENTS = {"start": "start", "done": "done", "changes": "changes", "approve": None, "merged": None, "closed": "closed", "drop": None}`(사건 → `[redmine].status` 의 키, None 은 상태를 바꾸지 않는다), `RETRY_S = (60, 120, 300, 600)`(그 뒤는 600), `GIVE_UP_S = 86400`, `TIMEOUT_S = 10`(PUT), `DOCTOR_TIMEOUT_S = 5`(GET), `SUMMARY_MAX = 300`, `P1_LINES = 5`, `P1_WIDTH = 200`, `MASK = "***"`, `BUSY_TEXT = "다른 hteam redmine-sync 가 보내는 중이라 보내지 않았다(state/redmine/sync.lock)"`.
   - `redmine.issue_of(p, tid) -> str | None`: 그 태스크 사양의 `issue`(사양을 읽지 못하면 None).
   - `redmine.enqueue(p, cfg, st_or_tid, event, *, notes: str, issue: str | None = None) -> dict | None`: 헤더 계약의 `enqueue(p, cfg, st_or_tid, event, **fields)` 다(fields 는 `notes`·`issue`). `cfg.redmine` 이 None 이거나 issue(주지 않으면 `issue_of`)가 None 이면 아무것도 쓰지 않고 None. 아니면 큐 항목을 쓰고 돌려준다. 모르는 사건은 exit 2 `bad_redmine_event`(관제 내부 오류).
   - 큐 항목(헤더 "기록·필드에 더하는 것"): `{"seq": 7, "issue": "5712", "task": "T-001", "event": "changes", "status_id": 4, "notes": "…", "at": "2026-11-12T01:02:03Z"}`, 다시 보낼 때 `tries`(보낸 횟수)·`next_at`(UTC)·`last_error`(가린 글) 를 더한다. failed 항목은 같은 꼴에 `error`(가린 글).
-  - `redmine.close_for(p, cfg, tid) -> list[dict]`: 태스크 tid 가 `done` 이 된 뒤 닫을 이슈마다 `closed` 항목을 쓰고 그 목록을 돌려준다(Rules 4).
+  - `redmine.close_for(p, cfg, tid) -> list[dict]`: 태스크 tid 가 `done` 이 된 뒤 닫을 이슈마다 `closed` 항목을 쓰고 그 목록을 돌려준다(Rules 4). `cfg.redmine` 이 None 이면 빈 목록. 태스크가 `done` 이 되는 두 경로(관제의 `Drive.after_accept`, 사용자 일괄 승인·결정 복구의 `approval._apply`)가 이 한 함수를 부른다(Rules 2 의 7, Codex 계획 리뷰 r1).
   - `redmine.due(p) -> bool`: 지금 보낼 항목이 있나(같은 이슈의 맨 앞 항목 가운데 `next_at` 이 없거나 지났거나, 읽지 못하는 항목이 있다).
   - `redmine.read_key(p, cfg) -> str | None`, `redmine.mask(text: str, key: str | None) -> str`(key 가 있으면 그 값을 모두 `***` 로).
-  - `redmine.sync(p, cfg) -> dict`: 전송(Rules 6). 결과 `{"sent": [항목 요약], "failed": [항목 요약], "retry": [항목 요약], "pending": <남은 큐 수>}`. 항목 요약은 `{"seq", "issue", "event", "status"}`(+ failed·retry 는 `"error"`). `status` 는 HTTP 상태 정수 또는 `"연결 실패"`·`"키 없음"`·`"읽기 실패"`. 읽지 못한 항목의 `issue`·`event` 는 `"?"`.
+  - `redmine.sync(p, cfg) -> dict`: 전송(Rules 6). 결과 `{"busy": false, "sent": [항목 요약], "failed": [항목 요약], "retry": [항목 요약], "pending": <남은 큐 수>}`. 실행 내내 `p.redmine_sync_lock` 을 비차단 `fcntl.flock`(`LOCK_EX | LOCK_NB`)으로 쥔다. 못 쥐면(다른 `hteam redmine-sync` 가 보내는 중이다. 예: 관제가 다시 떠 새 관제의 자식이 앞 관제가 남긴 자식과 겹친다) 큐를 읽지도 보내지도 않고 `{"busy": true, "message": "다른 hteam redmine-sync 가 보내는 중이라 보내지 않았다(state/redmine/sync.lock)", "sent": [], "failed": [], "retry": [], "pending": <queue 의 *.json 수>}` 를 돌려준다(Codex 계획 리뷰 r1). 항목 요약은 `{"seq", "issue", "event", "status"}`(+ failed·retry 는 `"error"`). `status` 는 HTTP 상태 정수 또는 `"연결 실패"`·`"키 없음"`·`"읽기 실패"`. 읽지 못한 항목의 `issue`·`event` 는 `"?"`.
   - `redmine.summary(p, cfg) -> dict`: `{"enabled": true, "pending": <queue 의 *.json 수>, "failed": <failed 의 파일 수>, "last_error": <status.json 의 last_error 또는 null>}`. 키는 들지 않는다.
   - `redmine.checks(p, cfg) -> list[dict]`: doctor 점검 셋(Rules 9).
   - `state/redmine/status.json`: 전송 한 번이 끝날 때 `{"at": <UTC>, "last_error": <글 또는 null>}`. 이번 전송에 실패(failed·retry)가 있으면 그 마지막 글(`#<N> <사건> <상태>: <글 200자>`, 가림. 키 없음이면 키 없음 글), 실패 없이 하나라도 보냈으면 null, 아무것도 보내지 않았으면 앞 값을 그대로 둔다. 느슨하게 읽는다(깨졌으면 last_error null).
-  - CLI `hteam redmine-sync`(관제만. 관제 밖은 exit 5 `drive_only`): `[redmine]` 이 없으면 exit 2 `redmine_off`(`config.toml 에 [redmine] 이 없다(Redmine 연동이 꺼져 있다)`). 성공 exit 0 과 `sync` 결과(보내기 실패가 있어도 0).
+  - CLI `hteam redmine-sync`(관제만. 관제 밖은 exit 5 `drive_only`): `[redmine]` 이 없으면 exit 2 `redmine_off`(`config.toml 에 [redmine] 이 없다(Redmine 연동이 꺼져 있다)`). 성공 exit 0 과 `sync` 결과(보내기 실패가 있어도, `busy` 여도 0).
   - `Drive.redmine_step() -> None`(틱 단계, `reap_jobs` 바로 뒤): `[redmine]` 이 있고 `due(p)` 이고 자식 `redmine` 이 없으면 `self.spawn("redmine", ["redmine-sync"])`.
-  - `Drive.redmine_done(code: int, out: dict, err: str) -> None`(`reap_jobs` 가 키 `redmine` 자식에 부른다): failed·retry 항목마다 drive.log `redmine #<N> <사건> 실패 <상태>`(설계 8.11), failed 항목마다 progress `Redmine 이슈 #<N> 갱신 실패(<사건>, <상태>): <error 200자>. .herdr-team/state/redmine/failed/<NNNNNN>.json 에 남겼다`. code 가 0 이 아니면 drive.log `redmine-sync 실패(exit <code>): <err 끝 200자>`.
+  - `Drive.redmine_done(code: int, out: dict, err: str) -> None`(`reap_jobs` 가 키 `redmine` 자식에 부른다): failed·retry 항목마다 drive.log `redmine #<N> <사건> 실패 <상태>`(설계 8.11), failed 항목마다 progress `Redmine 이슈 #<N> 갱신 실패(<사건>, <상태>): <error 200자>. .herdr-team/state/redmine/failed/<NNNNNN>.json 에 남겼다`. code 가 0 이 아니면 drive.log `redmine-sync 실패(exit <code>): <err 끝 200자>`. `busy` 결과는 목록이 비어 아무것도 쓰지 않는다(다음 틱의 `redmine_step` 이 다시 띄운다).
   - `Drive.create_task(…, issue: str | None = None)`: 있으면 사양 front matter 에 `issue`(`plan: append` 와 함께 쓸 수 있다).
   - `approval.link(p, tid, root=None)`: 보고서를 `root`(없으면 `p.root`)에서 읽는다. 규칙은 그대로(마지막 claude.ai URL, `design_system_url`·디자인 시스템 URL 제외, 없으면 보고서 경로).
   - 일괄 승인 줄: `- T-001 #5712 r1 [디자인] 로그인 화면: <링크>`(issue 가 있을 때만 ID 뒤 ` #N`). progress `기획 적용:` 의 태스크 줄: `T-002 #5712 [developer] 저장 모듈`. 둘 다 `[redmine]` 과 상관없다(설계 5.1 "일괄 승인 줄에 보인다" 는 `[redmine]` 조건이 없다).
@@ -4319,7 +4513,7 @@ Expected: ast 오류 없음, grep 빈 출력. 구현자는 여기서 멈춘다(�
    4. changes(hteam 반려): `Drive.on_review_result` 의 code 0·`status == "changes"` 갈래에서 `hteam_changes` 전. 이름은 `hteam`, P1 줄은 그 라운드 기록의 `prechecks` 그대로(사전 검사 문제, 관문 반려의 `review.GATE_PROBLEM`, Task 6 의 `full_if` full 반려 `GATE_FULL_PROBLEM`).
    5. approve: `Drive.finish_review` 의 `res["status"] == "approved"` 갈래에서 `accept_task` 전. 아티팩트는 `approval.link(p, tid, root=workspace.task_root(p, st))` 가 `https://claude.ai/` 로 시작할 때만(11.4 와 같은 규칙, 작업 공간 태스크는 병합 전이라 작업 루트의 보고서를 읽는다).
    6. merged: `tasks.accept` 안, Task 5 의 `workspace.merge(p, cfg, st)` 가 `{"result": "merged"}` 를 돌려주고 태스크 상태의 `workspace.merge` 에 병합 커밋 sha 를 쓴 직후(병합은 늘 `tasks.accept` 한 곳에서 일어난다. 관제 판정·큐 accept·관제 안의 CLI accept 가 모두 지난다, Task 5 Rules 1). 이름은 상태의 `workspace.base_branch`.
-   7. closed: `Drive.after_accept` 가 `res["status"] == "done"` 이면 직무별 다음 자리(`apply_plan`·`batch_done`) 뒤, `start_ready` 전에 `redmine.close_for(p, cfg, tid)`. 묶음 처리가 만든 회귀 수정·정리 태스크가 먼저 생겨야 그 이슈를 미룬다(Rules 4).
+   7. closed: `Drive.after_accept` 가 `res["status"] == "done"` 이면 직무별 다음 자리(`apply_plan`·`batch_done`) 뒤, `start_ready` 전에 `redmine.close_for(p, cfg, tid)`. 묶음 처리가 만든 회귀 수정·정리 태스크가 먼저 생겨야 그 이슈를 미룬다(Rules 4). 승인 직무(designer·director 등)는 사용자 일괄 승인으로 `done` 이 된다: `design-decide`(큐 실행 `_x_design_decide`)와 관제 재확인의 결정 복구가 부르는 `approval._apply` 는 `tasks.accept` 를 직접 부르고 `after_accept` 를 거치지 않는다(Codex 계획 리뷰 r1). 그래서 `_apply` 는 `config.load(p)` 를 한 번 읽고 `accept` 루프에서 `tasks.accept` 가 `status == "done"` 을 돌려준 태스크마다 바로 `redmine.close_for(p, cfg, task)` 를 부른다(같은 함수 하나. 닫을 수 있는가는 Rules 4 그대로라 묶음·같은 이슈의 미루기도 같다). `_apply` 는 관제 안(큐 실행·재확인)에서만 돈다. 이미 끝나 `passed` 로 넘긴 태스크는 다시 닫지 않는다(그 사이 죽어 빠진 사건은 설계 8.12 한계).
    8. drop: `tasks.drop` 이 `dropped` 를 쓴 블록을 마친 직후.
 3. 노트는 Interfaces 의 문구 원문이다. 사건마다 `enqueue(p, cfg, st, event, notes=…)` 한 번. 키는 노트·로그·outbox 어디에도 넣지 않는다.
 4. 닫는 때(설계 8.12, 사용자 결정) — `close_for(p, cfg, tid)`:
@@ -4332,9 +4526,9 @@ Expected: ast 오류 없음, grep 빈 출력. 구현자는 여기서 멈춘다(�
    1. `queue/*.json` 을 순번 순으로 본다. 읽지 못하거나 꼴이 틀린 항목(dict 가 아님, `seq` 정수·`issue` 숫자 문자열·`event`·`notes`·`at` 문자열이 아님)은 그 파일 그대로 `failed/` 로 옮기고 failed 에 `{"seq": <파일 이름의 수>, "issue": "?", "event": "?", "status": "읽기 실패", "error": "큐 항목을 읽지 못했다: <까닭>"}`.
    2. 이미 막힌 이슈(이번 전송에서 앞 항목이 남았다)면 건너뛴다. `next_at` 이 지금보다 뒤면 그 이슈를 막고 건너뛴다.
    3. 키(`read_key`)가 없으면 보내지 않고 다시 보낼 항목으로(4 의 retry, 상태 `"키 없음"`, 글 `Redmine API 키를 찾지 못했다(<env_file 의 <key_env> | 환경 변수 <key_env>>)`).
-   4. 보내기: `PUT <url>/issues/<N>.json`, 본문 `{"issue": {"status_id": <id>, "notes": <노트>}}`(status_id 가 null 이면 `{"issue": {"notes": <노트>}}`), 머리 `Content-Type: application/json`·`X-Redmine-API-Key: <키>`, `urllib.request.urlopen(…, timeout=TIMEOUT_S)`(프록시는 urllib 기본 동작). 2xx 면 항목을 지우고 sent. 4xx 면 `error`(`HTTP <code>: <응답 본문 앞 200자>`, `mask`)를 더해 `failed/` 로 옮기고 failed(그 이슈를 막지 않는다: 남은 앞 항목이 없으므로 뒤 항목을 보낸다). 5xx·연결 실패(`URLError`·`OSError`·시간 초과, 상태 `"연결 실패"`, 글 `연결 실패: <까닭>`)는 retry: `tries` + 1, `next_at = 지금 + RETRY_S[min(앞 tries, 3)]`, `last_error`(가림)를 써 두고 그 이슈를 막는다. 다만 항목의 `at` 이 `GIVE_UP_S` 를 넘었으면 retry 대신 `error`(`24시간 동안 보내지 못했다: <글>`)로 `failed/` 로 옮기고 failed.
+   4. 보내기: `PUT <url>/issues/<N>.json`, 본문 `{"issue": {"status_id": <id>, "notes": <노트>}}`(status_id 가 null 이면 `{"issue": {"notes": <노트>}}`), 머리 `Content-Type: application/json`·`X-Redmine-API-Key: <키>`, `urllib.request.urlopen(…, timeout=TIMEOUT_S)`(프록시는 urllib 기본 동작). 2xx 면 항목을 지우고 sent. 4xx 면 `error`(`HTTP <code>: <본문>`)를 더해 `failed/` 로 옮기고 failed(그 이슈를 막지 않는다: 남은 앞 항목이 없으므로 뒤 항목을 보낸다). 오류 글의 차례(Codex 계획 리뷰 r1): 응답 본문 **전체**(5xx 도, 연결 실패의 까닭도)에서 먼저 `mask` 로 키를 가린 **뒤** 앞 200자로 자른다. 자른 뒤 가리면 200자 경계에 걸린 키는 온전한 문자열이 아니라 가려지지 않고 앞부분이 남는다(실패 파일·출력·progress·`status.json` 으로 간다). 5xx·연결 실패(`URLError`·`OSError`·시간 초과, 상태 `"연결 실패"`, 글 `연결 실패: <까닭>`)는 retry: `tries` + 1, `next_at = 지금 + RETRY_S[min(앞 tries, 3)]`, `last_error`(가림)를 써 두고 그 이슈를 막는다. 다만 항목의 `at` 이 `GIVE_UP_S` 를 넘었으면 retry 대신 `error`(`24시간 동안 보내지 못했다: <글>`)로 `failed/` 로 옮기고 failed.
    5. 끝나면 `status.json` 을 쓴다(Interfaces 의 last_error 규칙). 결과를 돌려준다(pending 은 남은 큐 수).
-   - 같은 이슈의 뒤 항목은 앞 항목이 남아 있는 동안 보내지 않는다(설계 8.12). 다른 이슈는 막지 않는다. 같은 자식이 한 번에 하나만 돈다(관제의 자식 키 `redmine`, 8.8). 전송이 성공한 뒤 항목을 지우기 전에 죽으면 같은 노트가 두 번 간다(설계 한계, 고치지 않는다).
+   - 같은 이슈의 뒤 항목은 앞 항목이 남아 있는 동안 보내지 않는다(설계 8.12). 다른 이슈는 막지 않는다. 전송자는 한 번에 하나다: 관제의 자식 키 `redmine`(8.8)은 한 관제 안에서만 막으므로, 관제가 다시 떠 앞 관제의 자식이 살아 있어도 둘이 같은 큐를 돌지 않게 `sync` 가 실행 내내 `sync.lock` 을 비차단으로 쥐고 못 쥐면 `busy` 로 바로 끝난다(Interfaces, Codex 계획 리뷰 r1). 늦은 `start` 가 다른 전송자의 `done` 뒤에 가서 이슈 상태가 되돌아가는 일이 없다. 전송이 성공한 뒤 항목을 지우기 전에 죽으면 같은 노트가 두 번 간다(설계 한계, 고치지 않는다).
 7. 키(`read_key`): `env_file` 이 있으면 `p.root / env_file` 만 읽는다: 빈 줄·`#` 줄을 빼고 `KEY=VALUE` 줄(`=` 앞을 strip 해 `key_env` 와 같은 첫 줄), 값은 strip 한 뒤 길이 2 이상이고 앞뒤가 같은 따옴표(`"`·`'`)면 한 겹 벗긴다. 파일을 읽지 못하거나 그 이름이 없으면 None. `env_file` 이 없으면 관제 환경의 `key_env`. 빈 값은 None. 키는 전송 자식과 doctor 만 읽는다(관제 본체·`enqueue`·status 는 읽지 않는다).
 8. 관제(설계 8.8·8.11): `Drive.tick` 은 `reap_jobs` 와 두 번째 `heartbeat` 사이에 `redmine_step` 을 한다(격리 키 `redmine`). `reap_jobs` 는 키 `redmine` 자식을 `job:redmine` 격리 안에서 `redmine_done(code, _last_json(out) or {}, err)` 로 처리한다. `redmine_step` 은 꺼져 있으면 아무것도 하지 않는다(폴더도 만들지 않는다).
 9. doctor(설계 9.2): 설정을 한 번 읽고(읽지 못하면 Redmine 점검을 하지 않는다) `[redmine]` 이 있으면 `redmine.checks` 를 지금 점검 목록 끝(`codex_browser` 뒤)에 더한다. 셋 다 `level: "warning"`:
@@ -4349,6 +4543,29 @@ Expected: ast 오류 없음, grep 빈 출력. 구현자는 여기서 멈춘다(�
 
 ```python
 def sync(p, cfg) -> dict:
+    p.redmine_dir.mkdir(parents=True, exist_ok=True)
+    with open(p.redmine_sync_lock, "a") as fh:      # 전송자 하나만: 실행 내내 쥔다(관제가 다시 떠도 둘이 돌지 않는다)
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {"busy": True, "message": BUSY_TEXT, "sent": [], "failed": [], "retry": [],
+                    "pending": len(list(p.redmine_queue.glob("*.json")))}
+        return {"busy": False, **_send_all(p, cfg)}
+
+
+def _put(cfg, item: dict, key: str) -> tuple[int | str, str]:
+    """PUT 하나. (HTTP 상태 또는 "연결 실패", 가린 뒤 자른 오류 글)."""
+    try:
+        with urllib.request.urlopen(_request(cfg, item, key), timeout=TIMEOUT_S) as resp:
+            return resp.status, ""
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")
+        return exc.code, f"HTTP {exc.code}: {mask(body, key)[:200]}"   # 전체를 가린 뒤 자른다(자르고 가리면 키 앞부분이 남는다)
+    except (urllib.error.URLError, OSError) as exc:
+        return "연결 실패", f"연결 실패: {mask(str(exc), key)[:200]}"
+
+
+def _send_all(p, cfg) -> dict:
     key, out, blocked, last = read_key(p, cfg), {"sent": [], "failed": [], "retry": []}, set(), None
     for path in sorted(p.redmine_queue.glob("*.json")):
         item, why = _read_item(path)
@@ -4455,11 +4672,16 @@ def parse_utc(text: str) -> float:
 
 class FakeRedmine:
     """PUT /issues/<N>.json·GET /users/current.json 을 받는 가짜 Redmine. codes[이슈] 는 그 이슈에 차례로 낼 응답 코드
-    (다 쓰면 204). 요청마다 {method, path, key, body, type} 를 남긴다. 4xx·5xx 본문에는 받은 키를 넣는다(가리기 시험)."""
+    (다 쓰면 204). 요청마다 {method, path, key, body, type} 를 남긴다. 4xx·5xx 본문에는 받은 키를 넣는다(가리기 시험).
+    pads[이슈] 는 그 본문에서 키 앞에 둘 글자 수(200자 자르기 경계 시험). hold() 뒤의 PUT 은 요청을 남긴 뒤 release() 까지
+    응답을 미룬다(entered 는 PUT 을 하나라도 받았는지)."""
 
     def __init__(self):
         self.requests: list[dict] = []
         self.codes: dict[str, list[int]] = {}
+        self.pads: dict[str, int] = {}
+        self.gate: threading.Event | None = None
+        self.entered = threading.Event()
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -4483,17 +4705,29 @@ class FakeRedmine:
                 key = self.headers.get("X-Redmine-API-Key")
                 outer.requests.append({"method": "PUT", "path": self.path, "key": key,
                                        "body": json.loads(raw or b"null"), "type": self.headers.get("Content-Type")})
+                outer.entered.set()
+                if outer.gate is not None:
+                    outer.gate.wait(30)
                 issue = self.path.removeprefix("/issues/").removesuffix(".json")
                 todo = outer.codes.get(issue) or []
                 code = todo.pop(0) if todo else 204
-                self._reply(code, b"" if code < 300 else json.dumps({"errors": [f"bad key {key}"]}).encode())
+                text = "x" * outer.pads.get(issue, 0) + f"bad key {key}"
+                self._reply(code, b"" if code < 300 else json.dumps({"errors": [text]}).encode())
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
 
+    def hold(self) -> None:
+        self.gate = threading.Event()
+
+    def release(self) -> None:
+        if self.gate is not None:
+            self.gate.set()
+
     def close(self) -> None:
+        self.release()
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=10)
@@ -4540,14 +4774,14 @@ class RedmineMixin:
         (folder / f"{seq:06d}.json").write_text(json.dumps(item, ensure_ascii=False), encoding="utf-8")
         return item
 
-    def leaks(self) -> list[str]:
-        """키 값이 든 파일(상태 폴더 전체와 docs). 비어야 한다(설계 8.12: 큐·로그·outbox·프롬프트에 쓰지 않는다)."""
+    def leaks(self, secret: str = KEY) -> list[str]:
+        """secret(기본은 키 값)이 든 파일(상태 폴더 전체와 docs). 비어야 한다(설계 8.12: 큐·로그·outbox·프롬프트에 쓰지 않는다)."""
         found = []
         for root in (self.state_dir, self.proj / "docs"):
             if not root.is_dir():
                 continue
             for path in root.rglob("*"):
-                if path.is_file() and KEY.encode() in path.read_bytes():
+                if path.is_file() and secret.encode() in path.read_bytes():
                     found.append(str(path.relative_to(self.proj)))
         return found
 
@@ -4711,6 +4945,30 @@ class SyncTest(RedmineMixin, TeamCase):
         self.assertEqual([(e["seq"], e["status"]) for e in out["failed"]], [(1, "읽기 실패")])
         self.assertTrue((self.redmine_dir / "failed" / "000001.json").is_file())
         self.assertFalse((folder / "000001.json").exists())
+
+    def test_one_sender_at_a_time(self):
+        # 관제가 다시 떠 앞 관제의 전송 자식이 살아 있어도 둘이 같은 큐를 돌지 않는다(sync.lock, Codex 계획 리뷰 r1)
+        self.put_item(1, "5712", "start", 2, "a")
+        self.put_item(2, "5712", "done", 3, "b")
+        self.put_item(3, "77", "start", 2, "c")
+        self.server.hold()
+        first = self.hteam_bg("redmine-sync")
+        deadline = time.monotonic() + 30
+        while not self.server.entered.wait(0.05):  # 첫 전송자가 첫 요청을 보내고 응답을 기다린다(잠금을 쥐었다)
+            self.assertIsNone(first.poll(), "첫 전송자가 요청 전에 끝났다")
+            self.assertLess(time.monotonic(), deadline)
+        code, out = self.sync()
+        self.assertEqual(code, 0, out)
+        self.assertEqual((out.get("busy"), out["sent"], out["failed"], out["retry"], out["pending"]), (True, [], [], [], 3))
+        self.assertEqual(out["message"], "다른 hteam redmine-sync 가 보내는 중이라 보내지 않았다(state/redmine/sync.lock)")
+        self.assertEqual(len(self.server.puts()), 1)  # 두 번째는 아무것도 보내지 않았다
+        self.server.release()
+        code, out = self.finish(first)
+        self.assertEqual((code, out.get("busy")), (0, False), out)
+        self.assertEqual([e["seq"] for e in out["sent"]], [1, 2, 3])
+        self.assertEqual([(r["path"], r["body"]["issue"]["notes"]) for r in self.server.puts()],
+                         [("/issues/5712.json", "a"), ("/issues/5712.json", "b"), ("/issues/77.json", "c")])  # 큐 순번 차례
+        self.assertEqual(self.queued(), [])
 
     def test_drive_only_and_needs_redmine_table(self):
         code, out = self.hteam("redmine-sync", as_="main")
@@ -4978,6 +5236,25 @@ class DriveStepTest(EventsCase):
         self.assertEqual(self.d.jobs, {})
         self.assertEqual(self.leaks(), [])
 
+    def test_key_cut_at_200_chars_is_masked_whole(self):
+        # 키가 응답 본문의 200자 경계에 걸쳐도 가린 뒤 자르므로 앞부분이 어디에도 남지 않는다(Rules 6 의 4, Codex 계획 리뷰 r1)
+        long_key = "rk-LONG-" + "0123456789abcdef" * 2  # 40자
+        self.env[KEY_ENV] = long_key
+        self.rearm()
+        self.server.codes["998"] = [422]
+        self.server.pads["998"] = 154  # 본문 {"errors": ["x…bad key <키>"]} 에서 키가 175자째에 시작해 200자 경계에 걸친다
+        self.put_item(1, "998", "start", 2, "a")
+        self.d.redmine_step()
+        self.wait_jobs()
+        fragment = long_key[:12]
+        [bad] = self.failed()
+        self.assertIn("***", bad["error"])
+        self.assertNotIn(fragment, bad["error"])
+        [line] = [e["body"] for e in self.outbox_items() if e["type"] == "progress"]
+        self.assertTrue(line.startswith("Redmine 이슈 #998 갱신 실패(start, 422): "), line)
+        self.assertNotIn(fragment, line)
+        self.assertEqual(self.leaks(fragment), [])  # 실패 파일·자식 출력·status.json·outbox·drive.log 어디에도 없다
+
     def test_no_child_without_items(self):
         self.d.redmine_step()
         self.assertEqual(self.d.jobs, {})
@@ -5074,6 +5351,34 @@ if __name__ == "__main__":
 **Append** `herdr-team/tests/test_approval.py`
 
 ```python
+REDMINE_QUEUE_ONLY = """
+[redmine]
+url = "http://127.0.0.1:9"
+key_env = "HT_REDMINE_KEY"
+status = { start = 2, done = 3, changes = 4, closed = 5 }
+"""
+
+
+class RedmineDecisionTest(DecisionCase):
+    """사용자 일괄 승인(design-decide)으로 done 이 된 승인 직무 태스크도 이슈를 닫는다(설계 8.12 의 닫는 때, Task 8 Rules 2 의 7,
+    Codex 계획 리뷰 r1). approval._apply 는 관제의 after_accept 를 거치지 않는다. 큐에 쓰기만 본다(전송하지 않는다)."""
+    config = APPROVAL + REDMINE_QUEUE_ONLY
+
+    def test_decision_accept_queues_the_close(self):
+        self.task("T-001", "awaiting_user", title="로그인 화면")
+        self.write_spec("T-001", "designer", title="로그인 화면", owns="docs/design/screens/t-001/**",
+                        front={"issue": "5712"}, commit=False)
+        self.assertEqual(self.review()[1].get("id"), "out-0001")
+        code, out = self.decide("out-0001", {})
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.task_state("T-001")["status"], "done")
+        folder = self.state_dir / "redmine" / "queue"
+        items = [json.loads(f.read_text(encoding="utf-8")) for f in sorted(folder.glob("*.json"))] \
+            if folder.is_dir() else []
+        self.assertEqual([(i["event"], i["issue"], i["task"], i["status_id"], i["notes"]) for i in items],
+                         [("closed", "5712", "T-001", 5, "T-001 가 끝나 종료한다.")])
+
+
 class IssueLineTest(ApprovalCase):
     """일괄 승인 줄의 이슈 번호(설계 5.1·8.12, 7단계): issue 가 있는 태스크만 ID 뒤에 `#N`. [redmine] 과 상관없다."""
 
@@ -5105,8 +5410,8 @@ class PlanIssueProgressTest(FlowCase):
 
 - [ ] **Step 2: 실패 확인**
 
-Run: `cd herdr-team && python3 -m unittest tests.test_redmine tests.test_approval.IssueLineTest tests.test_drive_flows.PlanIssueProgressTest 2>&1 | tail -5`
-Expected: `Ran 31 tests` / `FAILED (failures=27, errors=10)`(subTest 마다 센다). 대표 메시지: `AssertionError: 2 != 0 : {'ok': False, 'error': {'code': 'usage', 'message': "argument cmd: invalid choice: 'redmine-sync' …`(16건), `AttributeError: 'Drive' object has no attribute 'redmine_step'`, `AttributeError: 'Spec' object has no attribute 'issue'`, `ImportError: cannot import name 'redmine' from 'hteam'`, `KeyError: 'redmine_key'`, `AssertionError: Tuples differ: (0, 'working', None) != (0, 'waiting', 'slot_setup')`, `AssertionError: Lists differ: [] != [('start', '5712', 2, 'herdr-team: T-001 r…`(관제 흐름은 HEAD 에서 끝까지 돌고 큐만 비었다). HEAD 에 공유 시험 도구와 이 태스크의 Step 1 블록만 적용한 트리에서 쟀다(앞 태스크 구현 없음). 앞 태스크(Task 2–7)를 구현한 트리에서는 `Spec.issue`·`slot_setup` 갈래가 이 태스크 기능의 실패(큐가 빈다)로 바뀐다.
+Run: `cd herdr-team && python3 -m unittest tests.test_redmine tests.test_approval.IssueLineTest tests.test_approval.RedmineDecisionTest tests.test_drive_flows.PlanIssueProgressTest 2>&1 | tail -5`
+Expected: `Ran 34 tests` / `FAILED (failures=29, errors=11)`(subTest 마다 센다). 대표 메시지: `AssertionError: 2 != 0 : {'ok': False, 'error': {'code': 'usage', 'message': "argument cmd: invalid choice: 'redmine-sync' …`(16건), `AttributeError: 'Drive' object has no attribute 'redmine_step'`, `AttributeError: 'Spec' object has no attribute 'issue'`, `ImportError: cannot import name 'redmine' from 'hteam'`, `KeyError: 'redmine_key'`, `AssertionError: Tuples differ: (0, 'working', None) != (0, 'waiting', 'slot_setup')`, `AssertionError: Lists differ: [] != [('start', '5712', 2, 'herdr-team: T-001 r…`(관제 흐름은 HEAD 에서 끝까지 돌고 큐만 비었다), `AssertionError: Lists differ: [] != [('closed', '5712', 'T-001', 5, 'T-001 가 끝나 종료한다.')]`(`RedmineDecisionTest`: design-decide 는 HEAD 에서 돌고 닫기만 없다), `AssertionError: … 첫 전송자가 요청 전에 끝났다`(`test_one_sender_at_a_time`: `redmine-sync` 가 없어 바로 끝난다). HEAD 에 공유 시험 도구와 이 태스크의 Step 1 블록만 적용한 트리에서 쟀다(앞 태스크 구현 없음). 앞 태스크(Task 2–7)를 구현한 트리에서는 `Spec.issue`·`slot_setup` 갈래가 이 태스크 기능의 실패(큐가 빈다)로 바뀐다.
 
 - [ ] **Step 3: 구현**
 
@@ -5964,13 +6269,27 @@ EOF
 cat > scripts/related.py <<'EOF'
 """[test] 도우미(시험용). quick: 인자 파일마다 관련 unittest 파일(테스트 파일이면 그것, src/x/y.py 면 src/x/test_y.py)을
 돌린다. --all 이면 src/**/test_*.py 와 tests/**/test_*.py 전부. 실행 전에 HT_PORT 로 포트를 하나 열어 둔다(슬롯마다 달라야
-동시에 돌아도 부딪치지 않는다). 연 포트와 cwd 를 $HTEAM_MAIN_ROOT/.herdr-team/state/e2e-marks/ 에 남긴다."""
+동시에 돌아도 부딪치지 않는다). 연 포트와 cwd 를 메인 프로젝트의 .herdr-team/state/e2e-marks/ 에 남긴다.
+
+메인 루트: 테스트 명령 환경에는 HTEAM_MAIN_ROOT 가 없다(setup·teardown 에만 있다). git common dir 의 부모로 찾는다(슬롯
+worktree 든 메인 폴더든 메인 저장소 폴더다. 이 시험 프로젝트는 저장소 루트다).
+
+멈춤 지점: 포트를 연 뒤 표시 파일을 남기고, e2e-marks/hold 가 있는 동안 테스트를 돌리지 않고 포트를 쥔 채 기다린다(최대
+HOLD_MAX_S). 운영자가 hold 를 지우면 이어 한다. 그래서 두 슬롯의 테스트가 둘 다 포트를 연 상태를 표시 파일로 확인할 수
+있고, 리뷰 관문의 quick 이 끝나지 않아 그 태스크가 운영자가 풀기 전에 승인·병합되지 않는다."""
 import os
 import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+HOLD_MAX_S = 20 * 60  # [test] timeout_min(기본 30분)보다 짧게
+
+
+def main_root() -> Path:
+    out = subprocess.run(["git", "rev-parse", "--git-common-dir"], capture_output=True, text=True).stdout.strip()
+    return Path(out).resolve().parent if out else Path(".").resolve()
 
 
 def pick(args):
@@ -5988,21 +6307,23 @@ def pick(args):
 
 def main(args):
     port = int(os.environ.get("HT_PORT", "0"))
-    marks = Path(os.environ.get("HTEAM_MAIN_ROOT", ".")) / ".herdr-team" / "state" / "e2e-marks"
+    marks = main_root() / ".herdr-team" / "state" / "e2e-marks"
     marks.mkdir(parents=True, exist_ok=True)
     with socket.socket() as srv:
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         srv.bind(("127.0.0.1", port))  # 다른 슬롯과 같은 포트면 여기서 실패한다
         srv.listen()
-        (marks / f"test-{os.environ.get('HTEAM_SLOT', 'none')}-{int(time.time())}.txt").write_text(
-            f"cwd={os.getcwd()} port={srv.getsockname()[1]} args={args}\n")
+        (marks / f"test-{os.environ.get('HTEAM_SLOT', 'none')}-{os.getpid()}.txt").write_text(
+            f"cwd={os.getcwd()} port={srv.getsockname()[1]} args={args} at={int(time.time())}\n")
+        deadline = time.monotonic() + HOLD_MAX_S
+        while (marks / "hold").exists() and time.monotonic() < deadline:  # 포트를 쥔 채 운영자를 기다린다
+            time.sleep(0.2)
         files = sorted(Path("src").glob("**/test_*.py")) + sorted(Path("tests").glob("**/test_*.py")) \
             if args == ["--all"] else pick(args)
         if not files:
             print("관련 테스트 없음")
             return 0
         names = [str(f.with_suffix("")).replace("/", ".") for f in files]
-        time.sleep(5)  # 두 슬롯의 quick 이 겹치게 둔다
         return subprocess.call([sys.executable, "-m", "unittest", "-v", *names])
 
 
@@ -6083,13 +6404,17 @@ Expected: space 의 `{"space", "tab", "terminal"}`(셸 터미널을 `$M` 으로 
 
 - [ ] **Step 5: 개발 태스크 둘이 슬롯 1·2 에서 동시에(설계 15.2 의 7단계 1)**
 
-메인에 요청(비용을 줄이려 기획 태스크 없이 메인이 사양을 쓴다, 7.7): "개발 태스크 셋과 묶음 테스트 하나를 만든다. T-001: `src/a/core.py` 에 `greet(x)` 를 더하고 `src/a/test_core.py`(owns `src/a/**`, issue 101). T-002: `src/b/calc.py` 에 `add(a, b)` 와 `src/b/test_calc.py`(owns `src/b/**`, issue 102). T-003: `src/a/core.py` 의 `name()` 이 `"A"` 를 돌려주게(owns `src/a/**`, depends_on 없음, issue 103). 묶음 테스트 T-004(tester, depends_on T-001·T-002, owns `tests/<key>/**`·`docs/qa/<key>.md`, issue 104). `docs/planning/tasks.toml` 의 `[test]` 는 quick `python3 scripts/related.py {files}`, full `python3 scripts/related.py --all`. 사양을 커밋하고 T-001·T-002·T-003 을 start 한다." `[test]` 확정 질문에는 `확정한다 (추천)`.
+먼저 운영자가 테스트 멈춤 표시를 만든다(시험 도우미 `related.py` 의 멈춤 지점. 두 슬롯의 테스트가 실행 속도와 상관없이 겹치게 한다): `mkdir -p "$E2E/ws/.herdr-team/state/e2e-marks" && touch "$E2E/ws/.herdr-team/state/e2e-marks/hold"`.
+
+메인에 요청(비용을 줄이려 기획 태스크 없이 메인이 사양을 쓴다, 7.7): "개발 태스크 셋과 묶음 테스트 하나를 만든다. T-001: `src/a/core.py` 에 `greet(x)` 를 더하고 `src/a/test_core.py`(owns `src/a/**`, issue 101). T-002: `src/b/calc.py` 에 `add(a, b)` 와 `src/b/test_calc.py`(owns `src/b/**`, issue 102). T-003: `src/a/core.py` 의 `name()` 이 `"A"` 를 돌려주게(owns `src/a/**`, depends_on 없음, issue 103). 묶음 테스트 T-004(tester, depends_on T-001·T-002, owns `tests/<key>/**`·`docs/qa/<key>.md`, issue 104). `docs/planning/tasks.toml` 의 `[test]` 는 quick `python3 scripts/related.py {files}`, full `python3 scripts/related.py --all`. 사양을 모두 커밋하고 T-001·T-002·T-004 를 start 한다(T-004 는 의존이 끝나면 관제가 띄운다). T-003 은 사양만 두고 지금 시작하지 않는다(Step 7 에서 시작한다)." `[test]` 확정 질문에는 `확정한다 (추천)`. T-003 을 지금 시작하지 않는 까닭: 처음부터 시작 대기열에 두면 T-001 이 끝나자마자 관제가 띄워 운영자가 기준 브랜치를 고치기 전에 병합까지 끝날 수 있다(Step 7 의 충돌이 실행 속도에 기댄다). 상태 없는 사양은 start-ready 가 띄우지 않는다.
+
+멈춤 풀기: 감시(Monitor 의 until 루프)로 `e2e-marks/test-1-*.txt` 와 `test-2-*.txt` 가 둘 다 생길 때까지 기다린다. 두 테스트는 포트를 연 채 표시를 남기고 `hold` 가 있는 동안 기다리므로, 둘 다 있으면 두 포트(8110·8120)가 함께 열려 있다. 그때 `hc get` 으로 두 워커가 살아 있는지 보고 `rm "$E2E/ws/.herdr-team/state/e2e-marks/hold"` 한다.
 
 확인:
-- `status` 의 `workspace.slots`: T-001·T-002 가 슬롯 1·2 에(`preparing` → `busy`), T-003 은 T-001 과 owns 가 겹쳐 기다린다(`start-ready` 의 대기 사유 `lock`. 슬롯 예약이 owns 잠금을 쥔다). drive.log 에 `slot-1 T-001 준비 …`·`slot-1 T-001 setup passed`(문구는 Task 4 의 원문) 같은 줄, `e2e-marks/slots.log` 에 `setup slot=1 … port=8110`·`setup slot=2 … port=8120`.
+- `status` 의 `workspace.slots`: T-001·T-002 가 슬롯 1·2 에(`preparing` → `busy`). T-003 은 상태가 없다(시작하지 않았다). drive.log 에 `slot-1 T-001 준비 …`·`slot-1 T-001 setup passed`(문구는 Task 4 의 원문) 같은 줄, `e2e-marks/slots.log` 에 `setup slot=1 … port=8110`·`setup slot=2 … port=8120`.
 - 두 워커의 `hc get` cwd 가 각 슬롯의 작업 루트(`$E2E/ws/.herdr-team/state/slots/slot-1`, `slot-2`), 신뢰 창 없이 Claude 입력란이 떴다(S1). `horch worker-show` 의 `env` 에 `HT_PORT`·`HTEAM_SLOT`.
 - 워커가 슬롯 밖을 고치지 않았다: 메인 폴더 `git status --porcelain` 가 비었다(사양 커밋 뒤). 각 슬롯의 `git -C <슬롯> branch --show-current` 가 `herdr/T-001`·`herdr/T-002`.
-- quick 이 슬롯에서 돌았다: `e2e-marks/test-1-*.txt` 의 `cwd=…/slot-1 port=8110`, `test-2-*.txt` 의 `cwd=…/slot-2 port=8120`, 두 quick 이 겹친 시각(5초 대기)에도 포트 충돌 없이 통과.
+- quick 이 슬롯에서 돌았다: `e2e-marks/test-1-*.txt` 의 `cwd=…/slot-1 port=8110`, `test-2-*.txt` 의 `cwd=…/slot-2 port=8120`(표시 파일은 메인의 `e2e-marks/` 에 있다. 슬롯 안 `.herdr-team/state/e2e-marks/` 에는 없다), 두 테스트가 함께 포트를 쥔 채 멈췄다가(멈춤 풀기 전 두 표시) 풀린 뒤 포트 충돌 없이 통과.
 - Codex 리뷰어의 `hc get` cwd 가 슬롯이고 리뷰 파일 커밋 `[T-001] review r1:` 이 `herdr/T-001` 에 있다(메인 브랜치에는 아직 없다).
 - Redmine: `redmine-requests.jsonl` 에 #101·#102 의 `status_id: 2`(시작 노트 `herdr-team: T-001 r1 작업을 시작했다(개발, Claude).`), done 뒤 `status_id: 3`. 모든 줄 `key_ok: true`.
 
@@ -6098,15 +6423,21 @@ Expected: space 의 `{"space", "tab", "terminal"}`(셸 터미널을 `$M` 으로 
 확인:
 - T-001 승인 뒤 메인 폴더 `git log --first-parent -3 --format=%s main` 에 `[T-001] merge: <제목>`, 그 커밋의 부모가 둘. 태스크 상태 `workspace.merge` 가 그 sha, `status: done`. drive.log `T-001 병합 <sha 7자>`, Redmine #101 노트 `기준 브랜치 main 에 병합했다(<sha 7자>).`
 - 놓기: `slots.log` 에 `teardown slot=1`, 슬롯 1 이 `free`, `git -C <슬롯 1> status` 가 detached HEAD, `git branch --list herdr/T-001` 이 비었다(지웠다).
-- T-001 이 done 이라 T-003 의 owns 잠금이 풀려 슬롯 1(가장 작은 free)을 다시 쓴다. `setup slot=1` 이 다시 돌고(태스크가 바뀌었으므로) `node_modules` 같은 무시된 파일은 없지만 슬롯 폴더는 지우지 않았다(같은 폴더 경로).
+- T-002 도 같은 병합·놓기를 지난다. 두 태스크가 done 이 되면 T-004(tester)를 관제가 띄운다(Step 8). 슬롯 재사용은 Step 7 의 T-003 이 본다.
 
 - [ ] **Step 7: 충돌(`merge_conflict`)과 기준 병합 라운드**
 
-T-003 이 일하는 동안 운영자가 메인 폴더에서 기준 브랜치에 직접 같은 줄을 고쳐 커밋한다(사람의 커밋을 흉내 낸다. owns 잠금 밖이라 hteam 이 막지 않는다. 설계 15.2 의 "owns 밖 같은 파일" 을 이렇게 만든다):
+차례를 고정한다(실행 속도에 기대지 않는다):
+
+1. 운영자가 멈춤 표시를 다시 만든다: `touch "$E2E/ws/.herdr-team/state/e2e-marks/hold"`. 이제 T-003 의 quick(워커의 `hteam test`, 리뷰 관문)은 포트를 연 채 기다리므로 T-003 은 운영자가 풀기 전에 승인·병합되지 않는다(Step 8 의 T-004 full 이 그 사이 돌면 그것도 기다린다).
+2. 메인에 "T-003 을 시작한다" 를 시킨다. 감시로 `"$H" --root "$E2E/ws" status` 의 `workspace.slots` 에 T-003 이 `busy` 로 보일 때까지 기다린다(예약 때 `slots.json` 의 그 슬롯 `base` 가 정해진다. 그 값이 지금 메인 HEAD 와 같은지 본다). T-003 은 놓인 슬롯(가장 작은 free, 보통 1)을 다시 쓴다: `slots.log` 에 그 슬롯의 `setup` 이 다시 돈다(태스크가 바뀌었으므로), 슬롯 폴더는 같은 경로다.
+3. 그다음 운영자가 메인 폴더에서 기준 브랜치에 직접 같은 줄을 고쳐 커밋한다(사람의 커밋을 흉내 낸다. owns 잠금 밖이라 hteam 이 막지 않는다. 설계 15.2 의 "owns 밖 같은 파일" 을 이렇게 만든다):
 
 ```bash
 cd "$E2E/ws" && sed -i '' 's/return "a"/return "a1"/' src/a/core.py && git commit -qam "사람: name 을 a1 로" && cd "$REPO_ROOT"
 ```
+
+4. 커밋 뒤에 `rm "$E2E/ws/.herdr-team/state/e2e-marks/hold"` 로 푼다. T-003 의 기준(`base`)은 이 커밋 앞이고 병합은 이 커밋 뒤라 충돌이 늘 난다.
 
 확인:
 - T-003 승인 뒤 accept 의 병합이 충돌한다: drive.log 에 충돌 줄, 메인 폴더에 `MERGE_HEAD` 가 없다(`git merge --abort` 확인), T-003 `status: changes`, 상태의 `base_merge` 가 기준 HEAD sha, `base` 가 그 sha, 라운드 기록 `merge_conflict: {base, files: ["src/a/core.py"]}`. 메인 watch 에 decide `merge_conflict` 가 오고 메인이 사용자(운영자)에게 충돌 파일을 보인다.
@@ -6184,16 +6515,43 @@ for f in sorted(now):
         if os.path.isfile(copy) and os.path.isfile(f) and not f.endswith(".claude.json"):
             sys.stdout.writelines(difflib.unified_diff(open(copy).readlines(), open(f).readlines(), copy, f))
 cj, copy = os.path.join(home, ".claude.json"), os.path.join(pre, ".claude.json")
+
+
+def paths(x, y, at):
+    """x → y 의 바뀐 키 경로(값은 내지 않는다)."""
+    if isinstance(x, dict) and isinstance(y, dict):
+        for k in sorted(set(x) | set(y), key=str):
+            if k not in y:
+                yield f"{at}.{k} 사라짐"
+            elif k not in x:
+                yield f"{at}.{k} 생김"
+            elif x[k] != y[k]:
+                yield from paths(x[k], y[k], f"{at}.{k}")
+    elif x != y:
+        yield f"{at} 바뀜"
+
+
 if os.path.isfile(cj) and os.path.isfile(copy):
     a, b = json.load(open(copy)), json.load(open(cj))
-    new = sorted(set((b.get("projects") or {})) - set((a.get("projects") or {})))
-    print("~/.claude.json 새 프로젝트 항목:", new)
-    print("~/.claude.json 바뀐 최상위 키:", sorted(k for k in set(a) | set(b) if a.get(k) != b.get(k)))
+    pa, pb = a.get("projects") or {}, b.get("projects") or {}
+    e2e = os.path.realpath(os.path.dirname(os.path.abspath(pre)))
+    for key in sorted(pa):  # 기존 프로젝트 항목: 바뀐 키 경로와 사라진 항목(값은 내지 않는다)
+        if key not in pb:
+            print("~/.claude.json 기존 프로젝트 항목 사라짐:", key)
+        elif pa[key] != pb[key]:
+            print("~/.claude.json 기존 프로젝트 항목 바뀜:", key, list(paths(pa[key], pb[key], "")))
+    for key in sorted(set(pb) - set(pa)):  # 새 항목: 시험 폴더 안만 된다. 슬롯 폴더 항목은 생기면 안 된다(S1)
+        real = os.path.realpath(key)
+        inside = real == e2e or real.startswith(e2e + os.sep)
+        kind = "슬롯 폴더(실패)" if "/.herdr-team/state/slots/" in real + "/" else ("시험 폴더" if inside else "시험 밖(실패)")
+        print("~/.claude.json 새 프로젝트 항목:", kind, key)
+    print("~/.claude.json 바뀐 최상위 키(projects 밖):",
+          sorted(k for k in set(a) | set(b) if k != "projects" and a.get(k) != b.get(k)))
 print("비교 끝")
 PY
 ```
 
-Expected: `바뀜 .codex/config.toml`(시험 폴더 신뢰 항목만, diff 로 확인), `~/.claude.json 새 프로젝트 항목` 이 시험 프로젝트 `ws`·`shared` 둘뿐(슬롯 폴더 항목이 없다, S1), 바뀐 최상위 키는 `projects` 와 Claude 시작 기록류뿐, `.claude/settings.json`·`.claude/plugins/*.json` 은 바뀌지 않음(바뀌면 6단계처럼 원인을 적고 사용자에게 알린다), `비교 끝`. 다르면 실패로 적고 사용자에게 알린다.
+Expected: `바뀜 .codex/config.toml`(시험 폴더 신뢰 항목만, diff 로 확인), `~/.claude.json 새 프로젝트 항목` 이 `시험 폴더` 인 `ws`·`shared` 둘뿐(`슬롯 폴더(실패)`·`시험 밖(실패)` 줄이 없다, S1), `기존 프로젝트 항목 사라짐` 줄이 없고 `기존 프로젝트 항목 바뀜` 은 없거나 운영자 세션이 쓰는 이 저장소 항목의 시작 기록류(`lastSessionId`·비용·시각 같은 키 경로)뿐(사용자의 다른 프로젝트 항목이 바뀌면 실패다. 값은 출력하지 않으므로 키 경로로 판단한다), projects 밖의 바뀐 최상위 키는 Claude 시작 기록류뿐, `.claude/settings.json`·`.claude/plugins/*.json` 은 바뀌지 않음(바뀌면 6단계처럼 원인을 적고 사용자에게 알린다), `비교 끝`. 다르면 실패로 적고 사용자에게 알린다.
 
 - [ ] **Step 13: 전체 시험(하나씩, 백그라운드), 결과 커밋, 브랜치 리뷰**
 
@@ -6226,7 +6584,8 @@ Expected: 커밋 하나, grep 빈 출력, 리뷰 pane 주소. `hc wait <주소> 
 
 - `HORCH_MIN = "0.3.0"` 은 브리프의 Task 9 가 아니라 Task 1 이다(herdr-team `test_versions_match` 가 함께 배포하는 herdr-orch 버전과 같기를 요구한다. 6단계와 같은 까닭).
 - 브리프 Task 6 의 "작업 루트 cwd·슬롯 env·`HTEAM_SLOT`" 은 Task 4 다(작업 공간 리뷰 관문이 그것 없이 돌 수 없다). 리뷰 프롬프트의 작업 공간 줄도 Task 4 다.
-- `testgate.child_env(cfg=None, extra=None)`: 헤더 계약은 `child_env(cfg, extra=None)`. 테스트 관문이 config.toml 없이 불릴 수 있어 cfg 를 선택 인자로 했다(Task 3). 그 뒤 Task 6 이 `[redmine] key_env` 를 빼려고 `hteam test` 가 config.toml 을 읽게 한다(5단계의 "`hteam test` 는 config.toml 을 읽지 않는다" 가 7단계에 바뀐다. 깨졌으면 다른 명령처럼 exit 2 `bad_config`).
+- `testgate.child_env(cfg=None, extra=None)`: 헤더 계약은 `child_env(cfg, extra=None)`. 테스트 관문이 config.toml 없이 불릴 수 있어 cfg 를 선택 인자로 했다(Task 3). `hteam test` 는 7단계에도 `config.load` 를 부르지 않는다(설계 4.2·5.7 의 5단계 규칙 "설정이 깨져도 동작한다" 그대로, Codex 계획 리뷰 r1 에서 고쳤다). 슬롯 env·마무리 full 의 슬롯·key_env 빼기에 필요한 값만 Task 2 의 `config.test_settings(p)`(`TestSettings`: `workspace`, `redmine.key_env`)가 검사 없이 읽는다: `[workspace]` 표는 그 표의 검사를 통과할 때만 쓰고(아니면 shared), `key_env` 는 `config.redmine_key_env(p)` 로 이름만 맞으면 뺀다(`[redmine]` 의 다른 키가 틀려도). 쓰는 곳은 Task 4 의 `record_task`, Task 5 의 `run_final`, Task 6 의 `execute` 다. `slot_env`·`task_env`·`run_hook`·`claim_final`·`child_env` 는 `cfg.workspace`·`cfg.redmine.key_env` 만 쓰므로 `Config` 와 `TestSettings` 를 다 받는다. 관제·준비·놓기 자식은 지금처럼 `config.load` 의 `Config` 를 넘긴다. 리뷰 관문도 `test_settings` 를 지나지만 리뷰가 이미 검사한 설정이라 값이 같다.
+- `[workspace.env]` 는 31개까지, 값에 NUL 이 없어야 한다(Task 2). 설계 4.2 에 개수 상한이 없지만 워커·리뷰어에는 `HTEAM_SLOT` 이 더해져 horch `--env` 상한 32(orch 설계 14.1)를 넘으면 setup 까지 마친 뒤 usage 로 막힌다. NUL 은 subprocess 환경이 받지 않는다(`ValueError`). 문구는 개수 `workspace.env 는 31개 이하다(HTEAM_SLOT 을 더해 horch --env 32개 안이다)`, 값은 설계 문구 그대로(Codex 계획 리뷰 r1).
 - 준비 실패의 슬롯·태스크(Task 3): `branch_exists` 와 setup 실패는 슬롯 `free`(폴더 남김), 태스크 라운드 없는 `launch_failed`. setup 실패면 커밋 없는 빈 브랜치(`tip == base`)를 지우고 `git switch --detach` 한다(지우지 않으면 다시 시작이 다른 슬롯에서 `branch_exists` 로 막힌다). `setup_done` 은 None(반쯤 된 환경).
 - 준비 자식은 `slots.json` 을 고칠 때마다 예약이 아직 그 태스크의 `preparing` 인지 다시 본다(Task 3). `slot prepare` 는 `preparing` 기록만 준비한다. `workspace_off`(exit 3)·`slot_not_reserved`(exit 3)는 설계에 없는 입력 검사다(shared 프로젝트에서 잘못 불린 자식이 `slots.json` 을 만들지 않게).
 - 표시 파일 `marker` 는 설계의 common dir 비교에 더해 `slot` 1–9 정수, `task` 가 태스크 ID, `main_root/.herdr-team/config.toml` 이 있을 것도 본다(Task 3).
@@ -6244,8 +6603,17 @@ Expected: 커밋 하나, grep 빈 출력, 리뷰 pane 주소. `hc wait <주소> 
 - 병합(Task 5): 첫 거부 시각만 두지 않고 `merge_wait: {since, asked}` 를 쓴다(10분 거부·`MERGE_HEAD`·`base_moved` 를 각각 한 번만 올리려면 올린 kind 를 남겨야 한다). 병합 갈래는 git 메시지가 아니라 `MERGE_HEAD` 로 가른다(병합이 시작됐으면 충돌, 아니면 거부. 로캘을 타지 않는다). 기준 병합 라운드의 표시는 라운드 기록(`base_merge`·`merge_resume`)으로 사양에 들어간다. "바뀐 파일·사전 검사·관문은 지금 기준과 태스크 브랜치의 차이만 본다" 는 "부모가 둘 이상인 커밋은 `diff(base, HEAD)` 에 든 경로만 센다" 로 한다(병합 커밋의 첫 부모 diff 에는 기준에서 들어온 다른 파일이 들어 quick 이 그것까지 돈다). 관제 안의 CLI `hteam accept` 는 `after_accept` 를 거치지 않으므로 놓기는 다음 재확인이 한다(메인의 accept 는 큐라 바로 놓는다). 마무리 full 의 빈 슬롯 없음은 decide 없이 로그만 남기고 다음 재확인에 다시 한다(설계 "슬롯이 없으면 기다린다"). 병합 뒤 `workspace.task_root` 는 메인 폴더다(놓은 슬롯은 다른 태스크가 다시 쓴다). 놓기 뒤 `setup_done` 은 null 이다(teardown 했으니 다음 태스크가 setup 을 다시 한다).
 - 준비 중 drop(Task 5): drop 이 준비가 끝나지 않은(`ready` 없는) 예약을 바로 푼다. 늦게 끝난 준비 자식은 Task 3 의 다시 확인으로 슬롯 기록을 쓰지 않으므로 설계 5.10.9 의 "늦게 끝난 자식이 슬롯을 ready 로 쓸 수 있다" 는 생기지 않는다. 대신 그 자식이 만든 브랜치·setup 결과(teardown 없음)가 남는다(한계로 적는다). `ready` 인 예약과 `busy` 는 관제의 놓기(teardown 포함)가 푼다.
 - `roles.DRIVE_ONLY_MESSAGE`(설계 7.1 원문)와 큐 명령 목록에 `slot reset` 을 더했다(설계 5.10.8 이 큐 명령으로 정했다, Task 5·9).
+- 준비 실패 뒤 fix(Task 4 Rules 12, Codex 계획 리뷰 r1): 작업 공간 직무 태스크의 `fix` 는 그 태스크가 `busy` 슬롯을 쥘 때만 한다. 아니면(준비 실패의 라운드 없는 `launch_failed` 등) 상태를 바꾸기 전에 exit 3 `slot_not_held`(hint `hteam start T`). 그대로 두면 `fix` 가 `_prepare_start` 를 거치지 않아 슬롯 env·작업 공간 절 없이 메인 폴더에서 워커가 뜬다. 관제의 자동 fix 는 이 경우를 부르지 않는다(`_launch_failed` 가 라운드 없는 것을 건너뛴다).
+- decide `files` 의 작업 루트 산출물(Task 4 Rules 13, Codex 계획 리뷰 r1): 보고서(`report_rel`)와 리뷰 결과·hteam 반려 파일(`review_rel`)은 그 태스크의 작업 루트에서 찾아 메인 루트 기준 슬롯 경로(`.herdr-team/state/slots/slot-<N>/<rel>`)로 낸다(`Drive._work_files`). 사양·기획 문서·직무 문서·설정·로그는 메인 경로 그대로다.
+- 놓기의 차례(Task 5 Rules 7, Codex 계획 리뷰 r1): teardown → 작업 트리 검사(슬롯의 `MERGE_HEAD`, 버린 태스크의 커밋 안 된 변경) → 깨끗하면 `switch --detach`·`branch -d`·`free`, 아니면 switch 하지 않고 태스크 없는 `dirty`(브랜치·병합 상태 그대로). switch 가 실패해도 `dirty` 로 간다(되풀이하지 않는다). 기준 병합 라운드 도중의 drop 이 슬롯을 `busy` 로 묶지 않는다. 알림은 리뷰 판정 지시서의 "decide `workspace_failed`(slot_dirty)" 가 아니라 설계 5.10.6 의 "버린 태스크의 슬롯에 커밋 안 된 변경이 있으면 `dirty` 로 두고 progress 로 알린다" 를 따랐다(계획과 설계가 다르면 설계가 맞다). 병합한 태스크인데 남긴 경우(`MERGE_HEAD`·switch 실패) progress 괄호는 `<T> 는 병합했다` 다.
+- 병합 거부 알림의 차례(Task 5 Rules 5, Codex 계획 리뷰 r1): `workspace_failed` decide 를 쓴 뒤 `merge_wait.asked` 를 저장한다(앞 계획은 반대였다. 그 사이 중단되면 알림이 영영 빠졌다).
+- 충돌 알림의 복구(Task 5 Rules 5, Codex 계획 리뷰 r1): 재확인은 `decide_round == round` 가 아니라 지금 있는 `outbox.read_outbox` 에서 그 태스크의 `merge_conflict` decide 가 라운드 기록의 `merge_conflict`(`base`·`files`)와 같은 detail 로 있는지 본다(같은 라운드의 다른 decide 가 남긴 표시에 가려지지 않는다). 새 상태 필드는 더하지 않았다.
+- Redmine 전송자 하나(Task 8, Codex 계획 리뷰 r1): `hteam redmine-sync` 는 실행 내내 `state/redmine/sync.lock` 을 비차단으로 쥐고 못 쥐면 보내지 않고 `busy: true`(exit 0)로 끝난다. 관제의 자식 키 `redmine` 은 한 관제 안에서만 막으므로 관제가 다시 떴을 때 앞 관제의 자식과 겹치지 않게 한다. 잠금 순서는 `sync.lock` → `queue.lock` 만 된다.
+- Redmine 오류 글(Task 8 Rules 6 의 4, Codex 계획 리뷰 r1): HTTP 오류 본문·연결 실패 까닭은 전체에서 키를 가린 뒤 200자로 자른다(자른 뒤 가리면 경계에 걸린 키의 앞부분이 남는다).
+- 승인 직무의 닫기(Task 8 Rules 2 의 7, Codex 계획 리뷰 r1): `approval._apply`(design-decide·결정 복구)가 `tasks.accept` 로 `done` 을 만든 태스크마다 `redmine.close_for` 를 부른다(`after_accept` 와 같은 함수 하나).
+- 실환경 시험 도우미(Task 10, Codex 계획 리뷰 r1): `related.py` 는 메인 루트를 `git rev-parse --git-common-dir` 의 부모로 찾는다(테스트 명령 환경에는 `HTEAM_MAIN_ROOT` 가 없다. 제품 env 계약은 바꾸지 않는다). 포트를 연 뒤 메인 `e2e-marks/hold` 가 있는 동안 기다리는 멈춤 지점을 두어, 두 슬롯 테스트가 함께 포트를 연 상태를 표시 파일로 확인한 뒤 풀고, 충돌 재현용 T-003 은 Step 7 에서 시작해 운영자가 기준 브랜치를 고친 뒤에야 관문을 지나게 한다. 그래서 Step 5 의 "T-003 이 owns 잠금으로 기다린다" 실환경 확인은 뺐다(예약의 owns 잠금은 Task 4 의 `test_reservation_holds_owns_lock` 이 본다). 전역 파일 비교는 `~/.claude.json` 의 `projects` 를 항목별로 견주어 기존 항목의 바뀐 키 경로·사라진 항목을 보이고(값은 내지 않는다) 새 항목은 시험 폴더만 받는다.
 
-설계에 원문이 없어 계획이 정한 문구·값(각 태스크 Interfaces 에 원문):
+설계에 원문이 없어 계획이 정한 문구·값(각 태스크 Interfaces 에 원문. Codex 계획 리뷰 r1 에서 더한 것: Task 2 의 `WORKSPACE_ENV_MAX`·개수 문구·`TestSettings`·`RedmineKey`·`test_settings`·`redmine_key_env`, Task 4 의 `slot_not_held` 문구·`Drive._work_files`, Task 5 의 놓기 progress 괄호 갈래, Task 8 의 `BUSY_TEXT`·`busy` 결과·`redmine_sync_lock`, Task 10 의 `related.py` 멈춤 지점 `e2e-marks/hold`·`HOLD_MAX_S`):
 
 - herdr-orch(Task 1): `--env` usage 문구 여섯과 검사 차례, `workers.ENV_MAX`·`ENV_VALUE_MAX`·`ENV_KEY_RE`·`parse_env`, 가짜 에이전트의 `FAKE_AGENT_ENV`, skill.md 한 줄.
 - 설정·사양(Task 2): `[workspace]`·`[redmine]` 의 표·모르는 키·roles 문구, 사양 `issue` 문구 `issue 는 숫자 1–9자리 이슈 번호다(앞의 # 는 뗀다): <값>`, tasks.toml issue 문구, `[test]` 의 `tester_paths`·`full_if` 항목 문구, `confirm_section` 의 두 키 줄, 상수 `WORKSPACE_*`·`ENV_NAME_*`·`REDMINE_*`·`specs.issue_value`, `plan.group_problems(…, tester_paths=None)`. url·env_file 검사의 세부(공백 없음, `~`·절대 경로·`..` 금지). issue 의 앞자리 0 은 그대로.
@@ -6256,6 +6624,16 @@ Expected: 커밋 하나, grep 빈 출력, 리뷰 pane 주소. `hc wait <주소> 
 - 리뷰 문구(Task 7): 점검표 경고 문구와 출력 자리(review 결과 `warnings`), 점검표 자르기 꼴, 템플릿 자리 `{{issue}}`·`{{extra}}`, `compose.ISSUE_LINE`·`REDMINE_ISSUE_LINE`·`issue_line`·`REVIEW_EXTRA`·`review_extra`.
 - Redmine(Task 8): `redmine.py` 상수·함수, `state/redmine/status.json`, `redmine_off`·`bad_redmine_event`, progress·drive.log·키 없음·HTTP 오류 문구, doctor detail, 노트의 P1 줄 잇기(` / `, 없으면 `(없음)`), closed 노트의 key 는 tester 사양 `plan_key`(없으면 tester ID), `#N` 자리(ID 바로 뒤), `last_error` 규칙, 사건 자리, 닫을 수 있음의 판정.
 - init·문서(Task 9): doctor `workspace_git`·`workspace_head`·`workspace_slots` 문구, `gitio.version`, init 4a 문장과 "하지 않는 것" 한 줄, AGENTS 절 넷, worker-rules 두 문장, CLAUDE 절 push 주석 머리, README 절 제목과 본문 전부.
+
+알려진 한계(Codex 계획 리뷰 r1 에서 고치지 않기로 한 것과 고치며 남은 것. 구현에서 고치지 않는다):
+
+- 준비 자식의 실패를 관제가 거두기 전에 관제가 죽고 그 자식이 실패하면 새 관제는 그 실패를 decide 로 올리지 못한다(관제 사망과 준비 실패가 겹치는 가장자리). 결과: `setup_failed`·`branch_exists` 는 라운드 없는 `launch_failed` 라 start-ready 가 한 번 다시 준비하고, 그 두 번째 실패는 새 관제가 거둬 decide 로 올린다. 준비 중 발견한 dirty 슬롯은 decide 없이 `dirty` 로 남고 `status` 의 `workspace` 에 보인다(r1 A1·B4).
+- `workspace.roles` 에 planner 같은 직무도 넣을 수 있다. 설계 4.2 는 "정의되지 않은 직무" 만 거부하고 roles 를 사용자가 정하게 했다(기본은 developer·tester). 설계가 정한 범위라 계획에서 막지 않는다(r1 A2).
+- `hteam test` 의 설정 읽기(`test_settings`): `[workspace]` 표가 깨졌으면 shared 로 보고 메인 폴더 env 없이 돈다(작업 공간 태스크는 `workspace.root` 에서 돌고 `HTEAM_SLOT` 만 받는다, 마무리 full 은 메인 폴더). 그때는 관제도 설정을 읽지 못해 멈춰 있고 메인이 고친다.
+- 병합 거부 decide 를 쓴 뒤 `asked` 를 저장하기 전에 관제가 죽으면 다음 재확인이 같은 `workspace_failed` 를 한 번 더 올린다(빠지지는 않는다).
+- 충돌 알림 복구는 outbox 의 `merge_conflict` detail(`base`·`files`)로 가린다. 같은 태스크가 다른 라운드에서 같은 기준·같은 파일로 다시 충돌하면(기준이 그동안 움직이지 않았고 워커가 기준 병합을 하지 않고 승인된 경우) 앞 decide 를 이번 것으로 보고 다시 올리지 않는다.
+- 작업 공간 직무 태스크를 shared 모드에서 시작한 뒤 worktree 모드로 바꾸면 그 태스크의 fix 는 `slot_not_held` 로 거부된다(설계에 모드 바꾸기 규칙이 없다. 메인이 drop 하고 새로 만든다).
+- 다른 전송자가 `sync.lock` 을 쥐고 있는 동안 관제는 틱마다 `busy` 로 바로 끝나는 전송 자식을 띄운다(보내지 않으므로 순서·중복에는 영향이 없다).
 
 확인하지 못한 것(실환경 Task 10 또는 구현 때 본다):
 
