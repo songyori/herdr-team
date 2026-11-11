@@ -233,3 +233,89 @@ class ReadmeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+from tests.helpers import BASE_CONFIG, CREW_CONFIG  # noqa: E402  (Append 블록, 7단계)
+
+P7_REDMINE = ('\n[redmine]\nurl = "https://redmine.example.com"\nkey_env = "REDMINE_API_KEY"\n'
+              'status = { start = 2, done = 3, changes = 4, closed = 5 }\n')
+WORK_PRIORITY = ("보고서 경로, 커밋 형식, done 방법은 이 사양이 프로젝트 문서(AGENTS.md, CLAUDE.md 등)의 다른 규칙보다 앞선다"
+                 "(Orca 시절 문서의 다른 보고서 경로·이슈 트래커 갱신 규칙과 부딪칠 때).")
+REVIEW_PRIORITY = ("- 이 프롬프트의 리뷰 파일 경로·형식·판정 표기와 git 쓰기 금지는 프로젝트 문서(AGENTS.md, CLAUDE.md 등)의 다른 "
+                   "규칙보다 앞선다. 코드·문구·디자인 기준은 프로젝트 문서도 따른다.")
+ROUND_TWO = ("2. 새 커밋이 새 P1 을 만들었는지. 고친 함수·데이터를 읽는 다른 호출처와 출력 경로(다른 화면, 내보내기, 다른 "
+             "API·작업)도 본다. 고친 방법이 만든 새 경계 조건(잠금 대기의 누적, 시각·순서, 늦은 응답)도 본다.")
+RULES_HEAD = "## 소유 경로와 작업 규칙\n"
+
+
+class PromptTemplateP7Test(unittest.TestCase):
+    """7단계 템플릿 문구(설계 6.2·5.5): 리뷰 프롬프트 우선순위 줄과 자리, 라운드 절 2, 작업 규칙의 우선순위 줄."""
+
+    def test_review_prompt_priority_line_and_slots(self):
+        text = read("templates/review-prompt.md")
+        self.assertIn("<execution_policy>\n- 리뷰만 한다. 쓰는 파일은 REVIEW_FILE 하나다. 다른 파일을 만들거나 고치거나 지우지 "
+                      "않는다.\n" + REVIEW_PRIORITY + "\n- git 쓰기", text)
+        self.assertIn("— [{{role}}] {{title}}{{issue}}\n- 사양: `{{spec_path}}`\n", text)
+        self.assertIn("{{request_rule}}\n\n{{extra}}## 등급과 판정\n", text)
+
+    def test_round_item_two(self):
+        text = read("templates/review-round.md")
+        self.assertIn("\n" + ROUND_TWO + "\n3. r{{prev}} 이후 바뀌지 않은 코드에서", text)
+        self.assertNotIn("2. 새 커밋이 새 P1 을 만들었는지.\n", text)
+        self.assertIn("이번 라운드는 세 가지만 본다.", text)
+
+    def test_worker_rules_priority_paragraph(self):
+        text = read("templates/worker-rules.md")
+        self.assertIn("새 태스크로 나눈다).\n\n" + WORK_PRIORITY + "\n\n1. 같은 작업 폴더에서", text)
+        self.assertTrue(text.rstrip().endswith("(리뷰 사전 검사가 수정 라운드로 돌려보낸다)."))
+
+
+class WorkSpecP7Test(TeamCase):
+    """워커 사양의 7단계 줄(설계 5.5 의 8·작업 규칙, 8.12): 작업 규칙의 우선순위 줄, 작업 규칙 바로 앞의 이슈 줄."""
+
+    def setUp(self):
+        super().setUp()
+        self.init_project()
+        self.p = Project(self.proj)
+
+    def spec(self, front=None, config_text=None) -> str:
+        if config_text is not None:
+            (self.team / "config.toml").write_text(config_text, encoding="utf-8")
+        self.write_spec("T-001", "developer", front=front, commit=False)
+        cfg = config.load(self.p)
+        return compose.work_spec(self.p, cfg, specs.load(self.p, "T-001"), {"round": 1}, cfg.owns("developer"))
+
+    def test_defaults_add_only_the_priority_paragraph(self):
+        # 회귀: issue 가 없으면 선행 태스크 절 바로 뒤가 작업 규칙이다
+        text = self.spec()
+        self.assertIn("## 선행 태스크\n없음.\n\n" + RULES_HEAD, text)
+        self.assertNotIn("이슈 #", text)
+        self.assertEqual(text.count(WORK_PRIORITY), 1)
+        self.assertNotIn("\n\n\n", text)
+
+    def test_issue_line_right_before_the_rules(self):
+        text = self.spec(front={"issue": "5712"})
+        self.assertIn("## 선행 태스크\n없음.\n\n이 태스크는 이슈 #5712 이다.\n\n" + RULES_HEAD, text)
+        self.assertEqual(text.count("이슈 #5712"), 1)
+        self.assertNotIn("\n\n\n", text)
+
+    def test_issue_hash_is_dropped(self):
+        text = self.spec(front={"issue": "#5712"})
+        self.assertIn("\n\n이 태스크는 이슈 #5712 이다.\n\n" + RULES_HEAD, text)
+        self.assertNotIn("##5712", text)
+
+    def test_redmine_issue_line(self):
+        text = self.spec(front={"issue": "5712"}, config_text=BASE_CONFIG + P7_REDMINE)
+        self.assertIn("\n\n이 태스크는 Redmine 이슈 #5712 이다. 이슈 상태와 노트는 관제가 바꾼다. 워커·리뷰어는 Redmine 을 바꾸지 "
+                      "않는다(프로젝트 문서에 다른 규칙이 있어도).\n\n" + RULES_HEAD, text)
+
+    def test_redmine_without_issue_adds_nothing(self):
+        text = self.spec(config_text=BASE_CONFIG + P7_REDMINE)
+        self.assertIn("## 선행 태스크\n없음.\n\n" + RULES_HEAD, text)
+        self.assertNotIn("Redmine", text)
+
+    def test_issue_line_comes_after_the_handoff_line(self):
+        (self.proj / "docs/handoff").mkdir(parents=True)
+        (self.proj / "docs/handoff/production.md").write_text("# 인수인계\n", encoding="utf-8")
+        text = self.spec(front={"issue": "5712"}, config_text=CREW_CONFIG)
+        self.assertIn("남은 일이 적혀 있다.\n\n이 태스크는 이슈 #5712 이다.\n\n" + RULES_HEAD, text)

@@ -2251,3 +2251,107 @@ class FullIfGateTest(GateCase):
         self.assertEqual((code, out["tests"]), (0, {"quick": "passed"}), out)
         self.assertIn("관련된 테스트(quick)를 돌렸다.\n- quick: 통과 (", self.prompt())
         self.assertNotIn("full_if", self.prompt())
+
+
+from tests.helpers import BASE_CONFIG, TeamCase  # noqa: E402  (Append 블록, 7단계)
+from hteam.paths import Project  # noqa: E402
+
+P7_REDMINE = ('\n[redmine]\nurl = "https://redmine.example.com"\nkey_env = "REDMINE_API_KEY"\n'
+              'status = { start = 2, done = 3, changes = 4, closed = 5 }\n')
+REVIEW_PRIORITY = ("- 이 프롬프트의 리뷰 파일 경로·형식·판정 표기와 git 쓰기 금지는 프로젝트 문서(AGENTS.md, CLAUDE.md 등)의 다른 "
+                   "규칙보다 앞선다. 코드·문구·디자인 기준은 프로젝트 문서도 따른다.")
+CRITERIA_END = "4. 수정 라운드면 이전 리뷰의 P1 지적이 모두 반영됐는가.\n\n"
+TASK_LINE = "— [developer] 앱 만들기\n"
+
+
+class ReviewPromptP7Test(ReviewCase):
+    """7단계 리뷰 프롬프트 추가(설계 6.2): 우선순위 줄, 프로젝트 점검표, 이슈 줄, 라운드 절 2."""
+
+    def prompt(self, n=1, k=1):
+        return (self.state_dir / f"tasks/T-001/r{n}-review-a{k}.md").read_text(encoding="utf-8")
+
+    def test_priority_line_follows_first_policy_line(self):
+        self.reviewing()
+        self.assertIn("<execution_policy>\n- 리뷰만 한다. 쓰는 파일은 REVIEW_FILE 하나다. 다른 파일을 만들거나 고치거나 지우지 "
+                      "않는다.\n" + REVIEW_PRIORITY + "\n- git 쓰기(add·commit", self.prompt())
+
+    def test_defaults_add_no_checklist_or_issue(self):
+        # 회귀: review-extra.md·issue 가 없으면 기준 절 바로 뒤가 등급과 판정이고 태스크 줄 바로 뒤가 사양 줄이다
+        out = self.reviewing()
+        text = self.prompt()
+        self.assertIn(CRITERIA_END + "## 등급과 판정\n", text)
+        self.assertIn(TASK_LINE + "- 사양: `.herdr-team/tasks/T-001.md`\n", text)
+        self.assertNotIn("## 프로젝트 점검표", text)
+        self.assertNotIn("이슈 #", text)
+        self.assertNotIn("\n\n\n", text)
+        self.assertFalse([w for w in out.get("warnings", []) if "review-extra.md" in w], out)
+
+    def test_checklist_after_criteria_and_issue_after_task_line(self):
+        self.commit(".herdr-team/review-extra.md", "- 행 잠금 뒤 DB 시각을 다시 읽는가\n- 늦은 응답을 버리는가\n\n",
+                    "chore: 점검표")
+        self.reviewing(front={"issue": "#5712"})
+        text = self.prompt()
+        self.assertIn(CRITERIA_END + "## 프로젝트 점검표\n- 행 잠금 뒤 DB 시각을 다시 읽는가\n- 늦은 응답을 버리는가\n\n"
+                      "## 등급과 판정\n", text)
+        self.assertEqual(text.count("## 프로젝트 점검표"), 1)
+        self.assertIn(TASK_LINE + "- 이 태스크는 이슈 #5712 이다.\n- 사양: `.herdr-team/tasks/T-001.md`\n", text)
+        self.assertNotIn("Redmine", text)  # [redmine] 이 없으면 짧은 형태(설계 8.12)
+        self.assertNotIn("\n\n\n", text)
+
+    def test_uncommitted_checklist_is_read_from_the_work_tree(self):
+        (self.team / "review-extra.md").write_text("- 작업 트리의 점검표\n", encoding="utf-8")
+        self.reviewing()
+        self.assertIn("## 프로젝트 점검표\n- 작업 트리의 점검표\n\n## 등급과 판정\n", self.prompt())
+
+    def test_long_checklist_is_cut(self):
+        self.commit(".herdr-team/review-extra.md", "가" * 6100 + "\n", "chore: 점검표")
+        self.reviewing()
+        text = self.prompt()
+        self.assertIn("## 프로젝트 점검표\n" + "가" * 6000 + "\n(뒤 100자 생략)\n\n## 등급과 판정\n", text)
+        self.assertNotIn("가" * 6001, text)
+
+    def test_unreadable_checklist_is_left_out_with_a_warning(self):
+        (self.team / "review-extra.md").write_bytes(b"\xff\xfe broken")
+        self.git("add", "--", ".herdr-team/review-extra.md")
+        self.git("commit", "-q", "-m", "chore: 깨진 점검표", "--", ".herdr-team/review-extra.md")
+        out = self.reviewing()
+        text = self.prompt()
+        self.assertNotIn("## 프로젝트 점검표", text)
+        self.assertIn(CRITERIA_END + "## 등급과 판정\n", text)
+        warned = [w for w in out.get("warnings", []) if "review-extra.md" in w]
+        self.assertEqual(len(warned), 1, out)
+        self.assertIn("`.herdr-team/review-extra.md` 를 읽지 못해 리뷰 프롬프트에 프로젝트 점검표를 넣지 않았다: ", warned[0])
+
+    def test_round_two_item_two_widens_the_recheck(self):
+        self.reviewing()
+        self.act_review("T-001", "REQUEST_CHANGES", text=P1_REVIEW)
+        self.assertEqual(self.hteam("review-finish", "T-001")[1]["status"], "changes")
+        self.assertEqual(self.hteam("fix", "T-001")[0], 0)
+        self.assertEqual(self.act_work("T-001", {"src/app.py": "print('r2')\n"})[0], 0)
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual(code, 0, out)
+        text = self.prompt(n=2)
+        self.assertIn("이번 라운드는 세 가지만 본다.\n1. r1 의 P1 지적마다", text)
+        self.assertIn("\n2. 새 커밋이 새 P1 을 만들었는지. 고친 함수·데이터를 읽는 다른 호출처와 출력 경로(다른 화면, 내보내기, "
+                      "다른 API·작업)도 본다. 고친 방법이 만든 새 경계 조건(잠금 대기의 누적, 시각·순서, 늦은 응답)도 본다.\n"
+                      "3. r1 이후 바뀌지 않은 코드에서", text)
+        self.assertIn(REVIEW_PRIORITY, text)
+        self.assertNotIn("\n\n\n", text)
+
+
+class RedmineReviewPromptTest(ReviewCase):
+    """[redmine] 이 있으면 이슈 줄이 관제가 이슈를 바꾼다고 적는다(설계 8.12·6.2)."""
+
+    def setUp(self):
+        TeamCase.setUp(self)
+        self.init_project(config=BASE_CONFIG + P7_REDMINE)
+        self.setup_run()
+        self.p = Project(self.proj)
+
+    def test_issue_line_says_drive_owns_the_issue(self):
+        self.reviewing(front={"issue": "5712"})
+        text = (self.state_dir / "tasks/T-001/r1-review-a1.md").read_text(encoding="utf-8")
+        self.assertIn(TASK_LINE + "- 이 태스크는 Redmine 이슈 #5712 이다. 이슈 상태와 노트는 관제가 바꾼다. 워커·리뷰어는 Redmine 을 "
+                      "바꾸지 않는다(프로젝트 문서에 다른 규칙이 있어도).\n- 사양: `.herdr-team/tasks/T-001.md`\n", text)
+        work = (self.state_dir / "tasks/T-001/r1-work.md").read_text(encoding="utf-8")
+        self.assertIn("\n\n이 태스크는 Redmine 이슈 #5712 이다. 이슈 상태와 노트는 관제가 바꾼다.", work)

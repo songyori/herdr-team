@@ -326,8 +326,9 @@ def _launch_attempt(p, cfg, h, tid: str, k: int, request: str | None = None) -> 
     spec = specs.load(p, tid)
     info = testgate.summary(att["inputs"].get("tests"))  # 출력·history 의 관문 요약(설계 6.1 4a)
     prompt = p.task_dir(tid) / f"r{rd['round']}-review-a{k}.md"
+    warned: list[str] = []  # 프롬프트를 새로 쓸 때의 경고(프로젝트 점검표를 읽지 못함, 설계 6.2). 복구는 다시 읽지 않는다
     if not prompt.is_file():
-        write_atomic(prompt, compose.review_prompt(p, cfg, spec, rd, att, st["rounds"]))
+        write_atomic(prompt, compose.review_prompt(p, cfg, spec, rd, att, st["rounds"], warnings=warned))
     # 작업 공간 태스크의 리뷰어는 슬롯의 작업 루트와 슬롯 env 로 뜬다(설계 5.10.4)
     env = workspace.slot_env(cfg, st["workspace"]["slot"]) if st.get("workspace") else None
     res = dispatch.launch(p, h, tid, pick, agent=att["agent"], model=att["model"], effort=att["effort"],
@@ -345,6 +346,8 @@ def _launch_attempt(p, cfg, h, tid: str, k: int, request: str | None = None) -> 
         raise
     out = {"task": tid, "round": rd["round"], "attempt": k, "status": "reviewing", "reviewer": att["agent"], **res,
            **info}
+    if warned:  # dispatch 결과의 warnings 뒤
+        out["warnings"] = [*(out.get("warnings") or []), *warned]
     if res["mode"] == "adopt" and res.get("state") in ("settled", "retained", "released", "abandoned"):
         out["next"] = [SHIM, "review-finish", tid]
     return out

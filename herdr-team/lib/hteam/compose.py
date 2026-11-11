@@ -128,10 +128,24 @@ def review_workspace(cfg, st: dict) -> str:
     return "".join(f"\n- {x}" for x in [lines[0], *lines[2:]])
 
 
+# 이슈 줄(설계 8.12, 5.5 의 8, 6.2). [redmine] 이 있으면 관제가 이슈를 바꾼다는 형태, 없으면 짧은 형태다
+ISSUE_LINE = "이 태스크는 이슈 #{issue} 이다."
+REDMINE_ISSUE_LINE = ("이 태스크는 Redmine 이슈 #{issue} 이다. 이슈 상태와 노트는 관제가 바꾼다. 워커·리뷰어는 Redmine 을 바꾸지 "
+                      "않는다(프로젝트 문서에 다른 규칙이 있어도).")
+
+
+def issue_line(cfg, spec) -> str | None:
+    """태스크의 이슈 줄(글머리 없음). 사양에 issue 가 없으면 None. [redmine] 유무는 그 사양·프롬프트를 만들 때의 설정이다
+    (이미 쓴 사양·프롬프트는 바꾸지 않는다)."""
+    if not spec.issue:
+        return None
+    return (REDMINE_ISSUE_LINE if cfg.redmine is not None else ISSUE_LINE).format(issue=spec.issue)
+
+
 def work_spec(p, cfg, spec, rd: dict, owns: list[str], st: dict | None = None) -> str:
     """직무 문서 → 태스크 본문 → 선행 태스크 → 인수인계 줄(그 직무의 고정 에이전트가 있고 파일이 작업 트리에 있을 때) → 작업
-    공간 절(st 가 작업 공간 태스크일 때, 설계 5.10.5) → owns 와 작업 규칙 → 테스트 절(test_block) → 수정 블록(수정 라운드).
-    st 가 있으면 이전 리뷰 파일은 그 태스크의 작업 루트에서 본다."""
+    공간 절(st 가 작업 공간 태스크일 때, 설계 5.10.5) → 이슈 줄(사양에 issue 가 있을 때, 5.5 의 8·8.12) → owns 와 작업 규칙
+    → 테스트 절(test_block) → 수정 블록(수정 라운드). st 가 있으면 이전 리뷰 파일은 그 태스크의 작업 루트에서 본다."""
     if st is not None:
         p = workspace.view(p, st)
     tid, n = spec.id, rd["round"]
@@ -156,6 +170,9 @@ def work_spec(p, cfg, spec, rd: dict, owns: list[str], st: dict | None = None) -
     section = workspace_section(cfg, st or {}, rd)
     if section:
         parts += ["", section]
+    issue = issue_line(cfg, spec)
+    if issue:  # 작업 규칙 바로 앞(설계 5.5 의 8)
+        parts += ["", issue]
     parts += ["", fill(_template("worker-rules.md"), owns=_bullets(owns), report=report_rel(tid), task_id=tid,
                        round=str(n), ask_rule=ask_rule).rstrip()]
     block = test_block(p, spec)
@@ -381,15 +398,40 @@ def round_section(p, tid: str, rd: dict, rounds: list[dict], commits: list[dict]
                 prev_head=shown, new_commits=new, request_scope=REQUEST_SCOPE if requested else "").rstrip() + "\n\n"
 
 
-def review_prompt(p, cfg, spec, rd: dict, att: dict, rounds: list[dict] | None = None) -> str:
+REVIEW_EXTRA = ".herdr-team/review-extra.md"  # 프로젝트 점검표(설계 6.2). 프로젝트 루트 기준
+REVIEW_EXTRA_MAX = 6000  # 글자 수(len)
+EXTRA_WARNING = "`.herdr-team/review-extra.md` 를 읽지 못해 리뷰 프롬프트에 프로젝트 점검표를 넣지 않았다: {why}"
+
+
+def review_extra(p) -> tuple[str, str | None]:
+    """리뷰 프롬프트의 프로젝트 점검표 절과 경고(설계 6.2). 메인 프로젝트 작업 트리(상태 루트 p.root. 커밋 여부와 상관없고 작업
+    공간 태스크여도 메인 사본이다)의 REVIEW_EXTRA 를 UTF-8 로 읽는다. 없거나 끝 공백을 뗀 본문이 비면 ("", None). 읽지
+    못하면(UTF-8 아님, 디렉터리·권한) 절 없이 경고 한 줄. REVIEW_EXTRA_MAX 자를 넘으면 앞부분 뒤에 뗀 글자 수를 적는다.
+    본문은 가공하지 않는다."""
+    try:
+        text = (p.root / REVIEW_EXTRA).read_text(encoding="utf-8").rstrip()
+    except FileNotFoundError:
+        return "", None
+    except (UnicodeDecodeError, OSError) as exc:
+        return "", EXTRA_WARNING.format(why=" ".join(f"{type(exc).__name__}: {exc}".split())[:200])
+    if not text:
+        return "", None
+    if len(text) > REVIEW_EXTRA_MAX:
+        text = f"{text[:REVIEW_EXTRA_MAX]}\n(뒤 {len(text) - REVIEW_EXTRA_MAX}자 생략)"
+    return f"## 프로젝트 점검표\n{text}\n\n", None
+
+
+def review_prompt(p, cfg, spec, rd: dict, att: dict, rounds: list[dict] | None = None,
+                  warnings: list[str] | None = None) -> str:
     """리뷰 프롬프트(설계 6.2). 입력(대상 커밋, 바뀐 파일)은 시도 기록에 저장된 것을 쓴다. 이번 라운드에 요청(사용자
     요청·지시·디렉터 보강, round_requests)이 있으면 그 요청과 그 라운드 작업 사양을 보이고 기준에 한 줄을 더한다
-    (없으면 그대로).
-    기준 뒤에 테스트 절(tests_section), 묶음 절(group_section), 디자인 절(design_section), 문구 절(text_section) 순서로
-    붙인다. 없는 절은 빈 문자열이다. 관문 결과는 시도 기록 inputs.tests 를 쓴다(관문을 다시 돌리지 않는다). 라운드 2 부터는
+    (없으면 그대로). 사양에 issue 가 있으면 태스크 줄 바로 뒤에 이슈 줄(issue_line)을 넣는다.
+    기준 뒤에 프로젝트 점검표(review_extra), 테스트 절(tests_section), 묶음 절(group_section), 디자인 절(design_section),
+    문구 절(text_section) 순서로 붙인다. 없는 절은 빈 문자열이다. 점검표를 읽지 못한 경고는 warnings(리스트면)에 더한다.
+    관문 결과는 시도 기록 inputs.tests 를 쓴다(관문을 다시 돌리지 않는다). 라운드 2 부터는
     테스트 절 다음에 라운드 절(round_section, rounds 는 상태의 라운드 기록)을 붙인다. 리뷰어는 작업 루트에서 뜨므로 상태 루트
-    파일(사양·직무 문서·이번 라운드 작업 사양·관문 로그, 기준 절 안의 팀 파일)은 메인 사본을 가리킨다(p.state_ref·team_refs:
-    슬롯 태스크면 작업 루트에서 메인 루트로 가는 상대 경로)."""
+    파일(사양·직무 문서·이번 라운드 작업 사양·관문 로그, 기준 절·점검표 안의 팀 파일)은 메인 사본을 가리킨다(p.state_ref·
+    team_refs: 슬롯 태스크면 작업 루트에서 메인 루트로 가는 상대 경로)."""
     tid, n = spec.id, rd["round"]
     st = state.load(p, tid) or {}  # 작업 공간 태스크면 이전 리뷰·린트는 슬롯에서 보고 작업 공간 줄을 넣는다(설계 5.10.5)
     p = workspace.view(p, st)
@@ -406,8 +448,13 @@ def review_prompt(p, cfg, spec, rd: dict, att: dict, rounds: list[dict] | None =
         request = "".join(f"\n- 이번 라운드 {label}: {text}" for label, text in asks) + f"\n- 이번 라운드 작업 사양: `{work}`"
         request_rule = (f"\n5. 이번 라운드 요청(위 {labels})을 반영했는가. 요청이 사양의 Acceptance 를 바꾸면 요청을 따른 쪽을 "
                         "맞는 것으로 본다.")
+    extra, warned = review_extra(p)
+    if warned and warnings is not None:
+        warnings.append(warned)
+    issue = issue_line(cfg, spec)
     return fill(_template("review-prompt.md"), role=spec.role, role_title=cfg.role_title(spec.role), task_id=tid,
                 round=str(n), attempt=str(att["attempt"]), title=spec.title, review_file=att["file"],
+                issue=f"\n- {issue}" if issue else "", extra=team_refs(p, extra),
                 spec_path=p.state_ref(f".herdr-team/tasks/{tid}.md"),
                 role_doc=p.state_ref(f".herdr-team/roles/{spec.role}.md"),
                 report=report_rel(tid), prior=", ".join(f"`{x}`" for x in prior) or "없음", request=request,

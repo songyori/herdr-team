@@ -331,6 +331,21 @@ class SlotReviewTest(WsCase):
         self.assertEqual((root / role_at).read_text(encoding="utf-8"), "# developer 직무 문서(고침)\n")
         self.assertNotIn("고친 Acceptance", (root / ".herdr-team" / "tasks" / "T-001.md").read_text(encoding="utf-8"))
 
+    def test_slot_review_reads_main_checklist(self):
+        # 프로젝트 점검표는 메인 프로젝트 작업 트리의 것이다(설계 6.2. 커밋하지 않아 슬롯에는 없다). 본문 안의 팀 파일 경로는
+        # 기준 절처럼 메인 사본을 가리킨다(Task 4 리뷰 반영 2차 G2 의 규칙)
+        self.ws_start("T-001")
+        root = self.slot_root(1)
+        (self.team / "review-extra.md").write_text("- `.herdr-team/project.md` 의 규칙을 다시 본다\n", encoding="utf-8")
+        self.work()
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual((code, out["status"]), (0, "reviewing"), out)
+        prompt = (self.state_dir / "tasks" / "T-001" / "r1-review-a1.md").read_text(encoding="utf-8")
+        self.assertIn("## 프로젝트 점검표\n- `../../../../.herdr-team/project.md` 의 규칙을 다시 본다\n\n## 등급과 판정\n",
+                      prompt)
+        self.assertFalse((root / ".herdr-team" / "review-extra.md").exists())
+        self.assertTrue((root / "../../../../.herdr-team/project.md").is_file())
+
     def test_main_folder_commit_during_review_is_not_tamper(self):
         self.ws_start("T-001")
         self.work()
