@@ -10,10 +10,14 @@ from . import auth
 from .errors import CONFLICT, MISSING, USAGE, HorchError
 
 
-def inject_codex_env(argv: list[str], terminal: str) -> list[str]:
-    """Codex 설정이 inherit=core 여도 Codex 셸에 HC_TERMINAL_ID 가 보이게 한다."""
+def inject_codex_env(argv: list[str], terminal: str, env: dict[str, str] | None = None) -> list[str]:
+    """Codex 설정이 inherit=core 여도 Codex 셸에 HC_TERMINAL_ID 와 worker-start --env 값이 보이게 한다.
+    --env 값은 HC_TERMINAL_ID 뒤에 이름 순서로 더한다(사전 검증 S2: 환경에만 두면 사용자 정책이 뺀다)."""
     if argv and Path(argv[0]).name == "codex":
-        return [argv[0], "-c", f"shell_environment_policy.set.HC_TERMINAL_ID={json.dumps(terminal)}", *argv[1:]]
+        extra = ["-c", f"shell_environment_policy.set.HC_TERMINAL_ID={json.dumps(terminal)}"]
+        for name in sorted(env or {}):
+            extra += ["-c", f"shell_environment_policy.set.{name}={json.dumps(env[name])}"]
+        return [argv[0], *extra, *argv[1:]]
     return list(argv)
 
 
@@ -42,15 +46,16 @@ def run(store, dispatch_id: str, argv: list[str]) -> None:
         raise HorchError("usage", "에이전트 명령이 없다", USAGE)
     claim(store, dispatch_id, terminal)
     # worker-start --env 값(설계 14.3). hc run 터미널은 부른 셸의 환경을 물려받지 않으므로 exec 직전에 더한다
-    env = store.one("SELECT env FROM dispatches WHERE id=?", (dispatch_id,))["env"]
-    final = inject_codex_env(argv, terminal)
+    raw = store.one("SELECT env FROM dispatches WHERE id=?", (dispatch_id,))["env"]
+    env = json.loads(raw) if raw is not None else None
+    final = inject_codex_env(argv, terminal, env)
     store.close()
     # CPython 이 무시로 바꾼 SIGPIPE·SIGXFSZ 는 exec 뒤에도 남아 에이전트와 자식이 물려받으므로 되돌린다.
     for name in ("SIGPIPE", "SIGXFSZ"):
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), signal.SIG_DFL)
     if env is not None:
-        os.environ.update(json.loads(env))  # 같은 이름은 덮어쓴다. 프리앰블·에이전트 인자에는 넣지 않는다
+        os.environ.update(env)  # 같은 이름은 덮어쓴다. 프리앰블에는 넣지 않는다(Codex 는 위의 -c 인자로도 받는다)
     try:
         os.execvp(final[0], final)
     except OSError as exc:

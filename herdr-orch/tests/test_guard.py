@@ -134,6 +134,14 @@ class InjectTest(unittest.TestCase):
 
     def test_claude_unchanged(self):
         self.assertEqual(guard.inject_codex_env(["claude", "x"], "t7"), ["claude", "x"])
+        self.assertEqual(guard.inject_codex_env(["claude", "x"], "t7", {"A": "1"}), ["claude", "x"])
+
+    def test_codex_env_goes_to_policy_set_in_name_order(self):
+        # 사전 검증 S2: 사용자 정책이 inherit = "core" 여도 Codex 셸이 --env 값을 보게 한다
+        self.assertEqual(guard.inject_codex_env(["codex", "--no-daemon"], "t7", {"B": "가", "A": "1"}),
+                         ["codex", "-c", 'shell_environment_policy.set.HC_TERMINAL_ID="t7"',
+                          "-c", 'shell_environment_policy.set.A="1"', "-c", 'shell_environment_policy.set.B="\\uac00"',
+                          "--no-daemon"])
 
 
 class GuardCliTest(HorchCase):

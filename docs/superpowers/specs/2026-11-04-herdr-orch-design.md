@@ -704,8 +704,9 @@ herdr-team 7단계의 작업 공간(그 설계 5.10)은 워커·리뷰어마다 
 
 ### 14.3 적용
 
-- `launch-guard` 가 가드 등록을 마친 뒤 `os.execvp` 직전에 `os.environ` 에 더한다(같은 이름은 덮어쓴다). 프리앰블과 에이전트 인자에는 넣지 않는다.
+- `launch-guard` 가 가드 등록을 마친 뒤 `os.execvp` 직전에 `os.environ` 에 더한다(같은 이름은 덮어쓴다). 프리앰블에는 넣지 않는다. Claude 의 인자에도 넣지 않는다.
 - Codex 는 셸 도구에 넘길 환경을 `shell_environment_policy`(`inherit`, 이름 필터, `include_only`·`exclude`)로 정한다. 버전과 사용자 설정에 따라 이름에 `KEY`·`SECRET`·`TOKEN` 이 든 변수나 허용 목록 밖 변수가 빠질 수 있다(Codex 설계 리뷰 r1). herdr-team 은 그런 이름을 쓰지 않게 검사한다(그 설계 4.2). Codex 셸이 값을 보는지는 기본 설정과 사용자 정책이 있을 때 모두 사전 검증 S2 로 확인한다(그 설계 15.2).
+- S2 결과(2026-11-11, `codex exec` 로 대신 쟀다. 그날 대화형 Codex 는 사용자 플러그인 훅 오류로 셸 명령이 막혀 잴 수 없었다): 사용자 설정 `inherit = "core"` 와 `-c shell_environment_policy.inherit="core"` 에서는 환경의 값이 Codex 셸에 보이지 않았다. `-c shell_environment_policy.set.<이름>=<값>` 을 더하면 보였다. `include_only` 를 쓰면 `set` 값도 빠졌다. 그래서 Codex 에는 `HC_TERMINAL_ID` 인자 뒤에 Dispatch env 의 이름 순서로 `-c shell_environment_policy.set.<이름>=<JSON 문자열>` 도 더한다(`guard.inject_codex_env`). `include_only` 정책은 herdr-team doctor 가 경고한다(그 설계 9.2).
 
 ### 14.4 테스트·버전·한계
 

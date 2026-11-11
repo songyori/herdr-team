@@ -87,13 +87,23 @@ class EnvStartTest(EnvCase):
         got = self.run_guard(term)
         self.assertEqual(got["env"], {"HT_PORT": None, "HTEAM_SLOT": None, "HT_URL": None, "HT_EMPTY": None})
 
-    def test_codex_gets_env_in_environment_not_args(self):
-        # Codex 인자는 지금처럼 HC_TERMINAL_ID 하나만 더한다. --env 값은 환경에만 있다(S2 는 실환경 Task 10)
-        code, out = self.start("--env=HT_PORT=8110", agent="codex")
+    def test_codex_gets_env_in_environment_and_policy_set(self):
+        # 사용자 shell_environment_policy 가 inherit = "core" 면 Codex 셸이 환경의 값을 보지 못한다(사전 검증 S2).
+        # 그래서 Codex 에는 HC_TERMINAL_ID 뒤에 이름 순서로 -c shell_environment_policy.set.<이름>=<JSON 문자열> 도 더한다
+        code, out = self.start("--env=HT_PORT=8110", '--env=HT_URL=http://x/"y"', agent="codex")
         self.assertEqual(code, 0, out)
         got = self.run_guard(out["terminal"])
         self.assertEqual(got["fake"], "codex")
-        self.assertEqual(got["argv"][:2], ["-c", f'shell_environment_policy.set.HC_TERMINAL_ID="{out["terminal"]}"'])
+        self.assertEqual(got["argv"][:6], ["-c", f'shell_environment_policy.set.HC_TERMINAL_ID="{out["terminal"]}"',
+                                           "-c", 'shell_environment_policy.set.HT_PORT="8110"',
+                                           "-c", 'shell_environment_policy.set.HT_URL="http://x/\\"y\\""'])
+        self.assertEqual((got["env"]["HT_PORT"], got["env"]["HT_URL"]), ("8110", 'http://x/"y"'))
+
+    def test_claude_gets_env_in_environment_only(self):
+        # Claude 의 인자는 바뀌지 않는다(값은 환경에만 있다)
+        code, out = self.start("--env=HT_PORT=8110")
+        self.assertEqual(code, 0, out)
+        got = self.run_guard(out["terminal"])
         self.assertFalse([a for a in got["argv"] if "HT_PORT" in a], got["argv"])
         self.assertEqual(got["env"]["HT_PORT"], "8110")
 
