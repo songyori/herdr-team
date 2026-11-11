@@ -1,6 +1,8 @@
 """Claude·Codex 실행 명령(설계 8장 에이전트 명령)."""
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 
 from .errors import USAGE, HorchError
@@ -26,6 +28,16 @@ def _has(extra: list[str], names: set[str], short: str) -> bool:
     return False
 
 
+def codex_startup_args(cwd: str | Path, *, resolve: bool = True) -> list[str]:
+    """Codex 가 시작 창에서 멈추지 않게 하는 설정(설계 8장, 6단계 실환경). 처음 보는 폴더면 폴더 신뢰 창, 새 판이 있으면
+    업데이트 창이 뜨고 그동안 상태 보고가 없다. 신뢰는 cwd 의 실경로(Codex 가 실경로로 찾는다)에 이 실행에서만 준다.
+    `projects."<경로>".trust_level` 점 키는 경로의 점에서 갈라지므로 인라인 표 하나로 넘긴다. ~/.codex/config.toml 은 쓰지 않는다."""
+    path = os.path.realpath(cwd) if resolve else str(cwd)
+    # JSON 문자열은 TOML 기본 문자열로도 읽힌다(\" \\ \t \uXXXX). JSON 이 그대로 두는 DEL 만 TOML 이 막는다
+    key = json.dumps(path, ensure_ascii=False).replace("\x7f", "\\u007f")
+    return ["-c", "check_for_update_on_startup=false", "-c", "projects={" + key + '={trust_level="trusted"}}']
+
+
 def executable(agent: str) -> str:
     try:
         return AGENTS[agent]
@@ -34,7 +46,7 @@ def executable(agent: str) -> str:
 
 
 def build(agent: str, *, model: str | None, effort: str | None, extra: list[str], preamble: str,
-          home: Path) -> list[str]:
+          home: Path, cwd: str | Path | None = None) -> list[str]:
     exe = executable(agent)
     if agent == "claude":
         argv = [exe]
@@ -53,5 +65,7 @@ def build(agent: str, *, model: str | None, effort: str | None, extra: list[str]
             argv += ["-m", model]
         if effort:
             argv += ["-c", f"model_reasoning_effort={effort}"]
+        if cwd is not None:
+            argv += codex_startup_args(cwd)  # 호출자 인자(extra)가 뒤에 와 같은 키를 덮을 수 있다
     # extra 끝의 가변 인자 옵션(--add-dir 등)이 프리앰블을 삼키지 않도록 "--" 로 끊는다.
     return [*argv, *extra, "--", preamble]

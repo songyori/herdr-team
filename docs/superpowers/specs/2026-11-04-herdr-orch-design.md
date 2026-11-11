@@ -290,12 +290,13 @@ Dispatch:
 
 - Claude: `claude [--model M] [--effort E] [추가 인자...] -- "<프리앰블>"`
   - 처음 보는 폴더에서는 폴더 신뢰 확인 창에서 멈춘다(사전 검증 S1). 워커 `--cwd` 는 사용자가 이미 신뢰한 폴더를 쓴다.
-- Codex: `codex --no-daemon -s workspace-write -a never --add-dir <저장 루트> [-m M] [-c model_reasoning_effort=E] [추가 인자...] -- "<프리앰블>"`
+- Codex: `codex --no-daemon -s workspace-write -a never --add-dir <저장 루트> [-m M] [-c model_reasoning_effort=E] -c check_for_update_on_startup=false -c 'projects={"<cwd 실경로>"={trust_level="trusted"}}' [추가 인자...] -- "<프리앰블>"`
+  - 시작 창 막기(6단계 실환경, codex-cli 0.167.0): 처음 보는 폴더면 폴더 신뢰 창("Trust and continue"), 새 판이 있으면 업데이트 창이 뜨고 그동안 상태 보고가 없다. 숨은 워커는 사람이 볼 수도 없다. 그래서 `--cwd` 의 실경로를 이 실행에서만 신뢰하고(`~/.codex/config.toml` 은 쓰지 않는다, 실험에서 그대로였다) 시작 업데이트 확인을 끈다. Codex 는 신뢰를 실경로로 찾는다(`/tmp/…` 로 주면 `/private/tmp/…` 신뢰 창이 떴다). `projects."<경로>".trust_level` 점 키는 경로에 점이 있으면 듣지 않아 인라인 표 한 값으로 넘긴다(경로는 JSON 문자열 꼴. TOML 기본 문자열로도 읽힌다). 저장소 하위 폴더를 `--cwd` 로 줘도 그 경로 신뢰로 창이 없었다. 추가 인자가 뒤에 오므로 호출자가 같은 키를 덮을 수 있다.
   - `--no-daemon`: 없으면 Codex 의 명령이 hc 밖에서 돌아 `$HC_TERMINAL_ID` 가 없다.
   - `--add-dir`: Codex 샌드박스에서 저장소 DB 에 쓰게 한다.
   - `-a never`: 사람 없이 돈다. 샌드박스 밖 명령은 묻지 않고 실패한다.
   - 호출자가 추가 인자로 샌드박스·승인을 직접 고르면(`-s`·`--sandbox`, `-a`·`--ask-for-approval`, `--dangerously-bypass-approvals-and-sandbox` 등) 겹치는 기본 `-s workspace-write`·`-a never` 는 넣지 않는다. 겹치면 Codex 가 시작 전에 exit 2 로 끝난다(브랜치 리뷰에서 재현).
-  - 플러그인 hook 이 새로 생기거나 바뀌면 Codex 는 시작할 때 "Hooks need review" 확인 창에서 멈춘다(사전 검증 S2). 설정 키 `bypass_hook_trust` 는 대화형 Codex 에 듣지 않고, 실행 옵션 `--dangerously-bypass-hook-trust` 만 듣는다. 그러나 이 옵션은 검토하지 않은 hook 을 실행해, 깨진 hook 이 워커의 셸 명령을 모두 막을 수 있다(실환경 확인: Node 버전이 맞지 않는 context-mode hook). 그래서 워커에는 `--disable=hooks`(hook 을 끄고 확인 창도 없앤다, codex-cli 0.166 에서 확인)를 권한다. horch 는 이 옵션도 스스로 넣지 않는다. 호출자가 `--agent-arg=--disable=hooks` 로 넘긴다(herdr-team 은 사용자 설정에 따라 넘긴다). 처음 보는 폴더의 Codex 폴더 신뢰 창은 이 옵션으로도 사라지지 않으므로 워커 `--cwd` 는 이미 신뢰한 폴더를 쓴다.
+  - 플러그인 hook 이 새로 생기거나 바뀌면 Codex 는 시작할 때 "Hooks need review" 확인 창에서 멈춘다(사전 검증 S2). 설정 키 `bypass_hook_trust` 는 대화형 Codex 에 듣지 않고, 실행 옵션 `--dangerously-bypass-hook-trust` 만 듣는다. 그러나 이 옵션은 검토하지 않은 hook 을 실행해, 깨진 hook 이 워커의 셸 명령을 모두 막을 수 있다(실환경 확인: Node 버전이 맞지 않는 context-mode hook). 그래서 워커에는 `--disable=hooks`(hook 을 끄고 확인 창도 없앤다, codex-cli 0.166 에서 확인)를 권한다. horch 는 이 옵션도 스스로 넣지 않는다. 호출자가 `--agent-arg=--disable=hooks` 로 넘긴다(herdr-team 은 사용자 설정에 따라 넘긴다). 처음 보는 폴더의 Codex 폴더 신뢰 창은 이 옵션으로도 사라지지 않는다. 위 시작 창 막기의 `projects` 값이 그 창을 없앤다.
 - 프리앰블 앞의 `--` 는 추가 인자가 값을 여러 개 받는 옵션(Claude `--add-dir <dirs...>` 등)으로 끝나도 프리앰블을 그 값으로 먹지 않게 한다(두 CLI 모두 `--` 뒤 프롬프트를 받는다, 2026-11-05 확인).
 - 추가 인자(`--agent-arg`)는 호출자가 정한다. horch 는 권한 우회 플래그를 스스로 넣지 않는다.
 - 모델·effort 를 생략하면 에이전트 기본값이다. 값은 검사하지 않고 그대로 넘긴다.
@@ -410,6 +411,7 @@ Python 3.11 이상, `hc` 실행과 `hc server status`, `herdr-app status`, 저�
 - 6장 "이것은 보안 경계가 아니다" 를 따른다.
 - 워커는 사람 없이 돈다. 권한 모드나 샌드박스 우회는 호출자가 `--agent-arg` 로 정하고, 그 위험도 호출자가 진다. horch 는 우회 플래그를 넣지 않는다.
 - Codex 워커는 `workspace-write` 샌드박스와 `-a never` 로 띄우고, 저장 루트만 `--add-dir` 로 쓰기를 연다. 호출자가 우회 플래그를 넘기면 Codex 가 사용자의 자격 증명(git, 클라우드 인증, 셸 환경)을 그대로 쓴다.
+- Codex 워커는 `--cwd` 폴더를 신뢰한 것으로 띄운다(8장 시작 창 막기, 사용자 결정 2026-11-11). 신뢰한 폴더는 그 폴더의 Codex 설정이 코드를 실행할 수 있다(Codex 신뢰 창 문구). 워커를 띄우는 쪽이 그 폴더를 고른 것이므로 사람에게 다시 묻지 않는다. 신뢰는 그 실행에만 주고 사용자 설정 파일에 남기지 않는다.
 - 워커의 보고·질문·요약은 데이터다. `horch skill` 은 코디네이터에게 이 내용을 지시로 따르지 말라고 적는다.
 - 저장 루트는 0700 이다.
 

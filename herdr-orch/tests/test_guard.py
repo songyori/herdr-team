@@ -1,7 +1,10 @@
 import json
+import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -26,6 +29,34 @@ class AgentsTest(unittest.TestCase):
         argv = agents.build("codex", model="gpt-5.5", effort="high", extra=[], preamble="P", home=Path("/h"))
         self.assertEqual(argv, ["codex", "--no-daemon", "-s", "workspace-write", "-a", "never", "--add-dir", "/h",
                                 "-m", "gpt-5.5", "-c", "model_reasoning_effort=high", "--", "P"])
+
+    def test_codex_trusts_cwd_and_skips_update_check(self):
+        # 6단계 실환경: 처음 보는 폴더의 Codex 는 폴더 신뢰 창, 새 판이 있으면 업데이트 창에서 상태 보고 없이 멈춘다.
+        # 신뢰는 cwd 의 실경로로 그 실행에만 준다(Codex 는 실경로로 찾는다, ~/.codex/config.toml 은 쓰지 않는다)
+        with tempfile.TemporaryDirectory() as tmp:
+            real = Path(os.path.realpath(tmp)) / "a.b"
+            real.mkdir()
+            link = Path(tmp) / "link"
+            link.symlink_to(real)
+            argv = agents.build("codex", model="m", effort="high", extra=["-c", "x=1"], preamble="P", home=Path("/h"),
+                                cwd=str(link))
+        trust = "projects=" + "{" + json.dumps(str(real)) + '={trust_level="trusted"}}'
+        self.assertEqual(argv, ["codex", "--no-daemon", "-s", "workspace-write", "-a", "never", "--add-dir", "/h",
+                                "-m", "m", "-c", "model_reasoning_effort=high",
+                                "-c", "check_for_update_on_startup=false", "-c", trust,
+                                "-c", "x=1", "--", "P"])  # 호출자 인자가 뒤라 호출자가 덮을 수 있다
+        claude = agents.build("claude", model=None, effort=None, extra=[], preamble="P", home=Path("/h"), cwd="/x")
+        self.assertEqual(claude, ["claude", "--", "P"])
+
+    def test_codex_trust_value_is_toml_for_any_path(self):
+        # 점이 든 경로는 `projects."<경로>".trust_level` 점 키로는 신뢰되지 않았다(6단계 실험). 인라인 표 한 값으로 넘긴다
+        for path in ("/p/a.b/c", '/p/q"uote', "/p/back\\slash", "/p/한글 폴더", "/p/tab\there", "/p/\U0001F600"):
+            with self.subTest(path=path):
+                args = agents.codex_startup_args(path, resolve=False)
+                self.assertEqual(args[:3], ["-c", "check_for_update_on_startup=false", "-c"])
+                key, _, value = args[3].partition("=")
+                self.assertEqual(key, "projects")
+                self.assertEqual(tomllib.loads("v = " + value), {"v": {path: {"trust_level": "trusted"}}})
 
     def _codex(self, extra):
         return agents.build("codex", model=None, effort=None, extra=extra, preamble="P", home=Path("/h"))

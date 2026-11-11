@@ -256,7 +256,8 @@ def _launch(store, run_id, exe, base, progress, *, spec, agent, model, effort, e
     if shutil.which(exe) is None:
         _mark_failed(store, dispatch_id)
         raise HorchError("agent_missing", f"{exe} 를 PATH 에서 찾지 못했다", MISSING, data=base)
-    agent_argv = agents.build(agent, model=model, effort=effort, extra=list(extra), preamble=text, home=store.home)
+    agent_argv = agents.build(agent, model=model, effort=effort, extra=list(extra), preamble=text, home=store.home,
+                              cwd=cwd_path)
     launch_argv = [*horch_argv(store.home), "launch-guard", "--dispatch", dispatch_id, "--", *agent_argv]
     run = store.one("SELECT owner_space, owner_tab FROM runs WHERE id=?", (run_id,))
     labels: dict[str, str] = {}

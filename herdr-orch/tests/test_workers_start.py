@@ -59,6 +59,9 @@ class WorkerStartCliTest(HorchCase):
         sep = argv.index("--")
         self.assertEqual(argv[sep + 1:sep + 9], ["codex", "--no-daemon", "-s", "workspace-write", "-a", "never",
                                                  "--add-dir", str(self.home)])
+        trust = "projects=" + "{" + json.dumps(os.path.realpath(self.tmp)) + '={trust_level="trusted"}}'
+        self.assertIn(trust, argv)  # --cwd 의 실경로를 그 실행에만 신뢰한다(6단계 실환경)
+        self.assertIn("check_for_update_on_startup=false", argv)
 
     def test_placement_none_without_owner_tab(self):
         self.make_owner("t101", None, None)

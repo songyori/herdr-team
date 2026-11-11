@@ -652,7 +652,7 @@ orca-team 0.7.0 의 고정 에이전트(`lib/orch/agents.py`)를 Herdr 위에서
 4. 탭 이름: `herdr-app do tab.rename --id <탭> --name "herdr-team <제목>"`(최선 노력). Herdr 는 디스패치가 탭 이름을 바꾸지 않으므로 한 번이면 된다. orca 는 디스패치마다 Orca 가 탭 이름을 바꿔 되돌려야 했다(§17 P2-7).
 5. pane: `herdr-app ls` 에서 작업 터미널의 pane id 를 찾아 `work_pane` 에 둔다. 그 탭에 리뷰 보기 pane(`view`)이 이미 있으면(앞 세션 태스크의 리뷰가 아직 돈다) 새 작업 pane 은 오른쪽 끝에 붙었다(X4). `herdr-app do pane.swap '{"pane":"<작업 pane>","target":"<보기 pane>"}'` 로 왼쪽에 둔다(초점은 바뀌지 않는다, X4). 배치 확인은 core 문서 `doc.get herdr-app` 의 그 탭 `row` 순서로 한다(`herdr-app ls` 로는 방향을 알 수 없다, X4).
 6. 배치 실패(pane 을 못 찾음, swap 실패)는 태스크를 막지 않는다. `layout_error` 를 남기고 다음 태스크를 넣을 때 한 번만 다시 한다(`layout_retried`). 로그 한 줄을 남긴다.
-7. 처음 보는 폴더면 Claude·Codex 가 폴더 신뢰 창에서 멈춘다(X1. 상태 보고가 없다). 0.3.0 과 같이 `no_status` 로 드러나고 관제가 1분 뒤 메인에 decide 를 올린다(8.6). Claude 쪽은 init 때 메인이 이미 신뢰했다. Codex 의 신뢰는 따로(`~/.codex/config.toml`)라 그 프로젝트의 첫 Codex 실행은 신뢰 창에서 멈춘다(6단계 실환경). 이 decide 로 사용자가 그 탭(숨은 리뷰어면 보기 pane)에서 "Trust and continue" 를 고른다. herdr-team 은 키를 누르지 않고 신뢰 설정을 쓰지 않는다(13장).
+7. 처음 보는 폴더면 Claude·Codex 가 폴더 신뢰 창에서 멈춘다(X1. 상태 보고가 없다). 0.3.0 과 같이 `no_status` 로 드러나고 관제가 1분 뒤 메인에 decide 를 올린다(8.6). Claude 쪽은 init 때 메인이 이미 신뢰했다. Codex 의 신뢰는 따로(`~/.codex/config.toml`)라 그 프로젝트의 첫 Codex 실행이 신뢰 창에서 멈췄다(6단계 실환경). 그래서 horch 가 Codex 워커마다 `--cwd`(프로젝트 폴더) 실경로를 그 실행에서만 신뢰하고 시작 업데이트 확인을 끈다(herdr-orch 8장 시작 창 막기, 사용자 결정 2026-11-11). 사용자 설정 파일은 쓰지 않는다. 그 밖의 시작 창은 위 decide 가 받는다.
 
 #### 5.9.3 태스크 넣기
 
@@ -996,7 +996,7 @@ Codex 리뷰어에게는 `AGENTS.md` 의 리뷰어 규칙도 적용된다(9.1). 
 5. 보기 pane 의 제목은 attach 가 리뷰어 제목을 옮겨 온 것이다(X5).
 6. 보기 pane 을 열지 못해도(작업 pane 없음, `pane.split` 실패) 리뷰는 그대로 간다. 로그 한 줄만 남긴다. 보기 pane 이 죽어도 리뷰에는 영향이 없다.
 7. 그 pane 에서 친 키는 리뷰어에 들어간다(일반 attach). 사람이 리뷰어에게 입력하면 리뷰가 바뀔 수 있다. README 와 한계(13장)에 적는다. hc attach 의 떼기 키(`ctrl+\`)로 떼면 보기 pane 의 프로그램만 끝나고 리뷰어는 계속 돈다. 관제는 그 리뷰 동안 다시 열지 않는다(3 의 정리는 그대로 한다).
-8. 숨은 리뷰어가 시작 확인 창(폴더 신뢰 등)에서 멈추면 보기 pane 이 열리기 전에는 사람이 볼 수 없다. `no_status` 1분이면 관제가 decide 를 올린다(8.6). 리뷰어 `--cwd` 는 프로젝트 폴더다. Claude 쪽은 메인이 이미 신뢰했지만 Codex 는 따로라, 그 프로젝트의 첫 Codex 가 숨은 리뷰어면 신뢰 창에서 멈춘다(6단계 실환경). 리뷰 동안 열린 보기 pane(`hc attach`)에서 사용자가 넘긴다.
+8. 숨은 리뷰어가 시작 확인 창(폴더 신뢰 등)에서 멈추면 보기 pane 이 열리기 전에는 사람이 볼 수 없다. `no_status` 1분이면 관제가 decide 를 올린다(8.6). 리뷰어 `--cwd` 는 프로젝트 폴더다. Claude 쪽은 메인이 이미 신뢰했고, Codex 는 horch 가 그 실행에서만 신뢰하고 업데이트 창을 끈다(5.9.2 의 7). 그 밖의 확인 창은 리뷰 동안 열린 보기 pane(`hc attach`)에서 사용자가 넘긴다.
 9. 실환경에서 확인할 것: split pane 안의 일반 `hc attach`(X5 는 pane 안에서 `--observe` 만, 일반 attach 는 pty 캡처로만 봤다), 떼기 키(`ctrl+\`, hc 도움말), split 으로 만든 pane 터미널이 보이는 동안에도 200×120 으로 남은 일이 있었다(X4, 원인 모름). 그러면 attach 가 리뷰어를 200×120 으로 맞춰 좁은 pane 에서 잘린다. 15.2 에서 그림(또는 pty 캡처)으로 본다.
 
 `herdr-app do terminal.show`(다른 터미널을 그 pane 에 잠시 보이기)는 사용자 화면을 시험 space 로 옮기고 초점을 바꿨으므로 쓰지 않는다(X5).
@@ -2037,12 +2037,16 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
 - 관제는 `hc run` 으로 떠 부른 쪽 환경을 물려받지 않는다. argv 로는 `HTEAM_ROLE`·`HTEAM_LAUNCH` 만 넘긴다. 그래서 메인에서 `HERDR_ORCH_BIN`·`HERDR_TEAM_PLUGIN_ROOT` 로 고른 horch·플러그인은 관제에 가지 않는다. 관제는 형제 경로와 설치 기록으로 다시 찾는다(9.3, 최종 리뷰, 기록만).
 - 관제 안의 `fix --supplement`(보강이 끝난 뒤 화면 고치기, 메인 큐의 fix)가 보강 후행 태스크의 대기 라운드를 만드는 안쪽 fix 는 finish 잠금을 비차단으로 잡지 않는다(8.5 의 비차단은 바깥 fix 까지만). 그 후행 태스크의 리뷰 관문이 finish 잠금을 쥐고 있으면 관문이 끝날 때까지 관제 틱이 멈춘다(Codex 계획 리뷰 r2, 기록만).
 - 리뷰 보기 pane 의 크기는 실환경에서 숨은 리뷰어·보기 터미널 모두 120x40 이었다(6.5 의 9, 15.4 6단계). 보기 화면은 약 118열에서 줄바꿈하고 잘리지 않았다.
-- 그 프로젝트에서 Codex 를 처음 돌리면(대개 첫 Codex 리뷰어나 Codex 고정 에이전트) 폴더 신뢰 창에서 멈춘다. herdr-team 은 사용자 대신 신뢰하지 않는다(키를 누르지 않고 `~/.codex/config.toml` 을 쓰지 않는다). `no_status` 1분 decide 로 사용자가 넘길 때까지 그 일은 멈춰 있다(5.9.2 의 7, 6.5 의 8, 6단계 실환경, 기록만).
+- Codex 워커의 신뢰는 `--cwd` 실경로에만 준다. 사용자가 `[agents.codex].args` 에 `-c projects=…` 를 넣으면 그 값이 뒤에 와 이긴다(그 표에 프로젝트 폴더가 없으면 신뢰 창이 다시 뜬다). 업데이트 창 말고 새로 생기는 Codex 시작 창(로그인, 약관 등)은 `no_status` 1분 decide 로만 드러난다(5.9.2 의 7, 6.5 의 8, herdr-orch 8장, 기록만).
 - 메인이 `task new` 뒤 요청 큐로 `start T` 를 내도 관제 `start-ready` 가 먼저 그 태스크를 띄우면 요청 결과는 `bad_state: T 는 working 다` 다. 태스크는 이미 일하므로 영향은 없다(5.4, 8.2, 6단계 실환경, 기록만).
+- 인수인계 넣기(`horch worker-start --terminal`)에서 horch 가 보낸 뒤 죽거나 응답이 사라지면 관제는 `resetting` 을 지운다. 그 Dispatch 는 이미 active 일 수 있어 다음 시도는 `terminal_busy` 로 리셋을 접고, 그 인수인계의 끝 메시지도 인수인계로 보지 않는다(5.9.7 의 3, Codex 브랜치 리뷰 p6r2, 기록만).
+- 질문을 decide 로 띄운 뒤 그 워커가 끝나거나 버려지면(released) 메인의 회신(큐 `reply`)이 부른 `horch reply` 는 끝난 Dispatch 메일함에도 넣고 성공한다. `reply_failed` 안내 대신 decide 를 닫고 `replied: true` 를 돌려주지만 워커는 답을 읽지 못한다(7.4, Codex 브랜치 리뷰 p6r2, 기록만).
+- `[crew.temp]` 처럼 고정 에이전트 이름을 `temp` 로 지으면 설정 검사는 받지만 라운드 기록의 `crew: "temp"`(임시 워커 표시)와 겹친다. 첫 실행은 고정 터미널이고 첫 fix 부터 임시 워커로 돈다. init 은 이 이름을 만들지 않는다(4.2, 5.9.4, Codex 브랜치 리뷰 p6r2, 기록만).
 
 ## 14. 보안
 
 - 워커는 사람 없이 돈다. 권한 우회(`[agents.claude].args` 의 bypass, Codex 샌드박스 우회)를 넣으면 워커가 사용자의 git·클라우드 자격 증명과 셸 환경을 그대로 쓴다. init 이 위험을 적고 승인받았을 때만 넣는다.
+- Codex 워커는 프로젝트 폴더를 그 실행에서만 신뢰한 것으로 뜬다(5.9.2 의 7, 사용자 결정 2026-11-11). 신뢰한 폴더는 그 폴더의 Codex 설정이 코드를 실행할 수 있다(Codex 신뢰 창 문구). 사용자가 herdr-team 을 그 프로젝트에 init 한 것을 그 폴더를 믿는다는 뜻으로 본다. `~/.codex/config.toml` 에는 남기지 않는다.
 - Codex 샌드박스·승인 우회(`--dangerously-bypass-approvals-and-sandbox`)를 넣으면 Codex 리뷰어가 chrome-devtools 로 아무 URL(http(s) 포함)을 열 수 있고 페이지의 스크립트·요청이 돈다. 리뷰어가 읽는 워커 코드·웹 페이지의 글이 명령을 실행시킬 수 있고(프롬프트 주입), 저장소 밖 변경은 변조 검사가 잡지 못한다. 그래서 기본에 넣지 않고 init 이 승인받는다. 리뷰어의 브라우저 서버(`hteam-browser`)는 `--isolated=true`(임시 프로필)·`--headless=true` 로 정의해 사용자 Chrome 의 쿠키·로그인을 쓰지 않는다. 사용자·플러그인의 같은 일을 하는 `chrome-devtools`(이 환경에서는 격리하지 않은 고정 프로필)는 hteam 이 띄우는 codex(디스패치의 워커·리뷰어 fresh·retry, 이미지)에서만 끈다: agent 가 codex 이고 args 에 `hteam-browser` 정의가 있을 때 읽기 전용 `codex mcp get chrome-devtools --json`(프로세스 안에서 한 번, 15초 상한)으로 보고, 켜져 있으면 정의를 통째로(transport 키 하나 + `enabled=false`) args 뒤에 더한다. 조회 실패·시간 초과·codex 없음이면 끄지 않고 warnings 에 남긴다(디스패치를 막지 않는다). 우회를 승인하면 사용자 Codex 설정의 다른 MCP 서버도 승인 없이 쓸 수 있다. hteam 은 같은 일을 하는 `chrome-devtools` 만 끄고 다른 이름은 범위 밖이다. 리뷰어 프롬프트는 `hteam-browser` 만 쓰라고 한다(실수 방지). 첫 실행에 npm 패키지를 내려받는다(버전 고정 `chrome-devtools-mcp@1.10.1`).
 - 이미지 생성의 `codex exec` 는 orca-team 과 같이 샌드박스 우회로 돈다(`image_gen` 결과 파일을 읽으려고). 프롬프트는 이미지 생성만 하게 하고, 결과는 검사한 PNG 바이트만 `--out` 에 새 이름으로 게시한다(링크를 따라가지 않고 덮어쓰지 않는다). 그 codex 는 샌드박스 밖에서 돌아 실행 중 출력 폴더나 결과 파일을 바꿔치기할 수 있으므로 그런 경합은 위협 모델 밖이다. 폴더 fd 고정과 비차단 읽기는 실수(멈춤·잘못된 곳에 쓰기) 방지다.
 - Claude 리뷰어는 워커 화면을 사용자 자신의 Chrome DevTools MCP 로 렌더한다(격리된 `hteam-browser` 가 아니다). 그래서 페이지 스크립트가 그 브라우저 프로필에서 돈다. init 은 프로젝트 `.mcp.json` 에 격리 정의(`--isolated=true`)를 제안할 수 있다.
