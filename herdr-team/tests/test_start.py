@@ -1166,5 +1166,28 @@ class LeftRunningHintTest(TeamCase):
         self.assertIn(f"--home {self.horch_home} worker-release --dispatch dsp-1", exc.hint)
 
 
+class FullIfLineTest(StartCase):
+    """워커 사양 developer 테스트 절의 full_if 줄(설계 5.7 7단계 끝 문장): [test] 에 full_if 가 있을 때만, developer 만."""
+
+    LINE = ("- 이 태스크가 `[test] full_if` 경로를 바꾸면 `.herdr-team/bin/hteam test T-001` 가 quick 대신 전체 테스트를 돈다"
+            "(오래 걸리면 `run_in_background`).")
+
+    def spec_text(self, tid="T-001"):
+        cfg = config.load(self.p)
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            return compose.work_spec(self.p, cfg, specs.load(self.p, tid), {"round": 1}, ["src/**"])
+
+    def test_line_only_with_full_if_and_only_for_developer(self):
+        self.write_spec("T-001")
+        self.write_spec("T-002", "tester", owns="tests/grp/**, docs/qa/grp.md")
+        self.use_gate()
+        self.assertNotIn("full_if", self.spec_text())  # 회귀: 없으면 지금 문구 그대로
+        self.use_gate(extra='full_if = ["src/db/**"]\n')
+        text = self.spec_text()
+        self.assertIn("실패하면 고쳐서 커밋하고 다시 돌린다.\n" + self.LINE + "\n- 테스트가 소유 경로에 만드는 산출물", text)
+        self.assertEqual(text.count("full_if"), 1)
+        self.assertNotIn("full_if", self.spec_text("T-002"))
+
+
 if __name__ == "__main__":
     unittest.main()

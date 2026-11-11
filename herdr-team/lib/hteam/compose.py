@@ -59,6 +59,9 @@ PENDING_TEST_BLOCK = f"""## 테스트(확정 대기)
 - `docs/planning/tasks.toml` 의 `[test]` 를 사용자가 아직 확정하지 않았다. 그 quick·full 명령과 `{SHIM} test` 는 돌리지 않는다(확정 뒤에 리뷰하는 태스크는 관문이, 이미 관문 없이 리뷰한 태스크는 마무리의 마지막 full 이 돌린다).
 - 테스트는 쓰고 커밋한다. 그 명령이 아닌 방법으로 할 수 있는 검증(빌드, 화면 확인, Acceptance 의 다른 확인)은 한다.
 - 돌리지 못한 검증은 보고서 이번 라운드 절의 `### 테스트 확정 대기` 에 적는다(무엇을 확인하려 했는지, 확정 뒤 돌 명령). done 의 summary 에 "[test] 확정 필요" 를 넣는다. 확정을 기다리며 멈추지 않는다."""
+# developer 테스트 절의 full_if 줄(설계 5.7 7단계 끝 문장). [test] 에 full_if 가 있을 때 둘째 줄 바로 뒤에 넣는다
+FULL_IF_LINE = (f"- 이 태스크가 `[test] full_if` 경로를 바꾸면 `{SHIM} test {{task_id}}` 가 quick 대신 전체 테스트를 돈다"
+                "(오래 걸리면 `run_in_background`).")
 
 
 def test_block(p, spec) -> str:
@@ -77,6 +80,9 @@ def test_block(p, spec) -> str:
     if not approved:
         return PENDING_TEST_BLOCK
     block = TESTER_TEST_BLOCK if spec.role == testgate.TESTER_ROLE else DEVELOPER_TEST_BLOCK
+    if spec.role == testgate.DEVELOPER_ROLE and cfg.full_if:
+        lines = block.split("\n")
+        block = "\n".join(lines[:3] + [FULL_IF_LINE] + lines[3:])  # 머리·순서·done 줄 바로 뒤
     return block.format(task_id=spec.id)
 
 
@@ -279,6 +285,9 @@ VERIFY_PENDING = ("보고서의 검증 출력을 그대로 믿지 말고 직접 
 SKIPPED_LINE = ("- 확정하지 않은 테스트 명령이라 관문을 건너뛰었다(커밋된 docs/planning/tasks.toml 의 [test] 를 사용자가 "
                 "확정하지 않았다). 그 명령은 직접 돌리지 않는다. 다른 검증은 위 기준 1 대로 한다.")
 GROUP_FILES_SHOWN = 15
+# developer 관문이 full_if 로 full 을 돌렸을 때 테스트 절의 첫 문장(설계 6.2, 5.7 7단계). templates/review-tests.md 는 quick 문장이다
+FULL_IF_TESTS = ("hteam 이 `docs/planning/tasks.toml` 의 `[test]` 명령으로 전체 테스트(full)를 돌렸다. 이 태스크가 바꾼 파일 "
+                 "가운데 `[test] full_if` 에 맞은 것: {paths}")
 
 
 def verify_rule(p, role: str, tests: dict | None) -> str:
@@ -297,12 +306,15 @@ def _lines(items: list[str]) -> str:
 
 
 def tests_section(tests: dict | None, p=None) -> str:
-    """테스트 절(설계 6.2): developer 관문의 quick 결과. 건너뛰었으면(확정하지 않은 [test]) 한 줄. 없으면 빈 문자열. p 는
-    로그 경로를 정한다(testgate.describe)."""
+    """테스트 절(설계 6.2): developer 관문의 quick 결과(full_if 로 full 을 돌렸으면 그 결과와 맞은 경로). 건너뛰었으면
+    (확정하지 않은 [test]) 한 줄. 없으면 빈 문자열. p 는 로그 경로를 정한다(testgate.describe)."""
     if not tests:
         return ""
     if tests.get("skipped"):
         return f"## hteam 테스트 결과\n{SKIPPED_LINE}\n\n"
+    if tests.get("full_if"):
+        first = FULL_IF_TESTS.format(paths=testgate.matched_text(tests["full_if"]))
+        return f"## hteam 테스트 결과\n{first}\n{_lines(testgate.describe(tests['full'], 'full', p))}\n\n"
     if "quick" not in tests:
         return ""
     lines = _lines(testgate.describe(tests["quick"], "quick", p))

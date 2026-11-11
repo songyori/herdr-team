@@ -1388,5 +1388,26 @@ class StatusCopyTest(EventCase):
         self.assertEqual(out["tasks"][0]["hint"], "관제의 워커 목록 사본이 없다(관제가 재확인마다 쓴다)")
 
 
+class FullIfEventTest(EventCase):
+    """관제의 full_if 관문 반려(설계 8.6, 5.7 7단계): quick 실패처럼 사유 note 로 fix, 두 라운드 같은 실패면 repeat."""
+
+    def test_full_if_rejection_fixes_then_repeat_raises_decide(self):
+        self.use_gate(extra='full_if = ["src/**"]\n')
+        self.gate_modes("fail", "fail")  # 라운드마다 full 한 번
+        self.rearm()
+        self.start()
+        self.worked()
+        st = self.task_state("T-001")
+        self.assertEqual((st["status"], st["round"]), ("working", 2))
+        self.assertEqual(st["rounds"][-1]["note"],
+                         "테스트 관문 반려: full_if 로 돌린 full 이 통과하지 못했다(docs/reviews/T-001/r1.md 의 출력 끝을 본다)")
+        self.worked()
+        (e,) = self.decides()
+        self.assertEqual((e["kind"], e["summary"]),
+                         ("repeat_test_failure", "같은 full 테스트 실패로 hteam 사전 검사가 두 라운드 연속 반려했다"))
+        self.assertEqual(e["files"], ["docs/reviews/T-001/r2.md"])
+        self.assertEqual(self.task_state("T-001")["status"], "changes")
+
+
 if __name__ == "__main__":
     unittest.main()

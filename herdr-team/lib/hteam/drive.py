@@ -66,6 +66,8 @@ LIFTED_TEXT = "{tid}: {oid} 은 작업자가 이어 가서 닫아도 된다(work
 UNTRACKED_NOTE = "리뷰 중 소유 경로에 추적 안 된 파일이 생겼다. 커밋하거나 지운다: {paths}"
 UNCOMMITTED_NOTE = "커밋 안 된 파일을 커밋하거나 지운다"
 GATE_NOTE = "테스트 관문 반려: quick 이 통과하지 못했다({file} 의 출력 끝을 본다)"
+GATE_FULL_NOTE = "테스트 관문 반려: full_if 로 돌린 full 이 통과하지 못했다({file} 의 출력 끝을 본다)"
+REPEAT_GATE_TEXT = "같은 {kind} 테스트 실패로 hteam 사전 검사가 두 라운드 연속 반려했다"  # kind 는 quick·full
 # worker_question 의 판단 근거 문서(설계 7.7, 있는 것만)
 GROUNDS = ("docs/planning/spec.md", "docs/planning/contracts.md", "docs/planning/interview.md", "docs/planning/voice.md")
 TEST_CONFIG_CODES = frozenset({"test_unrunnable", "bad_test_config", "plan_unreadable"})
@@ -587,8 +589,9 @@ class Drive:
         max_rounds, 아니면 반려 사유 note 로 fix."""
         from . import review
         st = state.require(self.p, tid)
-        if _same_gate_failure(st):
-            self.decide("repeat_test_failure", tid, "같은 quick 테스트 실패로 hteam 사전 검사가 두 라운드 연속 반려했다",
+        kind = _same_gate_failure(st)
+        if kind:
+            self.decide("repeat_test_failure", tid, REPEAT_GATE_TEXT.format(kind=kind),
                         files=self._work_files(st, review_rel(tid, st["round"])),
                         commands=[self._fix_cmd(st), f"hteam drop {tid}"])
             return
@@ -598,6 +601,8 @@ class Drive:
         problems = (state.current_round(st) or {}).get("prechecks") or []
         if problems == [review.GATE_PROBLEM]:
             note = GATE_NOTE.format(file=review_rel(tid, st["round"]))
+        elif problems == [review.GATE_FULL_PROBLEM]:
+            note = GATE_FULL_NOTE.format(file=review_rel(tid, st["round"]))
         else:
             note = ("사전 검사 반려: " + "; ".join(problems))[:300]
         self.fix_task(tid, note)
@@ -1814,19 +1819,22 @@ def _last_json(text: str) -> dict | None:
     return None
 
 
-def _same_gate_failure(st: dict) -> bool:
-    """최근 두 판정 라운드가 모두 hteam 테스트 관문 반려이고 quick 출력 끝이 숫자만 빼고 같다(8.6 의 repeat_test_failure)."""
+def _same_gate_failure(st: dict) -> str | None:
+    """최근 두 판정 라운드가 모두 같은 종류(quick, full_if 의 full)의 hteam 테스트 관문 반려이고 그 출력 끝이 숫자만 빼고
+    같으면 그 종류(8.6 의 repeat_test_failure, 5.7 7단계). 아니면 None(quick 과 full 이 섞이면 같은 실패가 아니다)."""
     from . import review
     judged = [r for r in st["rounds"] if r.get("verdict")]
     if len(judged) < 2:
-        return False
+        return None
     a, b = judged[-2], judged[-1]
-    if not all(r.get("review_source") == "hteam" and r.get("prechecks") == [review.GATE_PROBLEM] for r in (a, b)):
-        return False
+    kind = next((k for k, problem in (("quick", review.GATE_PROBLEM), ("full", review.GATE_FULL_PROBLEM))
+                 if all(r.get("review_source") == "hteam" and r.get("prechecks") == [problem] for r in (a, b))), None)
+    if kind is None:
+        return None
 
     def tail(r: dict) -> str:  # 걸린 시간·숫자만 다른 같은 실패
-        return re.sub(r"\d+(?:\.\d+)?", "N", ((r.get("tests") or {}).get("quick") or {}).get("tail") or "")
-    return tail(a) == tail(b)
+        return re.sub(r"\d+(?:\.\d+)?", "N", ((r.get("tests") or {}).get(kind) or {}).get("tail") or "")
+    return kind if tail(a) == tail(b) else None
 
 
 def _acquire(p) -> dict:

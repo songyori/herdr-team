@@ -521,3 +521,191 @@ class SevenKeysApprovalTest(GateCase):
             cfg = testgate.load_config(self.p)
         self.assertEqual(gate["state"], "approved", gate)
         self.assertEqual((cfg.tester_paths, cfg.full_if), (("tests/{key}/**",), ("db/**",)))
+
+
+from tests.helpers import BASE_CONFIG, WS_CONFIG
+from hteam import config  # noqa: E402
+
+# [redmine] 표(설계 4.1). 이 태스크의 시험은 key_env 만 쓴다(주소는 쓰지 않는 닫힌 포트)
+REDMINE_TABLE = """
+[redmine]
+url = "http://127.0.0.1:9"
+key_env = "REDMINE_API_KEY"
+status = { start = 2, done = 3, changes = 4, closed = 5 }
+"""
+# full 이 받은 두 변수를 FAKE_DIR/env.txt 에 남긴다(없으면 "없음")
+ENV_FULL = 'mkdir -p "$FAKE_DIR" && printf "%s|%s" "${REDMINE_API_KEY-없음}" "${HT_KEEP-없음}" > "$FAKE_DIR/env.txt"'
+
+
+class FullIfTest(GateCase):
+    """`[test] full_if`(설계 5.7 7단계): developer 가 바꾼 경로가 맞으면 `hteam test T` 가 quick 대신 full 을 한 번 돈다."""
+
+    def setUp(self):
+        super().setUp()
+        self.use_gate(extra='full_if = ["src/db/**", "migrations/*.sql"]\n')
+
+    def test_quick_until_a_full_if_path_changes(self):
+        self.started()
+        self.commit("src/app.py", "a\n", "[T-001] app")
+        code, out = self.run_test("T-001")
+        self.assertEqual((code, out["kind"], out["status"], out.get("reason")), (0, "quick", "passed", None), out)
+        self.commit("src/db/schema.py", "s\n", "[T-001] 스키마")
+        code_sha = self.head()
+        code, out = self.run_test("T-001")
+        self.assertEqual((code, out["kind"], out["status"], out["reason"], out["matched"]),
+                         (0, "full", "passed", "full_if", ["src/db/schema.py"]), out)
+        self.assertEqual((out["command"], out["head"], out["round"]), ("fake-test --all", code_sha, 1), out)
+        self.assertEqual([c["args"] for c in self.gate_calls()], [["src/app.py"], ["--all"]])
+        self.assertTrue(out["log"].startswith(".herdr-team/state/tests/logs/T-001-r1-full-"), out["log"])
+        saved = self.record()
+        self.assertEqual({k: saved["full"][k] for k in ("round", "head", "status", "reason", "matched")},
+                         {"round": 1, "head": code_sha, "status": "passed", "reason": "full_if",
+                          "matched": ["src/db/schema.py"]})
+        self.assertEqual(saved["quick"]["status"], "passed")  # 앞 quick 기록은 그대로 남는다
+
+    def test_deleted_and_moved_paths_count(self):
+        # 지운 파일·옮긴 파일의 옛 경로도 바꾼 경로다(quick 파일은 지금 있는 파일만이라 판정에 쓰지 않는다, Codex 설계 리뷰 r1)
+        self.commit("src/db/a.py", "a\n", "chore: a")
+        self.commit("src/db/b.py", "b\n", "chore: b")
+        self.started()
+        self.git("rm", "-q", "src/db/a.py")
+        self.git("mv", "src/db/b.py", "src/b.py")
+        self.git("commit", "-q", "-m", "[T-001] 지우고 옮김")
+        code, out = self.run_test("T-001")
+        self.assertEqual((code, out["kind"], out["matched"]), (0, "full", ["src/db/a.py", "src/db/b.py"]), out)
+        self.commit("migrations/001.sql", "create\n", "[T-001] 마이그레이션")
+        code, out = self.run_test("T-001")
+        self.assertEqual(out["matched"], ["migrations/001.sql", "src/db/a.py", "src/db/b.py"], out)
+
+    def test_report_paths_do_not_count(self):
+        self.use_gate(extra='full_if = ["docs/**"]\n')
+        self.started()
+        self.commit("src/app.py", "a\n", "[T-001] app")
+        self.commit("docs/tasks/T-001/report.md", "## r1\n", "[T-001] 보고서")
+        self.commit("docs/qa/x.md", "qa\n", "[T-001] QA")
+        code, out = self.run_test("T-001")
+        self.assertEqual((code, out["kind"], out.get("matched")), (0, "quick", None), out)
+
+    def test_full_if_refuses_uncommitted_owned_like_quick(self):
+        self.started()
+        self.commit("src/db/schema.py", "s\n", "[T-001] 스키마")
+        (self.proj / "src/db/schema.py").write_text("고침\n")
+        code, out = self.run_test("T-001")
+        self.assertEqual((code, out["error"]["code"]), (2, "uncommitted_owned"), out)
+        self.assertIn("src/db/schema.py", out["error"]["message"])
+        self.assertEqual((self.gate_calls(), self.record()), ([], {}))
+
+    def test_failed_full_if_runs_once_and_exits_1(self):
+        self.started()
+        self.commit("src/db/schema.py", "s\n", "[T-001] 스키마")
+        self.gate_modes("fail", "pass")
+        code, out = self.run_test("T-001")
+        self.assertEqual((code, out["kind"], out["status"], out["exit"]), (1, "full", "failed", 1), out)
+        self.assertEqual(len(self.gate_calls()), 1)  # full 은 한 번만 돈다(quick 처럼 다시 돌리지 않는다)
+        self.assertEqual(self.record()["full"]["status"], "failed")
+
+    def test_only_developer_and_only_without_full_flag(self):
+        self.use_gate(extra='full_if = ["src/**", "tests/**"]\n')
+        self.started("T-002", owns=("tests/grp/**", "docs/qa/grp.md"), role="tester")
+        self.commit("tests/grp/test_a.py", "t\n", "[T-002] 묶음 테스트")
+        code, out = self.run_test("T-002")
+        self.assertEqual((code, out["kind"], out.get("reason")), (0, "quick", None), out)
+        self.started()
+        self.commit("src/a.py", "a\n", "[T-001] a")
+        code, out = self.run_test("T-001", "--full")  # 직접 돌린 full 은 지금 그대로(사전 거부 없음, reason 없음)
+        self.assertEqual((code, out["kind"], out.get("reason"), out.get("matched")), (0, "full", None, None), out)
+        self.assertNotIn("reason", self.record("T-001")["full"])
+
+
+class FullIfOffTest(GateCase):
+    """회귀: [test] 에 full_if 가 없으면 developer 의 `hteam test T` 는 바꾼 경로와 관계없이 지금처럼 quick 이다."""
+
+    def setUp(self):
+        super().setUp()
+        self.use_gate()
+
+    def test_without_full_if_nothing_changes(self):
+        self.started()
+        self.commit("src/db/schema.py", "s\n", "[T-001] 스키마")
+        code, out = self.run_test("T-001")
+        self.assertEqual((code, out["kind"], out["files"]), (0, "quick", ["src/db/schema.py"]), out)
+        self.assertNotIn("reason", out)
+        self.assertNotIn("full", self.record())
+
+
+class _KeyEnvCase(GateCase):
+    redmine = ""
+
+    def setUp(self):
+        TeamCase.setUp(self)
+        self.init_project(BASE_CONFIG + self.redmine)
+        self.p = Project(self.proj)
+        self.use_gate(full=ENV_FULL)
+
+    def full_saw(self) -> str:
+        code, out = self.run_test("--full", env={"REDMINE_API_KEY": "k-secret", "HT_KEEP": "keep"})
+        self.assertEqual((code, out["status"]), (0, "passed"), out)
+        return (self.tmp / "fake" / "env.txt").read_text(encoding="utf-8")
+
+
+class KeyEnvTest(_KeyEnvCase):
+    """테스트 명령 환경에서 [redmine] key_env 를 뺀다(설계 5.7 끝, 8.12). 다른 변수는 그대로 넘어간다."""
+    redmine = REDMINE_TABLE
+
+    def test_test_command_does_not_get_the_redmine_key(self):
+        self.assertEqual(self.full_saw(), "없음|keep")
+
+
+class KeyEnvSharedTest(_KeyEnvCase):
+    """회귀: [redmine] 이 없으면 그 이름의 변수도 지금처럼 넘어간다."""
+
+    def test_without_redmine_the_variable_passes(self):
+        self.assertEqual(self.full_saw(), "k-secret|keep")
+
+
+class KeyEnvBrokenConfigTest(_KeyEnvCase):
+    """설정이 깨져도(여기서는 [redmine] 의 url) hteam test 는 돌고 key_env 이름은 뺀다(Task 2 Rules 11, Codex 계획 리뷰 r1)."""
+    redmine = REDMINE_TABLE.replace('url = "http://127.0.0.1:9"', 'url = "ftp://127.0.0.1:9"')
+
+    def test_broken_config_still_drops_the_key(self):
+        with self.assertRaises(HteamError):
+            config.load(self.p)  # 전체 검사는 실패한다
+        self.assertEqual(self.full_saw(), "없음|keep")
+
+
+class BrokenConfigGateTest(GateCase):
+    """회귀: hteam test 는 config.toml 을 검사하지 않는다(설계 4.2·5.7 의 5단계 규칙, Codex 계획 리뷰 r1). 새 표가 없는
+    프로젝트에서 다른 키가 틀렸거나 TOML 이 깨져도 확정된 quick·full 이 지금처럼 돈다(bad_config 가 아니다)."""
+
+    def check(self, text: str) -> None:
+        self.use_gate()
+        self.started()
+        self.commit("src/a.py", "a\n", "[T-001] a")
+        (self.team / "config.toml").write_text(text, encoding="utf-8")
+        for args in (("T-001",), ("--full",)):
+            with self.subTest(args=args):
+                code, out = self.run_test(*args)
+                self.assertEqual((code, out.get("status")), (0, "passed"), out)
+
+    def test_other_key_broken(self):
+        self.check(BASE_CONFIG.replace("max_parallel = 4", "max_parallel = 0"))
+
+    def test_toml_broken(self):
+        self.check("max_parallel = [\n")
+
+
+class KeyEnvSetupTest(TeamCase):
+    """작업 공간 setup 도 같은 환경 규칙이다(설계 5.10.3 의 4, 8.12): key_env 는 빠지고 슬롯 번호는 들어간다."""
+
+    def test_setup_does_not_get_the_redmine_key(self):
+        setup = ('printf "%s|%s" "${REDMINE_API_KEY-없음}" "${HTEAM_SLOT-없음}" '
+                 '> "$HTEAM_MAIN_ROOT/.herdr-team/state/setup-env.txt"')
+        self.init_project(WS_CONFIG.replace("slots = 2\n", f"slots = 2\nsetup = {json.dumps(setup)}\n") + REDMINE_TABLE)
+        self.setup_run()
+        self.write_spec("T-001")
+        env = {"REDMINE_API_KEY": "k-secret"}
+        code, out = self.hteam("start", "T-001", env=env)
+        self.assertEqual((code, out.get("status"), out.get("reason")), (0, "waiting", "slot_setup"), out)
+        code, out = self.hteam("slot", "prepare", "T-001", env=env)
+        self.assertEqual(code, 0, out)
+        self.assertEqual((self.state_dir / "setup-env.txt").read_text(encoding="utf-8"), "없음|1")

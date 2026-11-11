@@ -2169,3 +2169,85 @@ class HandoffTamperTest(ReviewCase):
         code, out = self.hteam("review-finish", "T-001")
         self.assertEqual((code, out.get("error", {}).get("code")), (1, "review_tampered"), out)
         self.assertEqual(out["tamper"]["paths"], ["docs/handoff.md"])
+
+
+from hteam import review
+
+
+class FullIfGateTest(GateCase):
+    """리뷰 관문의 `full_if`(설계 5.7 7단계, 6.1 4a): 바꾼 경로가 맞으면 quick 대신 full 을 한 번, 실패면 리뷰어 없이 반려."""
+
+    def setUp(self):
+        super().setUp()
+        self.use_gate(extra='full_if = ["src/db/**"]\n')  # 식별값은 그대로라 앞 확정이 맞는다
+
+    def changed(self, files=None):
+        self.started()
+        code, out = self.act_work("T-001", files or {"src/db/schema.py": "x = 1\n"})
+        self.assertEqual(code, 0, out)
+
+    def test_full_if_path_runs_full_once(self):
+        self.changed()
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual((code, out["status"], out["tests"]), (0, "reviewing", {"full": "passed"}), out)
+        self.assertEqual([c["args"] for c in self.gate_calls()], [["--all"]])
+        text = self.prompt()
+        for needle in ("## hteam 테스트 결과\nhteam 이 `docs/planning/tasks.toml` 의 `[test]` 명령으로 전체 테스트(full)를 "
+                       "돌렸다. 이 태스크가 바꾼 파일 가운데 `[test] full_if` 에 맞은 것: src/db/schema.py\n- full: 통과 (",
+                       '- full 명령: "fake-test --all"', "- full 로그: .herdr-team/state/tests/logs/T-001-r1-full-",
+                       "1. 사양의 Acceptance 를 실제로 충족하는가. " + compose.VERIFY_GATED):
+            self.assertIn(needle, text)
+        self.assertNotIn("관련된 테스트(quick)", text)
+        tests = self.attempt("T-001")["inputs"]["tests"]
+        self.assertEqual((tests["full_if"], tests["full"]["reason"], tests["full"]["matched"]),
+                         (["src/db/schema.py"], "full_if", ["src/db/schema.py"]))
+        st = self.task_state("T-001")
+        self.assertEqual((st["history"][-1]["event"], st["history"][-1]["tests"]), ("review", {"full": "passed"}))
+
+    def test_full_if_failure_rejects_without_reviewer(self):
+        self.changed()
+        self.gate_modes("fail", "pass")
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual((code, out["status"], out["source"], out["tests"]),
+                         (0, "changes", "hteam", {"full": "failed"}), out)
+        self.assertEqual(len(self.gate_calls()), 1)
+        text = (self.proj / "docs/reviews/T-001/r1.md").read_text(encoding="utf-8")
+        for needle in ("# T-001 r1 리뷰 (출처: hteam 테스트 관문)\n\n리뷰어를 띄우지 않았다.",
+                       "## 지적 사항\n- [P1] hteam 테스트 관문: full_if 경로를 바꿔 돌린 전체 테스트(full)가 통과하지 못했다.\n\n"
+                       "## 테스트 관문\n- full: 실패 (",
+                       ', exit 1)\n- full 명령: "fake-test --all"\n- full 로그: .herdr-team/state/tests/logs/T-001-r1-full-',
+                       "\n- full_if 에 맞은 경로: src/db/schema.py\n\n출력 끝:\n```\n",
+                       "FAIL tests/a.test.ts > 더하기\n```\n\n고친 뒤 `.herdr-team/bin/hteam test T-001` 로 다시 확인한다.",
+                       "\n\nVERDICT: REQUEST_CHANGES\n"):
+            self.assertIn(needle, text)
+        st = self.task_state("T-001")
+        rd = st["rounds"][0]
+        self.assertEqual((rd["review_source"], rd["prechecks"], rd["reviews"], rd["tests"]["full"]["status"]),
+                         ("hteam", [review.GATE_FULL_PROBLEM], [], "failed"))
+        self.assertEqual(review.GATE_FULL_PROBLEM,
+                         "hteam 테스트 관문: full_if 경로를 바꿔 돌린 전체 테스트(full)가 통과하지 못했다.")
+        self.assertEqual((st["history"][-1]["event"], st["history"][-1]["tests"]), ("precheck", {"full": "failed"}))
+        self.assertEqual(self.review_workers(), [])
+
+    def test_worker_full_record_is_reused(self):
+        self.changed()
+        self.assertEqual(self.hteam("test", "T-001", as_=None)[0], 0)  # 워커의 hteam test 가 full 을 돌렸다
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual((code, out["status"], out["tests"], len(self.gate_calls())),
+                         (0, "reviewing", {"full": "passed"}, 1), out)
+
+    def test_failed_worker_record_is_reused_and_rejects(self):
+        # tester full 과 같은 재사용: 같은 라운드·code_head·식별값이면 상태와 관계없이 다시 쓴다(설계 5.7 7단계)
+        self.changed()
+        self.gate_modes("fail")
+        self.assertEqual(self.hteam("test", "T-001", as_=None)[0], 1)
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual((code, out["status"], out["tests"], len(self.gate_calls())),
+                         (0, "changes", {"full": "failed"}, 1), out)
+
+    def test_other_paths_keep_quick(self):
+        self.changed({"src/app.py": "print(1)\n"})
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual((code, out["tests"]), (0, {"quick": "passed"}), out)
+        self.assertIn("관련된 테스트(quick)를 돌렸다.\n- quick: 통과 (", self.prompt())
+        self.assertNotIn("full_if", self.prompt())

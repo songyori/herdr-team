@@ -2,7 +2,8 @@
 중단·tail·exclusive 잠금), 기록, `hteam test`. 리뷰 관문(6.1 4a)도 이 모듈을 쓴다(gate_results).
 
 git 은 gitio 로만 부른다. 테스트 명령은 이 모듈이 `/bin/sh -c` 로 직접 돌린다(horch·hc 를 거치지 않는다, 설계 3.3).
-`hteam test` 는 역할을 확인하지 않고 config.toml 을 읽지 않는다(워커·관제·메인 누구나 부른다, 설계 8.3).
+`hteam test` 는 역할을 확인하지 않고 config.toml 을 검사하지 않는다(워커·관제·메인 누구나 부른다, 설계 8.3. 작업 공간·
+[redmine] key_env 는 config.test_settings 로 검사 없이 읽는다, 설계 4.2).
 
 작업 루트(설계 5.7 7단계·5.10.4): 태스크의 작업 커밋·대상 파일·커밋 안 된 변경·테스트 명령의 cwd 는 그 태스크의 작업 루트
 (p.work_root)다. 태스크로 들어가는 함수가 태스크 상태로 p 를 다시 묶는다(workspace.view). `[test]` 설정·확정 기록·테스트
@@ -25,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
-from . import gitio, state
+from . import config, gitio, state
 from .errors import FAIL, TIMEOUT, USAGE, HteamError
 from .globs import matches_any, owns_problem
 from .paths import SHIM, Project, find_project
@@ -381,6 +382,24 @@ def check_committed(p, st: dict, commits: list[dict]) -> None:
                          f"`hteam fix {tid} --note \"커밋 안 된 파일을 커밋하거나 지운다\"` 로 되돌려 보낸다", USAGE)
 
 
+def full_if_matches(p, cfg: GateConfig, st: dict, commits: list[dict]) -> list[str]:
+    """developer 태스크가 바꾼 경로 가운데 `[test] full_if` 에 맞는 것, 정렬(설계 5.7 7단계). 바꾼 경로는 대상 커밋이 건드린
+    모든 경로다(changed_files: 지운 파일, 옮긴 파일의 옛 경로·새 경로도 든다. 지금 작업 트리의 파일만 남기는 quick 파일
+    목록은 쓰지 않는다). 보고서 경로와 프로젝트 밖(`../`)은 뺀다. developer 가 아니거나 full_if 가 없으면 []."""
+    if st.get("role") != DEVELOPER_ROLE or not cfg.full_if:
+        return []
+    tid = st["id"]
+    return sorted(f for f in changed_files(p, commits, st["base"])
+                  if not _report(f, tid) and not f.startswith("../") and matches_any(f, cfg.full_if))
+
+
+def matched_text(matched: list[str]) -> str:
+    """full_if 에 맞은 경로를 보이는 글(반려 파일·리뷰 프롬프트): 앞 15개를 `, ` 로 잇고 넘으면 ` 외 N개`."""
+    from .compose import GROUP_FILES_SHOWN  # compose 가 이 모듈을 쓴다
+    more = f" 외 {len(matched) - GROUP_FILES_SHOWN}개" if len(matched) > GROUP_FILES_SHOWN else ""
+    return ", ".join(show(f) for f in matched[:GROUP_FILES_SHOWN]) + more
+
+
 def dirty_files(p, allowed: list[str]) -> list[str]:
     """실행 직후 추적 파일의 커밋 안 된 변경(추적하지 않는 파일 제외) 가운데 allowed 밖, 정렬."""
     prefix = gitio.top_prefix(p.work_root)
@@ -392,10 +411,12 @@ def dirty_files(p, allowed: list[str]) -> list[str]:
 
 def child_env(cfg=None, extra: dict[str, str] | None = None) -> dict[str, str]:
     """테스트 명령과 작업 공간 setup·teardown 의 환경(설계 5.7·5.10.3 의 4): 지금 환경에서 DROP_ENV 를 빼고 extra 를
-    더한다. cfg 는 config.Config·config.TestSettings 또는 None 이다. 아직 쓰지 않는다(설계 5.7 의 [redmine] key_env 빼기가
-    쓴다)."""
+    더한다. cfg 는 config.Config·config.TestSettings 또는 None 이다. cfg 에 [redmine] 이 있으면 마지막에 key_env 이름을
+    뺀다(설계 8.12: 키가 테스트 명령·setup·teardown 으로 가지 않는다). [redmine] 이 없으면 그 이름도 그대로 넘어간다."""
     env = {k: v for k, v in os.environ.items() if k not in DROP_ENV}
     env.update(extra or {})
+    if cfg is not None and cfg.redmine is not None:
+        env.pop(cfg.redmine.key_env, None)
     return env
 
 
@@ -443,7 +464,8 @@ def read_tail(log: Path) -> str:
 def execute(p, command: str, log: Path, timeout_s: float, ok_exit, args=(), shown: str | None = None, *, cwd=None,
             env: dict[str, str] | None = None) -> dict:
     """`/bin/sh -c <명령> sh <args…>`(args 는 위치 인자 $1…), 로그 첫 줄은 shown(없으면 명령). cwd 는 주지 않으면 작업 루트(p.work_root), stdin /dev/null, 출력은 로그 하나, 새 세션(자기 프로세스 그룹).
-    환경은 child_env(None, env)(env 는 작업 공간 슬롯 env 등).
+    환경은 child_env(config.test_settings(p), env)(env 는 작업 공간 슬롯 env 등. 설정은 검사 없이 읽는다: `hteam test` 는
+    설정이 깨져도 돌고, [redmine] key_env 이름만 맞으면 그 변수를 뺀다, 설계 4.2·8.12).
     hteam 이 중단되면(SIGINT·SIGTERM) 그룹을 끝내고 다시 올린다(기록 없이 끝난다)."""
     log.parent.mkdir(parents=True, exist_ok=True)
     start = time.monotonic()
@@ -452,7 +474,8 @@ def execute(p, command: str, log: Path, timeout_s: float, ok_exit, args=(), show
         fh.flush()
         try:
             proc = subprocess.Popen(["/bin/sh", "-c", command, "sh", *args], cwd=str(cwd or p.work_root), stdin=subprocess.DEVNULL, stdout=fh,
-                                    stderr=subprocess.STDOUT, start_new_session=True, env=child_env(None, env))
+                                    stderr=subprocess.STDOUT, start_new_session=True,
+                                    env=child_env(config.test_settings(p), env))
         except OSError as exc:
             raise HteamError("test_unrunnable", f"[test] 명령을 실행하지 못했다: {exc}", USAGE) from None
         try:
@@ -547,11 +570,12 @@ def _save(path: Path, kind: str, entry: dict) -> None:
     write_json(path, data)  # 임시 파일 + os.replace. 파일 잠금은 없다(한계)
 
 
-def record_task(p, cfg: GateConfig, st: dict, commits: list[dict], kind: str) -> dict:
+def record_task(p, cfg: GateConfig, st: dict, commits: list[dict], kind: str, matched: list[str] | None = None) -> dict:
     """태스크 하나의 quick·full 을 돌려 종류별 마지막 기록으로 남긴다. 실행 불가(126·127)는 기록하지 않는다. 테스트는 그
     태스크의 작업 루트에서 그 태스크의 시험 env(workspace.task_env: 작업 공간 태스크는 슬롯 값, worktree 모드의 메인 폴더
-    태스크는 슬롯 0 값, shared 는 없음)로 돈다(설계 5.7 7단계). 설정은 검사 없이 읽는다(config.test_settings, 설계 4.2)."""
-    from . import config, workspace  # workspace 가 이 모듈을 쓴다. 불러오는 순서가 꼬이지 않게 여기서 가져온다
+    태스크는 슬롯 0 값, shared 는 없음)로 돈다(설계 5.7 7단계). 설정은 검사 없이 읽는다(config.test_settings, 설계 4.2).
+    matched 가 있으면 full_if 로 고른 full 이다: quick 과 같은 사전 거부를 먼저 하고 기록에 reason·matched 를 더한다."""
+    from . import workspace  # workspace 가 이 모듈을 쓴다. 불러오는 순서가 꼬이지 않게 여기서 가져온다
     p = workspace.view(p, st)
     env = workspace.task_env(p, config.test_settings(p), st)
     tid, rnd = st["id"], st.get("round") or 1
@@ -560,20 +584,29 @@ def record_task(p, cfg: GateConfig, st: dict, commits: list[dict], kind: str) ->
         check_committed(p, st, commits)
         result = run_quick(p, cfg, quick_files(p, tid, commits, st["base"]), name, env=env)
     else:
+        if matched:  # 커밋한 내용으로 돈 결과만 남긴다(설계 5.7 7단계)
+            check_committed(p, st, commits)
         result = attempt(p, cfg, cfg.full, f"{name}-full", env=env)
     if result["status"] == "unrunnable":
         raise _unrunnable(result)
     allowed = list(st.get("owns") or []) + [f"docs/tasks/{tid}/**"]
+    why = {"reason": "full_if", "matched": matched} if matched else {}
     entry = {"round": rnd, "head": code_head(p, tid, commits, st["base"], merges=bool(st.get("workspace"))),
-             "config": digest(cfg), **result, "dirty": dirty_files(p, allowed), "at": _local_now()}
+             "config": digest(cfg), **result, **why, "dirty": dirty_files(p, allowed), "at": _local_now()}
     _save(p.tests / f"{tid}.json", kind, entry)
     return entry
 
 
 def run_task(p, tid: str, kind: str) -> dict:
+    """`hteam test T-xxx`(quick)·`--full`. quick 인데 developer 가 바꾼 경로가 full_if 에 맞으면 full 을 한 번 돈다(결과
+    kind 는 full, 설계 5.7 7단계). `--full` 은 사전 거부 없이 그대로다."""
+    from . import workspace
     state.check_id(tid)
     cfg = approved_config(p)
     st, commits = task_target(p, tid)
+    matched = full_if_matches(workspace.view(p, st), cfg, st, commits) if kind == "quick" else []
+    if matched:
+        return {"task": tid, "kind": "full", **record_task(p, cfg, st, commits, "full", matched=matched)}
     return {"task": tid, "kind": kind, **record_task(p, cfg, st, commits, kind)}
 
 
@@ -584,7 +617,7 @@ def run_final(p) -> dict:
     5.10.7)는 메인 폴더에서 돌리지 않는다: 빈 슬롯 하나를 잡아 기준 HEAD 로 detach 하고 setup → full → teardown 을 그 슬롯의
     작업 루트와 env 로 한다(workspace.final_slot). 기록에 slot 을 더한다. 설정은 검사 없이 읽는다(config.test_settings,
     설계 4.2)."""
-    from . import config, workspace  # workspace 가 이 모듈을 쓴다
+    from . import workspace  # workspace 가 이 모듈을 쓴다
     cfg = approved_config(p)
     settings = config.test_settings(p)
     if not settings.workspace.on:
@@ -608,7 +641,8 @@ def run_final(p) -> dict:
 
 def gate_results(p, st: dict, role: str, commits: list[dict]) -> dict | None:
     """리뷰 관문(설계 6.1 4a). None 이면 관문이 없다(직무가 developer·tester 가 아니거나 HEAD 에 [test] 가 없다).
-    결과는 {head(code_head), config(식별값), 그리고 quick·full 기록 또는 skipped: "unapproved"}. 실행 불가·잠금 대기
+    결과는 {head(code_head), config(식별값), 그리고 quick·full 기록 또는 skipped: "unapproved"}. developer 가 바꾼 경로가
+    full_if 에 맞으면 quick 대신 full 이고 full_if(이번 대상 커밋으로 잰 경로)를 더한다(설계 5.7 7단계). 실행 불가·잠금 대기
     초과·형식·읽기 오류는 예외로 올라간다(리뷰는 아무것도 쓰지 않는다)."""
     from . import workspace
     if role not in GATED_ROLES:
@@ -623,12 +657,13 @@ def gate_results(p, st: dict, role: str, commits: list[dict]) -> dict | None:
     if not is_approved(p, value):
         return {**out, "skipped": "unapproved"}
     saved = records(p, tid)
-    if role == TESTER_ROLE:  # full 한 번만. 같은 라운드·같은 code_head·같은 식별값이면 상태와 관계없이 다시 쓴다
+    matched = full_if_matches(p, cfg, st, commits) if role == DEVELOPER_ROLE else []
+    if role == TESTER_ROLE or matched:  # full 한 번만. 같은 라운드·같은 code_head·같은 식별값이면 상태와 관계없이 다시 쓴다
         full = saved.get("full")
         if not (isinstance(full, dict) and full.get("round") == (st.get("round") or 1) and full.get("head") == head
                 and full.get("config") == value):
-            full = record_task(p, cfg, st, commits, "full")
-        return {**out, "full": full}
+            full = record_task(p, cfg, st, commits, "full", matched=matched)  # full_if 면 먼저 check_committed
+        return {**out, "full": full, **({"full_if": matched} if matched else {})}
     quick = saved.get("quick")  # developer: 같은 code_head·식별값의 통과 기록이면 다시 쓴다(라운드는 보지 않는다)
     if not (isinstance(quick, dict) and quick.get("head") == head and quick.get("config") == value
             and quick.get("status") in PASSED):
@@ -662,9 +697,14 @@ def summary(tests: dict | None) -> dict:
     return {"tests": {k: tests[k]["status"] for k in ("quick", "full") if k in tests}}
 
 
-def failed_quick(tests: dict | None) -> bool:
-    """developer 관문의 quick 이 failed·timeout 이다(리뷰어를 띄우지 않고 반려한다)."""
-    return bool(tests) and "quick" in tests and tests["quick"].get("status") not in PASSED
+def gate_failed(tests: dict | None) -> bool:
+    """developer 관문을 리뷰어 없이 반려할 결과인가: quick 이 failed·timeout 이거나, full_if 로 고른 full 이 그렇다(설계 6.1
+    4a·5.7 7단계). tester 의 full(full_if 키 없음)은 반려하지 않는다(리뷰어가 본다)."""
+    if not tests:
+        return False
+    if "quick" in tests:
+        return tests["quick"].get("status") not in PASSED
+    return bool(tests.get("full_if")) and tests["full"].get("status") not in PASSED
 
 
 def describe(entry: dict, kind: str, p=None) -> list[str]:

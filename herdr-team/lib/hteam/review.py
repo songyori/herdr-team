@@ -30,6 +30,7 @@ from .util import die_at, now, show, write_atomic
 
 AUTO_ATTEMPTS = 2  # 라운드당 자동 시도(설계 6.3 6)
 GATE_PROBLEM = "hteam 테스트 관문: quick 이 통과하지 못했다."
+GATE_FULL_PROBLEM = "hteam 테스트 관문: full_if 경로를 바꿔 돌린 전체 테스트(full)가 통과하지 못했다."
 # 판정 맞추기(설계 6.3, orca-team align_verdict). 절은 다음 `## `·`VERDICT:`·끝까지다
 FINDINGS_RE = re.compile(r"^## 지적 사항[ \t]*\n(.*?)(?=^## |^VERDICT:|\Z)", re.M | re.S)
 PRIOR_RE = re.compile(r"^## 이전 지적 확인[ \t]*\n(.*?)(?=^## |^VERDICT:|\Z)", re.M | re.S)
@@ -148,14 +149,23 @@ def prechecks(p, cfg, st: dict, spec, commits: list[dict], files: list[str]) -> 
     return found
 
 
+def gate_problem(tests: dict) -> str:
+    """관문 반려의 P1 문구: full_if 로 고른 full 이면 GATE_FULL_PROBLEM, 아니면 GATE_PROBLEM(quick)."""
+    return GATE_FULL_PROBLEM if tests.get("full_if") else GATE_PROBLEM
+
+
 def _gate_text(tid: str, n: int, tests: dict, p=None) -> str:
     """테스트 관문 반려 파일(설계 6.1 4a). 명령은 JSON 문자열, 출력 끝은 가변 길이 펜스로 넣는다. 로그 경로는 다음 라운드
-    워커가 작업 루트에서 여는 경로다(p, testgate.describe)."""
-    quick = tests["quick"]
-    tail = f"\n출력 끝:\n{testgate.fenced(quick['tail'])}\n" if quick.get("tail") else ""
+    워커가 작업 루트에서 여는 경로다(p, testgate.describe). full_if 로 고른 full 이면 그 결과와 맞은 경로다(설계 5.7 7단계)."""
+    kind = "full" if tests.get("full_if") else "quick"
+    entry = tests[kind]
+    lines = testgate.describe(entry, kind, p)
+    if kind == "full":
+        lines.append(f"full_if 에 맞은 경로: {testgate.matched_text(tests['full_if'])}")
+    tail = f"\n출력 끝:\n{testgate.fenced(entry['tail'])}\n" if entry.get("tail") else ""
     return (f"# {tid} r{n} 리뷰 (출처: hteam 테스트 관문)\n\n리뷰어를 띄우지 않았다. 수정 라운드에서 다음을 고친다.\n\n"
-            f"## 지적 사항\n- [P1] {GATE_PROBLEM}\n\n## 테스트 관문\n"
-            + "".join(f"- {x}\n" for x in testgate.describe(quick, "quick", p)) + tail
+            f"## 지적 사항\n- [P1] {gate_problem(tests)}\n\n## 테스트 관문\n"
+            + "".join(f"- {x}\n" for x in lines) + tail
             + f"\n고친 뒤 `{SHIM} test {tid}` 로 다시 확인한다.\n실패가 이 태스크 탓이 아니면(소유 경로 밖 코드, 위의 커밋 안 된 "
             "다른 파일) 코드를 고치지 말고 근거를 보고서에 적은 뒤 프리앰블의 ask 명령으로 묻는다(메인이 답한다).\n\n"
             "VERDICT: REQUEST_CHANGES\n")
@@ -478,8 +488,8 @@ def _review(p, tid: str, retry: bool, expect_round: int | None = None, request: 
         commits = target_commits(p, st)
         # 사전 검사는 하지 않는다. 관문은 입력(code_head·식별값·확정 여부)이 바뀌었을 때만 다시 돌린다(설계 6.1)
         tests = testgate.retry_results(p, st, spec.role, commits, (last.get("inputs") or {}).get("tests"))
-        if testgate.failed_quick(tests):
-            return _precheck_fail(p, tid, rd["round"], [GATE_PROBLEM], tests, expect=frozenset({"reviewing"}),
+        if testgate.gate_failed(tests):
+            return _precheck_fail(p, tid, rd["round"], [gate_problem(tests)], tests, expect=frozenset({"reviewing"}),
                                   request=request)
         return _new_attempt(p, cfg, h, tid, commits=commits, files=changed_files(p, commits, st["base"]), extra=True,
                             tests=tests, request=request)
@@ -505,8 +515,8 @@ def _review(p, tid: str, retry: bool, expect_round: int | None = None, request: 
     # 테스트 관문(설계 6.1 4a): 사전 검사를 통과한 뒤에만, 상태 전이 전에 돈다. 실행 불가·잠금 대기 초과·중단은 예외로
     # 올라가고 아무것도 쓰지 않는다(working 그대로, 다시 부르면 retain 은 그대로 된다)
     tests = testgate.gate_results(p, st, spec.role, commits)
-    if testgate.failed_quick(tests):
-        return {**_precheck_fail(p, tid, rd["round"], [GATE_PROBLEM], tests), "warnings": warnings}
+    if testgate.gate_failed(tests):
+        return {**_precheck_fail(p, tid, rd["round"], [gate_problem(tests)], tests), "warnings": warnings}
     res = _new_attempt(p, cfg, h, tid, commits=commits, files=files, extra=False, tests=tests)
     res["warnings"] = warnings + res.get("warnings", [])
     return res
