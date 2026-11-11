@@ -1,14 +1,137 @@
 # herdr-team
 
-Herdr(herdr-app 창 + herdr-core `hc`) 위에서 멀티 에이전트를 조정하는 Claude Code 플러그인 마켓플레이스다.
+[Herdr](https://herdr.dev)(herdr-app 창 + herdr-core `hc`) 위에서 멀티 에이전트를 조정하는 Claude Code 플러그인 마켓플레이스다. 플러그인 두 개가 들어 있다.
+
+| 플러그인 | 버전 | 하는 일 |
+|---|---|---|
+| `herdr-orch` | 0.2.0 | Claude·Codex 워커를 Herdr pane 으로 띄우고 메일함으로 질문·보고를 주고받는 `horch` CLI 와 스킬 |
+| `herdr-team` | 0.4.0 | `herdr-orch` 위의 직무 팀. 사용자는 메인 Claude 세션과 대화하고, 기획·디자인·개발·테스트는 직무 에이전트가 맡고, 산출물은 반대쪽 모델(Claude ↔ Codex)이 리뷰한다 |
+
+- 문서, 명령 출력, 에이전트끼리 주고받는 글은 한국어다.
+- 개인 프로젝트이고 0.x 버전이다. 버전이 바뀌면 설정과 동작이 바뀔 수 있다(아래 "이미 세팅한 프로젝트 업그레이드").
+- macOS 에서 확인했다. Linux·Windows 는 확인하지 않았다.
+- **주의: herdr-team 은 Codex 를 늘 샌드박스·승인 우회로 돌린다.** 워커가 사용자 권한과 자격 증명을 그대로 쓴다. 신뢰하는 저장소에서만 쓴다(아래 "herdr-team 보안 주의").
+
+## 요구사항
+
+| 항목 | 쓰는 곳 | 확인한 버전 |
+|---|---|---|
+| Herdr: herdr-app, herdr-core `hc` | 에이전트 터미널과 창 | herdr-app 0.1.14, hc 0.1.19 |
+| Claude Code(로그인한 것) | 메인 세션, Claude 워커·리뷰어 | 2.1.322 |
+| Codex CLI(로그인한 것) | Codex 워커·리뷰어 | codex-cli 0.167.0 |
+| Python 3.11 이상 | `horch`·`hteam`(표준 라이브러리만 쓴다) | 3.14.6 |
+| git | 태스크 사양과 산출물 커밋 | |
+| Node/npx | Codex 리뷰어 브라우저 `hteam-browser`(첫 실행에 `chrome-devtools-mcp@1.10.1` 을 내려받는다) | |
+
+- herdr-team 을 쓰려면 herdr-orch 0.2.0 이상도 함께 설치한다.
+- 선택 항목이 둘 있다. 없어도 나머지는 돈다.
+  - Codex `image_generation` 기능: designer 의 래스터 에셋(`hteam image`)을 만든다. `codex features enable image_generation` 으로 켠다.
+  - Chrome DevTools MCP: 디자인 디렉터가 레퍼런스 화면을 캡처한다. 없으면 링크만 남긴다.
+- herdr-orch 만 쓰면 Codex CLI 는 Codex 워커를 띄울 때만 필요하고 Node 는 필요 없다.
+- 비용: herdr-team 은 Claude 세션과 Codex 세션 여러 개를 동시에 오래 띄운다. 템플릿 기본 모델은 다음과 같다. 모델은 `init` 이 제안하는 표에서 바꾸거나 나중에 `.herdr-team/config.toml` 에서 고친다.
+  - 고정 에이전트: Claude `opus`(생산·리서치), Codex `gpt-6.1-sol`(테스트).
+  - 임시 워커·리뷰어: Claude `sonnet`, Codex `gpt-6.1-sol`.
+  - effort: 모두 `xhigh`.
+
+## 설치
+
+### 1. Herdr
+
+```sh
+curl -fsSL https://releases.herdr.dev/app/install.sh | sh
+```
+
+이 명령이 앱과 `hc` 를 함께 설치한다.
+- macOS: 앱은 `~/Applications/Herdr.app` 에, `herdr-app`·`hc` 는 `~/.local/bin` 에 설치된다.
+- `~/.local/bin` 이 `PATH` 에 있어야 한다.
+- 같은 명령을 다시 실행하면 업데이트된다.
+- 자세한 안내는 [herdr.dev](https://herdr.dev) 에 있다.
+
+### 2. Claude Code 와 Codex CLI
+
+각 공식 안내대로 설치하고 로그인한다. Codex 는 `codex login` 으로 로그인한다. 이미지 에셋을 쓰려면 위 `image_generation` 도 켠다.
+
+### 3. 플러그인
+
+터미널에서:
+
+```sh
+claude plugin marketplace add songyori/herdr-team
+claude plugin install herdr-orch@herdr-team
+claude plugin install herdr-team@herdr-team   # 직무 팀까지 쓸 때
+```
+
+Claude Code 안에서는 `/plugin marketplace add songyori/herdr-team` 다음 `/plugin install herdr-orch@herdr-team`, `/plugin install herdr-team@herdr-team` 를 실행한다.
+
+- 범위: 기본은 사용자 범위(`--scope user`)다. 한 프로젝트를 팀이 같이 쓰려면 그 프로젝트 폴더에서 세 명령 모두에 `--scope project` 를 붙인다.
+- 두 플러그인은 같은 범위로 설치한다. herdr-team 은 그 프로젝트에 맞는 herdr-orch 설치를 찾는다. 사용자 범위 설치는 늘 찾고, project·local 범위 설치는 그 프로젝트 안에서만 찾는다.
+- 설치하기 전에 열어 둔 Claude Code 세션은 다시 연다.
+
+## 시작하기(herdr-team)
+
+1. Herdr 앱에서 터미널을 열고 프로젝트 폴더로 간다. herdr-team 은 Herdr 터미널 안에서만 돈다.
+2. 그 터미널에서 `claude` 를 실행한다. 이 세션이 메인이다.
+3. `/herdr-team:init <프로젝트 설명>` 을 실행한다. init 은 다음 순서로 세팅한다.
+   1. 점검: 빠진 도구가 있으면 표로 보이고 멈춘다. git 저장소가 아니면 `git init` 과 빈 커밋을 한다.
+   2. 세팅 파일 생성: `.herdr-team/`, `CLAUDE.md`·`AGENTS.md` 의 herdr-team 절, `.gitignore` 줄을 만든다. 있는 파일은 덮어쓰지 않는다.
+   3. 제안 표: 직무별로 맡을 파일, 고정 에이전트 구성과 모델, 도구, 권한을 표로 제안한다. 사용자가 승인한 것만 적용한다. Claude 권한 우회도 여기서 승인할 때만 들어간다.
+   4. 관제 띄우기: 관제 탭(`herdr-team 관제`)을 띄우고 세팅 파일을 커밋한다.
+4. 다음 메시지로 만들 것을 말한다. 메인이 기획 태스크를 만들어 넘긴다. 다음 일은 메인 세션에서 사용자에게 묻는다.
+   - 기획자·디렉터의 질문
+   - 디자인 일괄 승인
+   - 테스트 명령 확정
+   - 관제가 판단을 맡긴 일
+5. 진행 상황은 메인이 알린다. 직접 보려면 `.herdr-team/bin/hteam status` 를 실행한다.
+6. 관제가 꺼지면 메인 세션 훅이 다시 띄운다. 직접 올리려면 `/herdr-team:up` 을 실행한다.
+
+## 업데이트
+
+```sh
+claude plugin marketplace update herdr-team
+claude plugin update herdr-orch@herdr-team
+claude plugin update herdr-team@herdr-team
+```
+
+- 업데이트한 뒤 Claude Code 세션을 다시 연다.
+- 이미 세팅한 프로젝트는 버전에 따라 손으로 옮길 것이 있다(아래 "이미 세팅한 프로젝트 업그레이드").
+- 복사해 둔 규칙 파일은 `.herdr-team/bin/hteam upgrade` 로 새 템플릿으로 바꾼다.
+
+## 삭제
+
+```sh
+claude plugin uninstall herdr-team@herdr-team
+claude plugin uninstall herdr-orch@herdr-team
+claude plugin marketplace remove herdr-team
+```
+
+- 프로젝트 범위로 설치했으면 `uninstall` 에 `--scope project` 를 붙인다.
+- 관제와 에이전트 터미널은 Herdr 에서 닫는다.
+- 다음은 지우지 않고 남는다. 필요 없으면 손으로 지운다.
+  - 프로젝트 안: `.herdr-team/`, `CLAUDE.md`·`AGENTS.md` 의 `<!-- herdr-team -->` 절.
+  - 프로젝트 밖: `${XDG_STATE_HOME:-~/.local/state}/herdr-team/`(테스트 명령 확정 기록), `~/.cache/herdr-team/`(레퍼런스 캡처와 이미지).
+
+## 문제 해결
+
+- 점검: herdr-team 은 프로젝트에서 `.herdr-team/bin/hteam doctor` 를 실행한다(init 전에는 init 이 점검한다). herdr-orch 는 플러그인 폴더의 `bin/horch doctor` 를 실행한다. 둘 다 빠진 도구와 그 이유를 JSON 으로 알려 준다.
+- 기록:
+  - 관제: `.herdr-team/state/drive/drive.log`
+  - 관제 자동 부활: `.herdr-team/state/auto-up.log`
+- 버그와 제안은 [Issues](https://github.com/songyori/herdr-team/issues) 에 남긴다. `doctor` 출력과 사용한 버전을 같이 적는다.
+
+## 문서와 개발
+
+- 설계: `docs/superpowers/specs/`(herdr-orch, herdr-team 설계 문서). 구현 계획: `docs/superpowers/plans/`.
+- 테스트: `bash herdr-orch/tests/run.sh`, `bash herdr-team/tests/run.sh`. 가짜 hc·herdr-app·claude·codex 를 써서 실제 Herdr 상태를 건드리지 않는다.
+- 개발 절차와 Codex 교차 검증 규칙은 `CLAUDE.md` 에 있다.
+- 라이선스: MIT(각 플러그인의 `plugin.json`).
 
 ## herdr-orch
 
 Run 소유자가 Claude·Codex 워커를 Herdr pane 으로 띄우고, SQLite 메일함으로 질문·보고를 주고받는 `horch` CLI 와 스킬 `herdr-orchestration`. 0.2.0 부터 고정 터미널(`worker-start --keep-open`·`--terminal`: 같은 세션에 다음 Dispatch 를 넣는다), 세션 비우기(`terminal-reset`), 고정 터미널 닫기(`terminal-close`)가 있다.
 
-- 요구사항: Python 3.11 이상, herdr-core `hc`, herdr-app, Claude Code, (Codex 워커를 쓰면) Codex CLI
-- 설치: Claude Code 에서 `/plugin marketplace add <이 저장소>` 다음 `/plugin install herdr-orch@herdr-team`
-- 점검: `herdr-orch/bin/horch doctor`
+- 요구사항·설치: 위 "요구사항"·"설치". herdr-orch 만 쓰면 herdr-team 은 설치하지 않아도 된다.
+- 쓰는 법: Herdr 터미널에서 연 Claude Code 세션에 Codex·Claude 워커로 일을 맡기고 결과를 받아 오라고 하면, 스킬 `herdr-orchestration` 이 `horch` 사용법을 읽고 워커를 띄운다.
+- 점검: `herdr-orch/bin/horch doctor`(저장소 기준 경로. 설치했으면 플러그인 폴더의 `bin/horch`)
 - 사용법: `herdr-orch/bin/horch skill`
 - 설계: `docs/superpowers/specs/2026-11-04-herdr-orch-design.md`
 - 테스트: `bash herdr-orch/tests/run.sh`(가짜 hc·herdr-app·claude·codex 사용, 실제 Herdr 상태를 건드리지 않는다)
@@ -17,8 +140,7 @@ Run 소유자가 Claude·Codex 워커를 Herdr pane 으로 띄우고, SQLite 메
 
 `herdr-orch` 위에 만든 직무 팀 플러그인. 메인(사용자와 대화하고 판단한다), 관제(`hteam drive`, 정해진 절차를 돌리는 프로그램), 직무 태스크를 하는 고정 에이전트와 임시 워커(planner·director·designer·developer·tester)가 일하고, 산출물은 반대쪽 모델(Claude ↔ Codex)이 교차 리뷰한다. 화면 프로젝트는 디자인 디렉터(레퍼런스·톤 시안·디자인 시스템)와 designer(화면·래스터 에셋)가 사용자 일괄 승인을 거쳐 디자인을 확정한다.
 
-- 요구사항: Python 3.11 이상, herdr-core `hc`, herdr-app, Claude Code, Codex CLI(`image_generation` 기능을 켠 것. `hteam image` 가 쓴다), Node/npx(리뷰어 브라우저 `hteam-browser` 가 첫 실행에 `chrome-devtools-mcp@1.10.1` 을 내려받는다). herdr-orch 0.2.0 이상도 함께 설치한다.
-- 설치: `/plugin marketplace add <이 저장소>` 다음 `/plugin install herdr-orch@herdr-team`, `/plugin install herdr-team@herdr-team`. 범위는 프로젝트(`--scope project`, 팀이 같이 쓴다) 또는 사용자(`--scope user`) 중에서 고른다.
+- 요구사항·설치: 위 "요구사항"·"설치". 처음 쓰는 순서는 위 "시작하기(herdr-team)".
 - 명령(Claude Code 슬래시 명령)
   - `/herdr-team:init <프로젝트 설명>`: 새 프로젝트를 세팅한다(`.herdr-team/`, `CLAUDE.md`·`AGENTS.md` 절). 직무 owns·고정 에이전트 구성·도구·권한은 표로 제안하고 승인받은 것만 적용한 뒤 관제를 띄운다.
   - `/herdr-team:up`: 수동 복구. 관제와 watch 를 올리고 열린 질문을 다시 묻는다. 관제는 보통 메인 세션 훅이 자동으로 다시 띄운다(아래 "관제 복구").
