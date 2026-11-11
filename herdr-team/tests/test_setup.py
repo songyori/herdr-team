@@ -397,32 +397,30 @@ class TemplateContractTest(unittest.TestCase):
         self.assertTrue(any("승인 직무 태스크" in e for e in plan.validate(cfg, chained)[0]))
 
     def test_codex_reviewer_browser_in_template(self):
-        # Codex 리뷰어가 화면을 렌더하도록 chrome-devtools 서버를 헤드리스·격리·버전 고정으로 정의한다. 우회 플래그는
-        # 기본에 넣지 않는다(init 이 승인받는다). horch 는 그대로 -s workspace-write -a never 를 붙이고, 우회를 더하면 뺀다
+        # Codex 리뷰어가 화면을 렌더하도록 chrome-devtools 서버를 헤드리스·격리·버전 고정으로 정의한다. Codex 는 늘
+        # 샌드박스·승인 우회로 돈다(템플릿 기본, init 이 묻지 않는다, 사용자 결정 2026-11-11). horch 는 우회가 있으면 -s·-a 를 뺀다
         import tomllib
         raw = tomllib.loads((ROOT / "templates/config.toml").read_text(encoding="utf-8"))
         args = raw["agents"]["codex"]["args"]
         # 서버 이름은 herdr-team 전용(hteam-browser): 사용자·플러그인의 chrome-devtools 를 -c 로 덮으면 기존 정의와 합쳐져
         # url 정의면 "url is not supported for stdio" 로 Codex 가 시작하지 못한다(codex-cli 0.166, Codex 계획 r2)
-        self.assertEqual(args, ["--disable=hooks",
+        self.assertEqual(args, ["--disable=hooks", "--dangerously-bypass-approvals-and-sandbox",
                                 "-c", 'mcp_servers.hteam-browser={command="npx",args=["-y","chrome-devtools-mcp@1.10.1",'
                                       '"--headless=true","--isolated=true"],startup_timeout_sec=60}'])
         self.assertFalse([a for a in args if "chrome-devtools=" in a or "chrome-devtools." in a])
-        self.assertFalse(any("bypass" in a or a in ("--yolo", "--full-auto") for a in args))
         sys.path.insert(0, str(ROOT.parent / "herdr-orch" / "lib"))
         self.addCleanup(sys.path.remove, str(ROOT.parent / "herdr-orch" / "lib"))
         from horch import agents
         self.assertEqual(set(config.CODEX_BYPASS), agents._BYPASS)  # doctor·image 가 보는 우회 플래그가 horch 와 같다
         argv = agents.build("codex", model=None, effort=None, extra=args, preamble="P", home=Path("/h"))
-        self.assertEqual(argv[:6], ["codex", "--no-daemon", "-s", "workspace-write", "-a", "never"])
-        argv = agents.build("codex", model=None, effort=None, extra=args + ["--dangerously-bypass-approvals-and-sandbox"],
-                            preamble="P", home=Path("/h"))
         self.assertNotIn("-s", argv[:4])
         self.assertNotIn("never", argv)
         init = (ROOT / "skills/init/SKILL.md").read_text(encoding="utf-8")
-        for needle in ("Codex 권한(샌드박스 우회)", "`--dangerously-bypass-approvals-and-sandbox`", "코드로만 본다",
+        for needle in ("Codex 는 늘 샌드박스·승인 우회", "`--dangerously-bypass-approvals-and-sandbox`", "표에서 묻지 않고",
                        "변조 검사가 잡지 못한다", "`codex_browser`", "다른 MCP 서버도 승인 없이 쓸 수 있다"):
             self.assertIn(needle, init)
+        for gone in ("Codex 권한(샌드박스 우회)", "network_access", "sandbox_workspace_write"):
+            self.assertNotIn(gone, init)
 
     def test_auto_up_in_templates(self):
         # 설계 4.1·9.3·9.5: 템플릿 설정의 auto_up, 메인 규칙의 자동 부활 줄, up 스킬은 수동 복구
@@ -454,7 +452,7 @@ class TemplateContractTest(unittest.TestCase):
             self.assertIsNone(private.search(text), path)
         init = (ROOT / "skills/init/SKILL.md").read_text(encoding="utf-8")
         for sentence in ("사용자 전역 설정(`~/.claude/`, `~/.claude.json`, `~/.codex/`)을 고치지 않는다.",
-                         "Codex 의 폴더 신뢰를 한꺼번에 허용하는 설정(\"Trust all\" 류)이나 전역 샌드박스·승인 우회 설정을 쓰지 않는다(우회는 이 프로젝트의 `[agents.codex].args` 에, 위 표로 승인받았을 때만).",
+                         "Codex 의 폴더 신뢰와 우회는 전역 설정에 쓰지 않는다. 신뢰는 horch 가 실행마다 넘기고, 우회는 이 프로젝트의 `[agents.codex].args` 에 있다.",
                          "사용자가 승인했을 때만 넣는다."):
             self.assertIn(sentence, init)
 
@@ -603,6 +601,7 @@ class CodexBrowserDoctorTest(TeamCase):
         out = self.check(define)
         self.assertEqual(out["ok"], False)
         self.assertIn("승인 정책으로 거부된다", out["detail"])
+        self.assertIn("템플릿 기본인 `--dangerously-bypass-approvals-and-sandbox` 를 다시 넣는다", out["detail"])
         out = self.check(define + ["--dangerously-bypass-approvals-and-sandbox"])
         self.assertEqual((out["ok"], out["level"]), (True, "warning"))
         out = self.check(["-c", 'mcp_servers.chrome-devtools={command="npx"}', "--yolo"])  # 다른 이름은 리뷰어의 것이 아니다

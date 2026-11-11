@@ -81,8 +81,9 @@ def _codex_browser(root: Path) -> dict:
         return _check("codex_browser", False, "npx 가 PATH 에 없어 chrome-devtools 서버를 띄우지 못한다(Node.js 설치)",
                       "warning")
     if not any(a.split("=", 1)[0] in config.CODEX_BYPASS for a in args):
-        return _check("codex_browser", False, "Codex 리뷰어의 브라우저 도구는 승인 정책으로 거부된다(코드로만 본다). 쓰려면 "
-                      "init 4단계의 Codex 권한(샌드박스 우회)을 승인한다", "warning")
+        return _check("codex_browser", False, "Codex 리뷰어의 브라우저 도구는 승인 정책으로 거부된다(코드로만 본다). "
+                      "[agents.codex].args 에 템플릿 기본인 `--dangerously-bypass-approvals-and-sandbox` 를 다시 넣는다",
+                      "warning")
     return _check("codex_browser", True, f"{BROWSER_SERVER} 정의·npx·샌드박스 우회가 있다", "warning")
 
 

@@ -199,7 +199,7 @@ codex_effort = "xhigh"    # 6단계: high → xhigh(리뷰 effort)
 [agents.claude]
 args = []
 [agents.codex]
-args = ["--disable=hooks",
+args = ["--disable=hooks", "--dangerously-bypass-approvals-and-sandbox",
         "-c", 'mcp_servers.hteam-browser={command="npx",args=["-y","chrome-devtools-mcp@1.10.1","--headless=true","--isolated=true"],startup_timeout_sec=60}']
 
 # 6단계: 고정 에이전트(5.9). 한 직무는 한 에이전트에만 둔다
@@ -217,11 +217,11 @@ agent = "claude"
 model = "opus"
 effort = "xhigh"
 
-[crew.test]
+[crew.test]                  # 테스트는 생산과 다른 모델(Codex)이 수용 기준으로 짠다. 리뷰는 Claude(사용자 결정 2026-11-11)
 title = "테스트"
 roles = ["tester"]
-agent = "claude"
-model = "sonnet"
+agent = "codex"
+model = "gpt-6.1-sol"
 effort = "xhigh"
 
 [image]
@@ -262,6 +262,7 @@ owns = ["src/**", "README.md", "docs/user/**", "docs/policy/**"]   # 4단계에 
 
 [roles.tester]
 title = "테스트"
+worker = "codex"             # [crew.test] agent 와 같게(넘친 임시 워커도 Codex)
 claude_model = "sonnet"
 claude_effort = "xhigh"
 codex_model = "gpt-6.1-sol"
@@ -276,7 +277,7 @@ owns = ["tests/**", "docs/qa/**"]
 - 리뷰어: `worker` 의 반대쪽 에이전트와 그쪽 모델·effort.
 - 우선순위(값마다 따로): `hteam start`·`fix` 의 `--model`·`--effort`·`--worker` > 태스크 front matter(`worker`, `claude_model` 등) > `[roles.<직무>]` > `[defaults]`.
 - `[agents.<에이전트>].args`: 그 에이전트를 띄울 때마다(작업·리뷰, 고정 에이전트를 처음 띄울 때 포함) horch `--agent-arg` 로 넘기는 인자. 같은 터미널에 넣는 Dispatch 는 인자를 다시 받지 않는다(herdr-orch 13.4). 0.3.0 은 코디네이터의 `claude` 인자에도 넣었다. horch 는 우회 플래그를 스스로 넣지 않으므로 권한 모드는 여기서 정한다. Claude 의 `--permission-mode=bypassPermissions` 는 init 이 위험을 설명하고 사용자가 승인했을 때만 넣는다(9.1).
-- `[agents.codex].args` 기본 `--disable=hooks`: Codex 의 hook 검토 창과, 검토하지 않은 hook 이 셸 명령을 막는 문제를 피한다(herdr-orch 실환경 확인 결과). 기본에 chrome-devtools MCP 서버 정의도 있다(herdr-team 전용 이름 `hteam-browser`, 서버 테이블 한 쌍 `-c mcp_servers.hteam-browser={command="npx",args=[…],startup_timeout_sec=60}`: `npx -y chrome-devtools-mcp@1.10.1 --headless=true --isolated=true`, 시작 제한 60초). 사용자의 Codex 에 브라우저 서버가 없어도 리뷰어가 화면을 렌더하고, 헤드리스·격리 프로필이라 사용자 Chrome 의 쿠키·로그인을 쓰지 않는다(6.2). 사용자·플러그인의 `chrome-devtools` 를 같은 이름으로 덮지 않는다: `-c` 는 기존 정의와 합쳐지므로(테이블 통째로 줘도 그렇다) 그 정의가 url 이면 `url is not supported for stdio` 로, 플러그인 정의에 일부 키만 주면 `invalid transport` 로 Codex 가 시작하지 못한다(codex-cli 0.166 에서 `codex mcp get` 으로 확인). 대신 hteam 이 띄우는 codex(디스패치의 워커·리뷰어, 이미지)에는 사용자 `chrome-devtools` 가 켜져 있을 때만 그 정의를 통째로 끄는 인자를 덧붙인다(14장). 승인 정책(`-a never`) 아래에서는 MCP 도구 호출이 거부되므로 리뷰어가 실제로 쓰려면 init 이 승인받은 샌드박스·승인 우회(`--dangerously-bypass-approvals-and-sandbox`)가 필요하다(9.1, 14장. 우회 플래그는 기본에 넣지 않는다).
+- `[agents.codex].args` 기본 `--disable=hooks`·`--dangerously-bypass-approvals-and-sandbox`: 앞의 것은 Codex 의 hook 검토 창과, 검토하지 않은 hook 이 셸 명령을 막는 문제를 피한다(herdr-orch 실환경 확인 결과). 기본에 chrome-devtools MCP 서버 정의도 있다(herdr-team 전용 이름 `hteam-browser`, 서버 테이블 한 쌍 `-c mcp_servers.hteam-browser={command="npx",args=[…],startup_timeout_sec=60}`: `npx -y chrome-devtools-mcp@1.10.1 --headless=true --isolated=true`, 시작 제한 60초). 사용자의 Codex 에 브라우저 서버가 없어도 리뷰어가 화면을 렌더하고, 헤드리스·격리 프로필이라 사용자 Chrome 의 쿠키·로그인을 쓰지 않는다(6.2). 사용자·플러그인의 `chrome-devtools` 를 같은 이름으로 덮지 않는다: `-c` 는 기존 정의와 합쳐지므로(테이블 통째로 줘도 그렇다) 그 정의가 url 이면 `url is not supported for stdio` 로, 플러그인 정의에 일부 키만 주면 `invalid transport` 로 Codex 가 시작하지 못한다(codex-cli 0.166 에서 `codex mcp get` 으로 확인). 대신 hteam 이 띄우는 codex(디스패치의 워커·리뷰어, 이미지)에는 사용자 `chrome-devtools` 가 켜져 있을 때만 그 정의를 통째로 끄는 인자를 덧붙인다(14장). Codex 는 늘 샌드박스·승인 우회로 돈다(사용자 결정 2026-11-11). 그래서 리뷰어가 MCP 도구를 쓰고 개발 서버를 띄운다(9.1, 14장. init 은 묻지 않는다. horch 는 우회가 있으면 `-s`·`-a` 기본을 넣지 않는다).
 - `owns`: 비면 안 된다. 태스크 front matter(와 tasks.toml)로 좁힐 수 있고 넓힐 수는 없다. 판정은 보수적이다: 같은 glob, 직무의 고정 경로와 같거나 그 아래인 고정 경로, 직무 glob 이 `**` 이거나 `<고정 접두사>/**` 일 때 고정 접두사가 그것으로 시작하는 glob·경로만 안으로 본다. 와일드카드 없는 경로는 git pathspec 처럼 그 아래 전체를 뜻하므로 `src/a.py` 는 `src/*.py` 안이 아니다. 판단할 수 없으면 거부한다(`plan check`, `start` 가 exit 2). owns 값에는 `[ ] { } , \`, 빈·`.`·`..` 마디, 앞뒤 `/`, 마디 일부인 `**` 를 쓰지 않는다(git 과 다르게 읽히거나 front matter 에서 갈라진다. 어기면 `plan check`·`task new`·사양 검사·설정 검사가 거부한다).
 - `max_parallel`: `start-ready` 가 동시에 둘 `working` 태스크 수 상한(1 이상).
 - `user_approval_roles`: 리뷰 승인 뒤 `done` 대신 `awaiting_user` 로 가는 직무. `[roles]` 에 있는 직무만.
@@ -595,7 +596,7 @@ exclusive = false     # 선택, 기본 false. true 면 테스트 실행을 한 �
 
 - `[test]` 확정은 실수 방지 수준이다(사용자 결정 2026-11-08, Codex 설계 리뷰 r2). 확정할 식별값을 프로젝트 안 outbox 항목에 두므로, 질문이 보인 뒤 outbox 를 일부러 바꾸는 워커(프롬프트 주입 포함)는 메인의 정상적인 확정 답으로 다른 명령을 확정 기록에 넣을 수 있다. 막지 않는다. (사용자 결정 2026-11-08: 실수 방지 수준) `[test]` 확정은 사용자가 모르는 새 명령이 리뷰 전 자동으로 도는 실수를 막는다. 프로젝트 안 상태를 일부러 바꾸는 워커는 막지 않는다(워커는 이미 프로젝트 상태를 셸로 바꿀 수 있다, 14장).
 - 확정 기록 갱신은 잠그지 않는다. 메인 세션 둘이 동시에 서로 다른 확정 답을 쓰면(읽기 → 더하기 → 교체가 겹친다) 한쪽 확정이 빠질 수 있다. 빠지면 관문이 건너뛰지만, 그 식별값의 질문은 이미 답해 관제는 다시 묻지 않고(8.4) `reask` 도 답한 질문은 내지 않는다(7.6). 사용자가 직접 다시 확정해야 한다: 메인이 `hteam test-confirm`(요청 큐, 7.1)으로 관제에 요청하면 관제가 새 확정 질문을 올린다(Codex 설계 리뷰 r2·r3, 기록만).
-- Codex 워커의 `hteam test` 는 그 샌드박스(기본: 네트워크 없음) 안에서 돈다. developer 는 통과 기록만 재사용하므로 샌드박스 탓의 실패는 리뷰 관문이 관제 환경에서 다시 돌린다. tester 의 full 은 상태와 관계없이 같은 라운드·같은 code_head 면 재사용하므로 샌드박스 탓의 실패가 묶음 리뷰에 그대로 간다(리뷰어가 실행 환경 탓인지 가른다).
+- 워커의 `hteam test` 는 그 워커의 환경에서 돈다(Codex 워커도 우회로 돌아 샌드박스가 없다, 4.1). developer 는 통과 기록만 재사용하므로 워커 환경 탓의 실패는 리뷰 관문이 관제 환경에서 다시 돌린다. tester 의 full 은 상태와 관계없이 같은 라운드·같은 code_head 면 재사용하므로 환경 탓의 실패가 묶음 리뷰에 그대로 간다(리뷰어가 실행 환경 탓인지 가른다).
 - 테스트가 추적 파일을 바꾸면(스냅숏 갱신 등) 관문이 변조 기준점(6.1 5)보다 먼저 돌아 변조가 아니다. 소유 경로 안이면 다음 리뷰 사전 검사가 커밋 안 된 변경으로 잡고, 밖이면 `dirty` 에만 남는다.
 
 ### 5.8 직무 문서의 테스트 규칙 (5단계)
@@ -1549,7 +1550,7 @@ kind 는 orca 의 `DECIDE_KINDS` 와 같다: `worker_failed`, `worker_question`,
 1. 설명이 비면 한 줄로 묻는다.
 2. `hteam doctor`(9.2). 오류면 멈추고 알린다.
 3. `hteam scaffold --description-file <임시 파일>`: `.herdr-team/` 일체(설정, 직무 문서, 디자인 규칙, 문구 규칙(4단계), shim, `project.md`, `tasks/`. 6단계에 코디네이터 사용법을 뺀다), `CLAUDE.md` 에 `<!-- herdr-team -->` 절(메인 규칙, 역할 판별 안내), `AGENTS.md` 에 같은 표시의 절(Codex 워커·리뷰어 규칙), `.gitignore` 에 `.herdr-team/state/`. 있는 파일은 덮어쓰지 않는다(`CLAUDE.md`·`AGENTS.md`·`.gitignore` 는 덧붙이기만 한다). `state/plugin-root` 를 만들고, `state/setup-done` 이 없을 때만 `state/setup-mode` 를 만든다(출력 `setup_mode`). 세팅을 마친 프로젝트를 다시 세팅하려면 `state/setup-done` 을 지우고 scaffold 를 다시 한다.
-4. 판단이 필요한 한 단계: 표 하나로 제안하고 AskUserQuestion 한 번으로 승인받는다. 직무별 owns, 추가 직무, 고정 에이전트 구성(6단계: `[crew.*]` 의 직무 묶음과 에이전트·모델, `[overflow]`), 필요한 도구(Chrome DevTools MCP 등), Claude 권한 모드(`[agents.claude].args`. bypass 는 사람 없이 돌 때 필요하지만 워커가 사용자 자격 증명을 그대로 쓴다는 위험을 적는다), Codex 권한(`[agents.codex].args` 의 `--dangerously-bypass-approvals-and-sandbox`: Codex 워커·리뷰어가 샌드박스·승인 없이 돌아 리뷰어가 chrome-devtools 로 화면을 렌더하고 개발 서버를 띄울 수 있다. 위험: 사용자 권한·자격 증명·네트워크를 그대로 쓴다, 리뷰어가 읽는 워커 코드·웹 페이지의 글이 명령을 실행시킬 수 있다, 저장소 밖 변경은 변조 검사가 잡지 못한다, 사용자 Codex 설정의 다른 MCP 서버도 승인 없이 쓸 수 있다(hteam 은 같은 일을 하는 `chrome-devtools` 만 끄고 다른 이름은 범위 밖이다). 승인하지 않으면 리뷰어는 화면을 코드로만 본다). `hteam image`(designer 의 래스터 에셋)는 이 승인과 관계없이 `codex exec` 를 샌드박스 우회로 돌린다(image_gen 결과 파일을 읽으려고, 14장). 프롬프트는 이미지 생성만 시키고 결과는 검사한 PNG 만 게시한다.
+4. 판단이 필요한 한 단계: 표 하나로 제안하고 AskUserQuestion 한 번으로 승인받는다. 직무별 owns, 추가 직무, 고정 에이전트 구성(6단계: `[crew.*]` 의 직무 묶음과 에이전트·모델, `[overflow]`), 필요한 도구(Chrome DevTools MCP 등), Claude 권한 모드(`[agents.claude].args`. bypass 는 사람 없이 돌 때 필요하지만 워커가 사용자 자격 증명을 그대로 쓴다는 위험을 적는다), Codex 우회는 묻지 않는다(`[agents.codex].args` 의 `--dangerously-bypass-approvals-and-sandbox` 는 템플릿 기본(사용자 결정 2026-11-11). Codex 워커·리뷰어가 샌드박스·승인 없이 돌아 리뷰어가 chrome-devtools 로 화면을 렌더하고 개발 서버를 띄운다. 표에는 위험만 적는다: 사용자 권한·자격 증명·네트워크를 그대로 쓴다, 리뷰어가 읽는 워커 코드·웹 페이지의 글이 명령을 실행시킬 수 있다, 저장소 밖 변경은 변조 검사가 잡지 못한다, 사용자 Codex 설정의 다른 MCP 서버도 승인 없이 쓸 수 있다(hteam 은 같은 일을 하는 `chrome-devtools` 만 끄고 다른 이름은 범위 밖이다)). `hteam image`(designer 의 래스터 에셋)도 `codex exec` 를 샌드박스 우회로 돌린다(image_gen 결과 파일을 읽으려고, 14장). 프롬프트는 이미지 생성만 시키고 결과는 검사한 PNG 만 게시한다.
 5. `hteam up --wait-run 180`(관제를 띄운다, 9.3)과 백그라운드 `hteam watch`.
 6. `hteam setup-done`, 경로 지정 커밋 `chore: herdr-team 세팅`, 보고.
 
@@ -2046,9 +2047,9 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
 
 ## 14. 보안
 
-- 워커는 사람 없이 돈다. 권한 우회(`[agents.claude].args` 의 bypass, Codex 샌드박스 우회)를 넣으면 워커가 사용자의 git·클라우드 자격 증명과 셸 환경을 그대로 쓴다. init 이 위험을 적고 승인받았을 때만 넣는다.
+- 워커는 사람 없이 돈다. 권한 우회(`[agents.claude].args` 의 bypass, Codex 우회)가 있으면 워커가 사용자의 git·클라우드 자격 증명과 셸 환경을 그대로 쓴다. Claude bypass 는 init 이 위험을 적고 승인받았을 때만 넣는다. Codex 우회는 늘 넣는다(사용자 결정 2026-11-11).
 - Codex 워커는 프로젝트 폴더를 그 실행에서만 신뢰한 것으로 뜬다(5.9.2 의 7, 사용자 결정 2026-11-11). 신뢰한 폴더는 그 폴더의 Codex 설정이 코드를 실행할 수 있다(Codex 신뢰 창 문구). 사용자가 herdr-team 을 그 프로젝트에 init 한 것을 그 폴더를 믿는다는 뜻으로 본다. `~/.codex/config.toml` 에는 남기지 않는다.
-- Codex 샌드박스·승인 우회(`--dangerously-bypass-approvals-and-sandbox`)를 넣으면 Codex 리뷰어가 chrome-devtools 로 아무 URL(http(s) 포함)을 열 수 있고 페이지의 스크립트·요청이 돈다. 리뷰어가 읽는 워커 코드·웹 페이지의 글이 명령을 실행시킬 수 있고(프롬프트 주입), 저장소 밖 변경은 변조 검사가 잡지 못한다. 그래서 기본에 넣지 않고 init 이 승인받는다. 리뷰어의 브라우저 서버(`hteam-browser`)는 `--isolated=true`(임시 프로필)·`--headless=true` 로 정의해 사용자 Chrome 의 쿠키·로그인을 쓰지 않는다. 사용자·플러그인의 같은 일을 하는 `chrome-devtools`(이 환경에서는 격리하지 않은 고정 프로필)는 hteam 이 띄우는 codex(디스패치의 워커·리뷰어 fresh·retry, 이미지)에서만 끈다: agent 가 codex 이고 args 에 `hteam-browser` 정의가 있을 때 읽기 전용 `codex mcp get chrome-devtools --json`(프로세스 안에서 한 번, 15초 상한)으로 보고, 켜져 있으면 정의를 통째로(transport 키 하나 + `enabled=false`) args 뒤에 더한다. 조회 실패·시간 초과·codex 없음이면 끄지 않고 warnings 에 남긴다(디스패치를 막지 않는다). 우회를 승인하면 사용자 Codex 설정의 다른 MCP 서버도 승인 없이 쓸 수 있다. hteam 은 같은 일을 하는 `chrome-devtools` 만 끄고 다른 이름은 범위 밖이다. 리뷰어 프롬프트는 `hteam-browser` 만 쓰라고 한다(실수 방지). 첫 실행에 npm 패키지를 내려받는다(버전 고정 `chrome-devtools-mcp@1.10.1`).
+- Codex 는 늘 샌드박스·승인 우회(`--dangerously-bypass-approvals-and-sandbox`)로 돌아 Codex 리뷰어가 chrome-devtools 로 아무 URL(http(s) 포함)을 열 수 있고 페이지의 스크립트·요청이 돈다. 리뷰어가 읽는 워커 코드·웹 페이지의 글이 명령을 실행시킬 수 있고(프롬프트 주입), 저장소 밖 변경은 변조 검사가 잡지 못한다. 사용자가 이 위험을 받아들이고 늘 넣기로 했다(사용자 결정 2026-11-11). 리뷰어의 브라우저 서버(`hteam-browser`)는 `--isolated=true`(임시 프로필)·`--headless=true` 로 정의해 사용자 Chrome 의 쿠키·로그인을 쓰지 않는다. 사용자·플러그인의 같은 일을 하는 `chrome-devtools`(이 환경에서는 격리하지 않은 고정 프로필)는 hteam 이 띄우는 codex(디스패치의 워커·리뷰어 fresh·retry, 이미지)에서만 끈다: agent 가 codex 이고 args 에 `hteam-browser` 정의가 있을 때 읽기 전용 `codex mcp get chrome-devtools --json`(프로세스 안에서 한 번, 15초 상한)으로 보고, 켜져 있으면 정의를 통째로(transport 키 하나 + `enabled=false`) args 뒤에 더한다. 조회 실패·시간 초과·codex 없음이면 끄지 않고 warnings 에 남긴다(디스패치를 막지 않는다). 우회로 사용자 Codex 설정의 다른 MCP 서버도 승인 없이 쓸 수 있다. hteam 은 같은 일을 하는 `chrome-devtools` 만 끄고 다른 이름은 범위 밖이다. 리뷰어 프롬프트는 `hteam-browser` 만 쓰라고 한다(실수 방지). 첫 실행에 npm 패키지를 내려받는다(버전 고정 `chrome-devtools-mcp@1.10.1`).
 - 이미지 생성의 `codex exec` 는 orca-team 과 같이 샌드박스 우회로 돈다(`image_gen` 결과 파일을 읽으려고). 프롬프트는 이미지 생성만 하게 하고, 결과는 검사한 PNG 바이트만 `--out` 에 새 이름으로 게시한다(링크를 따라가지 않고 덮어쓰지 않는다). 그 codex 는 샌드박스 밖에서 돌아 실행 중 출력 폴더나 결과 파일을 바꿔치기할 수 있으므로 그런 경합은 위협 모델 밖이다. 폴더 fd 고정과 비차단 읽기는 실수(멈춤·잘못된 곳에 쓰기) 방지다.
 - Claude 리뷰어는 워커 화면을 사용자 자신의 Chrome DevTools MCP 로 렌더한다(격리된 `hteam-browser` 가 아니다). 그래서 페이지 스크립트가 그 브라우저 프로필에서 돈다. init 은 프로젝트 `.mcp.json` 에 격리 정의(`--isolated=true`)를 제안할 수 있다.
 - 리뷰어가 제품 파일을 고치면 변조 검사로 판정을 무효로 한다.
@@ -2059,9 +2060,9 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
 - 테스트 명령(5단계, 5.7): `[test]` 의 quick·full 은 `/bin/sh -c` 로 도는 임의의 셸 문자열이다.
   - 누가 쓰나: 기획 워커(owns `docs/planning/**`)가 `docs/planning/tasks.toml` 에 쓰고 커밋한다. 사용자가 직접 넣을 수도 있다.
   - 언제 도나(Codex 설계 리뷰 r1): 사용자가 확정한 `[test]` 만 돈다(5.7). 확정은 기획 확정 질문이나 관제의 확정 질문(8.4)에서 hteam 이 붙인 `## 테스트 명령` 절을 사용자가 보고 첫 선택지로 답한 것이고, 메인의 `hteam answer` 가 정규화한 `[test]` 의 SHA-256 을 프로젝트 밖 확정 기록에 남긴다. 커밋된 HEAD 의 `[test]` 가 그 값과 다르면(확정 전, 확정 뒤 바뀜, 다른 직무 워커의 owns 밖 커밋) 리뷰 관문은 테스트를 돌리지 않고 알리며, `hteam test` 는 exit 2 `test_unapproved` 다. 확정 기록은 Codex 워커의 기본 샌드박스(`workspace-write`, 작업 폴더만 쓸 수 있다)가 쓸 수 없는 곳에 두지만, 확정할 식별값은 프로젝트 안 outbox 항목에 있어 일부러 outbox 를 바꾸는 워커(프롬프트 주입 포함)는 승인 대상을 바꿔치기할 수 있다(Codex 설계 리뷰 r2, 알려진 한계 5.7). (사용자 결정 2026-11-08: 실수 방지 수준) `[test]` 확정은 사용자가 모르는 새 명령이 리뷰 전 자동으로 도는 실수를 막는다. 프로젝트 안 상태를 일부러 바꾸는 워커는 막지 않는다(워커는 이미 프로젝트 상태를 셸로 바꿀 수 있다, 14장). 리뷰어도 확정하지 않은 `[test]` 명령을 직접 돌리지 않는다(6.2 의 기준 1).
-  - 누구의 권한으로 도나: 워커의 `hteam test` 는 그 워커의 권한·환경(Codex 워커면 그 샌드박스 안)으로, 리뷰 관문(`hteam review`)과 마무리 `hteam test --full` 은 관제 프로세스의 권한·환경(메인 세션이 띄운 `hteam up` 의 환경, 사용자 권한, 샌드박스 없음)으로 돈다(6단계. 0.3.0 은 코디네이터 Claude 의 권한·환경). 메인이 부르면 메인 권한이다.
+  - 누구의 권한으로 도나: 워커의 `hteam test` 는 그 워커의 권한·환경으로, 리뷰 관문(`hteam review`)과 마무리 `hteam test --full` 은 관제 프로세스의 권한·환경(메인 세션이 띄운 `hteam up` 의 환경, 사용자 권한, 샌드박스 없음)으로 돈다(6단계. 0.3.0 은 코디네이터 Claude 의 권한·환경). 메인이 부르면 메인 권한이다.
   - 어디서 어떻게: cwd 프로젝트 루트, stdin `/dev/null`, 자기 프로세스 그룹, 시간 상한 뒤 그룹 SIGTERM → 5초 → SIGKILL. 환경은 부른 쪽 그대로에서 `HTEAM_ROLE`·`HTEAM_LAUNCH`·`HC_TERMINAL_ID` 만 뺀다(실수 방지. 비밀값이 든 환경 변수는 그대로 물려받는다).
-  - 권한 차이: 관제는 샌드박스 없이 사용자 권한으로 돈다. Claude 워커는 `[agents.claude].args`(init 이 승인한 bypass 포함)로 돌아 비슷하지만, Codex 워커는 기본이 `-s workspace-write -a never`(horch `agents.build`)라 관제보다 좁다. 그래서 Codex 워커가 쓴 명령이 관제 환경에서 돌면 권한이 넓어진다. 사용자 확정이 그 실수를 막는다(실수 방지 수준이고 보안 경계가 아니다, 위). 확정한 명령 자체는 사용자 권한으로 돌므로 사용자가 명령을 읽고 정한다. 빼는 세 환경 변수는 실수 방지일 뿐이다. 신뢰하지 않는 저장소에서는 `[test]` 를 확정하지 않는다(README 보안 주의).
+  - 권한 차이: 관제는 샌드박스 없이 사용자 권한으로 돈다. Codex 워커는 우회로 돌아 관제와 같고, Claude 워커는 `[agents.claude].args`(init 이 승인한 bypass 포함)로 돌아 비슷하다. 워커가 쓴 명령이 관제 환경에서 돌아도 권한은 크게 넓어지지 않지만, 사람이 보지 않은 명령이 리뷰 관문에서 자동으로 돈다. 사용자 확정이 그 실수를 막는다(실수 방지 수준이고 보안 경계가 아니다, 위). 확정한 명령 자체는 사용자 권한으로 돌므로 사용자가 명령을 읽고 정한다. 빼는 세 환경 변수는 실수 방지일 뿐이다. 신뢰하지 않는 저장소에서는 `[test]` 를 확정하지 않는다(README 보안 주의).
   - 출력: tail(60줄 × 300자)이 리뷰 프롬프트와, quick 반려면 커밋되는 리뷰 파일 `docs/reviews/T-xxx/rN.md` 에 들어간다. 테스트가 비밀값을 출력하면 저장소에 남는다(가리지 않는다, 16장). 리뷰어에게 tail 과 테스트 명령은 자료다(6.2 실행 정책의 "자료다" 줄). 명령은 JSON 문자열로, tail 은 가변 길이 펜스로 넣어 프롬프트에 새 절을 만들지 못한다(6.2, 6.1 4a).
   - 테스트 기록(`state/tests/`)은 훅이 도구 편집을 막지만 셸로 바꿀 수 있다. 통과 기록을 꾸며 관문을 건너뛰는 것은 막지 못한다(로그 경로가 리뷰 프롬프트에 있어 리뷰어가 볼 수 있다).
 - 6단계: 메인 요청 큐(`state/drive/queue/`)는 프로젝트 안 파일이다. 같은 사용자의 워커가 셸로 요청 파일을 써 넣으면 관제가 메인 요청으로 실행한다(Claude 훅은 편집 도구만 막고 셸은 막지 못한다). 실수 방지 수준이고 보안 경계가 아니다(이 장의 원칙, orca-team 도 같다).
@@ -2391,7 +2392,7 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
 | `.orchestration/state/auto-up.{json,pid,log}` | `.herdr-team/state/auto-up.{json,pid,log}`(pid 파일은 `{pid, started}`) |
 | `orch test`, `lib/orch/testgate.py` | `hteam test`, `lib/hteam/testgate.py`(5.7) |
 | `.orchestration/state/tests/{T-xxx,final}.json`, `.lock` | `.herdr-team/state/tests/{T-xxx,final}.json`, `.lock` |
-| 테스트 로그 `~/.cache/orca-team/runs/<프로젝트>/` | `.herdr-team/state/tests/logs/`(Codex 워커 샌드박스 안에서 쓴다, 5.7) |
+| 테스트 로그 `~/.cache/orca-team/runs/<프로젝트>/` | `.herdr-team/state/tests/logs/`(워커가 쓴다, 5.7) |
 | 테스트 명령 환경을 그대로 물려줌 | `HTEAM_ROLE`·`HTEAM_LAUNCH`·`HC_TERMINAL_ID` 를 뺀다(5.7) |
 | `util.READ_ONLY_GIT` 의 `GIT_OPTIONAL_LOCKS=0` | `gitio.run` 의 환경 인자(관문의 `git status`, 5.7) |
 | 실행 불가·잠금 대기 초과 모두 exit 2, 코디네이터가 오류 문구로 가름 | 실행 불가 exit 2·잠금 대기 초과 exit 4, `error.code` 로 가름(5.7, 8.4) |

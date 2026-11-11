@@ -21,7 +21,7 @@ argument-hint: "<프로젝트 설명>"
 `HTEAM doctor` 를 실행한다.
 - `git_repo` 경고면 `git init` 뒤 `git commit --allow-empty -m "chore: init"` 을 실행한다.
 - exit 1(`unhealthy`)이면 `checks` 에서 `ok: false`·`level: error` 항목과 detail 을 표로 보여 주고 멈춘다.
-- `codex_image_generation`·`chrome_devtools_mcp`·`codex_browser` 경고는 멈추지 않는다. 6단계 보고에 적는다(`codex_browser` 는 4단계의 Codex 권한 행으로 풀린다).
+- `codex_image_generation`·`chrome_devtools_mcp`·`codex_browser` 경고는 멈추지 않는다. 6단계 보고에 적는다(`codex_browser` 는 `[agents.codex].args` 에서 우회나 `hteam-browser` 정의를 지웠을 때 뜬다).
 
 ## 3. 스캐폴드
 설명 원문을 스크래치 파일에 쓰고 `HTEAM scaffold --description-file <그 파일>` 을 실행한다. 출력의 `created`·`skipped` 를 기억한다.
@@ -36,13 +36,13 @@ argument-hint: "<프로젝트 설명>"
 
 - 직무별 owns: `.herdr-team/config.toml` 의 `[roles.*].owns`. 예: Next.js 면 developer `["src/**", "app/**", "package.json"]`.
 - 직무: 기본 직무는 planner·director·designer·developer·tester 다. 화면이 없는 프로젝트(CLI·라이브러리 등)면 `[roles.director]`·`[roles.designer]` 와 `user_approval_roles` 의 `"designer"` 를 빼고 `.herdr-team/roles/director.md`·`.herdr-team/roles/designer.md` 를 지우자고 제안한다. 화면이 있으면 디자인 디렉터 단계(레퍼런스·톤 시안·디자인 시스템을 사용자에게 차례로 묻는다)를 거치고, 레퍼런스 캡처에 Chrome DevTools MCP 를 쓴다는 것을 표에 적는다. 추가 직무는 기본 직무로 부족할 때만 둔다. `.herdr-team/roles/<직무>.md`(기본 직무 문서와 같은 절 구성)와 config 항목을 같이 만든다.
-- 고정 에이전트 구성(`[crew.<이름>]`, `[overflow]`): 한 세션이 그 직무 태스크와 수정 라운드를 이어 맡는다(묶음이 끝나면 인수인계를 쓰고 세션을 비운다). 템플릿은 `production`(planner·designer·developer), `research`(director), `test`(tester)다. 한 직무는 한 에이전트에만 둔다. 지운 직무는 `roles` 에서도 뺀다(화면이 없으면 `research` 를 지우고 `production` 에서 designer 를 뺀다). 에이전트마다 모델이 하나라 그 에이전트의 모든 직무 태스크가 그 모델로 돈다(비용을 표에 적는다). Codex 로 일하는 고정 에이전트(`agent = "codex"`)는 그 직무 표에도 `worker = "codex"` 가 있어야 태스크를 받는다. director·designer 를 가진 에이전트는 claude 만 된다. `[overflow] enabled`(기본 true)는 고정 에이전트가 바쁠 때 준비된 독립 태스크를 임시 워커로 돌린다.
+- 고정 에이전트 구성(`[crew.<이름>]`, `[overflow]`): 한 세션이 그 직무 태스크와 수정 라운드를 이어 맡는다(묶음이 끝나면 인수인계를 쓰고 세션을 비운다). 템플릿은 `production`(planner·designer·developer), `research`(director), `test`(tester)다. production·research 는 Claude, test 는 Codex 다. 테스트는 생산과 다른 모델이 수용 기준으로 짜고 그 리뷰는 반대쪽인 Claude 가 한다. 한 직무는 한 에이전트에만 둔다. 지운 직무는 `roles` 에서도 뺀다(화면이 없으면 `research` 를 지우고 `production` 에서 designer 를 뺀다). 에이전트마다 모델이 하나라 그 에이전트의 모든 직무 태스크가 그 모델로 돈다(비용을 표에 적는다). Codex 로 일하는 고정 에이전트(`agent = "codex"`)는 그 직무 표에도 `worker = "codex"` 가 있어야 태스크를 받는다. director·designer 를 가진 에이전트는 claude 만 된다. `[overflow] enabled`(기본 true)는 고정 에이전트가 바쁠 때 준비된 독립 태스크를 임시 워커로 돌린다.
 - 필요한 도구(Chrome DevTools MCP 등). 이미 설치된 것은 넣지 않는다. 넣는다면 프로젝트 범위(`.mcp.json`)로만 넣는다. Claude 리뷰어는 워커 화면을 사용자 자신의 Chrome DevTools MCP 로 렌더한다(격리된 `hteam-browser` 가 아니다). 페이지 스크립트가 그 브라우저 프로필에서 돌므로, 원하면 프로젝트 `.mcp.json` 에 격리 정의(`--isolated=true`)를 두자고 제안한다.
 - Claude 권한 모드(`[agents.claude].args`): 워커는 사람 없이 돌므로 `--permission-mode=bypassPermissions` 가 필요할 수 있다. `[agents.claude].args` 는 Claude 워커·리뷰어(고정 에이전트 포함)를 띄울 때마다 붙는다(관제는 Claude 가 아니다). 넣으면 워커·리뷰어가 확인 없이 사용자의 git·클라우드 자격 증명과 셸 환경을 그대로 쓴다는 위험을 표에 적는다. 사용자가 승인했을 때만 넣는다.
-- Codex 권한(샌드박스 우회): `[agents.codex].args` 에 `--dangerously-bypass-approvals-and-sandbox` 를 더하자고 제안한다. 무엇을 하는지: Codex 워커·리뷰어가 샌드박스·승인 없이 돈다. 리뷰어가 기본 설정의 `hteam-browser`(chrome-devtools, 헤드리스·격리) 서버로 화면을 렌더하고 개발 서버를 띄울 수 있다(우회가 없으면 `-a never` 때문에 브라우저 도구 호출이 거부되고 리뷰어는 화면을 코드로만 본다). 위험을 표에 적는다: Codex 가 사용자 권한·자격 증명·네트워크를 그대로 쓴다, 리뷰어가 읽는 워커 코드·웹 페이지의 글이 명령을 실행시킬 수 있다, 저장소 밖 변경은 변조 검사가 잡지 못한다, 사용자 Codex 설정의 다른 MCP 서버도 승인 없이 쓸 수 있다(hteam 은 같은 일을 하는 `chrome-devtools` 만 hteam 이 띄우는 codex 에서 끈다. 다른 이름은 범위 밖이다). 사용자가 승인했을 때만 넣는다. `hteam image`(designer 의 래스터 에셋)는 이 승인과 관계없이 `codex exec` 를 샌드박스 우회로 돌린다(image_gen 결과 파일을 읽으려고, 14장). 프롬프트는 이미지 생성만 시키고 결과는 검사한 PNG 만 게시한다.
+- Codex 는 늘 샌드박스·승인 우회로 돈다(`[agents.codex].args` 의 `--dangerously-bypass-approvals-and-sandbox`, 템플릿 기본). 표에서 묻지 않고 위험만 한 줄로 적는다: Codex 워커·리뷰어가 사용자 권한·자격 증명·네트워크를 그대로 쓴다, 리뷰어가 읽는 워커 코드·웹 페이지의 글이 명령을 실행시킬 수 있다, 저장소 밖 변경은 변조 검사가 잡지 못한다, 사용자 Codex 설정의 다른 MCP 서버도 승인 없이 쓸 수 있다(hteam 은 같은 일을 하는 `chrome-devtools` 만 hteam 이 띄우는 codex 에서 끈다. 다른 이름은 범위 밖이다). 그 덕에 리뷰어가 기본 설정의 `hteam-browser`(chrome-devtools, 헤드리스·격리)로 화면을 렌더하고 개발 서버를 띄운다. `hteam image`(designer 의 래스터 에셋)도 `codex exec` 를 우회로 돌린다(image_gen 결과 파일을 읽으려고, 14장). 프롬프트는 이미지 생성만 시키고 결과는 검사한 PNG 만 게시한다.
 - AskUserQuestion 한 번으로 승인받는다. 선택지 "전부 승인 (추천)", "바꾸지 않고 진행". 일부 제외는 Other 로 받는다.
 - 승인된 항목을 적용한다. 실패해도 멈추지 않고 결과를 표에 남긴다.
-- 바꾸는 곳은 이 프로젝트 안뿐이다. 사용자 전역 설정(`~/.claude/`, `~/.claude.json`, `~/.codex/`)을 고치지 않는다. Codex 의 폴더 신뢰를 한꺼번에 허용하는 설정("Trust all" 류)이나 전역 샌드박스·승인 우회 설정을 쓰지 않는다(우회는 이 프로젝트의 `[agents.codex].args` 에, 위 표로 승인받았을 때만).
+- 바꾸는 곳은 이 프로젝트 안뿐이다. 사용자 전역 설정(`~/.claude/`, `~/.claude.json`, `~/.codex/`)을 고치지 않는다. Codex 의 폴더 신뢰와 우회는 전역 설정에 쓰지 않는다. 신뢰는 horch 가 실행마다 넘기고, 우회는 이 프로젝트의 `[agents.codex].args` 에 있다.
 
 ## 5. 관제
 1. `.herdr-team/bin/hteam up --wait-run 180` 을 Bash `timeout: 240000` 으로 실행한다. 관제(`hteam drive`)가 관제 탭(`herdr-team 관제`)에 떠서 Run 을 만든다.
@@ -62,4 +62,4 @@ argument-hint: "<프로젝트 설명>"
 ## 하지 않는 것
 - `horch` 와 `hteam drive` 직접 호출. 메인이 Run 에 묶이거나 관제가 되면 깨우기 글이 사용자 입력란에 들어온다.
 - 기획·코드 작업 시작. 첫 업무는 사용자의 다음 메시지부터다.
-- 사용자 전역 Claude·Codex 설정 고치기, 승인받지 않은 권한 우회.
+- 사용자 전역 Claude·Codex 설정 고치기, 승인받지 않은 Claude 권한 우회.

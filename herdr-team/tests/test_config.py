@@ -420,7 +420,9 @@ class TemplateConfigTest(unittest.TestCase):
         self.assertEqual({n: (c["title"], c["roles"], c["agent"], c["model"], c["effort"]) for n, c in raw["crew"].items()},
                          {"production": ("생산", ["planner", "designer", "developer"], "claude", "opus", "xhigh"),
                           "research": ("조사", ["director"], "claude", "opus", "xhigh"),
-                          "test": ("테스트", ["tester"], "claude", "sonnet", "xhigh")})
+                          "test": ("테스트", ["tester"], "codex", "gpt-6.1-sol", "xhigh")})
+        # 테스트는 생산(Claude)과 다른 모델이 수용 기준으로 짠다(사용자 결정 2026-11-11). 리뷰는 반대쪽인 Claude
+        self.assertEqual(raw["roles"]["tester"]["worker"], "codex")
         cfg = config.build(raw)
         self.assertEqual(config.crew_warnings(cfg), [])
         self.assertEqual(cfg.crew_of("designer").name, "production")
