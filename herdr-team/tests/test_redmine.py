@@ -4,6 +4,7 @@ Redmine 은 이 프로세스 안의 가짜 HTTP 서버다(요청을 남기고 �
 (make_drive). 리뷰·전송 자식은 실제 hteam 하위 프로세스다(설계 8.8). 큐 항목의 꼴은 계획 헤더의 "기록·필드에 더하는 것" 이다."""
 import fcntl
 import json
+import os
 import re
 import socket
 import threading
@@ -24,6 +25,9 @@ KEY_ENV = "HT_REDMINE_KEY"
 STATUS = "status = { start = 2, done = 3, changes = 4, closed = 5 }"
 LOCAL_ISO = r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d"
 PROXY_ENV = ("http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")
+REDIRECT_ERROR = "HTTP 307: 리다이렉트를 따르지 않는다. [redmine] url 을 최종 주소로 고친다"
+BAD_PARTS = ("rk-BAD-4d2c", "9e8f7a6b")  # 머리에 쓸 수 없는 가짜 키의 앞뒤 조각. 어디에도 나오면 안 된다
+BAD_KEYS = (f"{BAD_PARTS[0]}\r\n{BAD_PARTS[1]}", f"{BAD_PARTS[0]}\x01{BAD_PARTS[1]}", f"{BAD_PARTS[0]}한{BAD_PARTS[1]}")
 
 
 def redmine_table(url: str, env_file: str | None = None) -> str:
@@ -47,7 +51,8 @@ class FakeRedmine:
     """PUT /issues/<N>.json·GET /users/current.json 을 받는 가짜 Redmine. codes[이슈] 는 그 이슈에 차례로 낼 응답 코드
     (다 쓰면 204). 요청마다 {method, path, key, body, type} 를 남긴다. 4xx·5xx 본문에는 받은 키를 넣는다(가리기 시험).
     pads[이슈] 는 그 본문에서 키 앞에 둘 글자 수(200자 자르기 경계 시험). lock_path 를 정하면 PUT 을 받을 때마다 그 파일의
-    flock 을 비차단으로 시도해, 보내는 쪽이 쥐고 있었는지를 lock_held 에 남긴다(시간에 기대지 않는 전송자 하나 시험)."""
+    flock 을 비차단으로 시도해, 보내는 쪽이 쥐고 있었는지를 lock_held 에 남긴다(시간에 기대지 않는 전송자 하나 시험).
+    redirect 를 정하면 모든 요청에 307 과 Location `<redirect><경로>` 로 답한다(리다이렉트 시험)."""
 
     def __init__(self):
         self.requests: list[dict] = []
@@ -55,6 +60,7 @@ class FakeRedmine:
         self.pads: dict[str, int] = {}
         self.lock_path: Path | None = None
         self.lock_held: list[bool] = []
+        self.redirect: str | None = None
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -67,9 +73,20 @@ class FakeRedmine:
                 self.end_headers()
                 self.wfile.write(body)
 
+            def _redirected(self) -> bool:
+                if outer.redirect is None:
+                    return False
+                self.send_response(307)
+                self.send_header("Location", outer.redirect + self.path)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return True
+
             def do_GET(self):
                 key = self.headers.get("X-Redmine-API-Key")
                 outer.requests.append({"method": "GET", "path": self.path, "key": key, "body": None, "type": None})
+                if self._redirected():
+                    return
                 ok = key == KEY and self.path == "/users/current.json"
                 self._reply(200 if ok else 401, b'{"user": {"id": 1}}' if ok else b'{"errors": ["no"]}')
 
@@ -78,6 +95,8 @@ class FakeRedmine:
                 key = self.headers.get("X-Redmine-API-Key")
                 outer.requests.append({"method": "PUT", "path": self.path, "key": key,
                                        "body": json.loads(raw or b"null"), "type": self.headers.get("Content-Type")})
+                if self._redirected():
+                    return
                 if outer.lock_path is not None:  # 보내는 프로세스가 sync.lock 을 쥔 채 보내는지
                     with open(outer.lock_path, "a") as fh:
                         try:
@@ -316,6 +335,79 @@ class SyncTest(RedmineMixin, TeamCase):
         self.assertEqual([(e["seq"], e["status"]) for e in out["failed"]], [(1, "읽기 실패")])
         self.assertTrue((self.redmine_dir / "failed" / "000001.json").is_file())
         self.assertFalse((folder / "000001.json").exists())
+
+    def test_item_with_bad_times_or_tries_moves_to_failed(self):
+        # next_at·tries·at 의 꼴이 틀린 항목도 깨진 항목이다: failed/ 로 옮기고 다른 이슈는 보낸다(리뷰 J5)
+        self.put_item(1, "1", next_at=12345)
+        self.put_item(2, "2", tries="x", next_at=utc(-1))
+        self.put_item(3, "3", at="모름")
+        self.put_item(4, "4")
+        code, out = self.sync()
+        self.assertEqual(code, 0, out)
+        self.assertEqual([e["seq"] for e in out["sent"]], [4])
+        self.assertEqual([(e["seq"], e["status"]) for e in out["failed"]], [(1, "읽기 실패"), (2, "읽기 실패"),
+                                                                            (3, "읽기 실패")])
+        self.assertEqual([r["path"] for r in self.server.puts()], ["/issues/4.json"])
+        self.assertEqual(sorted(f.name for f in (self.redmine_dir / "failed").glob("*.json")),
+                         ["000001.json", "000002.json", "000003.json"])
+        self.assertEqual(self.queued(), [])
+
+    def test_redirect_is_not_followed(self):
+        # 리다이렉트를 따르지 않는다: 키 머리가 다른 서버로 가지 않고, 4xx 처럼 다시 보내지 않는다(리뷰 J1)
+        other = FakeRedmine()
+        self.addCleanup(other.close)
+        self.server.redirect = other.url
+        self.put_item(1, "1")
+        code, out = self.sync()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(other.requests, [])
+        self.assertEqual([(e["seq"], e["status"], e["error"]) for e in out["failed"]], [(1, 307, REDIRECT_ERROR)])
+        self.assertEqual(out["retry"], [])
+        [bad] = self.failed()
+        self.assertEqual(bad["error"], REDIRECT_ERROR)
+        self.assertEqual(self.queued(), [])
+        self.assertEqual(self.leaks(), [])
+
+    def clear_queue(self) -> None:
+        for f in (self.redmine_dir / "queue").glob("*.json"):
+            f.unlink()
+
+    def test_key_line_end_is_stripped(self):
+        # 환경 변수 키도 앞뒤 공백·줄 끝을 벗긴다(리뷰 J2). 벗기지 않으면 http.client 가 키를 통째로 담은 오류를 낸다
+        for raw in (KEY + "\r", KEY + "\n", f" {KEY}\r\n"):
+            with self.subTest(raw=repr(raw)):
+                self.clear_queue()
+                self.server.requests.clear()
+                self.env[KEY_ENV] = raw
+                self.put_item(1, "1")
+                code, out = self.sync()
+                self.assertEqual(code, 0, out)
+                self.assertNotIn(KEY, json.dumps(out, ensure_ascii=False))
+                self.assertEqual([r["key"] for r in self.server.puts()], [KEY])
+                self.assertEqual(self.queued(), [])
+                self.assertEqual(self.leaks(), [])
+
+    def test_key_not_fit_for_header_is_not_used(self):
+        # 가운데 제어 문자·latin-1 밖 글자가 든 키는 쓰지 않는다: 보내지 않고 "키 형식"(키 없음과 같은 재시도), 값은 어디에도
+        # 보이지 않는다(리뷰 J2)
+        for raw in BAD_KEYS:
+            with self.subTest(raw=repr(raw)):
+                self.clear_queue()
+                self.env[KEY_ENV] = raw
+                self.put_item(1, "1")
+                code, out = self.sync()
+                self.assertEqual(code, 0, out)
+                self.assertEqual(self.server.requests, [])
+                self.assertEqual([(e["seq"], e["status"]) for e in out["retry"]], [(1, "키 형식")])
+                [item] = self.queued()
+                self.assertEqual(item["tries"], 1)
+                last = self.status()["redmine"]["last_error"]
+                self.assertIn("형식", last)
+                self.assertIn(KEY_ENV, last)
+                text = json.dumps(out, ensure_ascii=False) + last
+                for part in BAD_PARTS:
+                    self.assertNotIn(part, text)
+                    self.assertEqual(self.leaks(part), [])
 
     def test_one_sender_at_a_time(self):
         # 관제가 다시 떠 앞 관제의 전송 자식이 살아 있어도 둘이 같은 큐를 돌지 않는다(sync.lock, Codex 계획 리뷰 r1).
@@ -706,6 +798,61 @@ class DoctorTest(RedmineMixin, TeamCase):
         checks = self.checks()
         self.assertEqual(set(checks), {"redmine_key", "redmine_api"})
         self.assertTrue(checks["redmine_key"]["ok"] and checks["redmine_api"]["ok"], checks)
+
+    def test_redirect_is_not_followed(self):
+        # doctor 의 GET 도 리다이렉트를 따르지 않는다: 다른 서버가 키를 받지 않고 점검은 실패다(리뷰 J1)
+        (self.proj / ".env").write_text(f'{KEY_ENV}="{KEY}"\n', encoding="utf-8")
+        other = FakeRedmine()
+        self.addCleanup(other.close)
+        self.server.redirect = other.url
+        checks = self.checks()
+        self.assertEqual(other.requests, [])
+        self.assertEqual((checks["redmine_api"]["ok"], checks["redmine_api"]["detail"]), (False, REDIRECT_ERROR))
+
+    def test_key_line_end_is_stripped_and_bad_key_is_not_used(self):
+        # 환경 변수 키의 줄 끝은 벗기고, 머리에 쓸 수 없는 키는 GET 하지 않고 "형식" 으로 알린다. 값은 보이지 않는다(리뷰 J2)
+        (self.team / "config.toml").write_text(BASE_CONFIG + redmine_table(self.server.url), encoding="utf-8")
+        for raw in (KEY + "\r", KEY + "\n"):
+            with self.subTest(raw=repr(raw)):
+                self.env[KEY_ENV] = raw
+                checks = self.checks()
+                self.assertTrue(checks["redmine_key"]["ok"] and checks["redmine_api"]["ok"], checks)
+        self.server.requests.clear()
+        for raw in BAD_KEYS:
+            with self.subTest(raw=repr(raw)):
+                self.env[KEY_ENV] = raw
+                code, out = self.hteam("doctor", as_="main")
+                self.assertEqual(code, 0, out)
+                text = json.dumps(out, ensure_ascii=False)
+                for part in BAD_PARTS:
+                    self.assertNotIn(part, text)
+                checks = {c["name"]: c for c in out["checks"] if c["name"].startswith("redmine")}
+                self.assertFalse(checks["redmine_key"]["ok"])
+                self.assertIn("형식", checks["redmine_key"]["detail"])
+                self.assertFalse(checks["redmine_api"]["ok"])
+                self.assertEqual(self.server.requests, [])
+
+
+class UnexpectedErrorTest(RedmineMixin, TeamCase):
+    """전송·doctor 점검에서 예상 못 한 예외가 나도 밖으로 나가는 글은 키를 가린다(cli.main 의 일반 처리기는 예외 글을 그대로
+    stdout 에 쓴다. 전송 자식이면 state/drive/jobs/redmine.out, 리뷰 J2)."""
+
+    def test_unexpected_error_text_is_masked(self):
+        from hteam import config, redmine
+        from hteam.errors import HteamError
+        self.init_project(BASE_CONFIG + redmine_table("http://127.0.0.1:9"))
+        p = Project(self.proj)
+        cfg = config.load(p)
+        boom = RuntimeError(f"뜻밖이다 {KEY}")
+        cases = (("sync", "hteam.redmine._send_all", lambda: redmine.sync(p, cfg)),
+                 ("checks", "hteam.redmine._api", lambda: redmine.checks(p, cfg)))
+        for name, target, call in cases:
+            with self.subTest(name=name), mock.patch.dict(os.environ, {KEY_ENV: KEY}), \
+                    mock.patch(target, side_effect=boom):
+                with self.assertRaises(HteamError) as caught:
+                    call()
+                self.assertEqual((caught.exception.code, caught.exception.message),
+                                 ("internal", "RuntimeError: 뜻밖이다 ***"))
 
 
 class MaskTest(unittest.TestCase):

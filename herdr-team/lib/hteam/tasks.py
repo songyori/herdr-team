@@ -1392,9 +1392,14 @@ def drop(p, tid: str, force: bool, expect_round: int | None = None, request: str
         if rec is not None and rec["state"] == "preparing" and not rec.get("ready"):
             data["slots"][str(n)] = {**workspace.SLOT_DEFAULT, "setup_done": rec["setup_done"], "since": now()}
             workspace.save(p, data)  # 프로젝트 잠금 안(_closing)
-    redmine.dropped(p, config.load(p), cur)  # 설계 8.12: drop 노트(상태를 바꾸지 않는다)
     crew.unqueue(p, tid)
     crew.free(p, tid)
+    try:  # drop 은 설정 없이 끝난다(설계 4장): 설정을 읽지 못하면 Redmine 노트만 건너뛴다(리뷰 J3)
+        cfg = config.load(p)
+    except HteamError:
+        cfg = None
+    if cfg is not None:
+        redmine.dropped(p, cfg, cur)  # 설계 8.12: drop 노트(상태를 바꾸지 않는다)
     out = {"task": tid, "status": "dropped", "released": released}
     if hint:
         out["hint"] = hint

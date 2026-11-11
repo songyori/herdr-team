@@ -40,6 +40,7 @@ ERROR_WIDTH = 200  # 오류 글(가린 뒤 자른다)
 MASK = "***"
 BUSY_TEXT = "다른 hteam redmine-sync 가 보내는 중이라 보내지 않았다(state/redmine/sync.lock)"
 OFF_TEXT = "config.toml 에 [redmine] 이 없다(Redmine 연동이 꺼져 있다)"
+REDIRECT_TEXT = "리다이렉트를 따르지 않는다. [redmine] url 을 최종 주소로 고친다"
 ISSUE_RE = SEQ_RE = re.compile(r"[0-9]+")  # 이슈 번호, 큐 파일 이름의 순번
 NAME_WIDTH = 6  # 큐 파일 이름의 순번 자릿수
 
@@ -248,10 +249,10 @@ def _no_key_text(cfg) -> str:
 def read_key(p, cfg) -> str | None:
     """API 키. env_file 이 있으면 `<프로젝트>/<env_file>` 만 읽는다(빈 줄·# 줄을 빼고 `=` 앞을 strip 한 이름이 key_env 인 첫
     줄, 값은 strip 한 뒤 앞뒤가 같은 따옴표면 한 겹 벗긴다. 파일을 읽지 못하거나 그 이름이 없으면 None). 없으면 이 프로세스
-    환경의 key_env. 빈 값은 None. 전송 자식과 doctor 만 부른다."""
+    환경의 key_env(앞뒤 공백·줄 끝을 strip 한다). 빈 값은 None. 전송 자식과 doctor 만 부른다."""
     rm = cfg.redmine
     if not rm.env_file:
-        return os.environ.get(rm.key_env) or None
+        return (os.environ.get(rm.key_env) or "").strip() or None
     try:
         text = (p.root / rm.env_file).read_text(encoding="utf-8")
     except (OSError, ValueError):
@@ -270,24 +271,55 @@ def read_key(p, cfg) -> str | None:
     return None
 
 
+def _key_ok(key: str) -> bool:
+    """머리(X-Redmine-API-Key)에 쓸 수 있는 키인가: 모든 글자가 latin-1 안의 찍히는 글자다. 그 밖(줄바꿈 등 제어 문자, 한글)이면
+    http.client 가 키를 통째로 담은 ValueError 를 내므로 그 키는 쓰지 않는다(리뷰 J2)."""
+    return all(ord(c) < 256 and c.isprintable() for c in key)
+
+
+def _bad_key_text(cfg) -> str:
+    return f"Redmine API 키 형식이 틀렸다({_key_place(cfg.redmine)}. 제어 문자나 latin-1 밖 글자가 들었다)"
+
+
 def mask(text: str, key: str | None) -> str:
     """key 가 있으면 text 의 그 값을 모두 `***` 로."""
     return text.replace(key, MASK) if key else text
 
 
+def _masked(p, cfg, fn):
+    """fn() 의 예상 못 한 예외(HteamError 밖)를 키를 가린 internal 오류로 바꾼다. cli.main 의 일반 처리기는 예외 글을 그대로
+    stdout(전송 자식이면 state/drive/jobs/redmine.out, doctor 면 메인 세션)에 쓴다(리뷰 J2)."""
+    try:
+        return fn()
+    except HteamError:
+        raise
+    except Exception as exc:
+        raise HteamError("internal", mask(f"{type(exc).__name__}: {exc}", read_key(p, cfg))) from None
+
+
 # --- 전송(자식 hteam redmine-sync) ---
+def _stamp(value) -> bool:
+    """util.now 꼴 시각 문자열인가."""
+    return isinstance(value, str) and age_seconds(value) is not None
+
+
 def _read_item(path) -> tuple[dict | None, str]:
-    """큐 항목과 읽지 못한 까닭. 꼴: dict, seq 정수, issue 숫자 문자열, event·notes·at 문자열."""
+    """큐 항목과 읽지 못한 까닭. 꼴: dict, seq 정수, issue 숫자 문자열, event·notes 문자열, at 시각, next_at(있으면) 시각,
+    tries(있으면) 0 이상 정수(리뷰 J5: 틀리면 due·전송이 멈추거나 자식이 죽거나 24시간 포기를 하지 못한다)."""
     try:
         item = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         return None, str(exc)
     if not isinstance(item, dict):
         return None, "JSON 객체가 아니다"
+    tries = item.get("tries")
     if not (isinstance(item.get("seq"), int) and not isinstance(item["seq"], bool)
             and isinstance(item.get("issue"), str) and ISSUE_RE.fullmatch(item["issue"])
-            and all(isinstance(item.get(k), str) for k in ("event", "notes", "at"))):
-        return None, "꼴이 틀렸다(seq 정수, issue 숫자 문자열, event·notes·at 문자열)"
+            and all(isinstance(item.get(k), str) for k in ("event", "notes")) and _stamp(item.get("at"))
+            and (item.get("next_at") is None or _stamp(item["next_at"]))
+            and (tries is None or (isinstance(tries, int) and not isinstance(tries, bool) and tries >= 0))):
+        return None, ("꼴이 틀렸다(seq 정수, issue 숫자 문자열, event·notes 문자열, at 시각, next_at(있으면) 시각, "
+                      "tries(있으면) 0 이상 정수)")
     return item, ""
 
 
@@ -301,6 +333,19 @@ def _later(seconds: float) -> str:
     return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """리다이렉트를 따르지 않는다: 기본 urlopen 은 새 주소(다른 서버)로 X-Redmine-API-Key 머리까지 보낸다(리뷰 J1). 3xx 는
+    HTTPError 로 올라온다."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _open(req: urllib.request.Request, timeout: float):
+    """Redmine 요청 하나(리다이렉트를 따르지 않는다. 프록시 등 그 밖은 urlopen 기본과 같다)."""
+    return urllib.request.build_opener(_NoRedirect).open(req, timeout=timeout)
+
+
 def _request(cfg, item: dict, key: str) -> urllib.request.Request:
     fields = {"notes": item["notes"]} if item.get("status_id") is None \
         else {"status_id": item["status_id"], "notes": item["notes"]}
@@ -311,17 +356,19 @@ def _request(cfg, item: dict, key: str) -> urllib.request.Request:
 
 def _put(cfg, item: dict, key: str) -> tuple[int | str, str]:
     """PUT 하나. (HTTP 상태 또는 "연결 실패", 오류 글). 오류 글은 전체에서 키를 가린 뒤 자른다(자른 뒤 가리면 경계에 걸린 키의
-    앞부분이 남는다)."""
+    앞부분이 남는다). 3xx 는 따르지 않고 본문 없이 REDIRECT_TEXT."""
     try:
-        with urllib.request.urlopen(_request(cfg, item, key), timeout=TIMEOUT_S) as resp:
+        with _open(_request(cfg, item, key), TIMEOUT_S) as resp:
             return resp.status, ""
     except urllib.error.HTTPError as exc:
+        if 300 <= exc.code < 400:
+            return exc.code, f"HTTP {exc.code}: {REDIRECT_TEXT}"
         try:
             body = exc.read().decode("utf-8", "replace")
         except (OSError, http.client.HTTPException):
             body = ""
         return exc.code, f"HTTP {exc.code}: {mask(body, key)[:ERROR_WIDTH]}"
-    except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+    except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError) as exc:  # ValueError: 머리 검사 등
         return "연결 실패", f"연결 실패: {mask(str(exc), key)[:ERROR_WIDTH]}"
 
 
@@ -344,6 +391,8 @@ def _write_status(p, last: str | None) -> None:
 def _send_all(p, cfg) -> dict:
     """큐를 순번 순으로 보낸다(설계 8.12). 같은 이슈의 뒤 항목은 앞 항목이 남아 있는 동안 보내지 않는다. 다른 이슈는 막지 않는다."""
     key = read_key(p, cfg)
+    # 보내지 않는 까닭(키 없음·키 형식은 같은 재시도 간격을 탄다. 글에 키 값은 없다)
+    held = ("키 없음", _no_key_text(cfg)) if key is None else ("키 형식", _bad_key_text(cfg)) if not _key_ok(key) else None
     out: dict = {"sent": [], "failed": [], "retry": []}
     blocked: set[str] = set()
     last = None
@@ -361,12 +410,12 @@ def _send_all(p, cfg) -> dict:
         if issue in blocked or (item.get("next_at") and (age_seconds(item["next_at"]) or 0) < 0):
             blocked.add(issue)
             continue
-        status, error = ("키 없음", _no_key_text(cfg)) if key is None else _put(cfg, item, key)
+        status, error = held or _put(cfg, item, key)
         if isinstance(status, int) and 200 <= status < 300:
             path.unlink()
             out["sent"].append(_brief(item, status))
             continue
-        if isinstance(status, int) and 400 <= status < 500:  # 그 이슈를 막지 않는다(남은 앞 항목이 없다)
+        if isinstance(status, int) and 300 <= status < 500:  # 3xx·4xx: 다시 보내지 않는다. 그 이슈를 막지 않는다(남은 앞 항목이 없다)
             _fail(p, path, item, error)
             out["failed"].append(_brief(item, status, error))
         elif (age_seconds(item["at"]) or 0) >= GIVE_UP_S:
@@ -379,7 +428,7 @@ def _send_all(p, cfg) -> dict:
             write_json(path, item)
             blocked.add(issue)
             out["retry"].append(_brief(item, status, error))
-        last = error if status == "키 없음" else f"#{issue} {item['event']} {status}: {error[:ERROR_WIDTH]}"
+        last = error if held else f"#{issue} {item['event']} {status}: {error[:ERROR_WIDTH]}"
     if out["sent"] or out["failed"] or out["retry"]:  # 아무것도 보내지 않았으면 앞 값을 둔다
         _write_status(p, last)  # 실패가 없으면 None(보냈다)
     return {**out, "pending": len(_files(p))}
@@ -395,7 +444,7 @@ def sync(p, cfg) -> dict:
         except BlockingIOError:
             return {"busy": True, "message": BUSY_TEXT, "sent": [], "failed": [], "retry": [],
                     "pending": len(_files(p))}
-        return {"busy": False, **_send_all(p, cfg)}
+        return {"busy": False, **_masked(p, cfg, lambda: _send_all(p, cfg))}
 
 
 def due(p) -> bool:
@@ -429,25 +478,33 @@ def _check(name: str, ok, detail: str) -> dict:
 def _api(cfg, key: str) -> tuple[bool, str]:
     req = urllib.request.Request(f"{cfg.redmine.url}/users/current.json", headers={"X-Redmine-API-Key": key})
     try:
-        with urllib.request.urlopen(req, timeout=DOCTOR_TIMEOUT_S) as resp:
+        with _open(req, DOCTOR_TIMEOUT_S) as resp:
             code = resp.status
     except urllib.error.HTTPError as exc:
-        return False, f"HTTP {exc.code}"
-    except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+        return False, f"HTTP {exc.code}: {REDIRECT_TEXT}" if 300 <= exc.code < 400 else f"HTTP {exc.code}"
+    except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError) as exc:
         return False, f"연결 실패: {mask(str(exc), key)[:ERROR_WIDTH]}"
     return code == 200, "200" if code == 200 else f"HTTP {code}"
 
 
 def checks(p, cfg) -> list[dict]:
-    """doctor 의 Redmine 점검(설계 9.2, 경고만): 키를 찾는지(값은 보이지 않는다), GET /users/current.json 이 200 인지,
-    env_file 이 있으면 git 이 추적하지 않는지."""
+    """doctor 의 Redmine 점검(설계 9.2, 경고만): 키를 찾는지·머리에 쓸 수 있는지(값은 보이지 않는다), GET /users/current.json
+    이 200 인지(리다이렉트를 따르지 않는다), env_file 이 있으면 git 이 추적하지 않는지. 예상 못 한 예외 글도 키를 가린다."""
+    return _masked(p, cfg, lambda: _checks(p, cfg))
+
+
+def _checks(p, cfg) -> list[dict]:
     rm = cfg.redmine
     key = read_key(p, cfg)
     found = rm.env_file or f"환경 변수 {rm.key_env}"
-    out = [_check("redmine_key", key is not None,
-                  f"키를 찾았다({found})" if key is not None else f"키를 찾지 못했다: {_key_place(rm)}")]
-    out.append(_check("redmine_api", *_api(cfg, key)) if key is not None
-               else _check("redmine_api", False, "키가 없어 보지 않았다"))
+    if key is None:
+        out = [_check("redmine_key", False, f"키를 찾지 못했다: {_key_place(rm)}"),
+               _check("redmine_api", False, "키가 없어 보지 않았다")]
+    elif not _key_ok(key):
+        out = [_check("redmine_key", False, f"키 형식이 틀렸다(제어 문자나 latin-1 밖 글자가 들었다): {_key_place(rm)}"),
+               _check("redmine_api", False, "키 형식이 틀려 보지 않았다")]
+    else:
+        out = [_check("redmine_key", True, f"키를 찾았다({found})"), _check("redmine_api", *_api(cfg, key))]
     if rm.env_file:
         tracked = gitio.tracked(p.root, rm.env_file)
         out.append(_check("redmine_env_file", not tracked,

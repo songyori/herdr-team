@@ -781,6 +781,24 @@ class DropCrewTest(CrewCase):
                                       "않으면 이전 세션이 지금 풀린 소유 경로를 계속 고칠 수 있다")
         self.assertEqual((self.entry()["terminal"], self.entry()["task"]), (None, None))  # 다음 태스크가 그 세션에 들어가지 않게 잊는다
 
+    def test_drop_with_broken_config_still_cleans_up(self):
+        # 설정이 깨져도 drop 은 큐에서 빼고 에이전트를 비운 뒤 성공한다(설계 4장: drop 의 메인 쪽 검사는 설정을 읽지 않는다).
+        # Redmine 노트만 건너뛴다(리뷰 J3)
+        self.first("T-001")
+        out = self.started("T-002")
+        self.hteam("fix", "T-001", "--note=x")
+        self.assertEqual(self.entry()["queue"], ["T-001"])
+        self.set_config("[[깨짐\n")
+        code, res = self.hteam("drop", "T-001")
+        self.assertEqual((code, res.get("status")), (0, "dropped"), res)
+        self.assertNotIn("queued_fix", self.task_state("T-001"))
+        self.assertEqual(self.entry()["queue"], [])
+        self.ready(out["terminal"], status="idle")
+        code, res = self.hteam("drop", "T-002")
+        self.assertEqual((code, res.get("status")), (0, "dropped"), res)
+        self.assertEqual(self.task_state("T-002")["status"], "dropped")
+        self.assertEqual(self.entry()["task"], None)
+
     def test_drop_working_without_force_refuses(self):
         out = self.started("T-001")
         self.ready(out["terminal"], status="working")
