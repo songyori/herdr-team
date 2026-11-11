@@ -31,6 +31,7 @@ COMMAND_MODULES: tuple[str, ...] = (
     "drive",
     "queue",
     "crew",
+    "workspace",
 )
 
 

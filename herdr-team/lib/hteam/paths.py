@@ -13,10 +13,14 @@ SHIM = ".herdr-team/bin/hteam"
 
 
 class Project:
-    """대상 프로젝트의 파일 위치. 만들지는 않는다(ensure_state 만 state 폴더를 만든다)."""
+    """대상 프로젝트의 파일 위치. 만들지는 않는다(ensure_state 만 state 폴더를 만든다).
 
-    def __init__(self, root: Path):
+    root 는 상태 루트(메인 프로젝트)이고 모든 경로가 그 기준이다. work_root 는 작업 루트(파일·git·시험)로 기본은 root,
+    작업 공간 슬롯에서 찾았으면 그 슬롯이다(설계 5.10.2, project_at)."""
+
+    def __init__(self, root: Path, work_root: Path | None = None):
         self.root = Path(root).resolve()
+        self.work_root = Path(work_root).resolve() if work_root is not None else self.root
         self.team = self.root / ".herdr-team"
         self.config = self.team / "config.toml"
         self.project_md = self.team / "project.md"
@@ -66,6 +70,12 @@ class Project:
         self.auto_up_log = self.state / "auto-up.log"
         self.tests = self.state / "tests"  # 테스트 기록 T-xxx.json·final.json, exclusive 잠금 .lock(설계 5.7)
         self.test_logs = self.tests / "logs"
+        # 작업 공간(설계 5.10.2): 슬롯 상태, 슬롯 폴더(slot-<N>, git worktree)와 슬롯 잠금(slot-<N>.lock), setup·teardown
+        # 로그, 병합의 git 잠금(5.10.6)
+        self.slots_file = self.state / "slots.json"
+        self.slots_dir = self.state / "slots"
+        self.slot_logs = self.slots_dir / "logs"
+        self.git_lock = self.state / "git.lock"
 
     def ensure_state(self) -> None:
         for folder in (self.state, self.task_states, self.answers, self.sessions):
@@ -103,17 +113,26 @@ def handoff_rel(name: str) -> str:
     return f"docs/handoff/{name}.md"
 
 
+def project_at(folder) -> Project:
+    """`.herdr-team/config.toml` 이 있는 folder 의 프로젝트. folder 의 슬롯 표시 파일이 맞으면 상태 루트는 메인
+    (main_root), 작업 루트는 folder 다(설계 5.10.2). 아니면 folder 하나다."""
+    from .workspace import marker  # workspace 가 가져오는 모듈들이 이 모듈을 가져오므로 여기서 가져온다
+    found = marker(folder)
+    return Project(found["main_root"], work_root=folder) if found else Project(folder)
+
+
 def find_project(arg: str | None) -> Project:
-    """--root 가 있으면 그 폴더, 없으면 현재 폴더에서 위로 `.herdr-team/config.toml` 을 찾는다."""
+    """--root 가 있으면 그 폴더, 없으면 현재 폴더에서 위로 `.herdr-team/config.toml` 을 찾는다. 찾은 폴더가 작업 공간
+    슬롯이면 상태 루트는 메인이다(project_at)."""
     if arg:
         root = Path(arg).expanduser().resolve()
         if (root / ".herdr-team" / "config.toml").is_file():
-            return Project(root)
+            return project_at(root)
         raise HteamError("no_project", f"{root} 에 .herdr-team/config.toml 이 없다", USAGE,
                          "/herdr-team:init 으로 세팅하거나 --root 를 고친다")
     start = Path.cwd().resolve()
     for folder in (start, *start.parents):
         if (folder / ".herdr-team" / "config.toml").is_file():
-            return Project(folder)
+            return project_at(folder)
     raise HteamError("no_project", "herdr-team 프로젝트가 아니다(위로 .herdr-team/config.toml 이 없다)", USAGE,
                      "프로젝트 안에서 실행하거나 --root 를 준다")

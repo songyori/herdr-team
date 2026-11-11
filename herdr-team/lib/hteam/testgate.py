@@ -376,8 +376,13 @@ def dirty_files(p, allowed: list[str]) -> list[str]:
 
 # --- 실행(설계 5.7) ---
 
-def _env() -> dict[str, str]:
-    return {k: v for k, v in os.environ.items() if k not in DROP_ENV}
+def child_env(cfg=None, extra: dict[str, str] | None = None) -> dict[str, str]:
+    """테스트 명령과 작업 공간 setup·teardown 의 환경(설계 5.7·5.10.3 의 4): 지금 환경에서 DROP_ENV 를 빼고 extra 를
+    더한다. cfg 는 config.Config·config.TestSettings 또는 None 이다. 아직 쓰지 않는다(설계 5.7 의 [redmine] key_env 빼기가
+    쓴다)."""
+    env = {k: v for k, v in os.environ.items() if k not in DROP_ENV}
+    env.update(extra or {})
+    return env
 
 
 def log_path(p, name: str) -> Path:
@@ -431,7 +436,7 @@ def execute(p, command: str, log: Path, timeout_s: float, ok_exit, args=(), show
         fh.flush()
         try:
             proc = subprocess.Popen(["/bin/sh", "-c", command, "sh", *args], cwd=str(p.root), stdin=subprocess.DEVNULL, stdout=fh,
-                                    stderr=subprocess.STDOUT, start_new_session=True, env=_env())
+                                    stderr=subprocess.STDOUT, start_new_session=True, env=child_env(None))
         except OSError as exc:
             raise HteamError("test_unrunnable", f"[test] 명령을 실행하지 못했다: {exc}", USAGE) from None
         try:

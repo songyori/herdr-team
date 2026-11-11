@@ -807,3 +807,71 @@ class HookSourceTest(unittest.TestCase):
         self.assertNotIn("coordinator", text)
         self.assertNotIn("코디네이터", text)
         self.assertIsNone(re.search(r"\btell\b", text))
+
+
+class SlotHookTest(HookCase):
+    """작업 공간 슬롯(7단계, 설계 5.10.2): 훅은 표시 파일로 상태 루트(메인)와 작업 루트(슬롯)를 나눈다. 슬롯의 제품 파일은
+    고칠 수 있고, 자기 슬롯의 표시 파일·다른 슬롯·메인의 state/ 는 막는다."""
+
+    def setUp(self):
+        super().setUp()
+        self.slot1, self.slot2 = (self.state_dir / "slots" / f"slot-{n}" for n in (1, 2))
+        for n, slot in ((1, self.slot1), (2, self.slot2)):
+            self.git("worktree", "add", "-q", "--detach", str(slot), "HEAD")
+            self.mark(slot, {"main_root": str(self.proj), "slot": n, "task": f"T-00{n}"})
+
+    @staticmethod
+    def mark(slot, value) -> None:
+        path = slot / ".herdr-team" / "state" / "slot.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(value), encoding="utf-8")
+
+    def in_slot(self, event, payload, slot, **kw):
+        """슬롯에서 뜬 Claude 세션의 훅: CLAUDE_PROJECT_DIR 와 cwd 가 그 작업 루트다."""
+        return self.hook(event, {"cwd": str(slot), **payload}, env={"CLAUDE_PROJECT_DIR": str(slot)}, **kw)
+
+    def write(self, path, slot, **kw):
+        return self.in_slot("guard", {"tool_name": "Write", "session_id": "w1", "tool_input": {"file_path": str(path)}},
+                            slot, **kw)
+
+    def test_slot_session_uses_main_state(self):
+        worker = self.worker()
+        self.assertIsNone(self.write(self.slot1 / "src" / "a.py", self.slot1, terminal=worker))
+        self.assertEqual(self.cached("w1"), "worker")  # 세션 캐시는 메인의 state/sessions 에 있다
+        self.assertFalse((self.slot1 / ".herdr-team" / "state" / "sessions").exists())
+
+    def test_slot_worker_edit_rules(self):
+        worker = self.worker()
+        cases = [(self.slot1 / "src" / "a.py", None),                          # 자기 작업 루트의 제품 파일
+                 (self.slot1 / ".herdr-team" / "state" / "slot.json", "deny"),  # 자기 작업 루트의 표시 파일
+                 (self.slot2 / "src" / "a.py", "deny"),                         # 다른 슬롯(메인 state/ 안)
+                 (self.state_dir / "run.json", "deny"),                         # 메인의 상태
+                 (self.proj / "src" / "a.py", None)]                            # 메인 폴더 제품 파일(사양의 규칙이다, 5.10.5)
+        for path, want in cases:
+            with self.subTest(path=path):
+                self.assertEqual(self.decision(self.write(path, self.slot1, terminal=worker)), want)
+        # 상대 경로는 훅 입력의 cwd(작업 루트) 기준이다
+        rel = {"tool_name": "Write", "session_id": "w1", "tool_input": {"file_path": "src/b.py"}}
+        self.assertIsNone(self.in_slot("guard", rel, self.slot1, terminal=worker))
+        rel["tool_input"]["file_path"] = ".herdr-team/state/x.json"
+        self.assertEqual(self.decision(self.in_slot("guard", rel, self.slot1, terminal=worker)), "deny")
+
+    def test_main_folder_session_still_guards_slots(self):
+        # 표시 파일이 없는 메인 폴더 세션에게 슬롯은 state/ 안이다. 메인의 제품 편집 금지는 그대로다(회귀)
+        out = self.hook("guard", {"tool_name": "Write", "session_id": "w2",
+                                  "tool_input": {"file_path": str(self.slot1 / "src" / "a.py")}}, terminal=self.worker())
+        self.assertEqual(self.decision(out), "deny")
+        self.assertEqual(self.decision(self.edit("src/app.py", terminal=MAIN)), "deny")
+
+    def test_marker_of_another_repo_is_ignored(self):
+        other = self.tmp / "other"
+        (other / ".herdr-team").mkdir(parents=True)
+        (other / ".herdr-team" / "config.toml").write_text("max_parallel = 1\n", encoding="utf-8")
+        for args in (("init", "-q", "-b", "main"), ("add", "--", ".herdr-team"), ("commit", "-q", "-m", "init")):
+            subprocess.run(["git", "-C", str(other), *args], check=True, capture_output=True, env=self.env)
+        self.mark(self.slot1, {"main_root": str(other), "slot": 1, "task": "T-001"})
+        worker = self.worker()
+        # 슬롯을 따로 된 프로젝트로 본다: 메인 state/ 는 그 프로젝트 밖이라 이 규칙으로 막지 않고, 슬롯 자신의 state/ 는 막는다
+        self.assertIsNone(self.write(self.state_dir / "run.json", self.slot1, terminal=worker))
+        self.assertEqual(self.decision(self.write(self.slot1 / ".herdr-team" / "state" / "x", self.slot1, terminal=worker)),
+                         "deny")

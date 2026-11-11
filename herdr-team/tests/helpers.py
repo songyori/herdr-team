@@ -79,6 +79,16 @@ model = "sonnet"
 effort = "xhigh"
 """
 
+# 작업 공간(7단계, 설계 5.10): 개발·테스트 직무(기본 roles)를 슬롯 둘의 worktree 에서 돌린다. 슬롯 env 는 HT_PORT 하나
+WS_CONFIG = BASE_CONFIG + """
+[workspace]
+mode = "worktree"
+slots = 2
+
+[workspace.env]
+HT_PORT = "81{slot}0"
+"""
+
 VALID_BODY = """## Target
 src/app.py
 
@@ -451,12 +461,15 @@ class TeamCase(unittest.TestCase):
         return dict(row)
 
     def act(self, did: str, action: dict) -> tuple[int, dict]:
-        """Dispatch did 의 워커 터미널에서 가짜 에이전트 동작을 한다(tests/fakes/agent-act)."""
+        """Dispatch did 의 워커 터미널에서 가짜 에이전트 동작을 한다(tests/fakes/agent-act). 파일·git 은 그 Dispatch 의
+        cwd 에서 한다(작업 공간 태스크면 슬롯의 작업 루트, 7단계). cwd 가 프로젝트 밖이면 프로젝트 루트다."""
         row = self.dispatch_row(did)
         preamble = self.horch_home / "runs" / row["run_id"] / "dispatches" / did / "preamble.md"
         env = dict(self.env)
         env["HC_TERMINAL_ID"] = row["terminal"]
-        proc = subprocess.run([sys.executable, str(FAKES / "agent-act"), "--root", str(self.proj),
+        cwd = Path(row["cwd"]).resolve() if row.get("cwd") else None
+        root = cwd if cwd is not None and cwd.is_relative_to(self.proj) else self.proj
+        proc = subprocess.run([sys.executable, str(FAKES / "agent-act"), "--root", str(root),
                                "--preamble", str(preamble)], input=json.dumps(action), capture_output=True,
                               text=True, env=env, timeout=60)
         return proc.returncode, _parse(proc.stdout, proc.stderr)
@@ -495,6 +508,24 @@ class TeamCase(unittest.TestCase):
             action["review"] = {"file": att["file"], "text": text, "verdict": verdict}
         action.update(extra or {})
         return self.act(att["dispatch"], action)
+
+
+    # --- 작업 공간(7단계, 설계 5.10) ---
+    def slot_root(self, n: int) -> Path:
+        """슬롯 n 의 작업 루트. 시험 프로젝트는 저장소 루트라 슬롯 폴더 그대로다(설계 5.10.2)."""
+        return self.state_dir / "slots" / f"slot-{n}"
+
+    def slots(self) -> dict:
+        """state/slots.json. 없으면 {"slots": {}}(모든 슬롯이 free)."""
+        path = self.state_dir / "slots.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"slots": {}}
+
+    def git_at(self, root, *args: str) -> str:
+        """다른 작업 트리(슬롯)에서 git 을 부른다. 실패하면 시험 실패."""
+        proc = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, env=self.env)
+        if proc.returncode != 0:
+            raise AssertionError(f"git -C {root} {args} 실패: {proc.stderr}")
+        return proc.stdout
 
 
 def _parse(stdout: str, stderr: str) -> dict:

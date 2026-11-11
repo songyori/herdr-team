@@ -530,3 +530,56 @@ def worktree_entries(root, paths: list[str], exec_bit: bool = True, index: dict[
         for (rel, _, mode), oid in zip(chunk, oids):
             result[rel] = f"{mode}:{oid}"
     return result
+
+
+# --- 작업 공간(설계 5.10): 슬롯 worktree·태스크 브랜치 ---
+
+def worktree_add(root, folder, commit: str) -> None:
+    """folder 에 commit 을 detached 로 꺼낸 새 worktree 를 만든다(`git worktree add --detach`, 설계 5.10.3 의 2)."""
+    run(root, "worktree", "add", "--detach", os.fspath(folder), commit)
+
+
+def switch_new(root, branch: str, start: str) -> None:
+    """start 에서 새 브랜치를 따고 그리로 옮긴다(`git switch -c`)."""
+    run(root, "switch", "-c", branch, start)
+
+
+def switch(root, branch: str) -> None:
+    run(root, "switch", branch)
+
+
+def switch_detach(root) -> None:
+    """지금 HEAD 에서 브랜치를 떠난다(`git switch --detach`)."""
+    run(root, "switch", "--detach")
+
+
+def branch_exists(root, name: str) -> bool:
+    args = ("show-ref", "--verify", "--quiet", f"refs/heads/{name}")
+    return _yes_no(run(root, *args, check=False), args)
+
+
+def branch_tip(root, name: str) -> str | None:
+    """브랜치 name 이 가리키는 커밋. 없으면 None."""
+    args = ("rev-parse", "--verify", "-q", f"refs/heads/{name}")
+    proc = run(root, *args, check=False)
+    return proc.stdout.strip() if _yes_no(proc, args) else None
+
+
+def current_branch(root) -> str | None:
+    """지금 브랜치 이름(`git symbolic-ref -q --short HEAD`). detached HEAD 면 None."""
+    args = ("symbolic-ref", "-q", "--short", "HEAD")
+    proc = run(root, *args, check=False)
+    return proc.stdout.strip() if _yes_no(proc, args) else None
+
+
+def delete_branch(root, name: str, *, force: bool = False) -> None:
+    run(root, "branch", "-D" if force else "-d", name)
+
+
+def common_dir(root) -> str | None:
+    """root 의 git common dir(`git rev-parse --git-common-dir` 을 root 기준으로 푼 실제 경로). worktree 들은 같은 값이다.
+    저장소가 아니거나 폴더가 없으면 None."""
+    proc = run(root, "rev-parse", "--git-common-dir", check=False, raw=True)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    return os.path.realpath(os.path.join(os.fsdecode(root), _out_line(proc.stdout)))

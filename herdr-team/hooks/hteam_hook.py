@@ -19,7 +19,7 @@ from pathlib import Path
 HOOK_START = time.monotonic()  # 자동 부활의 4초 규칙과 마감은 훅이 시작한 때부터 잰다(설계 9.5)
 LIB = Path(__file__).resolve().parents[1] / "lib"
 # hteam 모듈. _load() 가 herdr-team 프로젝트에서만 채운다
-outbox = roles = HteamError = PLUGIN_ROOT = SHIM = Project = None
+outbox = roles = HteamError = PLUGIN_ROOT = SHIM = project_at = None
 die_at = flock = read_json = write_atomic = write_json = None
 
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
@@ -44,13 +44,13 @@ DRIVE_RE = re.compile(r"(^|[\s;&|(`'\"/<>])hteam['\"]?(?:\s+--root(?:=\S+|\s+\S+
 
 def _load() -> None:
     """hteam 모듈을 가져온다. herdr-team 프로젝트를 찾은 뒤에만 부른다. 실패는 main() 이 오류 기록으로 남긴다."""
-    global outbox, roles, HteamError, PLUGIN_ROOT, SHIM, Project
+    global outbox, roles, HteamError, PLUGIN_ROOT, SHIM, project_at
     global die_at, flock, read_json, write_atomic, write_json
     if str(LIB) not in sys.path:
         sys.path.insert(0, str(LIB))
     from hteam import outbox, roles
     from hteam.errors import HteamError
-    from hteam.paths import PLUGIN_ROOT, SHIM, Project
+    from hteam.paths import PLUGIN_ROOT, SHIM, project_at
     from hteam.util import die_at, flock, read_json, write_atomic, write_json
 
 
@@ -138,15 +138,15 @@ def _cwd(payload: dict) -> Path | None:
 def where(p, raw, cwd: Path | None = None) -> tuple[str, Path | None, str | None]:
     """("inside", 실제 경로, 프로젝트 기준 상대 경로) | ("outside", 실제 경로, None) | ("unknown", None, None).
 
-    `~` 는 홈으로, 상대 경로는 cwd(훅 입력의 cwd, 없으면 프로젝트 루트) 기준으로 푼다. `..` 와 심볼릭 링크는 실제 경로로
+    `~` 는 홈으로, 상대 경로는 cwd(훅 입력의 cwd, 없으면 작업 루트) 기준으로 푼다. `..` 와 심볼릭 링크는 실제 경로로
     푼 뒤 판단한다. 풀 수 없으면 unknown(허용으로 다루지 않는다): 빈 값·문자열이 아님·NUL 문자·심볼릭 링크 순환
-    (Python 3.13 부터 resolve() 가 오류 없이 링크를 남긴다) 등."""
+    (Python 3.13 부터 resolve() 가 오류 없이 링크를 남긴다) 등. 상대 경로(셋째 값)는 상태 루트(메인 프로젝트) 기준이다."""
     if not isinstance(raw, str) or not raw:
         return "unknown", None, None
     try:
         path = Path(raw).expanduser()
         if not path.is_absolute():
-            path = (cwd or p.root) / path
+            path = (cwd or p.work_root) / path
         real = path.resolve()
         if any(part.is_symlink() for part in (real, *real.parents)):
             return "unknown", None, None
@@ -157,6 +157,13 @@ def where(p, raw, cwd: Path | None = None) -> tuple[str, Path | None, str | None
 
 
 def _in_state(p, real: Path, rel: str | None) -> bool:
+    """hteam 이 관리하는 `.herdr-team/state/` 안인가. 슬롯 세션(작업 루트가 상태 루트와 다르다)은 자기 작업 루트 안이면
+    그 루트의 `.herdr-team/state/`(표시 파일)만 막고, 밖이면 상태 루트의 state/ 를 막는다(다른 슬롯도 그 안이다, 설계 5.10.2)."""
+    if p.work_root != p.root:
+        own = _below(real, p.work_root)
+        if own is not None:
+            folded = own.casefold()
+            return folded == STATE_DIR or folded.startswith(STATE_DIR + "/")
     folded = (rel or "").casefold()  # 대소문자를 가리지 않는 파일 시스템에서 `State/` 도 같은 폴더다
     return folded == STATE_DIR or folded.startswith(STATE_DIR + "/") or _below(real, p.state) is not None
 
@@ -448,7 +455,7 @@ def main() -> int:
         return 0
     try:
         _load()
-        out = HANDLERS[sys.argv[1]](Project(root), payload)
+        out = HANDLERS[sys.argv[1]](project_at(root), payload)  # 작업 공간 슬롯이면 상태 루트는 메인이다(설계 5.10.2)
     except Exception as exc:  # noqa: BLE001  훅은 세션을 막지 않는다(hteam 을 가져오지 못한 것 포함)
         code = getattr(exc, "code", None)
         log_error(root, (f"{code}\n" if isinstance(code, str) else "") + traceback.format_exc())
