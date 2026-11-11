@@ -18,7 +18,7 @@ DRIVE_DOWN = "관제(hteam drive)가 꺼져 있다. 메인에서 /herdr-team:up 
 DRIVE_HUNG = ("관제가 멈춘 것 같다(프로세스는 살아 있는데 heartbeat 가 끊겼다). 긴 작업 중일 수 있으니 잠시 뒤 다시 한다. 계속되면 "
               "사용자에게 관제 탭을 확인해 달라고 한다(관제를 다시 띄우는 명령은 이 상태를 고치지 않는다)")
 DRIVE_ONLY = ("이 명령은 관제(hteam drive)가 스스로 한다. 메인이 관제 큐로 넣는 명령은 start, start-ready, fix, accept, drop, "
-              "review --retry, design-decide, scope, agent reset, test-confirm 이다")
+              "review --retry, design-decide, scope, agent reset, slot reset, test-confirm 이다")
 NOT_WORKING = "T-002: 일하는 중(working)인 태스크에만 범위를 더한다(status=pending). 시작 전이면 사양을 고쳐 커밋한다"
 
 # 관제의 큐 실행(Drive.run_queue)을 따로 띄운 프로세스에서 한다. HTEAM_TEST_DIE_AT 의 os._exit 가 시험 프로세스를 죽이지 않게

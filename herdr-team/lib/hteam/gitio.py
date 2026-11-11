@@ -106,16 +106,22 @@ def log_since(root, base: str) -> list[tuple[str, str]]:
     return pairs
 
 
-def _against(root, sha: str) -> tuple[str, ...]:
+def parents(root, sha: str) -> list[str]:
+    """커밋의 부모 sha(차례대로). 뿌리 커밋은 빈 목록이다."""
+    return run(root, "rev-list", "--parents", "-n", "1", sha).stdout.split()[1:]
+
+
+def _against(root, sha: str, ups: list[str] | None = None) -> tuple[str, ...]:
     """diff-tree 가 견줄 대상: 병합 커밋은 첫 부모와(기본 diff-tree 는 병합에 빈 목록·합친 diff 를 낸다), 그 밖은 부모와
-    (뿌리 커밋은 --root 로 빈 트리와)."""
-    parents = run(root, "rev-list", "--parents", "-n", "1", sha).stdout.split()[1:]
-    return (parents[0], sha) if len(parents) > 1 else ("--no-commit-id", "--root", sha)
+    (뿌리 커밋은 --root 로 빈 트리와). ups 는 부르는 쪽이 이미 읽은 부모다(없으면 읽는다)."""
+    ups = parents(root, sha) if ups is None else ups
+    return (ups[0], sha) if len(ups) > 1 else ("--no-commit-id", "--root", sha)
 
 
-def commit_files(root, sha: str) -> list[str]:
-    """커밋이 바꾼 경로(최상위 기준). 병합 커밋은 첫 부모와 견준다. 이름 바꾸기는 옛 경로와 새 경로를 다 낸다."""
-    args = ("diff-tree", "--name-only", "-r", "-z", "--no-renames", *_against(root, sha))
+def commit_files(root, sha: str, ups: list[str] | None = None) -> list[str]:
+    """커밋이 바꾼 경로(최상위 기준). 병합 커밋은 첫 부모와 견준다. 이름 바꾸기는 옛 경로와 새 경로를 다 낸다. ups 는
+    부르는 쪽이 이미 읽은 부모(parents)다."""
+    args = ("diff-tree", "--name-only", "-r", "-z", "--no-renames", *_against(root, sha, ups))
     return _zb(run(root, *ABSOLUTE, *args, raw=True).stdout)
 
 
@@ -548,9 +554,9 @@ def switch(root, branch: str) -> None:
     run(root, "switch", branch)
 
 
-def switch_detach(root) -> None:
-    """지금 HEAD 에서 브랜치를 떠난다(`git switch --detach`)."""
-    run(root, "switch", "--detach")
+def switch_detach(root, commit: str | None = None) -> None:
+    """브랜치를 떠난다(`git switch --detach [<commit>]`). commit 이 없으면 지금 HEAD 에서."""
+    run(root, "switch", "--detach", *([commit] if commit else []))
 
 
 def branch_exists(root, name: str) -> bool:
@@ -590,3 +596,38 @@ def common_dir(root) -> str | None:
     if proc.returncode != 0 or not proc.stdout.strip():
         return None
     return os.path.realpath(os.path.join(os.fsdecode(root), _out_line(proc.stdout)))
+
+
+# --- 병합과 슬롯 정리(설계 5.10.6·5.10.8) ---
+
+def merge_no_ff(root, branch: str, message: str) -> subprocess.CompletedProcess:
+    """`git merge --no-ff -m <message> <branch>`(병합 커밋. check 없이 결과를 돌려준다: 충돌·거부는 부르는 쪽이 MERGE_HEAD
+    로 가른다). -m 이 있으면 git 은 편집기를 열지 않는다."""
+    return run(root, "merge", "--no-ff", "-m", message, branch, check=False)
+
+
+def merge_head(root) -> str | None:
+    """끝나지 않은 병합의 MERGE_HEAD(`git rev-parse -q --verify MERGE_HEAD`). worktree 면 그 worktree 의 것. 없으면 None."""
+    args = ("rev-parse", "-q", "--verify", "MERGE_HEAD")
+    proc = run(root, *args, check=False)
+    return proc.stdout.strip() if _yes_no(proc, args) else None
+
+
+def unmerged(root) -> list[str]:
+    """병합 충돌로 풀리지 않은 경로(`git diff --name-only --diff-filter=U`, 최상위 기준)."""
+    return _zb(run(root, *ABSOLUTE, "diff", "--name-only", "--diff-filter=U", "-z", raw=True).stdout)
+
+
+def merge_abort(root) -> None:
+    """`git merge --abort`. 실패해도 예외를 내지 않는다(되돌렸는지는 부르는 쪽이 merge_head 로 본다)."""
+    run(root, "merge", "--abort", check=False)
+
+
+def reset_hard(root) -> None:
+    """`git reset --hard`(추적 파일과 index 를 HEAD 로, 끝나지 않은 병합도 지운다)."""
+    run(root, "reset", "--hard", "-q")
+
+
+def clean_untracked(root) -> None:
+    """`git clean -fd`(추적하지 않는 파일·폴더를 지운다. 무시된 파일은 남는다)."""
+    run(root, "clean", "-fd", "-q")

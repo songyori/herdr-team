@@ -28,7 +28,7 @@ from typing import Iterator
 from . import gitio, state
 from .errors import FAIL, TIMEOUT, USAGE, HteamError
 from .globs import matches_any, owns_problem
-from .paths import SHIM, find_project
+from .paths import SHIM, Project, find_project
 from .util import dumps, now, read_json, read_json_strict, show, write_json
 
 PLAN_FILE = "docs/planning/tasks.toml"  # plan.PLAN_FILE 과 같다(plan 이 이 모듈을 쓰므로 따로 둔다)
@@ -326,9 +326,10 @@ def work_commits(p, st: dict) -> list[dict]:
     return review.target_commits(p, st)
 
 
-def changed_files(p, commits: list[dict]) -> list[str]:
+def changed_files(p, commits: list[dict], base: str | None = None) -> list[str]:
+    """review.changed_files(base 를 주면 병합 커밋은 base 와 HEAD 의 차이만, 설계 5.10.6)."""
     from . import review
-    return review.changed_files(p, commits)
+    return review.changed_files(p, commits, base)
 
 
 def task_target(p, tid: str) -> tuple[dict, list[dict]]:
@@ -342,18 +343,21 @@ def task_target(p, tid: str) -> tuple[dict, list[dict]]:
     return st, work_commits(workspace.view(p, st), st)
 
 
-def code_head(p, tid: str, commits: list[dict]) -> str | None:
-    """작업 커밋을 뒤에서부터 보며 보고서 경로 밖 파일(프로젝트 밖 `../` 포함)을 하나라도 바꾼 첫 커밋. 재사용 기준이다."""
+def code_head(p, tid: str, commits: list[dict], base: str | None = None) -> str | None:
+    """작업 커밋을 뒤에서부터 보며 보고서 경로 밖 파일(프로젝트 밖 `../` 포함)을 하나라도 바꾼 첫 커밋. 재사용 기준이다.
+    base 를 주면 병합 커밋은 base 와 HEAD 의 차이에 든 경로만 본다(review.path_reader)."""
+    from . import review
     prefix = gitio.top_prefix(p.work_root)
+    read = review.path_reader(p, base)
     for c in reversed(commits):
-        if any(not _report(gitio.from_top(prefix, f), tid) for f in gitio.commit_files(p.work_root, c["sha"])):
+        if any(not _report(gitio.from_top(prefix, f), tid) for f in read(c["sha"])):
             return c["sha"]
     return None
 
 
-def quick_files(p, tid: str, commits: list[dict]) -> list[str]:
+def quick_files(p, tid: str, commits: list[dict], base: str | None = None) -> list[str]:
     """작업 커밋이 바꾼 파일 가운데 보고서 경로 밖이고 프로젝트 안이며 지금 작업 트리에 파일로 있는 것, 정렬."""
-    return sorted(f for f in changed_files(p, commits)
+    return sorted(f for f in changed_files(p, commits, base)
                   if not _report(f, tid) and not f.startswith("../") and (p.work_root / f).is_file())
 
 
@@ -551,13 +555,13 @@ def record_task(p, cfg: GateConfig, st: dict, commits: list[dict], kind: str) ->
     name = f"{tid}-r{rnd}"
     if kind == "quick":
         check_committed(p, st, commits)
-        result = run_quick(p, cfg, quick_files(p, tid, commits), name, env=env)
+        result = run_quick(p, cfg, quick_files(p, tid, commits, st["base"]), name, env=env)
     else:
         result = attempt(p, cfg, cfg.full, f"{name}-full", env=env)
     if result["status"] == "unrunnable":
         raise _unrunnable(result)
     allowed = list(st.get("owns") or []) + [f"docs/tasks/{tid}/**"]
-    entry = {"round": rnd, "head": code_head(p, tid, commits), "config": digest(cfg), **result,
+    entry = {"round": rnd, "head": code_head(p, tid, commits, st["base"]), "config": digest(cfg), **result,
              "dirty": dirty_files(p, allowed), "at": _local_now()}
     _save(p.tests / f"{tid}.json", kind, entry)
     return entry
@@ -571,15 +575,30 @@ def run_task(p, tid: str, kind: str) -> dict:
 
 
 def run_final(p) -> dict:
-    """태스크 없는 full(마무리, 설계 8.4): `state/tests/final.json` 의 full."""
+    """태스크 없는 full(마무리, 설계 8.4): `state/tests/final.json` 의 full. 기록의 head 는 돌린 트리의 커밋이다.
+
+    shared 면 메인 폴더(상태 루트)에서 돌린다: 슬롯 안에서 불러도 cwd·dirty·head 가 모두 메인 폴더다. worktree 모드(설계
+    5.10.7)는 메인 폴더에서 돌리지 않는다: 빈 슬롯 하나를 잡아 기준 HEAD 로 detach 하고 setup → full → teardown 을 그 슬롯의
+    작업 루트와 env 로 한다(workspace.final_slot). 기록에 slot 을 더한다. 설정은 검사 없이 읽는다(config.test_settings,
+    설계 4.2)."""
+    from . import config, workspace  # workspace 가 이 모듈을 쓴다
     cfg = approved_config(p)
-    start = gitio.head(p.root)  # 실행 전 HEAD 로 기록한다: 실행 중 들어온 커밋에 passed 가 붙지 않게
-    result = attempt(p, cfg, cfg.full, "final-full")
+    settings = config.test_settings(p)
+    if not settings.workspace.on:
+        main = Project(p.root)
+        start = gitio.head(main.root)  # 실행 전 HEAD 로 기록한다: 실행 중 들어온 커밋에 passed 가 붙지 않게
+        result = attempt(main, cfg, cfg.full, "final-full", cwd=main.root)
+        dirty, extra = dirty_files(main, []), {}
+    else:
+        with workspace.final_slot(p, settings) as (n, start):  # start 는 슬롯을 detach 한 메인 HEAD
+            q = Project(p.root, work_root=workspace.work_root(p, n))
+            result = attempt(q, cfg, cfg.full, "final-full", cwd=q.work_root, env=workspace.slot_env(settings, n))
+            dirty, extra = dirty_files(q, []), {"slot": n}  # teardown 전에 그 슬롯의 작업 트리를 본다
     if result["status"] == "unrunnable":
         raise _unrunnable(result)
     end = gitio.head(p.root)
     entry = {"head": start, "head_moved": end if end != start else None, "config": digest(cfg), **result,
-             "dirty": dirty_files(p, []), "at": _local_now()}
+             "dirty": dirty, **extra, "at": _local_now()}
     _save(p.tests / "final.json", "full", entry)
     return {"task": None, "kind": "full", **entry}
 
@@ -596,7 +615,7 @@ def gate_results(p, st: dict, role: str, commits: list[dict]) -> dict | None:
         return None
     p = workspace.view(p, st)
     tid, value = st["id"], digest(cfg)
-    head = code_head(p, tid, commits)
+    head = code_head(p, tid, commits, st["base"])
     out = {"head": head, "config": value}
     if not is_approved(p, value):
         return {**out, "skipped": "unapproved"}
@@ -625,7 +644,7 @@ def retry_results(p, st: dict, role: str, commits: list[dict], prev: dict | None
         return None
     p = workspace.view(p, st)
     value = digest(cfg)
-    if (prev and prev.get("head") == code_head(p, st["id"], commits) and prev.get("config") == value
+    if (prev and prev.get("head") == code_head(p, st["id"], commits, st["base"]) and prev.get("config") == value
             and bool(prev.get("skipped")) == (not is_approved(p, value))):
         return prev
     return gate_results(p, st, role, commits)

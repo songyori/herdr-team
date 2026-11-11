@@ -20,7 +20,7 @@ from hteam.paths import Project
 
 LOCAL_ISO = r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d"
 DRIVE_ONLY = ("이 명령은 관제(hteam drive)가 스스로 한다. 메인이 관제 큐로 넣는 명령은 start, start-ready, fix, accept, drop, "
-              "review --retry, design-decide, scope, agent reset, test-confirm 이다")
+              "review --retry, design-decide, scope, agent reset, slot reset, test-confirm 이다")
 
 # run-use·run-create 를 처음 FLAKY_FAILS 번 일시 실패로 돌려주고 나머지는 진짜 horch 로 넘기는 감싸개(Run 연결 재시도, 설계 8.2 의 4)
 FLAKY_HORCH = """#!/usr/bin/env python3
@@ -81,7 +81,8 @@ class ConstantsTest(unittest.TestCase):
                          (10000, 1.0, 5.0, 60, 120, 180, 90, 0.2, 60, 1800, 1800, 1800, 1800, 3, 10000, 3, 60, 3, 5.0))
         self.assertEqual(drive.DECIDE_KINDS, ("worker_failed", "worker_question", "escalation", "max_rounds",
                                               "repeat_test_failure", "test_config", "planning_gaps",
-                                              "unknown_regression", "token_update", "workspace_failed"))
+                                              "unknown_regression", "token_update", "workspace_failed",
+                                              "merge_conflict"))
 
 
 class LivenessTest(DriveCase):

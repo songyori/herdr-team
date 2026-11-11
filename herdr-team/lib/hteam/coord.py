@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import time
 
-from . import approval, config, crew, dispatch, drive, outbox, roles, state, tasks, testgate
+from . import approval, config, crew, dispatch, drive, outbox, roles, state, tasks, testgate, workspace
 from .errors import HteamError
 from .horch import Horch
 from .paths import SHIM, find_project
@@ -406,6 +406,13 @@ def status(p) -> dict:
             crew_rows = crew.status_rows(p, cfg)  # crew.json 과 설정만 읽는다(hc 를 부르지 않는다)
         except HteamError as exc:
             warnings.append(f"고정 에이전트 기록: {exc.message}")
+    slots = None
+    if cfg is not None and cfg.workspace.on:  # worktree 모드에서만 키가 있다(설계 5.10.8)
+        try:
+            slots = workspace.status_view(p, cfg)
+        except HteamError as exc:  # 슬롯 기록이 손상됐다. status 는 실패하지 않는다
+            slots = {"mode": "worktree", "slots": []}
+            warnings.append(f"작업 공간 기록: {exc.message}")
     run, run_error = {}, None
     try:
         run = outbox._run(p)
@@ -415,6 +422,8 @@ def status(p) -> dict:
            "horch": horch_cmd, "workers_at": workers_at, "drive": drive.view(p, run), "crew": crew_rows,
            "watch_alive": outbox.watch_alive(p),
            "open_questions": questions, "unread_outbox": outbox.unread(p), "test_gate": testgate.gate_state(p)}
+    if slots is not None:
+        out["workspace"] = slots
     if warnings:
         out["warnings"] = warnings
     return out

@@ -1026,6 +1026,10 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
         rd = _new_round(st, st["round"] + 1, gitio.head(workspace.task_root(p, st)), rchoice, note=note,
                         supplement=supplement, coord_note=coord_note)
         _crew_round(rd, plc, ignored, forced)
+        if st.get("base_merge"):  # 기준 병합 라운드(설계 5.10.6): 사양의 작업 공간 절이 병합 지시를 받는다
+            rd["base_merge"] = st["base_merge"]
+            if gitio.merge_head(workspace.task_root(p, st)) == st["base_merge"]:
+                rd["merge_resume"] = True  # 앞 워커가 시작한 병합이 슬롯에 남았다
         if from_user:
             rd["from_user"] = True  # 사용자 일괄 승인의 수정 요청(설계 11.4). 수정 블록이 사용자 요청으로 적는다
             # 마지막으로 실제 리뷰된 라운드의 판정(그 뒤 라운드는 띄우지 않았거나 판정 전에 닫혔다). 수정 요청이면 그 지적도
@@ -1232,7 +1236,13 @@ def accept(p, tid: str, expect_round: int | None = None, decision: str | None = 
     release 실패는 Dispatch 마다 경고로 남기고 cleaned 는 쓰지 않는다. 전이는 한다.
 
     nowait(관제 안)면 무엇보다 먼저 finish 잠금을 탐침한다(리뷰 관문이 돌면 아무것도 바꾸지 않고 review_busy, 설계 8.5).
-    잠금 순서상 finish 잠금을 쥔 채 프로젝트 잠금을 잡지 않으므로 탐침만 한다. request 는 accept 사건에 남긴다."""
+    잠금 순서상 finish 잠금을 쥔 채 프로젝트 잠금을 잡지 않으므로 탐침만 한다. request 는 accept 사건에 남긴다.
+
+    작업 공간 태스크(설계 5.10.6, 6.4 의 7단계 줄)는 프로젝트 잠금 안에서 상태를 쓰기 전에 기준 브랜치에 병합한다
+    (workspace.merge, 관제 판정·큐·관제 안의 CLI accept 가 모두 이 한 곳을 지난다). 병합하면 같은 쓰기에서 workspace.merge·
+    done(결과의 merge), 충돌이면 changes·라운드의 merge_conflict·base_merge·base 이동(결과의 merge_conflict). 병합 거부
+    (merge_pending·merge_blocked·base_moved)는 상태·라운드를 바꾸지 않고 첫 거부 시각 merge_wait 만 남긴 뒤 그대로 올린다
+    (exit 3, data 의 first 는 이번이 첫 거부인지)."""
     if nowait:
         state.finish_probe(p, tid)
     cfg = config.load(p)
@@ -1265,23 +1275,57 @@ def accept(p, tid: str, expect_round: int | None = None, decision: str | None = 
                 cleaned = False
                 warnings.append(f"작업 Dispatch {row['id']}({slot['title']})를 정리하지 못했다: {exc.message}")
     die_at("accept_before_final")
+    outcome = None
     with state.project_lock(p):  # 선행의 새 라운드(fix 가 같은 잠금 안에서 쓴다)와 겹치지 않게 이 안에서 다시 본다
         _held_for_accept(p, tid, decision)  # 결정 기록도 같은 잠금 안에서 쓴다
         if st["status"] == "awaiting_user" and cfg.is_approval(st["role"]):
             _refuse_stale(p, cfg, tid)
+        now_st = state.require(p, tid)
+        ws = now_st.get("workspace")
+        if (now_st["status"], now_st["round"]) == (st["status"], st["round"]) and ws and not ws.get("merge"):
+            outcome = _merge(p, cfg, now_st)  # 다르면 아래 쓰기가 거부한다(병합하지 않는다)
         with state.edit(p, tid, expect={st["status"]}) as cur:
             if cur["round"] != st["round"]:  # 멈춘 사이 다음 라운드가 같은 상태에 닿았다. 본 적 없는 라운드를 닫지 않는다
                 raise _changed(tid, st, cur)
             work_slot(cur)["cleaned"] = cleaned
             cur.pop("queued_fix", None)  # 대기열의 수정은 하지 않는다(설계 5.9.5)
-            state.move(cur, to, "accept", **_req(request))
+            cur.pop("merge_wait", None)
+            if outcome and outcome["result"] == "conflict":
+                conflict = {"base": outcome["base"], "files": outcome["files"]}
+                cur["rounds"][-1]["merge_conflict"] = conflict
+                cur["base_merge"] = cur["base"] = outcome["base"]  # 기준 병합 라운드가 풀 기준, 리뷰 대상의 새 기준
+                to = "changes"
+                state.move(cur, to, "merge_conflict", **conflict, **_req(request))
+            else:
+                if outcome:
+                    cur["workspace"]["merge"] = outcome["sha"]
+                state.move(cur, to, "accept", **({"merge": outcome["sha"]} if outcome else {}), **_req(request))
     crew.unqueue(p, tid)
     out = {"task": tid, "status": to, "warnings": warnings}
+    if outcome and outcome["result"] == "merged":
+        out["merge"] = outcome["sha"]
+    elif outcome:
+        out["merge_conflict"] = {"base": outcome["base"], "files": outcome["files"]}
     if to == "awaiting_user":  # 승인 직무: 다른 승인 태스크와 묶어 사용자에게 묻는다(설계 11.4)
         out["next"] = [SHIM, "design-review"]
         out["hint"] = (f"`{SHIM} start-ready` 뒤 `{SHIM} design-review`. exit 3 approval_not_ready 면 다른 승인 직무 "
                        "태스크를 accept 한 뒤 다시 부른다")
     return out
+
+
+def _merge(p, cfg, st: dict) -> dict:
+    """accept 의 병합(workspace.merge). 거부면 태스크 잠금 안에서 merge_wait 가 없을 때만 첫 거부 시각을 쓰고(상태·라운드는
+    그대로) data 의 first 에 이번에 썼는지를 더해 그대로 올린다(관제가 10분 거부를 잰다, 설계 5.10.6)."""
+    try:
+        return workspace.merge(p, cfg, st)
+    except HteamError as exc:
+        if exc.code not in workspace.MERGE_REFUSED:
+            raise
+        with state.edit(p, st["id"]) as cur:
+            first = "merge_wait" not in cur
+            cur.setdefault("merge_wait", {"since": now(), "asked": []})
+        exc.data["first"] = first
+        raise
 
 
 DROP_HINT = ("이전 세션을 닫지 못했다. 사용자에게 그 에이전트 탭의 작업 pane 을 닫아 달라고 한다. 닫지 않으면 이전 세션이 지금 "
@@ -1335,8 +1379,16 @@ def drop(p, tid: str, force: bool, expect_round: int | None = None, request: str
     released = _close_round(p, h, tid, kill=force, check=lambda cur: _expect_round(tid, cur, expect_round), seen=seen,
                             nowait=nowait)
     with _closing(p, tid, seen) as cur:
+        # 준비가 끝나지 않은(ready 없는) 예약은 바로 푼다(준비 자식을 기다리지 않는다. 늦게 끝난 자식은 예약을 다시 보고 쓰지
+        # 않는다). busy·준비를 마친 예약은 관제의 놓기(teardown 포함)가 푼다(설계 5.10.6·5.10.9). 읽지 못하면 bad_slots_file
+        data = workspace.load(p)
+        n = workspace.held_by(data, tid)
+        rec = workspace.entry(data, n) if n is not None else None
         cur.pop("queued_fix", None)
         state.move(cur, "dropped", "drop", force=force, **_req(request))
+        if rec is not None and rec["state"] == "preparing" and not rec.get("ready"):
+            data["slots"][str(n)] = {**workspace.SLOT_DEFAULT, "setup_done": rec["setup_done"], "since": now()}
+            workspace.save(p, data)  # 프로젝트 잠금 안(_closing)
     crew.unqueue(p, tid)
     crew.free(p, tid)
     out = {"task": tid, "status": "dropped", "released": released}

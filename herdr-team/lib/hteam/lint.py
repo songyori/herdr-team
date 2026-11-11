@@ -272,7 +272,7 @@ def lint_task(p, tid: str) -> dict:
     st = state.require(p, tid)
     p = workspace.view(p, st)  # 커밋·파일은 그 태스크의 작업 루트에서 본다(설계 5.10.2)
     commits = review.target_commits(p, st) if st.get("base") else []
-    files = review.changed_files(p, commits)
+    files = review.changed_files(p, commits, st.get("base"))
     shas = [c["sha"] for c in commits]
     return {"task": tid, "files": files, "findings": compose.design_findings(p, files, shas),
             "text_findings": compose.text_findings(p, files, shas)}

@@ -29,7 +29,7 @@ def parse_title(title: str) -> dict | None:
 
 # 관제만 하는 명령을 관제 밖에서 불렀을 때(설계 7.1 원문)
 DRIVE_ONLY_MESSAGE = ("이 명령은 관제(hteam drive)가 스스로 한다. 메인이 관제 큐로 넣는 명령은 start, start-ready, fix, accept, "
-                      "drop, review --retry, design-decide, scope, agent reset, test-confirm 이다")
+                      "drop, review --retry, design-decide, scope, agent reset, slot reset, test-confirm 이다")
 
 
 def drive_env(p) -> bool:

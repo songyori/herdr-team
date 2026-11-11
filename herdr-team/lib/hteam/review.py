@@ -85,12 +85,34 @@ def target_commits(p, st: dict) -> list[dict]:
             if subject.startswith(f"[{tid}]") and not subject.startswith(f"[{tid}] review r")]
 
 
-def changed_files(p, commits: list[dict]) -> list[str]:
-    """대상 커밋이 건드린 경로, 프로젝트 기준(프로젝트 밖은 `../`). 병합 커밋은 첫 부모와 견준 경로다."""
+def path_reader(p, base: str | None = None):
+    """커밋 sha → 그 커밋이 바꾼 경로(최상위 기준)를 내는 함수. 병합 커밋은 첫 부모와 견준 경로다. base 가 있으면 부모가
+    둘 이상인 커밋(기준 병합 라운드의 병합 커밋, 설계 5.10.6)은 그 가운데 지금 기준과 태스크 브랜치의 차이
+    (`diff_names(base, HEAD)`)에 든 것만 낸다: 첫 부모와의 diff 에는 기준에서 들어온 다른 파일이 들어 있다."""
+    keep: set[str] | None = None
+
+    def read(sha: str) -> list[str]:
+        nonlocal keep
+        if base is None:
+            return gitio.commit_files(p.work_root, sha)
+        ups = gitio.parents(p.work_root, sha)
+        files = gitio.commit_files(p.work_root, sha, ups)
+        if len(ups) < 2:
+            return files
+        if keep is None:
+            keep = set(gitio.diff_names(p.work_root, base, "HEAD"))
+        return [f for f in files if f in keep]
+    return read
+
+
+def changed_files(p, commits: list[dict], base: str | None = None) -> list[str]:
+    """대상 커밋이 건드린 경로, 프로젝트 기준(프로젝트 밖은 `../`). 병합 커밋은 첫 부모와 견준 경로이고, base(태스크의
+    base)를 주면 병합 커밋은 base 와 HEAD 의 차이에 든 경로만 센다(path_reader)."""
     prefix = gitio.top_prefix(p.work_root)
+    read = path_reader(p, base)
     files: set[str] = set()
     for c in commits:
-        files.update(_rel(prefix, gitio.commit_files(p.work_root, c["sha"])))
+        files.update(_rel(prefix, read(c["sha"])))
     return sorted(files)
 
 
@@ -459,8 +481,8 @@ def _review(p, tid: str, retry: bool, expect_round: int | None = None, request: 
         if testgate.failed_quick(tests):
             return _precheck_fail(p, tid, rd["round"], [GATE_PROBLEM], tests, expect=frozenset({"reviewing"}),
                                   request=request)
-        return _new_attempt(p, cfg, h, tid, commits=commits, files=changed_files(p, commits), extra=True, tests=tests,
-                            request=request)
+        return _new_attempt(p, cfg, h, tid, commits=commits, files=changed_files(p, commits, st["base"]), extra=True,
+                            tests=tests, request=request)
     if st["status"] != "working":
         raise HteamError("bad_state", f"{tid} 는 {st['status']} 다(review 는 working 에서)", CONFLICT,
                          data={"status": st["status"]})
@@ -471,7 +493,12 @@ def _review(p, tid: str, retry: bool, expect_round: int | None = None, request: 
         if code:
             warnings.append(f"작업 Dispatch {did} 를 retain 하지 못했다: {(data.get('error') or {}).get('code')}")
     commits = target_commits(p, st)
-    files = changed_files(p, commits)
+    if st.get("base_merge") and any(st["base_merge"] in gitio.parents(p.work_root, c["sha"]) for c in commits):
+        # 기준 병합 라운드의 병합 커밋을 봤다(설계 5.10.6): 사전 검사·관문 결과와 상관없이 표시를 지운다. 커밋 전에 워커가
+        # 죽어 새 라운드가 열리면 표시가 남아 같은 지시를 받는다
+        with state.edit(p, tid) as cur:
+            cur.pop("base_merge", None)
+    files = changed_files(p, commits, st["base"])
     problems = prechecks(p, cfg, st, spec, commits, files)
     if problems:
         return {**_precheck_fail(p, tid, rd["round"], problems), "warnings": warnings}

@@ -18,13 +18,13 @@ import re
 import signal
 import time
 
-from . import drive, outbox, roles, state, testgate
+from . import drive, outbox, roles, state, testgate, workspace
 from .errors import FAIL, MISSING, HteamError
 from .paths import find_project
 from .util import bad_side_file, die_at, env_float, flock, now, read_json, read_json_strict, write_atomic, write_json
 
 QUEUE_COMMANDS = ("start", "start-ready", "fix", "accept", "drop", "review", "design-decide", "scope", "agent reset",
-                  "test-confirm", "reply")  # review 는 --retry 만
+                  "slot reset", "test-confirm", "reply")  # review 는 --retry 만
 ROUND_COMMANDS = ("fix", "accept", "drop", "scope", "review")  # 메인이 본 라운드를 expect_round 로 담는다
 
 # 설계 7.1 원문
@@ -194,7 +194,8 @@ def recorded(p, req: dict) -> dict | None:
 
     start·fix·accept·drop·scope·review 는 그 태스크 history 에 이 요청 id 의 사건이 있거나 queued_fix.request 가 이 id,
     design-decide 는 그 묶음의 결정 기록 request 가 이 id, test-confirm 은 test-confirm.json 의 asked 에 이 id 의 항목이
-    있다. start-ready·reply 는 기록이 없다(다시 해도 결과가 같다)."""
+    있다, slot reset 은 그 슬롯 기록의 reset_request 가 이 id 다(설계 5.10.8). start-ready·reply 는 기록이 없다(다시 해도
+    결과가 같다)."""
     rid, cmd, args = req.get("id"), req.get("command"), req.get("args") or {}
     if cmd in ("start", "fix", "accept", "drop", "scope", "review"):
         st = state.load(p, args.get("task"))
@@ -213,6 +214,10 @@ def recorded(p, req: dict) -> dict | None:
         hit = next((a for a in drive.confirm_record(p)["asked"] if a.get("request") == rid), None)
         if hit is not None:
             return {"recovered": True, "asked": hit.get("out_id"), "digest": hit.get("digest")}
+    if cmd == "slot reset" and isinstance(args.get("slot"), int):
+        rec = workspace.entry(workspace.load(p), args["slot"])
+        if rec.get("reset_request") == rid:
+            return {"recovered": True, "slot": args["slot"], "state": rec["state"]}
     return None
 
 
@@ -252,9 +257,12 @@ def _x_accept(p, d, req):
 
 
 def _x_drop(p, d, req):
+    """drop 뒤 관제가 그 슬롯을 놓는다(설계 5.10.6, 8.8). 놓기의 예외는 큐 결과를 바꾸지 않는다(격리 release:<T>)."""
     from . import tasks
     a = req["args"]
-    return tasks.drop(p, a["task"], bool(a.get("force")), req.get("expect_round"), request=req["id"], nowait=True)
+    res = tasks.drop(p, a["task"], bool(a.get("force")), req.get("expect_round"), request=req["id"], nowait=True)
+    d.isolated(f"release:{a['task']}", d.release_step)
+    return res
 
 
 def _x_review(p, d, req):
@@ -279,6 +287,12 @@ def _x_agent_reset(p, d, req):
     return crew.agent_reset(p, config.load(p), req["args"]["name"], request=req["id"])
 
 
+def _x_slot_reset(p, d, req):
+    """slot reset(설계 5.10.8): 큐 실행도 모드·번호를 검사한다. 요청 id 를 슬롯 기록에 남긴다(recorded)."""
+    from . import config
+    return workspace.reset(p, config.load(p), req["args"]["slot"], request=req["id"])
+
+
 def _x_test_confirm(p, d, req):
     return d.confirm_test(force=True, request=req["id"])
 
@@ -296,6 +310,7 @@ def _x_reply(p, d, req):
 # 실행 표(관제 안이라 모두 기다리지 않는다)
 EXECUTORS = {"start": _x_start, "start-ready": _x_start_ready, "fix": _x_fix, "accept": _x_accept, "drop": _x_drop,
              "review": _x_review, "design-decide": _x_design_decide, "scope": _x_scope, "agent reset": _x_agent_reset,
+             "slot reset": _x_slot_reset,
              "test-confirm": _x_test_confirm, "reply": _x_reply}
 
 

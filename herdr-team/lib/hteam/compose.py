@@ -93,11 +93,25 @@ def workspace_lines(cfg, st: dict) -> list[str]:
     return lines
 
 
-def workspace_section(cfg, st: dict) -> str:
-    """워커 사양의 작업 공간 절(설계 5.10.5). 작업 공간 태스크가 아니면 빈 글."""
+# 기준 병합 라운드의 작업 공간 절 둘째 줄(설계 5.10.6 원문)
+BASE_MERGE_LINE = ("- 이 라운드는 기준 커밋 `{sha}` 를 이 브랜치에 병합한다: `git merge --no-ff --no-commit {sha}` 뒤 충돌을 풀고 "
+                   "푼 파일을 `git add -- <파일>` 한다. `git diff --cached --name-only` 가 병합과 푼 파일만 담는지 본 뒤 경로를 "
+                   "지정하지 않은 `git commit -m \"[{tid}] 기준 병합: {sha7}\"` 로 커밋한다(병합 중에는 git 이 경로 지정 커밋을 "
+                   "받지 않는다. 이 커밋만 작업 규칙 5.5 의 경로 지정 예외다). 그 밖의 병합·rebase·push 는 하지 않는다.")
+MERGE_RESUME = "앞 워커가 시작한 병합이 남아 있다. 이어서 푼다."
+
+
+def workspace_section(cfg, st: dict, rd: dict | None = None) -> str:
+    """워커 사양의 작업 공간 절(설계 5.10.5). 작업 공간 태스크가 아니면 빈 글. 라운드 rd 에 base_merge 가 있으면(기준 병합
+    라운드, 5.10.6) 둘째 줄을 그 병합 지시로 바꾸고, merge_resume 이면 그 줄 끝에 MERGE_RESUME 을 붙인다."""
     if not st.get("workspace"):
         return ""
-    return "## 작업 공간\n" + "\n".join(f"- {x}" for x in workspace_lines(cfg, st))
+    lines = [f"- {x}" for x in workspace_lines(cfg, st)]
+    if rd and rd.get("base_merge"):
+        sha = rd["base_merge"]
+        lines[1] = BASE_MERGE_LINE.format(sha=sha, sha7=sha[:7], tid=st["id"]) + \
+            (f" {MERGE_RESUME}" if rd.get("merge_resume") else "")
+    return "## 작업 공간\n" + "\n".join(lines)
 
 
 def review_workspace(cfg, st: dict) -> str:
@@ -133,7 +147,7 @@ def work_spec(p, cfg, spec, rd: dict, owns: list[str], st: dict | None = None) -
     if member is not None and (p.root / handoff_rel(member.name)).is_file():  # 인수인계 줄(설계 5.5 의 7)
         parts += ["", f"먼저 `{handoff_rel(member.name)}` 를 읽는다. {member.title} 에이전트가 이 프로젝트에서 정한 결정과 규칙, "
                       "남은 일이 적혀 있다."]
-    section = workspace_section(cfg, st or {})
+    section = workspace_section(cfg, st or {}, rd)
     if section:
         parts += ["", section]
     parts += ["", fill(_template("worker-rules.md"), owns=_bullets(owns), report=report_rel(tid), task_id=tid,
@@ -300,7 +314,7 @@ def _group_task(p, tid: str) -> str:
         st, spec = state.require(p, tid), specs.load(p, tid)
         q = workspace.view(p, st)  # 선행 태스크의 커밋은 그 태스크의 작업 루트에서 센다
         commits = testgate.work_commits(q, st)
-        files = testgate.changed_files(q, commits)
+        files = testgate.changed_files(q, commits, st["base"])
     except (HteamError, OSError, ValueError):
         return f"- {tid} — 상태를 읽지 못했다"
     shown = ", ".join(show(f) for f in files[:GROUP_FILES_SHOWN]) or "없음"

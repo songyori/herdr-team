@@ -1,8 +1,10 @@
 """작업 공간(설계 5.10): 슬롯 상태(state/slots.json), 슬롯 잠금, 슬롯 폴더(저장소 전체의 git worktree)·태스크 브랜치·
-표시 파일, setup·teardown 실행, 관제 자식 `hteam slot prepare`.
+표시 파일, setup·teardown 실행, 관제 자식 `hteam slot prepare`·`slot release`, accept 의 병합(5.10.6), 마무리 full 의 슬롯
+(5.10.7), 큐 명령 `hteam slot reset`·status 의 workspace(5.10.8).
 
-잠금 순서는 슬롯 잠금(state/slots/slot-<N>.lock) → 프로젝트 잠금(state/lock) → 태스크 잠금이다. 슬롯 잠금은 준비·놓기·
-마무리 full 자식이 그 슬롯을 쓰는 동안 쥐고, 프로젝트 잠금을 쥔 쪽은 슬롯 잠금을 비차단으로만 시도한다(5.10.3).
+잠금 순서는 슬롯 잠금(state/slots/slot-<N>.lock) → 프로젝트 잠금(state/lock) → git 잠금(state/git.lock, 병합만) →
+태스크 잠금이다. 슬롯 잠금은 준비·놓기·마무리 full 자식이 그 슬롯을 쓰는 동안 쥐고, 프로젝트 잠금을 쥔 쪽은 슬롯 잠금을
+비차단으로만 시도한다(5.10.3).
 git 은 gitio 로만 부른다. 이 모듈은 paths 를 위에서 가져오지 않는다(paths.project_at 이 marker 를 늦게 가져온다).
 """
 from __future__ import annotations
@@ -17,8 +19,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
-from . import config, gitio, roles, state, testgate
-from .errors import CONFLICT, FAIL, HteamError
+from . import config, gitio, roles, specs, state, testgate
+from .errors import CONFLICT, FAIL, USAGE, HteamError
 from .util import die_at, flock, now, show, write_json
 
 MARKER_REL = ".herdr-team/state/slot.json"  # 작업 루트의 표시 파일 {main_root, slot, task}(5.10.2)
@@ -27,6 +29,8 @@ SLOT_DEFAULT = {"state": "free", "task": None, "branch": None, "base_branch": No
                 "since": None}
 MINUTE_S = 60  # setup·teardown 시간 상한은 setup_timeout_min × MINUTE_S 초다(시험이 줄인다)
 DIRTY_SHOWN = 20  # slot_dirty 출력의 files 개수
+MERGE_BLOCKED_S = 600  # 병합 거부가 이보다 오래 이어지면 workspace_failed(merge_blocked) 를 한 번 올린다(5.10.6)
+MERGE_REFUSED = ("merge_pending", "merge_blocked", "base_moved")  # 상태를 바꾸지 않은 병합 거부(관제가 다시 한다)
 
 
 def branch_of(tid: str) -> str:
@@ -109,8 +113,10 @@ def require_worktree(p, st: dict) -> None:
 
 
 def task_root(p, st: dict) -> Path:
-    """태스크가 도는 작업 루트. 작업 공간 태스크가 아니면 메인 프로젝트 루트다."""
-    return Path(st["workspace"]["root"]) if st.get("workspace") else p.root
+    """태스크가 도는 작업 루트. 작업 공간 태스크가 아니거나 병합한 태스크면 메인 프로젝트 루트다: 병합한 태스크의 보고서·
+    리뷰 파일은 병합 커밋으로 기준 브랜치에 있고, 슬롯은 놓은 뒤 다른 태스크가 다시 쓴다(5.10.6)."""
+    ws = st.get("workspace")
+    return Path(ws["root"]) if ws and not ws.get("merge") else p.root
 
 
 def view(p, st: dict):
@@ -304,6 +310,14 @@ def _refuse_branch(p, n: int, tid: str, branch: str) -> None:
                      "남은 브랜치를 어떻게 할지 사용자에게 묻는다", data={"slot": n, "kind": "branch_exists", "branch": branch})
 
 
+def _setup_error(n: int, result: dict) -> HteamError:
+    """setup 이 통과하지 못했다(준비와 마무리 full 이 같은 꼴로 낸다)."""
+    return HteamError("setup_failed", f"slot-{n} setup 이 {result['status']}(exit {result['exit']})로 끝났다. 로그: "
+                      f"{result['log']}", FAIL, data={"slot": n, "kind": "setup_failed", "status": result["status"],
+                                                      "exit": result["exit"], "log": result["log"],
+                                                      "tail": result["tail"]})
+
+
 def _setup_failed(p, n: int, tid: str, base: str, top: Path, branch: str, result: dict) -> None:
     """setup 실패·시간 초과·실행 불가: 브랜치를 떠나고 커밋 없는 빈 브랜치는 지운다(다시 시작이 branch_exists 로 막히지
     않게). 슬롯은 free(setup_done 없음: 반쯤 된 환경), 태스크는 라운드 없는 launch_failed. 폴더와 무시된 파일은 남긴다."""
@@ -313,10 +327,7 @@ def _setup_failed(p, n: int, tid: str, base: str, top: Path, branch: str, result
     with _reserved(p, n, tid) as rec:
         _reset(rec, setup_done=None)
         _launch_failed(p, tid, "slot_setup_failed", slot=n)
-    raise HteamError("setup_failed", f"slot-{n} setup 이 {result['status']}(exit {result['exit']})로 끝났다. 로그: "
-                     f"{result['log']}", FAIL, data={"slot": n, "kind": "setup_failed", "status": result["status"],
-                                                     "exit": result["exit"], "log": result["log"],
-                                                     "tail": result["tail"]})
+    raise _setup_error(n, result)
 
 
 def prepare(p, cfg, tid: str) -> dict:
@@ -365,6 +376,264 @@ def prepare(p, cfg, tid: str) -> dict:
             "base": rec["base"], "setup": result, "ready": True}
 
 
+# --- 병합(5.10.6, 6.4 의 7단계 줄) ---
+
+def first_line(text: str | None) -> str:
+    """git 출력의 첫 줄(빈 줄은 건너뛴다)."""
+    return next((line.strip() for line in (text or "").splitlines() if line.strip()), "")
+
+
+def _merge_refused(code: str, ws: dict, message: str, hint: str, **data) -> HteamError:
+    return HteamError(code, message, CONFLICT, hint, data={"kind": code, "slot": ws["slot"], **data})
+
+
+def _blocked(tid: str, ws: dict, message: str, output: str) -> HteamError:
+    return _merge_refused("merge_blocked", ws, message, "사용자가 메인 폴더의 병합 상태를 정리한 뒤 관제가 다시 병합한다",
+                          output=output[-600:])
+
+
+def merge(p, cfg, st: dict) -> dict:
+    """작업 공간 태스크 st 의 태스크 브랜치를 메인 폴더의 기준 브랜치에 `git merge --no-ff` 한다(5.10.6). 부르는 쪽
+    (tasks.accept)이 프로젝트 잠금을 쥐고, 이 함수가 git 잠금을 쥔다. 결과 {"result": "merged", "sha"} 또는
+    {"result": "conflict", "base", "files"}(되돌렸다). 거부는 상태를 바꾸지 않는 예외다: 메인 폴더에 끝나지 않은 병합이
+    있거나 되돌리지 못했으면 merge_blocked, 메인 폴더 브랜치가 기준 브랜치가 아니면 base_moved, 병합이 시작되지 않았으면
+    (index 에 올린 변경, 덮을 커밋 안 된 파일, index.lock) merge_pending. 갈래는 git 메시지가 아니라 MERGE_HEAD 로 가른다
+    (로캘을 타지 않는다)."""
+    ws, tid = st["workspace"], st["id"]
+    with flock(p.git_lock):
+        if gitio.merge_head(p.root):
+            raise _blocked(tid, ws, f"메인 폴더에 끝나지 않은 병합(MERGE_HEAD)이 있어 {tid} 를 병합하지 않았다", "")
+        cur = gitio.current_branch(p.root)
+        if cur != ws["base_branch"]:
+            raise _merge_refused("base_moved", ws, f"메인 폴더 브랜치가 {cur or 'detached HEAD'} 라 {tid} 를 기준 브랜치 "
+                                 f"{ws['base_branch']} 에 병합하지 않았다", "메인 폴더를 기준 브랜치로 되돌릴지 사용자에게 묻는다",
+                                 branch=cur, base_branch=ws["base_branch"])
+        base = gitio.head(p.root)
+        proc = gitio.merge_no_ff(p.root, ws["branch"], f"[{tid}] merge: {specs.load(p, tid).title}")
+        output = ((proc.stderr or "") + (proc.stdout or "")).strip()
+        if proc.returncode == 0:
+            return {"result": "merged", "sha": gitio.head(p.root)}
+        if not gitio.merge_head(p.root):  # 병합이 시작되지 않았다: 거부(다시 한다)
+            raise _merge_refused("merge_pending", ws, f"{tid} 병합이 거부됐다(관제가 다음 재확인에 다시 한다): "
+                                 f"{first_line(output)[:200]}",
+                                 "메인 폴더의 index 에 올린 변경·커밋 안 된 파일·index.lock 을 확인한다", output=output[-600:])
+        prefix = gitio.top_prefix(p.root)
+        files = sorted(gitio.from_top(prefix, f) for f in gitio.unmerged(p.root))
+        gitio.merge_abort(p.root)
+        if gitio.merge_head(p.root):  # 되돌렸는지 확인한다
+            raise _blocked(tid, ws, f"{tid} 병합 충돌을 되돌리지 못했다(git merge --abort 뒤에도 MERGE_HEAD 가 남았다)",
+                           output)
+        return {"result": "conflict", "base": base, "files": files}
+
+
+# --- 놓기(5.10.6) ---
+
+def _workspace_off() -> HteamError:
+    return HteamError("workspace_off", '작업 공간이 꺼져 있다(config.toml [workspace] mode = "worktree" 가 아니다)',
+                      CONFLICT)
+
+
+def _write(p, n: int, keep, rec: dict) -> None:
+    """프로젝트 잠금 안에서 슬롯 n 의 기록이 아직 keep(기록) 이 참인 것이면 rec 로 쓴다."""
+    with state.project_lock(p):
+        data = load(p)
+        if keep(entry(data, n)):
+            data["slots"][str(n)] = rec
+            save(p, data)
+
+
+def release(p, cfg, tid: str) -> dict:
+    """`hteam slot release T` 의 몸통: 병합하거나 버린 태스크의 슬롯을 놓는다. 슬롯 잠금(nowait)을 쥔 채 teardown →
+    작업 트리 검사 → (깨끗하면) `git switch --detach` → (병합한 브랜치면) `git branch -d` → free. 슬롯에 끝나지 않은 병합이
+    있거나, 버린 태스크의 슬롯에 커밋 안 된 변경이 있거나, switch 가 거부되면 switch·브랜치 지우기를 하지 않고 태스크 없는
+    dirty 로 둔다(정리는 slot reset). 슬롯 폴더가 자기 worktree 가 아니면 git 을 부르지 않고 dirty 로 둔다(그 폴더에서 git 을
+    부르면 메인 작업 트리가 바뀐다). 슬롯 폴더와 무시된 파일은 지우지 않는다. 다시 불러도 같은 결과로 잇는다(teardown 은
+    다시 돈다)."""
+    nothing = {"task": tid, "slot": None, "state": None, "teardown": None, "branch_deleted": False, "dirty": []}
+    with state.project_lock(p):
+        n = held_by(load(p), tid)
+    if n is None:
+        return nothing
+    st = state.require(p, tid)
+    if st["status"] not in ("done", "dropped"):
+        raise HteamError("task_open", f"{tid} 는 {st['status']} 다. 슬롯은 병합하거나 버린 뒤에 놓는다", CONFLICT,
+                         data={"status": st["status"]})
+
+    def mine(rec: dict) -> bool:  # 기록이 아직 이 태스크의 것인가
+        return rec["task"] == tid
+
+    with slot_lock(p, n, nowait=True):
+        with state.project_lock(p):
+            if not mine(entry(load(p), n)):
+                return nothing
+        top, branch = folder(p, n), branch_of(tid)
+        teardown = run_hook(p, cfg, n, "teardown", tid)
+        die_at("slot_release_teardown")
+        out = {"task": tid, "slot": n, "teardown": teardown, "branch_deleted": False, "dirty": []}
+        dirty = {**SLOT_DEFAULT, "state": "dirty", "since": now()}  # 태스크 연결을 푼다(브랜치·병합 상태·파일은 그대로)
+        if not own_worktree(top):
+            _write(p, n, mine, dirty)
+            return {**out, "state": "dirty", "reason": "not_worktree"}
+        # 작업 트리 검사는 switch 보다 먼저다: git 은 병합 중 switch 를 거부한다
+        merging = bool(gitio.merge_head(top))
+        files = gitio.dirty(top, ["."]) if merging or st["status"] == "dropped" else []
+        keep = merging or bool(files)
+        if not keep:
+            try:
+                gitio.switch_detach(top)
+            except HteamError as exc:
+                if exc.code != "git_failed":
+                    raise
+                keep, files = True, gitio.dirty(top, ["."])  # switch 가 거부했다: 다시 하지 않고 남긴다
+        if keep:
+            _write(p, n, mine, dirty)
+            return {**out, "state": "dirty", "dirty": files[:DIRTY_SHOWN]}
+        if st["status"] == "done" and gitio.branch_exists(p.root, branch):  # 버린 태스크의 브랜치는 기록으로 남긴다
+            try:
+                gitio.delete_branch(p.root, branch)
+                out["branch_deleted"] = True
+            except HteamError as exc:
+                if exc.code != "git_failed":
+                    raise
+        die_at("slot_release_detached")
+        _write(p, n, mine, {**SLOT_DEFAULT, "since": now()})  # setup_done 없음: teardown 했으니 다음 태스크가 다시 한다
+    return {**out, "state": "free"}
+
+
+def releasable(p) -> list[tuple[int, str]]:
+    """놓을 슬롯: 기록의 태스크가 done·dropped 인데 기록이 busy 이거나 준비를 마친(ready) preparing 인 (번호, 태스크).
+    번호 순. 놓기 도중 관제나 자식이 죽어도 재확인이 이것으로 잇는다(5.10.6)."""
+    found = []
+    data = load(p)
+    for key in sorted(data["slots"], key=int):
+        rec = entry(data, int(key))
+        tid = rec["task"]
+        if not tid or not (rec["state"] == "busy" or (rec["state"] == "preparing" and rec.get("ready"))):
+            continue
+        st = state.load(p, tid)
+        if st is not None and st["status"] in ("done", "dropped"):
+            found.append((int(key), tid))
+    return found
+
+
+# --- slot reset(5.10.8) ---
+
+def slot_number(cfg, value) -> int:
+    """`slot reset <N>` 의 번호: 1–slots 의 정수(문자열이면 숫자만). 아니면 exit 2 bad_slot."""
+    text = str(value)
+    if not (text.isascii() and text.isdigit() and 1 <= int(text) <= cfg.workspace.slots):
+        raise HteamError("bad_slot", f"슬롯 번호는 1–{cfg.workspace.slots} 다: {text}", USAGE)
+    return int(text)
+
+
+def check_reset(cfg, value) -> int:
+    """slot reset 의 입력 검사(모드 → 번호). 메인이 큐에 넣기 전에도 본다."""
+    if not cfg.workspace.on:
+        raise _workspace_off()
+    return slot_number(cfg, value)
+
+
+def reset(p, cfg, n, *, request: str | None = None) -> dict:
+    """`hteam slot reset <N>`(큐 명령): 태스크 없는 dirty 슬롯만 `git reset --hard`·`git clean -fd`(무시된 파일은 남는다)
+    뒤 free 로 쓴다. 되돌릴 수 없으므로 메인은 사용자 확인 뒤에만 부른다. request(큐 요청 id)를 기록에 남긴다(재실행 막기).
+    슬롯 폴더가 자기 worktree 가 아니면 git 을 부르지 않는다(메인 작업 트리를 지운다): 폴더가 없으면(사용자가 치웠다) git
+    없이 free, 있으면 exit 1 slot_not_worktree."""
+    n = check_reset(cfg, n)
+    with slot_lock(p, n, nowait=True):
+        with state.project_lock(p):
+            data = load(p)
+            rec = entry(data, n)
+            if rec["state"] != "dirty" or rec["task"]:
+                raise HteamError("slot_not_dirty", f"slot-{n} 은 {rec['state']}({rec['task'] or '태스크 없음'})라 reset 하지 "
+                                 "않는다(dirty 이고 태스크가 없을 때만)", CONFLICT,
+                                 data={"slot": n, "state": rec["state"], "task": rec["task"]})
+            top = folder(p, n)
+            if top.exists():
+                if not own_worktree(top):
+                    raise HteamError("slot_not_worktree", f"slot-{n} 폴더가 git worktree 가 아니다(.git 이 없거나 깨졌다). 그 "
+                                     "폴더에서 git 을 부르지 않았다", FAIL, "사용자와 폴더를 확인한다(그 폴더에서 git 을 부르면 "
+                                     "메인 저장소가 잡힌다). 쓸 것이 없으면 폴더를 치우고 git worktree prune 한 뒤 다시 한다",
+                                     data={"slot": n})
+                gitio.reset_hard(top)
+                gitio.clean_untracked(top)
+            data["slots"][str(n)] = {**SLOT_DEFAULT, "since": now(), "reset_request": request}
+            save(p, data)
+    return {"slot": n, "state": "free"}
+
+
+# --- 마무리 full(5.10.7) ---
+
+def claim_final(p, cfg) -> tuple[int, str]:
+    """마무리 full 이 쓸 슬롯을 잡는다(프로젝트 잠금 안): free 이거나 앞 마무리 full 이 남긴 기록(busy, 태스크 없음,
+    use final)인데 슬롯 잠금이 풀린 가장 작은 번호를 busy·use final·base(메인 HEAD) 로 쓴다. (번호, base). 없으면 exit 3
+    no_free_slot."""
+    with state.project_lock(p):
+        data = load(p)
+        for n in range(1, cfg.workspace.slots + 1):
+            rec = entry(data, n)
+            left = rec["state"] == "busy" and not rec["task"] and rec.get("use") == "final"
+            if (rec["state"] == "free" or left) and not slot_busy(p, n):
+                base = gitio.head(p.root)
+                data["slots"][str(n)] = {**SLOT_DEFAULT, "state": "busy", "use": "final", "base": base, "since": now()}
+                save(p, data)
+                return n, base
+    raise HteamError("no_free_slot", f"빈 슬롯이 없다(slot-1–{cfg.workspace.slots} 을 모두 쓰는 중이다). 마무리 full 은 "
+                     "슬롯이 비면 다시 한다", CONFLICT)
+
+
+def free_final(p, n: int) -> None:
+    """마무리 full 의 기록을 free 로(아직 그 기록일 때만)."""
+    _write(p, n, lambda rec: rec["state"] == "busy" and not rec["task"] and rec.get("use") == "final",
+           {**SLOT_DEFAULT, "since": now()})
+
+
+@contextlib.contextmanager
+def final_slot(p, cfg) -> Iterator[tuple[int, str]]:
+    """마무리 full 의 슬롯(5.10.7): claim_final → 슬롯 잠금(nowait) → 폴더가 없으면 worktree add, 있으면 기준 HEAD 로
+    `git switch --detach` → setup(있으면. 실패면 setup_failed, teardown 은 돌리지 않는다) → 블록(full) → teardown(있으면,
+    결과는 쓰지 않는다. 블록이 예외로 끝나도 돈다). 끝나면 늘 free_final. 폴더가 자기 worktree 가 아니면 git 을 부르지 않고
+    슬롯을 태스크 없는 dirty 로 두고 slot_dirty 다."""
+    n, base = claim_final(p, cfg)
+    try:
+        with slot_lock(p, n, nowait=True):
+            top = folder(p, n)
+            if not top.exists():
+                gitio.worktree_add(p.root, top, base)
+            elif not own_worktree(top):
+                _write(p, n, lambda rec: rec.get("use") == "final" and not rec["task"],
+                       {**SLOT_DEFAULT, "state": "dirty", "since": now()})
+                raise HteamError("slot_dirty", f"slot-{n} 폴더가 git worktree 가 아니어서(.git 이 없거나 깨졌다) 마무리 full 을 "
+                                 "돌리지 않았다", CONFLICT, "사용자와 폴더를 확인한다(그 폴더에서 git 을 부르면 메인 저장소가 "
+                                 "잡힌다). 쓸 것이 없으면 폴더를 치우고 git worktree prune 한 뒤 hteam slot reset "
+                                 f"{n}", data={"slot": n, "kind": "slot_dirty", "reason": "not_worktree"})
+            else:
+                gitio.switch_detach(top, base)
+            if cfg.workspace.setup:
+                result = run_hook(p, cfg, n, "setup", None)
+                if result["status"] != "passed":
+                    raise _setup_error(n, result)
+            try:
+                yield n, base
+            finally:
+                run_hook(p, cfg, n, "teardown", None)  # setup 을 했으면 full 이 실패해도 정리한다
+    finally:
+        free_final(p, n)
+
+
+# --- status(5.10.8) ---
+
+def status_view(p, cfg) -> dict:
+    """`hteam status` 의 workspace: 1–slots 와 기록에 있는 번호의 {n, state, task, branch}, 번호 순. slots.json 을 읽지 못하면
+    bad_slots_file 을 그대로 올린다(부르는 쪽이 경고로 바꾼다)."""
+    data = load(p)
+    numbers = sorted(set(range(1, cfg.workspace.slots + 1)) | {int(k) for k in data["slots"]})
+    rows = []
+    for n in numbers:
+        rec = entry(data, n)
+        rows.append({"n": n, "state": rec["state"], "task": rec["task"], "branch": rec["branch"]})
+    return {"mode": "worktree", "slots": rows}
+
+
 # --- CLI ---
 
 def _cmd_prepare(args) -> dict:
@@ -374,9 +643,31 @@ def _cmd_prepare(args) -> dict:
     state.check_id(args.task)
     cfg = config.load(p)
     if not cfg.workspace.on:
-        raise HteamError("workspace_off", '작업 공간이 꺼져 있다(config.toml [workspace] mode = "worktree" 가 아니다)',
-                         CONFLICT)
+        raise _workspace_off()
     return prepare(p, cfg, args.task)
+
+
+def _cmd_release(args) -> dict:
+    """관제 자식(설계 8.8): 관제 밖에서 부르면 drive_only."""
+    from .paths import find_project  # 이 모듈은 paths 를 위에서 가져오지 않는다(모듈 설명)
+    p = find_project(args.root)
+    roles.require_drive(p)
+    state.check_id(args.task)
+    cfg = config.load(p)
+    if not cfg.workspace.on:
+        raise _workspace_off()
+    return release(p, cfg, args.task)
+
+
+def _cmd_reset(args) -> dict:
+    """큐 명령(7.1, 5.10.8): 관제(와 자식)에서는 바로, 메인에서는 모드·번호 검사 뒤 요청 큐."""
+    from . import queue  # queue 가 이 모듈을 쓴다
+    from .paths import find_project  # 이 모듈은 paths 를 위에서 가져오지 않는다(모듈 설명)
+    p = find_project(args.root)
+    cfg = config.load(p)
+    value = int(args.slot) if args.slot.isascii() and args.slot.isdigit() else args.slot
+    return queue.route(p, "slot reset", {"slot": value}, lambda req: reset(p, cfg, args.slot),
+                       check=lambda: check_reset(cfg, args.slot))
 
 
 def register(sub) -> None:
@@ -385,3 +676,9 @@ def register(sub) -> None:
     s = ssub.add_parser("prepare")
     s.add_argument("task")
     s.set_defaults(func=_cmd_prepare)
+    s = ssub.add_parser("release")
+    s.add_argument("task")
+    s.set_defaults(func=_cmd_release)
+    s = ssub.add_parser("reset")
+    s.add_argument("slot")
+    s.set_defaults(func=_cmd_reset)

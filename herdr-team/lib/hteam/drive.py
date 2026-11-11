@@ -50,7 +50,7 @@ PID_TRIES = 3  # drive.pid 를 만들다 다른 관제와 경합하면 이만큼
 
 # decide 종류(설계 8.10, orca 의 DECIDE_KINDS 와 같은 순서)
 DECIDE_KINDS = ("worker_failed", "worker_question", "escalation", "max_rounds", "repeat_test_failure", "test_config",
-                "planning_gaps", "unknown_regression", "token_update", "workspace_failed")
+                "planning_gaps", "unknown_regression", "token_update", "workspace_failed", "merge_conflict")
 TITLE = "herdr-team 관제"  # 관제 탭 이름과 관제 pane 제목(8.2 의 5)
 
 # 정해진 글(설계 8.6 원문)
@@ -190,7 +190,7 @@ class Drive:
         self._raised: set[tuple[str, str]] = set()  # 올린 격리 실패(키, 문구). 이 프로세스 안의 기억
         self._failed: set[tuple[str | None, str]] = set()  # 올린 관제 절차 실패(태스크, 문구). 이 프로세스 안의 기억
         self._horch: Horch | None = None
-        # 돌고 있는 자식(설계 8.8): {키: {proc, args, out, err}}. 키는 review:<T>, final, 작업 공간 준비 slot:<N>
+        # 돌고 있는 자식(설계 8.8): {키: {proc, args, out, err}}. 키는 review:<T>, final, 작업 공간 준비·놓기 slot:<N>
         self.jobs: dict[str, dict] = {}
         self.rows: list[dict] = []  # 마지막 워커 목록(재확인). locate 가 기록 전 Dispatch 를 제목으로 찾을 때 쓴다
         self.retry_reviews: set[str] = set()  # 관문 잠금 대기 초과로 미룬 리뷰(8.7 의 4)
@@ -634,23 +634,70 @@ class Drive:
 
     # --- accept·fix(8.6·8.7) ---
     def accept_task(self, tid: str) -> dict | None:
-        """관제 판정 경로의 accept. review_busy 면 기다리고(재확인이 다시 본다), 그 밖의 거부는 관제 절차 실패."""
+        """관제 판정 경로의 accept. review_busy 면 기다리고(재확인이 다시 본다), 작업 공간 병합 거부는 merge_refused, 그 밖의
+        거부는 관제 절차 실패."""
         from . import tasks  # tasks 가 queue 를 거쳐 이 모듈을 쓴다
         try:
             res = tasks.accept(self.p, tid, nowait=True)
         except HteamError as exc:
             if exc.exit_code == MISSING:
                 raise
-            if exc.code != "review_busy":
+            if exc.code in workspace.MERGE_REFUSED:
+                self.merge_refused(tid, exc)
+            elif exc.code != "review_busy":
                 self.procedure_failed(tid, exc)
             return None
         self.after_accept(tid, res)
         return res
 
+    def merge_refused(self, tid: str, exc: HteamError) -> None:
+        """작업 공간 병합 거부(설계 5.10.6, 8.10). 태스크는 approved 그대로라 다음 재확인이 다시 병합한다. merge_pending 은 첫
+        거부만 로그를 남기고, 첫 거부(merge_wait.since)부터 MERGE_BLOCKED_S 가 지나면 workspace_failed(merge_blocked) 를 한 번
+        올린다. merge_blocked·base_moved 는 바로 그 kind 로 한 번 올린다. decide 를 쓴 뒤 merge_wait.asked 에 kind 를 남긴다
+        (그 사이 중단되면 다음 재확인이 한 번 더 올릴 수 있지만 잃지 않는다)."""
+        kind = "merge_blocked" if exc.code == "merge_pending" else exc.code
+        output = exc.data.get("output")
+        wait = state.require(self.p, tid).get("merge_wait") or {"since": now(), "asked": []}
+        if exc.code == "merge_pending":
+            if exc.data.get("first"):
+                self.log(f"{tid} 병합 거부: {workspace.first_line(output)[:120]}")
+            if (age_seconds(wait["since"]) or 0) <= workspace.MERGE_BLOCKED_S:
+                return
+            summary = f"{tid} 병합이 10분 넘게 거부됐다: {workspace.first_line(output)}"
+        else:
+            self.log(f"{tid} 병합 못 함({exc.code}): {exc.message[:120]}")
+            summary = exc.message
+        if kind in wait["asked"]:
+            return
+        detail = {k: v for k, v in exc.data.items() if k != "first"}
+        self.decide("workspace_failed", tid, summary, detail={**detail, "kind": kind})  # 먼저 알린다(잃지 않는다)
+        with state.edit(self.p, tid) as cur:
+            mark = cur.setdefault("merge_wait", wait)
+            mark["asked"] = [*mark.get("asked", []), kind]
+
+    def conflict_decide(self, tid: str, conflict: dict) -> None:
+        """decide merge_conflict(설계 5.10.6, 7.7): 충돌 파일을 보이고 fix(기준 병합 라운드) 나 drop 을 묻는다."""
+        st = state.require(self.p, tid)
+        files = conflict["files"]
+        self.decide("merge_conflict", tid, f"기준 브랜치 {st['workspace']['base_branch']} 에 병합하다 충돌했다"
+                    f"({len(files)}개 파일: {', '.join(files[:5])}). 되돌렸다", detail=conflict,
+                    commands=[self._fix_cmd(st, "<충돌을 어떻게 풀지 사용자 지시>"), f"hteam drop {tid}"])
+
+    def _conflict_asked(self, tid: str, conflict: dict) -> bool:
+        """이 충돌(라운드 기록의 merge_conflict)의 decide 가 outbox 에 있나(kind·task·detail 로 가린다)."""
+        return any(e.get("type") == "decide" and e.get("kind") == "merge_conflict" and e.get("task") == tid
+                   and e.get("detail") == conflict for e in outbox.read_outbox(self.p))
+
     def after_accept(self, tid: str, res: dict) -> None:
-        """accept 뒤(설계 8.6, 관제 판정 경로와 큐 accept 모두): release 실패 progress, 직무·결과별 다음 자리, start-ready."""
+        """accept 뒤(설계 8.6, 관제 판정 경로와 큐 accept 모두): release 실패 progress, 작업 공간 병합 로그·충돌 decide,
+        직무·결과별 다음 자리, start-ready, 끝에 슬롯 놓기(release_step)."""
         for warning in res.get("warnings") or []:
             self.progress(f"{tid} 워커 해제 실패: {str(warning)[:200]}")
+        if res.get("merge"):
+            self.log(f"{tid} 병합 {res['merge'][:7]}")
+        elif res.get("merge_conflict"):
+            self.log(f"{tid} 병합 충돌: {', '.join(res['merge_conflict']['files'][:5])}")
+            self.conflict_decide(tid, res["merge_conflict"])
         role = (state.load(self.p, tid) or {}).get("role")
         if res.get("status") == "done" and role == "planner":
             self.apply_plan(tid)
@@ -659,6 +706,7 @@ class Drive:
         elif res.get("status") == "awaiting_user":
             self.design_step()
         self.start_ready()
+        self.isolated("slots", self.release_step)
 
     def fix_task(self, tid: str, note: str | None = None) -> dict | None:
         """관제의 모든 fix(8.6·8.7). 먼저 drive_fix 를 쓴다: fix 가 이전 Dispatch 를 정리한 뒤 새 라운드를 쓰기 전에 관제가 죽어도
@@ -836,9 +884,10 @@ class Drive:
                 self.isolated(f"job:{key}",
                               lambda code=code, out=out, err=err: self.final_done(code, _last_json(out) or {}, err))
             elif key.startswith("slot:"):
-                n, tid = int(key.split(":", 1)[1]), job["args"][2]  # 자식 인자 slot prepare T
+                n, (_, step, tid) = int(key.split(":", 1)[1]), job["args"]  # 자식 인자 slot prepare|release T
+                done = self._release_done if step == "release" else self._slot_done
                 self.isolated(f"job:{key}",
-                              lambda n=n, tid=tid, code=code, out=out: self._slot_done(n, tid, code, _last_json(out)))
+                              lambda n=n, tid=tid, code=code, out=out, done=done: done(n, tid, code, _last_json(out)))
 
     def _review_done(self, tid: str, code: int, out: str, args: list[str] | None = None, rnd: int | None = None) -> None:
         """리뷰 자식이 끝났다: 도는 동안 올린 decide 의 표시를 먼저 쓰고(그 뒤 결과 처리가 쓰는 새 표시가 이긴다) 결과를 처리한다.
@@ -903,6 +952,47 @@ class Drive:
         else:
             self.decide("workspace_failed", tid, err["message"], commands=[f"hteam start {tid}"],
                         detail={"kind": kind, "slot": n, "branch": data.get("branch")})
+
+    # --- 작업 공간 놓기(5.10.6, 8.8) ---
+    def release_step(self) -> None:
+        """병합했거나 버린 태스크가 아직 쥔 슬롯(workspace.releasable)마다 놓기 자식 `hteam slot release T`(키 slot:<N>)를
+        띄운다. 그 키의 자식이 있거나 슬롯 잠금을 다른 실행자가 쥐었으면 띄우지 않는다. 놓기 도중 관제나 자식이 죽어도 다음
+        재확인이 잇는다(태스크가 done·dropped 인데 슬롯이 busy)."""
+        for n, tid in workspace.releasable(self.p):
+            if self.running(f"slot:{n}") or workspace.slot_busy(self.p, n):
+                continue
+            self.spawn(f"slot:{n}", ["slot", "release", tid])
+            self.log(f"slot-{n} {tid} 놓기 시작")
+
+    def _release_done(self, n: int, tid: str, code: int, data: dict | None) -> None:
+        """놓기 자식이 끝났다(설계 5.10.6): 로그 `slot-<N> <T> 놓기 <free|dirty>`, teardown 이 통과하지 못했으면 progress,
+        dirty 로 남겼으면 progress. slot_locked(다른 실행자가 쥐었다)는 다음 재확인이 본다. 그 밖은 놓기 실패 로그."""
+        err = (data or {}).get("error") or {}
+        if not (code == 0 and data and data.get("ok")):
+            if err.get("code") != "slot_locked":
+                said = str(err.get("message") or f"exit {code}: 출력이 없다")
+                self.log(f"slot-{n} {tid} 놓기 실패: {err.get('code') or 'failed'}: {said[:120]}")
+            return
+        if not data.get("state"):  # 그 사이 다른 놓기가 풀었다
+            return
+        td = data.get("teardown")
+        failed = td is not None and td.get("status") != "passed"
+        self.log(f"slot-{n} {tid} 놓기 {data['state']}" + (f" (teardown {td['status']})" if failed else ""))
+        if failed:
+            self.progress(f"slot-{n} {tid} teardown 이 {td['status']}(exit {td.get('exit')})로 끝났다(놓기는 마쳤다). "
+                          f"로그: {td.get('log')}")
+        if data["state"] != "dirty":
+            return
+        if data.get("reason") == "not_worktree":
+            self.progress(f"slot-{n} 폴더가 git worktree 가 아니어서(.git 이 없거나 깨졌다) {tid} 를 놓지 못하고 dirty 로 "
+                          "두었다. 그 폴더에서 git 을 부르지 않았다. 사용자와 폴더를 확인한다. 쓸 것이 없으면 폴더를 치우고 "
+                          f"git worktree prune 한 뒤 hteam slot reset {n}")
+            return
+        merged = (state.load(self.p, tid) or {}).get("status") == "done"
+        why = f"{tid} 는 병합했다" if merged else f"{tid} 를 버렸다"
+        shown = ", ".join(data.get("dirty", [])[:5]) or "git switch 가 거부했다"
+        self.progress(f"slot-{n} 에 커밋 안 된 변경이 남아 dirty 로 두었다({why}): {shown}. 사용자가 버려도 된다고 하면 "
+                      f"hteam slot reset {n}")
 
     def reset_step(self) -> None:
         """고정 에이전트마다 리셋 단계(설계 5.9.7). 설정 순서로, 에이전트마다 reset:<이름> 격리."""
@@ -1045,6 +1135,7 @@ class Drive:
         for st in states:
             self.heartbeat()
             self.isolated(f"reconcile:{st['id']}", lambda st=st: self.reconcile_task(st))
+        self.isolated("slots", self.release_step)  # 끊긴 놓기를 잇는다(설계 5.10.6)
         self.isolated("batches", self.unbatched)  # 8.7 의 6
         self.isolated("start_ready", self.start_ready)  # 8.7 의 7. 끝에 작업 공간 예약의 준비 자식(slot_step, 5.10.3)
         self.isolated("design", self.design_step)
@@ -1084,6 +1175,11 @@ class Drive:
             self.accept_task(tid)
         elif status == "changes":
             if st.get("queued_fix"):
+                return
+            conflict = (rd or {}).get("merge_conflict")
+            if conflict:  # 병합 충돌(5.10.6): 자동 fix 를 하지 않는다. decide 전에 관제가 죽었으면 여기서 올린다
+                if not self._conflict_asked(tid, conflict):
+                    self.conflict_decide(tid, conflict)
                 return
             if (rd or {}).get("review_source") == "hteam":
                 self.hteam_changes(tid)
@@ -1432,10 +1528,18 @@ class Drive:
         if code == TIMEOUT:
             self.log("전체 테스트 잠금 대기 초과. 다음 확인 때 다시 한다")
             return
+        if code == CONFLICT and ecode in ("no_free_slot", "slot_locked"):  # worktree 모드(5.10.7): 슬롯이 비면 다시 한다
+            self.log("마지막 전체 테스트: 빈 슬롯이 없어 다음 확인 때 다시 한다")
+            return
         if code == USAGE and ecode == "test_unapproved":
             self.confirm_test()
             return
-        if code == FAIL and ecode == "bad_test_approvals":  # 8.6 리뷰 자식 표와 같다. 답하기 전에는 다시 돌리지 않는다
+        if ecode in ("setup_failed", "slot_dirty"):  # worktree 모드의 슬롯 준비 실패(5.10.7). 답하기 전에는 다시 돌리지 않는다
+            logs = self._files(out["log"]) if out.get("log") else []
+            oid = self.decide("workspace_failed", None, message, files=logs, tail=out.get("tail") or "",
+                              detail={k: out.get(k) for k in ("kind", "slot", "status", "exit", "log", "reason")
+                                      if out.get(k) is not None})
+        elif code == FAIL and ecode == "bad_test_approvals":  # 8.6 리뷰 자식 표와 같다. 답하기 전에는 다시 돌리지 않는다
             oid = self.decide("escalation", None, f"마지막 전체 테스트를 돌리지 못했다: {message}")
         elif code == FAIL:
             oid = self.decide("unknown_regression", None, FINAL_FAILED, files=[out["log"]] if out.get("log") else [],
