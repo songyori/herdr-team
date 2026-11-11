@@ -1,7 +1,7 @@
 # herdr-orch 설계
 
 - 날짜: 2026-11-04
-- 상태: 0.1.x(1–12장)는 구현·실환경 확인을 마치고 병합했다(0.1.2). 0.2.0(13장, 고정 터미널)은 herdr-team 6단계와 한 주기로 구현·실환경 확인을 마치고 병합했다(2026-11-11).
+- 상태: 0.1.x(1–12장)는 구현·실환경 확인을 마치고 병합했다(0.1.2). 0.2.0(13장, 고정 터미널)은 herdr-team 6단계와 한 주기로 구현·실환경 확인을 마치고 병합했다(2026-11-11). 0.3.0(14장, 워커 환경 변수)은 herdr-team 7단계와 한 주기로 설계 중이다(2026-11-11).
 - 범위: herdr-team 저장소의 첫 플러그인 `herdr-orch`
 
 ## 1. 목적
@@ -687,6 +687,32 @@ exit 코드 표(7장)는 그대로다(새 값 없음).
 - 감싸지 않은 send 는 사람이 친 글처럼 들어간다. hc 의 보낸 쪽 추적(`<hc from>`)을 쓰지 않는다.
 - hc 가 아직 `launching`·`active` 인 Dispatch 의 주소를 새 터미널에 다시 쓰면, 그 터미널의 가드 등록이 `dispatch_one_per_terminal` 에 걸려 오류로 끝나고 새 워커가 뜨지 않는다(그 Dispatch 는 `launch_failed` 가 된다). 주소는 늘어나는 값으로 보이므로(t12w → t133) core 재시작(X7) 뒤에만 생길 수 있다. 마이그레이션 한계와 뿌리가 같다. hc 주소 재사용은 herdr-team 6단계 실환경 확인(Task 12)에서 본다(최종 리뷰, 기록만).
 
-## 14. 범위 밖
+## 14. 0.3.0: 워커 환경 변수 (2026-11-11)
+
+herdr-team 7단계의 작업 공간(그 설계 5.10)은 워커·리뷰어마다 다른 환경 변수(시험 DB 포트 등)를 준다. `hc run` 으로 띄운 터미널은 부른 셸의 환경을 물려받지 않는다(herdr-team 6단계 실환경 확인). 그래서 horch 가 값을 Dispatch 에 기록하고, `launch-guard` 가 에이전트를 exec 하기 직전에 그 값을 환경에 넣는다.
+
+### 14.1 `worker-start --env`
+
+- `--env KEY=VALUE`(되풀이, 32개까지). KEY 는 `^[A-Za-z_][A-Za-z0-9_]*$` 이고 `HC_`·`HORCH_` 로 시작하지 않는다(가드와 판별이 쓰는 변수). VALUE 는 줄바꿈·NUL 이 없는 1 KiB 이하 문자열이다. 같은 KEY 가 두 번이거나 형식이 틀리면 exit 2 `usage`.
+- `--terminal` 과 같이 쓰면 exit 2 `usage`(살아 있는 세션의 환경은 바꾸지 못한다). `--keep-open` 과는 쓸 수 있다(그 고정 터미널의 첫 환경이다).
+- `--task --retry`: `--env` 를 주면 그 값을, 주지 않으면 그 Task 의 마지막 Dispatch 의 값을 쓴다.
+
+### 14.2 기록(스키마 v4)
+
+- `dispatches.env TEXT`(JSON 객체, 없으면 NULL). v3 → v4 는 `ALTER TABLE ADD COLUMN` 하나와 `schema_version` 4 다(누적 마이그레이션 `if v < 4`).
+- `worker-list`·`worker-show` 행에 `env` 를 더한다.
+
+### 14.3 적용
+
+- `launch-guard` 가 가드 등록을 마친 뒤 `os.execvp` 직전에 `os.environ` 에 더한다(같은 이름은 덮어쓴다). 프리앰블과 에이전트 인자에는 넣지 않는다.
+- Codex 는 셸 도구에 부모 환경을 물려준다. 다만 기본 정책이 이름에 `KEY`·`SECRET`·`TOKEN` 이 든 변수를 뺀다. herdr-team 은 그런 이름을 쓰지 않게 검사한다(그 설계 4.2). Codex 셸이 값을 보는지는 사전 검증 S2 로 확인한다(그 설계 15.2).
+
+### 14.4 테스트·버전·한계
+
+- 테스트: `--env` 형식 오류와 `--terminal` 충돌(exit 2), 가짜 hc 가 받은 `launch-guard` 가 exec 한 프로세스의 환경, retry 의 값 물려받기, v3 DB 를 열면 v4 로 올라가고 기존 행은 `env` NULL.
+- 버전 세 곳(`paths.VERSION`, `herdr-orch/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`)을 0.3.0 으로 맞춘다. herdr-team 의 `HORCH_MIN` 은 0.3.0 이 된다.
+- 한계: 값은 저장소(SQLite)와 `worker-show` 출력에 남는다. 비밀값을 넘기지 않는다(herdr-team 은 포트·경로 같은 값만 넘긴다).
+
+## 15. 범위 밖
 
 gate, 태스크 의존성(DAG), 그룹 주소(`@all` 등), 중첩 워커, 원격 머신(`--on`), heartbeat, Codex·Claude 외 에이전트, 메시지 종류별 대기 필터, `pane.split` 대체 배치, 소유자 실행(herdr-team 이 관제를 띄운다), 팀 보드 Herdr 모드. 0.2.0 에서 "같은 터미널 재사용" 은 고정 터미널로 범위 안이 됐다(13장). 0.2.0 도 범위 밖: hc core 재시작 뒤 고정 터미널 복구 확인(실험 X7 을 하지 않았다), 입력 유실의 자동 재전송(호출자가 정한다), 비우기의 화면 확인.
