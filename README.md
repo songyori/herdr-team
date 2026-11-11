@@ -30,7 +30,8 @@
 - herdr-orch 만 쓰면 Codex CLI 는 Codex 워커를 띄울 때만 필요하고 Node 는 필요 없다.
 - 비용: herdr-team 은 Claude 세션과 Codex 세션 여러 개를 동시에 오래 띄운다. 템플릿 기본 모델은 다음과 같다. 모델은 `init` 이 제안하는 표에서 바꾸거나 나중에 `.herdr-team/config.toml` 에서 고친다.
   - 고정 에이전트: Claude `opus`(생산·리서치), Codex `gpt-6.1-sol`(테스트).
-  - 임시 워커·리뷰어: Claude `sonnet`, Codex `gpt-6.1-sol`.
+  - 임시 워커(고정 에이전트가 바쁠 때 등): 직무 표(`[roles.<직무>]`)의 모델을 쓴다. planner·director·developer 는 Claude `opus`, designer 는 Claude `sonnet`, tester 는 Codex `gpt-6.1-sol` 이다.
+  - 리뷰어: Claude 가 한 작업은 Codex `gpt-6.1-sol` 이, tester(Codex)의 작업은 Claude `sonnet` 이 리뷰한다.
   - effort: 모두 `xhigh`.
 
 ## 설치
