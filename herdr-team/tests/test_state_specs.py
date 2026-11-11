@@ -299,3 +299,43 @@ class TaskNewTest(TeamCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IssueSpecTest(TeamCase):
+    """사양 front matter 의 issue(설계 5.1, 7단계): 숫자 1–9자리, 앞의 # 는 뗀다. 아니면 사양 검사 exit 2."""
+
+    def setUp(self):
+        super().setUp()
+        self.init_project(commit=False)
+        self.p = Project(self.proj)
+        self.cfg = config.load(self.p)
+
+    def test_issue_values(self):
+        for raw, want in (("5712", "5712"), ("#5712", "5712"), ("123456789", "123456789"), ("0", "0"),
+                          ("007", "007")):
+            with self.subTest(raw=raw):
+                self.write_spec("T-001", front={"issue": raw}, commit=False)
+                spec = specs.check(self.p, self.cfg, "T-001")
+                self.assertEqual(spec.issue, want)
+                self.assertEqual(spec.front["issue"], raw)  # front matter 값은 쓴 그대로 둔다
+        self.write_spec("T-002", commit=False)
+        spec = specs.check(self.p, self.cfg, "T-002")
+        self.assertIsNone(spec.issue)
+        self.assertNotIn("issue", spec.front)
+
+    def test_bad_issue_is_a_spec_problem(self):
+        for raw in ("", "#", "57-12", "abc", "1234567890", "##5", "5712a", "- 5", "# 5"):
+            with self.subTest(raw=raw):
+                self.write_spec("T-001", front={"issue": raw}, commit=False)
+                with self.assertRaises(HteamError) as ctx:
+                    specs.check(self.p, self.cfg, "T-001")
+                self.assertEqual((ctx.exception.code, ctx.exception.exit_code), ("bad_spec", 2))
+                self.assertEqual(ctx.exception.data["problems"],
+                                 [f"issue 는 숫자 1–9자리 이슈 번호다(앞의 # 는 뗀다): {raw!r}"])
+                self.assertIsNone(specs.load(self.p, "T-001").issue)
+
+    def test_issue_value_helper(self):
+        for value, want in (("#12", "12"), (" 12 ", "12"), (12, "12"), (0, "0"), (123456789, "123456789"),
+                            (1234567890, None), (-1, None), (True, None), (1.5, None), (["1"], None), (None, None)):
+            with self.subTest(value=value):
+                self.assertEqual(specs.issue_value(value), want)

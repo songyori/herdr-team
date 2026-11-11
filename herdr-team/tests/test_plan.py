@@ -1020,3 +1020,105 @@ class GitioTest(TeamCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+from hteam import specs  # noqa: E402  (7단계 덧붙임)
+
+ISSUE_RULE = "issue 는 숫자 1–9자리 이슈 번호다(문자열이나 정수, 앞의 # 는 뗀다)"
+
+
+class IssuePlanTest(TeamCase):
+    """tasks.toml 의 issue(설계 5.2, 7단계): 형식 검사, plan apply 가 사양 front matter 로 옮긴다, digest 에 든다."""
+
+    def setUp(self):
+        super().setUp()
+        self.init_project()
+        self.setup_run()
+        self.cfg = config.load(Project(self.proj))
+        self.path = self.proj / "docs/planning/tasks.toml"
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def test_issue_format(self):
+        ok = [task("a", owns=["src/a/**"], issue="#5712"), task("b", owns=["src/b/**"], issue=88),
+              task("c", owns=["src/c/**"], issue="123456789")]
+        self.assertEqual(plan.validate(self.cfg, ok)[0], [])
+        for bad in ("57-12", "", "#", "1234567890", True, 1234567890, -1, 1.5, ["1"]):
+            with self.subTest(bad=bad):
+                self.assertEqual(plan.validate(self.cfg, [task("a", issue=bad)])[0], [f"a: {ISSUE_RULE}"])
+
+    def test_apply_copies_issue_to_spec_front(self):
+        self.path.write_text(toml([task("a", owns=["src/a/**"], issue="#5712"),
+                                   task("b", owns=["src/b/**"], deps=["a"], issue=88),
+                                   task("c", owns=["src/c/**"])]), encoding="utf-8")
+        code, out = self.hteam("plan", "apply")
+        self.assertEqual(code, 0, out)
+        first = (self.proj / ".herdr-team/tasks/T-001.md").read_text(encoding="utf-8")
+        self.assertIn("plan_key: a\nissue: 5712\n---\n", first)
+        second = (self.proj / ".herdr-team/tasks/T-002.md").read_text(encoding="utf-8")
+        self.assertIn("depends_on: T-001\nplan_key: b\nissue: 88\n---\n", second)
+        self.assertNotIn("issue:", (self.proj / ".herdr-team/tasks/T-003.md").read_text(encoding="utf-8"))
+        p = Project(self.proj)
+        self.assertEqual([specs.load(p, t).issue for t in ("T-001", "T-002", "T-003")], ["5712", "88", None])
+
+    def test_issue_added_after_apply_is_refused(self):
+        self.path.write_text(toml([task("a")]), encoding="utf-8")
+        self.assertEqual(self.hteam("plan", "apply")[0], 0)
+        self.path.write_text(toml([task("a", issue=5712)]), encoding="utf-8")
+        code, out = self.hteam("plan", "apply", "--append")
+        self.assertEqual((code, out["error"]["code"]), (2, "plan_changed"), out)
+        code, out = self.hteam("plan", "check", as_=None)
+        self.assertEqual((code, out["error"]["code"]), (2, "plan_changed"), out)
+
+
+# tester 직무가 e2e/** 도 갖는 설정과 tester_paths 두 경로(설계 5.2·5.7, 7단계)
+TESTER_PATHS_CONFIG = GROUP_CONFIG.replace('owns = ["tests/**", "docs/qa/**"]',
+                                           'owns = ["tests/**", "e2e/**", "docs/qa/**"]')
+PATHS_TABLE = TEST_TABLE + 'tester_paths = ["tests/{key}/**", "e2e/{key}/**"]\n'
+
+
+class TesterPathsTest(TeamCase):
+    """묶음 규칙 1 의 tester_paths(설계 5.2 의 7단계 문장): tester owns 는 tester_paths 를 key 로 채운 것과
+    docs/qa/{key}.md 다. 없으면 지금 규칙 그대로다."""
+
+    def setUp(self):
+        super().setUp()
+        self.init_project(config=TESTER_PATHS_CONFIG)
+        self.setup_run()
+        self.path = self.proj / "docs/planning/tasks.toml"
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def tasks(tester_owns):
+        return [task("store", owns=["src/store/**"]), task("grp", "tester", tester_owns, deps=["store"])]
+
+    def check(self, tasks, table=PATHS_TABLE):
+        self.path.write_text(toml(tasks) + "\n" + table, encoding="utf-8")
+        return self.hteam("plan", "check", as_=None)
+
+    def test_paths_fill_the_key(self):
+        code, out = self.check(self.tasks(["docs/qa/grp.md", "e2e/grp/**", "tests/grp/**"]))  # 순서 무관
+        self.assertEqual((code, out["test"]), (0, True), out)
+        code, out = self.check(self.tasks(["tests/grp/**", "docs/qa/grp.md"]))
+        self.assertEqual((code, out["error"]["code"]), (2, "plan_invalid"), out)
+        self.assertIn('grp: tester 태스크 owns 는 정확히 ["tests/grp/**", "e2e/grp/**", "docs/qa/grp.md"] 다',
+                      out["errors"])
+
+    def test_without_tester_paths_the_rule_is_unchanged(self):
+        code, out = self.check(self.tasks(["tests/grp/**", "docs/qa/grp.md"]), table=TEST_TABLE)
+        self.assertEqual(code, 0, out)
+        code, out = self.check(self.tasks(["tests/grp/**", "e2e/grp/**", "docs/qa/grp.md"]), table=TEST_TABLE)
+        self.assertEqual((code, out["error"]["code"]), (2, "plan_invalid"), out)
+        self.assertIn('grp: tester 태스크 owns 는 정확히 ["tests/grp/**", "docs/qa/grp.md"] 다', out["errors"])
+
+    def test_format_errors_come_with_field_errors(self):
+        table = TEST_TABLE + 'tester_paths = ["tests/**"]\nfull_if = "db/**"\n'
+        code, out = self.check(self.tasks(["tests/grp/**", "docs/qa/grp.md"]), table=table)
+        self.assertEqual((code, out["error"]["code"]), (2, "plan_invalid"), out)
+        self.assertEqual(sorted(out["errors"]), ["[test]: full_if 는 glob 목록이다",
+                                                 "[test]: tester_paths 는 {key} 를 한 번씩 담은 경로 목록이다"])
+
+    def test_group_problems_keeps_two_argument_call(self):
+        keys = {t["key"]: t for t in self.tasks(["tests/grp/**", "docs/qa/grp.md"])}
+        self.assertEqual(plan.group_problems(keys, set(keys)), [])
+        self.assertEqual(plan.group_problems(keys, set(keys), ["tests/{key}/**", "e2e/{key}/**"]),
+                         ['grp: tester 태스크 owns 는 정확히 ["tests/grp/**", "e2e/grp/**", "docs/qa/grp.md"] 다'])

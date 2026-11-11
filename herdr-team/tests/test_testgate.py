@@ -449,3 +449,75 @@ class ExecuteTest(GateCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SevenKeysTest(unittest.TestCase):
+    """[test] 의 tester_paths·full_if(설계 5.7, 7단계): 형식, 기본값, 식별값에 들지 않음, 확정 질문 절."""
+
+    BASE = {"quick": "a {files}", "full": "b"}
+    PATHS_RULE = "[test]: tester_paths 는 {key} 를 한 번씩 담은 경로 목록이다"
+    GLOB_RULE = "[test]: full_if 는 glob 목록이다"
+
+    def test_parse_and_defaults(self):
+        cfg = testgate.parse_config(dict(self.BASE))
+        self.assertEqual((cfg.tester_paths, cfg.full_if), (None, ()))
+        cfg = testgate.parse_config({**self.BASE, "tester_paths": ["tests/{key}/**", "e2e/{key}/**"],
+                                     "full_if": ["db/migrations/**", "package.json"]})
+        self.assertEqual((cfg.tester_paths, cfg.full_if),
+                         (("tests/{key}/**", "e2e/{key}/**"), ("db/migrations/**", "package.json")))
+        self.assertEqual(testgate.parse_config({**self.BASE, "full_if": []}).full_if, ())
+        # 다섯 인자로 만드는 GateConfig 는 그대로 된다(새 필드는 뒤에 기본값으로 붙는다)
+        old = testgate.GateConfig("a {files}", "b", 30, (0,), False)
+        self.assertEqual((old.tester_paths, old.full_if), (None, ()))
+
+    def test_problems(self):
+        for bad in ("tests/{key}/**", [], ["tests/**"], ["tests/{key}/{key}/**"], ["tests/{key}/**", 3], [" "]):
+            with self.subTest(tester_paths=bad):
+                self.assertEqual(testgate.config_problems({**self.BASE, "tester_paths": bad}), [self.PATHS_RULE])
+        self.assertEqual(testgate.config_problems({**self.BASE, "tester_paths": ["tests/{key}/[a]/**", "/e2e/{key}/**"]}),
+                         ["[test]: tester_paths 'tests/{key}/[a]/**': [] 를 쓸 수 없다",
+                          "[test]: tester_paths '/e2e/{key}/**': / 로 시작하거나 끝날 수 없다"])
+        for bad in ("db/**", ["db/**", 3], [""], [" "]):
+            with self.subTest(full_if=bad):
+                self.assertEqual(testgate.config_problems({**self.BASE, "full_if": bad}), [self.GLOB_RULE])
+        self.assertEqual(testgate.config_problems({**self.BASE, "full_if": ["db/[x]", "src//a"]}),
+                         ["[test]: full_if 'db/[x]': [] 를 쓸 수 없다",
+                          "[test]: full_if 'src//a': 빈 마디나 . · .. 마디를 쓸 수 없다"])
+        good = {**self.BASE, "tester_paths": ["tests/{key}/**", "e2e/x{key}/**"],
+                "full_if": ["db/migrations/**", "package.json", "**/*.sql"]}
+        self.assertEqual(testgate.config_problems(good), [])
+        # 다른 문제와 함께 모으고 새 키 문제는 뒤에 온다
+        self.assertEqual(testgate.config_problems({"quick": "a", "full": "b", "tester_paths": "x", "full_if": 1}),
+                         ["[test]: quick 은 {files} 를 정확히 한 번 담는다", self.PATHS_RULE, self.GLOB_RULE])
+
+    def test_digest_ignores_new_keys(self):
+        plain = testgate.parse_config(dict(self.BASE))
+        more = testgate.parse_config({**self.BASE, "tester_paths": ["tests/{key}/**"], "full_if": ["db/**"]})
+        self.assertEqual(testgate.digest(more), testgate.digest(plain))
+        self.assertEqual(testgate.normalized(more), testgate.normalized(plain))
+
+    def test_confirm_section_shows_new_keys_when_present(self):
+        cfg = testgate.parse_config({**self.BASE, "tester_paths": ["tests/{key}/**", "e2e/{key}/**"],
+                                     "full_if": ["db/**"]})
+        self.assertEqual(testgate.confirm_section(cfg),
+                         "## 테스트 명령\n" + testgate.CONFIRM_LINE + "\n```toml\nquick = \"a {files}\"\nfull = \"b\"\n"
+                         "timeout_min = 30\nok_exit = [0]\nexclusive = false\n"
+                         "tester_paths = [\"tests/{key}/**\", \"e2e/{key}/**\"]\nfull_if = [\"db/**\"]\n```")
+        only = testgate.parse_config({**self.BASE, "full_if": ["db/**"]})
+        self.assertTrue(testgate.confirm_section(only).endswith("exclusive = false\nfull_if = [\"db/**\"]\n```"))
+        self.assertTrue(testgate.confirm_section(testgate.parse_config(dict(self.BASE))).endswith(
+            "exclusive = false\n```"))
+
+
+class SevenKeysApprovalTest(GateCase):
+    """tester_paths·full_if 를 더해도 사용자 확정은 그대로 맞는다(설계 5.7 "이미 한 확정이 그대로 맞는다")."""
+
+    def test_adding_new_keys_keeps_the_confirmation(self):
+        self.use_gate()
+        self.commit("docs/planning/tasks.toml", '[test]\nquick = "fake-test {files}"\nfull = "fake-test --all"\n'
+                    'tester_paths = ["tests/{key}/**"]\nfull_if = ["db/**"]\n', "plan: [test] 7단계 키")
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            gate = testgate.gate_state(self.p)
+            cfg = testgate.load_config(self.p)
+        self.assertEqual(gate["state"], "approved", gate)
+        self.assertEqual((cfg.tester_paths, cfg.full_if), (("tests/{key}/**",), ("db/**",)))

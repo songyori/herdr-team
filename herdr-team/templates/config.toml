@@ -14,6 +14,30 @@ max_rounds = 3
 [overflow]
 enabled = true
 
+# 7단계 선택 기능. 주석을 풀면 켜진다(없으면 꺼져 지금과 같다). init 이 묻고 승인한 것만 쓴다(설계 9.1).
+# 작업 공간(설계 5.10): 개발 단계 직무(roles) 태스크를 슬롯 worktree(.herdr-team/state/slots/slot-<N>)의 태스크 브랜치에서
+# 돌리고 accept 때 관제가 기준 브랜치에 병합한다. worktree 면 roles 의 직무를 [crew.*] 와 user_approval_roles 에서 뺀다
+# (임시 워커만 맡는다). setup·teardown 은 슬롯 작업 루트에서 /bin/sh 로 돈다(환경에 [workspace.env] 값과 HTEAM_SLOT,
+# HTEAM_MAIN_ROOT, HTEAM_SLOT_ROOT). 시험 도구·린트 설정에서 .herdr-team/ 를 뺀다(슬롯 사본이 섞이지 않게).
+# [workspace]
+# mode = "worktree"                 # 없으면 "shared"(지금과 같다)
+# roles = ["developer", "tester"]
+# slots = 3                         # 동시에 쓰는 슬롯 수(1–9, 기본 2)
+# setup = "pnpm install --frozen-lockfile && cp \"$HTEAM_MAIN_ROOT/.env\" .env && pnpm db:up"
+# teardown = "pnpm db:down"
+# setup_timeout_min = 20
+# [workspace.env]                   # 값의 {slot} 은 슬롯 번호(메인 폴더 0). 이름에 KEY·SECRET·TOKEN 을 쓰지 않는다
+# APP_DB_PORT = "548{slot}9"
+# APP_E2E_PORT_BASE = "7{slot}00"
+
+# Redmine(설계 8.12): 사양의 issue 가 가리키는 이슈의 상태·노트를 관제가 바꾼다(워커·리뷰어는 바꾸지 않는다). API 키 값은
+# 이 파일에 쓰지 않는다. env_file 은 git 이 추적하지 않는 파일이어야 한다.
+# [redmine]
+# url = "https://redmine.example.com"
+# key_env = "REDMINE_API_KEY"       # API 키를 담은 환경 변수 이름
+# env_file = ".env"                 # 있으면 키를 이 파일(KEY=VALUE 줄)에서 읽는다
+# status = { start = 2, done = 3, changes = 4, closed = 5 }   # 진행·작업완료·수정 요청·종료 상태 번호
+
 [defaults]
 worker = "claude"         # 작업 워커. 리뷰는 늘 반대쪽 에이전트다
 claude_model = "sonnet"

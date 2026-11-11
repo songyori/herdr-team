@@ -17,7 +17,7 @@ PLAN_FILE = "docs/planning/tasks.toml"
 KEY_RE = re.compile(r"[a-z0-9-]+")
 TEXT_FIELDS = ("title", "target", "change", "constraints")
 REQUIRED = ("key", "role", "title", "owns", "target", "change", "constraints", "acceptance")
-ALLOWED = frozenset(REQUIRED + ("depends_on",))
+ALLOWED = frozenset(REQUIRED + ("depends_on", "issue"))
 NO_TEST = object()  # tasks.toml 에 [test] 가 없다(validate 의 test 기본값)
 
 
@@ -73,6 +73,8 @@ def _fields(cfg, tasks: list[dict]) -> tuple[list[str], dict[str, dict]]:
             errors.append(f"{label}: depends_on 은 문자열 목록이다")
         elif len(set(t.get("depends_on", []))) != len(t.get("depends_on", [])):
             errors.append(f"{label}: depends_on 에 같은 key 가 두 번 있다")
+        if "issue" in t and specs.issue_value(t["issue"]) is None:  # 7단계(설계 5.2)
+            errors.append(f"{label}: issue 는 숫자 1–9자리 이슈 번호다(문자열이나 정수, 앞의 # 는 뗀다)")
         if "acceptance" in t and not _str_list(t["acceptance"]):
             errors.append(f"{label}: acceptance 는 비지 않은 문자열 목록이다")
         for f in TEXT_FIELDS:
@@ -112,17 +114,21 @@ def _cycle(deps: dict[str, list[str]]) -> list[str] | None:
     return None
 
 
-def group_problems(keys: dict[str, dict], fresh: set[str]) -> list[str]:
+def group_problems(keys: dict[str, dict], fresh: set[str], tester_paths=None) -> list[str]:
     """묶음 규칙(설계 5.2, `[test]` 가 있을 때). 묶음은 tester 태스크 하나와 그 depends_on 의 developer 태스크들이다.
-    fresh(아직 적용하지 않은 key) 안의 태스크만 본다. 직무 이름은 설정과 관계없이 글자 그대로다. 문구는 orca-team 원문이다."""
+    fresh(아직 적용하지 않은 key) 안의 태스크만 본다. 직무 이름은 설정과 관계없이 글자 그대로다. 문구는 orca-team 원문이다.
+    tester_paths(`[test]` 의 7단계 키)가 있으면 규칙 1 의 시험 경로는 그 항목의 {key} 를 key 로 채운 것이다(QA 보고서
+    경로는 그대로다)."""
     testers = [k for k, t in keys.items() if t["role"] == testgate.TESTER_ROLE]
     found = []
     for k in testers:
         if k not in fresh:
             continue
-        want = [f"tests/{k}/**", f"docs/qa/{k}.md"]
+        paths = [f"tests/{k}/**"] if tester_paths is None else [path.replace("{key}", k) for path in tester_paths]
+        want = paths + [f"docs/qa/{k}.md"]
         if sorted(keys[k]["owns"]) != sorted(want):
-            found.append(f'{k}: tester 태스크 owns 는 정확히 ["{want[0]}", "{want[1]}"] 다')
+            shown = ", ".join(f'"{w}"' for w in want)
+            found.append(f"{k}: tester 태스크 owns 는 정확히 [{shown}] 다")
         others = [d for d in keys[k].get("depends_on", []) if keys[d]["role"] != testgate.DEVELOPER_ROLE]
         if others:
             found.append(f"{k}: tester 태스크의 depends_on 에는 developer 태스크만 둔다({', '.join(others)})")
@@ -201,7 +207,7 @@ def validate(cfg, tasks: list[dict], test=NO_TEST, applied=()) -> tuple[list[str
                     errors.append(f"{k}: 에셋 전용이 아닌 designer 태스크는 director 태스크 {directors[0]} 에 "
                                   "직간접으로 의존해야 한다")
     if graph_ok and test is not NO_TEST:
-        errors += group_problems(keys, set(keys) - set(applied))
+        errors += group_problems(keys, set(keys) - set(applied), test.get("tester_paths"))
     depth: dict[str, int] = {}
 
     def level(k: str) -> int:
@@ -273,7 +279,9 @@ def _body(t: dict) -> str:
 
 
 def _spec_text(t: dict, tid: str, deps: list[str]) -> str:
-    return specs.render(tid, t["role"], t["title"].strip(), _body(t), owns=t["owns"], depends=deps, plan_key=t["key"])
+    front = {"issue": specs.issue_value(t["issue"])} if "issue" in t else None  # plan_key 줄 다음(설계 5.2 7단계)
+    return specs.render(tid, t["role"], t["title"].strip(), _body(t), owns=t["owns"], depends=deps, plan_key=t["key"],
+                        front=front)
 
 
 def _roundtrip(t: dict, tid: str, deps: list[str]) -> list[str]:
@@ -286,6 +294,8 @@ def _roundtrip(t: dict, tid: str, deps: list[str]) -> list[str]:
     want = {"id": tid, "role": t["role"], "title": t["title"].strip(), "owns": t["owns"], "plan_key": t["key"]}
     if deps:
         want["depends_on"] = deps
+    if "issue" in t:
+        want["issue"] = specs.issue_value(t["issue"])
     if spec.front != want:
         found.append("사양으로 옮기면 front matter(role·title·owns·depends_on·plan_key)가 바뀐다")
     return found

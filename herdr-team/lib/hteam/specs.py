@@ -11,6 +11,7 @@ from .paths import find_project
 from .util import read_json, write_atomic
 
 ID_RE = re.compile(r"T-\d{3,}")
+ISSUE_RE = re.compile(r"#?([0-9]{1,9})")  # 이슈 번호(설계 5.1 7단계). 앞의 # 는 뗀다
 SECTIONS = ("Target", "Change", "Constraints", "Acceptance")
 LIST_KEYS = ("owns", "depends_on")
 PLACEHOLDER_RE = re.compile(r"<[^<>\n]*>")
@@ -40,6 +41,20 @@ class Spec:
     body: str
     owns: list[str] | None = None
     depends_on: list[str] = field(default_factory=list)
+    issue: str | None = None  # 이슈 번호 숫자 문자열(앞의 # 를 뗀 값). front["issue"] 는 쓴 값 그대로다
+
+
+def issue_value(value) -> str | None:
+    """사양 front matter·tasks.toml 의 issue(설계 5.1·5.2): 숫자 1–9자리(앞의 # 는 떼고 앞자리 0 은 그대로) 문자열.
+    정수는 문자열로 본다(bool 은 아니다). 아니면 None."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        value = str(value)
+    if not isinstance(value, str):
+        return None
+    m = ISSUE_RE.fullmatch(value.strip())
+    return m.group(1) if m else None
 
 
 def _bad(message: str) -> HteamError:
@@ -100,7 +115,8 @@ def parse(text: str) -> Spec:
     if current is not None:
         sections[current] = "\n".join(buf).strip()
     return Spec(id=front["id"], role=front["role"], title=front["title"], front=front, sections=sections, body=body,
-                owns=front.get("owns") or None, depends_on=list(front.get("depends_on") or []))
+                owns=front.get("owns") or None, depends_on=list(front.get("depends_on") or []),
+                issue=issue_value(front.get("issue")))
 
 
 def problems(spec: Spec) -> list[str]:
@@ -116,6 +132,8 @@ def problems(spec: Spec) -> list[str]:
         found.append(f"worker 는 claude·codex 중 하나다: {spec.front['worker']!r}")
     found += [f"depends_on 의 {d!r} 는 태스크 ID 가 아니다" for d in spec.depends_on if not ID_RE.fullmatch(d)]
     found += [f"owns {o!r}: {why}" for o in spec.owns or [] if (why := owns_problem(o))]
+    if "issue" in spec.front and spec.issue is None:
+        found.append(f"issue 는 숫자 1–9자리 이슈 번호다(앞의 # 는 뗀다): {spec.front['issue']!r}")
     return found
 
 

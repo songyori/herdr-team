@@ -446,3 +446,317 @@ class TemplateConfigTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+import tomllib  # noqa: E402  (7단계 덧붙임)
+
+WS_TABLE = """
+[workspace]
+mode = "worktree"
+roles = ["developer"]
+slots = 3
+setup = "make setup"
+teardown = "make down"
+setup_timeout_min = 5
+
+[workspace.env]
+APP_DB_PORT = "548{slot}9"
+APP_NAME = "앱 {slot}"
+"""
+
+REDMINE_TABLE = """
+[redmine]
+url = "https://redmine.example.com/"
+key_env = "REDMINE_API_KEY"
+env_file = ".env"
+status = { start = 2, done = 3, changes = 4, closed = 5 }
+"""
+
+NAME_RULE = "이름은 대문자·숫자·_ 이고 HTEAM_·HC_·HORCH_ 로 시작하지 않으며 KEY·SECRET·TOKEN 을 담지 않는다"
+VALUE_RULE = "값은 줄바꿈 없는 1 KiB 이하 문자열이다"
+ENV_COUNT_RULE = "workspace.env 는 31개 이하다(HTEAM_SLOT 을 더해 horch --env 32개 안이다)"
+
+
+class WorkspaceConfigTest(TeamCase):
+    """[workspace](설계 4.1·4.2·5.10, 7단계). 표가 없으면 shared 기본값이고 0.4.0 과 같다."""
+
+    def load(self, text: str):
+        self.init_project(config=text, commit=False)
+        return config.load(Project(self.proj))
+
+    def errors(self, text: str) -> list[str]:
+        with self.assertRaises(HteamError) as ctx:
+            self.load(text)
+        self.assertEqual((ctx.exception.code, ctx.exception.exit_code), ("bad_config", 2))
+        return ctx.exception.data["errors"]
+
+    def test_no_table_is_shared_default(self):
+        cfg = self.load(BASE_CONFIG)
+        ws = cfg.workspace
+        self.assertEqual(ws, config.Workspace())
+        self.assertEqual((ws.mode, ws.roles, ws.slots, ws.setup, ws.teardown, ws.setup_timeout_min, ws.env),
+                         ("shared", ("developer", "tester"), 2, None, None, 20, {}))
+        self.assertFalse(ws.on)
+        self.assertEqual([r for r in cfg.roles if ws.covers(r)], [])
+        self.assertIsNone(cfg.redmine)
+        with self.assertRaises(Exception):
+            ws.mode = "worktree"  # 고정 값이다(frozen)
+
+    def test_worktree_values(self):
+        ws = self.load(BASE_CONFIG + WS_TABLE).workspace
+        self.assertEqual((ws.mode, ws.roles, ws.slots, ws.setup, ws.teardown, ws.setup_timeout_min),
+                         ("worktree", ("developer",), 3, "make setup", "make down", 5))
+        self.assertEqual(ws.env, {"APP_DB_PORT": "548{slot}9", "APP_NAME": "앱 {slot}"})  # {slot} 은 그대로 둔다
+        self.assertTrue(ws.on)
+        self.assertEqual([r for r in ("planner", "developer", "tester") if ws.covers(r)], ["developer"])
+
+    def test_default_roles_are_the_defined_ones(self):
+        ws = self.load(BASE_CONFIG + '\n[workspace]\nmode = "worktree"\n').workspace
+        self.assertEqual((ws.roles, ws.slots, ws.setup_timeout_min, ws.env), (("developer", "tester"), 2, 20, {}))
+        no_tester = BASE_CONFIG.replace('[roles.tester]\ntitle = "테스트"\nowns = ["tests/**", "docs/qa/**"]\n', "")
+        ws = self.load(no_tester + '\n[workspace]\nmode = "worktree"\n').workspace
+        self.assertEqual(ws.roles, ("developer",))  # 기본 roles 가운데 설정에 있는 직무만
+        self.assertFalse(ws.covers("tester"))
+
+    def test_shared_checks_but_does_not_use(self):
+        # shared 면 나머지 키는 검사만 한다(설계 4.1). 고정 에이전트·승인 직무 검사는 worktree 에서만 한다
+        text = CREW_CONFIG.replace("user_approval_roles = []", 'user_approval_roles = ["developer"]')
+        cfg = self.load(text + WS_TABLE.replace('mode = "worktree"', 'mode = "shared"'))
+        self.assertFalse(cfg.workspace.on)
+        self.assertFalse(cfg.workspace.covers("developer"))
+        self.assertEqual((cfg.workspace.slots, cfg.workspace.roles), (3, ("developer",)))
+        self.assertEqual(self.errors(BASE_CONFIG + "\n[workspace]\nslots = 0\n"), ["workspace.slots 는 1–9 정수다"])
+
+    def test_errors_are_collected(self):
+        long_value = "x" * 1025
+        text = BASE_CONFIG + f"""
+[workspace]
+mode = "worktrees"
+roles = ["developer", "ghost", "nope"]
+slots = 10
+setup = " "
+teardown = 3
+setup_timeout_min = 121
+colour = "red"
+alpha = 1
+
+[workspace.env]
+lower = "1"
+HTEAM_X = "1"
+HC_X = "1"
+HORCH_X = "1"
+API_KEY = "1"
+MY_SECRET = "1"
+GH_TOKEN = "1"
+MULTI = "a\\nb"
+NUM = 5
+LONG = "{long_value}"
+OK_PORT = "81{{slot}}0"
+"""
+        errs = self.errors(text)
+        want = ["workspace.mode 는 shared·worktree 다",
+                "workspace.roles 에 정의되지 않은 직무가 있다: ghost, nope",
+                "workspace.slots 는 1–9 정수다",
+                "workspace.setup 은 비지 않은 문자열이다",
+                "workspace.teardown 은 비지 않은 문자열이다",
+                "workspace.setup_timeout_min 은 1–120 정수다",
+                "workspace: 모르는 키 alpha, colour",
+                *[f"workspace.env.{n}: {NAME_RULE}" for n in ("lower", "HTEAM_X", "HC_X", "HORCH_X", "API_KEY",
+                                                              "MY_SECRET", "GH_TOKEN")],
+                *[f"workspace.env.{n}: {VALUE_RULE}" for n in ("MULTI", "NUM", "LONG")]]
+        for expected in want:
+            self.assertIn(expected, errs)
+        self.assertEqual(len([e for e in errs if e.startswith("workspace")]), len(want), errs)
+        self.assertFalse([e for e in errs if "OK_PORT" in e], errs)
+
+    def test_value_limit_is_utf8_bytes(self):
+        ok = "가" * 341 + "x"  # 1024 바이트
+        cfg = self.load(BASE_CONFIG + f'\n[workspace]\n[workspace.env]\nA_PORT = "{ok}"\nEMPTY = ""\n')
+        self.assertEqual(len(cfg.workspace.env["A_PORT"].encode("utf-8")), 1024)
+        self.assertEqual(cfg.workspace.env["EMPTY"], "")
+        self.assertEqual(self.errors(BASE_CONFIG + f'\n[workspace]\n[workspace.env]\nA_PORT = "{"가" * 342}"\n'),
+                         [f"workspace.env.A_PORT: {VALUE_RULE}"])
+
+    def test_env_count_leaves_room_for_hteam_slot(self):
+        # 워커에는 HTEAM_SLOT 을 더해 horch --env 로 넘긴다(상한 32, orch 설계 14.1). 그래서 [workspace.env] 는 31개까지다
+        many = "".join(f'A{i}_PORT = "1"\n' for i in range(31))
+        ws = self.load(BASE_CONFIG + '\n[workspace]\nmode = "worktree"\n[workspace.env]\n' + many).workspace
+        self.assertEqual(len(ws.env), 31)
+        self.assertEqual(self.errors(BASE_CONFIG + '\n[workspace]\nmode = "worktree"\n[workspace.env]\n' + many
+                                     + 'A31_PORT = "1"\n'), [ENV_COUNT_RULE])
+
+    def test_nul_in_value_is_refused(self):
+        # TOML 의 \u0000 은 문자열로 읽힌다. subprocess 환경과 horch --env 가 받지 않으므로 설정 검사에서 막는다
+        self.assertEqual(self.errors(BASE_CONFIG + '\n[workspace]\n[workspace.env]\nA_PORT = "81\\u00000"\n'),
+                         [f"workspace.env.A_PORT: {VALUE_RULE}"])
+
+    def test_shapes(self):
+        self.assertIn("[workspace] 는 표여야 한다", self.errors("workspace = 1\n" + BASE_CONFIG))
+        self.assertIn("[workspace.env] 는 표여야 한다", self.errors(BASE_CONFIG + "\n[workspace]\nenv = 1\n"))
+        for roles in ('"developer"', "[]", '["developer", 3]', '[" "]'):
+            with self.subTest(roles=roles):
+                self.assertEqual(self.errors(BASE_CONFIG + f"\n[workspace]\nroles = {roles}\n"),
+                                 ["workspace.roles 는 비지 않은 직무 이름 목록이다"])
+        for value in ("true", '"2"', "0", "1.5"):
+            with self.subTest(slots=value):
+                self.assertEqual(self.errors(BASE_CONFIG + f"\n[workspace]\nslots = {value}\n"),
+                                 ["workspace.slots 는 1–9 정수다"])
+        ws = self.load(BASE_CONFIG + "\n[workspace]\nslots = 9\nsetup_timeout_min = 120\n").workspace
+        self.assertEqual((ws.slots, ws.setup_timeout_min), (9, 120))
+        self.assertEqual(self.errors(BASE_CONFIG + "\n[workspace]\nsetup_timeout_min = 0\n"),
+                         ["workspace.setup_timeout_min 은 1–120 정수다"])
+
+    def test_worktree_refuses_crew_and_approval_roles(self):
+        text = CREW_CONFIG.replace("user_approval_roles = []", 'user_approval_roles = ["developer"]')
+        errs = self.errors(text + '\n[workspace]\nmode = "worktree"\n')
+        self.assertEqual(sorted(errs), sorted([
+            "crew.production: developer 는 작업 공간 직무다(worktree 모드에서는 임시 워커만 맡는다)",
+            "crew.test: tester 는 작업 공간 직무다(worktree 모드에서는 임시 워커만 맡는다)",
+            "user_approval_roles 의 developer 는 작업 공간 직무다(worktree 모드에서는 승인 직무로 두지 않는다)"]))
+        # 작업 공간 직무를 갖지 않은 고정 에이전트는 된다(roles 를 developer 로 좁히고 생산 에이전트에서 뺐다)
+        narrowed = CREW_CONFIG.replace('roles = ["planner", "developer"]', 'roles = ["planner"]')
+        cfg = self.load(narrowed + '\n[workspace]\nmode = "worktree"\nroles = ["developer"]\n')
+        self.assertEqual(list(cfg.crew), ["production", "test"])
+        self.assertTrue(cfg.workspace.covers("developer"))
+        self.assertFalse(cfg.workspace.covers("tester"))
+
+
+class RedmineConfigTest(TeamCase):
+    """[redmine](설계 4.1·4.2·8.12, 7단계). 표가 없으면 연동이 꺼진다."""
+
+    def load(self, text: str):
+        self.init_project(config=text, commit=False)
+        return config.load(Project(self.proj))
+
+    def errors(self, text: str) -> list[str]:
+        with self.assertRaises(HteamError) as ctx:
+            self.load(text)
+        self.assertEqual((ctx.exception.code, ctx.exception.exit_code), ("bad_config", 2))
+        return ctx.exception.data["errors"]
+
+    @staticmethod
+    def table(**over) -> str:
+        """[redmine] 표. over 의 값은 TOML 값 글자 그대로이고 None 이면 그 키를 뺀다."""
+        values = {"url": '"https://redmine.example.com"', "key_env": '"REDMINE_API_KEY"',
+                  "status": "{ start = 2, done = 3, changes = 4, closed = 5 }"}
+        values.update(over)
+        return "\n[redmine]\n" + "".join(f"{k} = {v}\n" for k, v in values.items() if v is not None)
+
+    def test_values(self):
+        rm = self.load(BASE_CONFIG + REDMINE_TABLE).redmine
+        self.assertEqual((rm.url, rm.key_env, rm.env_file, rm.status),
+                         ("https://redmine.example.com", "REDMINE_API_KEY", ".env",
+                          {"start": 2, "done": 3, "changes": 4, "closed": 5}))
+        with self.assertRaises(Exception):
+            rm.url = "https://other.example"  # 고정 값이다(frozen)
+        rm = self.load(BASE_CONFIG + self.table(url='"http://10.0.0.5:3000/redmine/"')).redmine
+        self.assertEqual((rm.url, rm.env_file), ("http://10.0.0.5:3000/redmine", None))
+        self.assertIsNone(self.load(BASE_CONFIG).redmine)
+
+    def test_errors(self):
+        url_rule = "redmine.url 은 http·https URL 이다"
+        key_rule = "redmine.key_env 는 환경 변수 이름이다"
+        file_rule = "redmine.env_file 은 프로젝트 안 상대 경로다"
+        status_rule = "redmine.status 는 start·done·changes·closed 네 양의 정수다"
+        cases = [
+            ({"url": '"ftp://x.example"'}, url_rule), ({"url": '"redmine.example.com"'}, url_rule),
+            ({"url": '"https://"'}, url_rule), ({"url": '"https://a b.example"'}, url_rule), ({"url": "3"}, url_rule),
+            ({"url": None}, url_rule),
+            ({"key_env": '"1KEY"'}, key_rule), ({"key_env": '"A-B"'}, key_rule), ({"key_env": '""'}, key_rule),
+            ({"key_env": None}, key_rule),
+            ({"env_file": '"/etc/redmine.env"'}, file_rule), ({"env_file": '"../.env"'}, file_rule),
+            ({"env_file": '"a/../../.env"'}, file_rule), ({"env_file": '""'}, file_rule),
+            ({"env_file": '"~/.env"'}, file_rule), ({"env_file": "1"}, file_rule),
+            ({"status": "{ start = 2, done = 3, changes = 4 }"}, status_rule),
+            ({"status": "{ start = 2, done = 3, changes = 4, closed = 0 }"}, status_rule),
+            ({"status": "{ start = 2, done = 3, changes = 4, closed = 5, other = 6 }"}, status_rule),
+            ({"status": "{ start = 2, done = 3, changes = 4, closed = true }"}, status_rule),
+            ({"status": "3"}, status_rule), ({"status": None}, status_rule),
+            ({"project": '"kcp"'}, "redmine: 모르는 키 project"),
+        ]
+        for over, want in cases:
+            with self.subTest(over=over):
+                self.assertEqual(self.errors(BASE_CONFIG + self.table(**over)), [want])
+        self.assertEqual(self.errors("redmine = 1\n" + BASE_CONFIG), ["[redmine] 는 표여야 한다"])
+        self.assertEqual(self.load(BASE_CONFIG + self.table(env_file='"config/redmine.env"')).redmine.env_file,
+                         "config/redmine.env")
+
+
+class TestSettingsReadTest(TeamCase):
+    """hteam test 가 쓰는 설정(Rules 11, 설계 4.2: hteam test 는 설정이 깨져도 돈다. Codex 계획 리뷰 r1): config.toml 을
+    검사 없이 읽고 예외를 내지 않는다. 슬롯 env 를 정하는 [workspace] 와 뺄 key_env 이름만 본다."""
+
+    def read(self, text: str | None):
+        """config.toml 을 text 로 쓰고(None 이면 지운다) (test_settings, redmine_key_env)."""
+        self.init_project(config=text or BASE_CONFIG, commit=False)
+        if text is None:
+            (self.team / "config.toml").unlink()
+        p = Project(self.proj)
+        return config.test_settings(p), config.redmine_key_env(p)
+
+    def test_valid_config_gives_the_same_values(self):
+        got, name = self.read(BASE_CONFIG + WS_TABLE + REDMINE_TABLE)
+        self.assertEqual(got.workspace, config.load(Project(self.proj)).workspace)
+        self.assertEqual((got.redmine, name), (config.RedmineKey("REDMINE_API_KEY"), "REDMINE_API_KEY"))
+
+    def test_errors_elsewhere_do_not_matter(self):
+        text = (BASE_CONFIG.replace("max_parallel = 4", "max_parallel = 0") + WS_TABLE
+                + REDMINE_TABLE.replace('url = "https://redmine.example.com/"', 'url = "ftp://x"'))
+        got, name = self.read(text)
+        with self.assertRaises(HteamError):
+            config.load(Project(self.proj))  # 전체 검사는 실패한다
+        self.assertEqual((got.workspace.mode, got.workspace.slots, got.workspace.env["APP_DB_PORT"]),
+                         ("worktree", 3, "548{slot}9"))
+        self.assertEqual((got.redmine, name), (config.RedmineKey("REDMINE_API_KEY"), "REDMINE_API_KEY"))
+
+    def test_unreadable_or_broken_tables_fall_back(self):
+        cases = {"no_file": None, "toml": "max_parallel = [\n", "no_tables": BASE_CONFIG,
+                 "bad_workspace": BASE_CONFIG + '\n[workspace]\nmode = "worktree"\nslots = 10\n',
+                 "workspace_not_table": "workspace = 1\n" + BASE_CONFIG,
+                 "bad_key_env": BASE_CONFIG + '\n[redmine]\nkey_env = "1KEY"\n',
+                 "redmine_not_table": "redmine = 1\n" + BASE_CONFIG}
+        for case, text in cases.items():
+            with self.subTest(case=case):
+                self.assertEqual(self.read(text), (config.TestSettings(), None))
+
+
+class TemplateSevenExampleTest(unittest.TestCase):
+    """템플릿 config.toml 의 [workspace]·[redmine] 주석 예시(설계 4.1 7단계): 주석이라 켜지지 않고, 풀면 검사를 통과한다."""
+
+    def setUp(self):
+        self.text = (ROOT / "templates" / "config.toml").read_text(encoding="utf-8")
+
+    def block(self, header: str) -> str:
+        """header 줄부터 `# ` 로 시작하는 줄이 끝날 때까지 `# ` 를 뗀 TOML."""
+        lines = self.text.splitlines()
+        out = []
+        for line in lines[lines.index(header):]:
+            if not line.startswith("# "):
+                break
+            out.append(line[2:])
+        return "\n".join(out) + "\n"
+
+    def test_comment_only(self):
+        raw = tomllib.loads(self.text)
+        self.assertNotIn("workspace", raw)
+        self.assertNotIn("redmine", raw)
+        cfg = config.build(raw)
+        self.assertFalse(cfg.workspace.on)
+        self.assertIsNone(cfg.redmine)
+
+    def test_uncommented_example_is_valid(self):
+        ws, rm = self.block("# [workspace]"), self.block("# [redmine]")
+        raw = tomllib.loads(BASE_CONFIG + "\n" + ws + "\n" + rm)
+        self.assertEqual(config.validate(raw), [])
+        cfg = config.build(raw)
+        self.assertEqual((cfg.workspace.mode, cfg.workspace.roles, cfg.workspace.slots),
+                         ("worktree", ("developer", "tester"), 3))
+        self.assertEqual(cfg.workspace.env, {"APP_DB_PORT": "548{slot}9", "APP_E2E_PORT_BASE": "7{slot}00"})
+        self.assertIn('cp "$HTEAM_MAIN_ROOT/.env" .env', cfg.workspace.setup)
+        self.assertEqual((cfg.redmine.key_env, cfg.redmine.env_file), ("REDMINE_API_KEY", ".env"))
+        self.assertEqual(cfg.redmine.status, {"start": 2, "done": 3, "changes": 4, "closed": 5})
+        # 템플릿의 고정 에이전트는 개발·테스트 직무를 갖는다. worktree 예시를 그대로 풀면 주석대로 검사가 막는다
+        errs = config.validate(tomllib.loads(self.text + "\n" + ws))
+        self.assertIn("crew.production: developer 는 작업 공간 직무다(worktree 모드에서는 임시 워커만 맡는다)", errs)
+        self.assertIn("crew.test: tester 는 작업 공간 직무다(worktree 모드에서는 임시 워커만 맡는다)", errs)
+        self.assertIn("worktree 면 roles 의 직무를 [crew.*] 와 user_approval_roles 에서 뺀다", self.text)

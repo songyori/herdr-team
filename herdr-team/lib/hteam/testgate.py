@@ -23,12 +23,12 @@ from typing import Iterator
 
 from . import gitio, state
 from .errors import FAIL, TIMEOUT, USAGE, HteamError
-from .globs import matches_any
+from .globs import matches_any, owns_problem
 from .paths import SHIM, find_project
 from .util import dumps, now, read_json, read_json_strict, show, write_json
 
 PLAN_FILE = "docs/planning/tasks.toml"  # plan.PLAN_FILE 과 같다(plan 이 이 모듈을 쓰므로 따로 둔다)
-KEYS = ("quick", "full", "timeout_min", "ok_exit", "exclusive")
+KEYS = ("quick", "full", "timeout_min", "ok_exit", "exclusive", "tester_paths", "full_if")
 DEFAULT_TIMEOUT_MIN = 30
 DEVELOPER_ROLE, TESTER_ROLE = "developer", "tester"  # 묶음 규칙·관문의 직무 이름은 설정과 관계없이 글자 그대로다
 GATED_ROLES = (DEVELOPER_ROLE, TESTER_ROLE)
@@ -54,6 +54,9 @@ class GateConfig:
     timeout_min: int
     ok_exit: tuple[int, ...]
     exclusive: bool
+    # 7단계 키(설계 5.2·5.7). 돌릴 명령을 바꾸지 않으므로 식별값(normalized·digest)에 넣지 않는다
+    tester_paths: tuple[str, ...] | None = None
+    full_if: tuple[str, ...] = ()
 
 
 def _int(value) -> bool:
@@ -131,6 +134,19 @@ def config_problems(raw) -> list[str]:
         found.append("[test]: ok_exit 는 정수 목록")
     if not isinstance(raw.get("exclusive", False), bool):
         found.append("[test]: exclusive 는 true 또는 false")
+    if "tester_paths" in raw:  # 7단계. 항목의 {key} 를 채운 경로가 owns 값 규칙(4.1)을 지켜야 한다
+        paths = raw["tester_paths"]
+        if not (isinstance(paths, list) and paths and all(isinstance(x, str) and x.count("{key}") == 1 for x in paths)):
+            found.append("[test]: tester_paths 는 {key} 를 한 번씩 담은 경로 목록이다")
+        else:
+            found += [f"[test]: tester_paths {x!r}: {why}" for x in paths
+                      if (why := owns_problem(x.replace("{key}", "key")))]
+    if "full_if" in raw:  # 7단계. owns 문법의 glob 목록(빈 목록은 된다)
+        patterns = raw["full_if"]
+        if not (isinstance(patterns, list) and all(isinstance(x, str) and x.strip() for x in patterns)):
+            found.append("[test]: full_if 는 glob 목록이다")
+        else:
+            found += [f"[test]: full_if {x!r}: {why}" for x in patterns if (why := owns_problem(x))]
     return found
 
 
@@ -139,8 +155,10 @@ def parse_config(raw) -> GateConfig:
     if problems:
         raise HteamError("bad_test_config", f"{PLAN_FILE} [test] 검증 실패: " + "; ".join(problems), USAGE,
                          f"기획 태스크로 {PLAN_FILE} 의 [test] 를 고친다(사용자가 직접 넣었으면 사용자가 고친다)")
+    paths = raw.get("tester_paths")
     return GateConfig(raw["quick"].strip(), raw["full"].strip(), raw.get("timeout_min", DEFAULT_TIMEOUT_MIN),
-                      tuple(raw.get("ok_exit", [0])), raw.get("exclusive", False))
+                      tuple(raw.get("ok_exit", [0])), raw.get("exclusive", False),
+                      tuple(paths) if paths is not None else None, tuple(raw.get("full_if", [])))
 
 
 def normalized(cfg: GateConfig) -> dict:
@@ -275,13 +293,19 @@ def fenced(text: str, lang: str = "") -> str:
 
 
 def confirm_section(cfg: GateConfig) -> str:
-    """확정 질문 context 끝의 `## 테스트 명령` 절(설계 5.7): 경고 한 줄과 정규화한 다섯 값의 TOML 블록."""
+    """확정 질문 context 끝의 `## 테스트 명령` 절(설계 5.7): 경고 한 줄과 정규화한 다섯 값의 TOML 블록. 7단계 키
+    tester_paths·full_if 는 있으면 뒤에 함께 보인다(식별값에는 들지 않는다)."""
     values = normalized(cfg)
-    body = "\n".join([f"quick = {json.dumps(values['quick'], ensure_ascii=False)}",
-                      f"full = {json.dumps(values['full'], ensure_ascii=False)}",
-                      f"timeout_min = {values['timeout_min']}",
-                      f"ok_exit = {json.dumps(values['ok_exit'])}",
-                      f"exclusive = {'true' if values['exclusive'] else 'false'}"])
+    lines = [f"quick = {json.dumps(values['quick'], ensure_ascii=False)}",
+             f"full = {json.dumps(values['full'], ensure_ascii=False)}",
+             f"timeout_min = {values['timeout_min']}",
+             f"ok_exit = {json.dumps(values['ok_exit'])}",
+             f"exclusive = {'true' if values['exclusive'] else 'false'}"]
+    if cfg.tester_paths is not None:
+        lines.append(f"tester_paths = {json.dumps(list(cfg.tester_paths), ensure_ascii=False)}")
+    if cfg.full_if:
+        lines.append(f"full_if = {json.dumps(list(cfg.full_if), ensure_ascii=False)}")
+    body = "\n".join(lines)
     return f"## 테스트 명령\n{CONFIRM_LINE}\n{fenced(body, 'toml')}"
 
 
