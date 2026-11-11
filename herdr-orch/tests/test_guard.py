@@ -140,8 +140,18 @@ class InjectTest(unittest.TestCase):
         # 사전 검증 S2: 사용자 정책이 inherit = "core" 여도 Codex 셸이 --env 값을 보게 한다
         self.assertEqual(guard.inject_codex_env(["codex", "--no-daemon"], "t7", {"B": "가", "A": "1"}),
                          ["codex", "-c", 'shell_environment_policy.set.HC_TERMINAL_ID="t7"',
-                          "-c", 'shell_environment_policy.set.A="1"', "-c", 'shell_environment_policy.set.B="\\uac00"',
+                          "-c", 'shell_environment_policy.set.A="1"', "-c", 'shell_environment_policy.set.B="가"',
                           "--no-daemon"])
+
+    def test_codex_env_values_round_trip_as_toml(self):
+        # Codex 는 -c 값을 TOML 로 읽는다. BMP 밖 문자(이모지)를 \ud83d 같은 대리 쌍으로 쓰면 TOML 이 그대로 받지 못한다
+        # (Codex 커밋 리뷰 a9e75d0)
+        values = {"E": "/tmp/😀", "K": "가나", "Q": 'a"b\\c', "T": "x\ty", "U": "\x1f"}
+        argv = guard.inject_codex_env(["codex"], "t7", values)
+        sets = [a.removeprefix("shell_environment_policy.set.") for a in argv if a.startswith("shell_environment_policy.set.")]
+        parsed = tomllib.loads("\n".join(sets))
+        self.assertEqual({k: parsed[k] for k in values}, values)
+        self.assertEqual(parsed["HC_TERMINAL_ID"], "t7")
 
 
 class GuardCliTest(HorchCase):

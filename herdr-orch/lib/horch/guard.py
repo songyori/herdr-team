@@ -16,7 +16,8 @@ def inject_codex_env(argv: list[str], terminal: str, env: dict[str, str] | None 
     if argv and Path(argv[0]).name == "codex":
         extra = ["-c", f"shell_environment_policy.set.HC_TERMINAL_ID={json.dumps(terminal)}"]
         for name in sorted(env or {}):
-            extra += ["-c", f"shell_environment_policy.set.{name}={json.dumps(env[name])}"]
+            # -c 값은 TOML 이다. ensure_ascii 면 BMP 밖 문자가 TOML 이 받지 않는 대리 쌍(\ud83d…)이 된다
+            extra += ["-c", f"shell_environment_policy.set.{name}={json.dumps(env[name], ensure_ascii=False)}"]
         return [argv[0], *extra, *argv[1:]]
     return list(argv)
 
