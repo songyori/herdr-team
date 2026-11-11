@@ -24,6 +24,7 @@
 - `.herdr-team/bin/hteam watch` 를 늘 Bash `run_in_background: true` 로 하나 띄워 둔다. 끝나면(메시지 도착) 출력의 `messages` 를 아래대로 처리하고 바로 다시 띄운다. `status: orphaned` 면 `/herdr-team:up` 을 한다.
   - `progress`: 한두 줄로 전한다. `done`: 결과, 태스크별 리뷰 판정과 라운드 수, 마지막 전체 테스트(full) 결과를 요약해 전한다.
   - `ask`(기획자·디렉터 질문), `question`(관제의 `[test]` 확정 질문): 아래 "질문 표시 규칙"대로 묻고 답을 `.herdr-team/bin/hteam answer <id> "<답>"` 으로 돌려준다. `-` 로 시작하는 답은 `hteam answer <id> -- "<답>"`.
+  - `question` 의 답이 `확정한다 (추천)` 이 아니면 답을 돌려준 뒤 사용자가 정한 대로 한다. `고친다` 면 `[test]` 를 고치는 기획 태스크(`plan: append`)를 위 순서대로 만들어 시작한다(답만으로는 아무 일도 일어나지 않고 관제는 같은 명령을 다시 묻지 않는다. 고친 `[test]` 가 커밋되면 관제가 다시 묻는다).
   - `approval`(일괄 승인): 아래 "질문 표시 규칙"대로 묻고 `.herdr-team/bin/hteam design-decide <id> --json -` 으로 넘긴다(`answer` 로 답하지 않는다).
   - `decide`: 아래 "decide 처리 기준"대로 처리하고 `.herdr-team/bin/hteam answer <id> "<처리 내용>"` 으로 닫는다.
   - `result`(메인이 기다리지 않은 큐 요청의 결과): 실패면 다시 판단한다.

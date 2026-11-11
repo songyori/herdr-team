@@ -1134,6 +1134,7 @@ orca-team 0.7.0 `queue.py` 를 옮긴다(`lib/hteam/queue.py`). 메인은 horch 
 - 큐 명령(7.1)은 관제 큐를 거친다. "관제가 꺼져 있다" 면 `/herdr-team:up` 뒤 다시 한다. "관제가 처리 중" 이면 결과가 watch 의 `result` 로 온다.
 - `horch` 와 `hteam drive` 를 직접 부르지 않는다(훅이 막는다). 메인 터미널이 Run 에 묶이거나 관제가 되면 horch 깨우기 글이 사용자 입력란에 들어온다.
 - `.herdr-team/bin/hteam watch` 를 늘 Bash `run_in_background: true` 로 하나 띄워 둔다. 끝나면 `messages` 를 7.2 표대로 처리하고 바로 다시 띄운다. `status: orphaned` 면 `/herdr-team:up` 을 한다.
+- `[test]` 확정 질문(`question`)의 답이 `확정한다 (추천)` 이 아니면 답을 돌려준 뒤 사용자가 정한 대로 한다. `고친다` 면 `[test]` 를 고치는 기획 태스크(`plan: append`)를 위 순서대로 만들어 시작한다. 답 파일만으로는 아무 일도 일어나지 않고 관제는 같은 식별값을 다시 묻지 않는다. 고친 `[test]` 가 커밋되면 새 식별값으로 다시 묻는다(8.4, Codex 브랜치 리뷰 p6r3).
 - decide 가 열린 동안 관제는 그 태스크를 자동으로 다루지 않는다. 처리했으면 명령이 적히지 않은 escalation 도 반드시 `hteam answer <id> "<처리 내용>"` 으로 닫는다.
 - 관제는 훅이 확인하고 꺼져 있으면 자동으로 다시 띄운다(config.toml `[drive] auto_up`). 훅 안내가 없는데 관제 상태가 의심되면 `/herdr-team:up` 을 실행한다. 메인을 다시 열었는데 답하지 않은 질문이 있으면 `/herdr-team:up` 이 다시 묻는다.
 - 업그레이드 줄(5단계, 8.4)은 그대로다.

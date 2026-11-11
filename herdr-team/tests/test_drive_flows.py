@@ -659,6 +659,14 @@ class ConfirmTest(FlowCase):
         self.d.confirm_test()
         self.assertEqual(len({q["test_digest"] for q in self.items("question")}), 2)
 
+    def test_main_rule_turns_fix_answer_into_planning_task(self):
+        """`고친다` 답은 답 파일만 남고 관제는 같은 식별값을 다시 묻지 않는다. 메인 규칙이 그 답을 `[test]` 고치기 기획
+        태스크로 잇는다(설계 7.4, Codex 브랜치 리뷰 p6r3: 없으면 마무리 full 이 멈춘다). 새 식별값은 위 시험대로 다시 묻는다."""
+        from tests.helpers import ROOT
+        main = (ROOT / "templates" / "CLAUDE.section.md").read_text(encoding="utf-8")
+        self.assertIn("`question` 의 답이 `확정한다 (추천)` 이 아니면 답을 돌려준 뒤 사용자가 정한 대로 한다. `고친다` 면 "
+                      "`[test]` 를 고치는 기획 태스크(`plan: append`)를 위 순서대로 만들어 시작한다", main)
+
     def test_approved_or_no_gate_asks_nothing(self):
         self.assertIsNone(self.d.confirm_test()["asked"])
         self.use_gate()
