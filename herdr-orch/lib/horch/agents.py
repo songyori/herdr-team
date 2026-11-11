@@ -28,13 +28,18 @@ def _has(extra: list[str], names: set[str], short: str) -> bool:
     return False
 
 
+def toml_str(text: str) -> str:
+    """TOML 기본 문자열(Codex -c 값). JSON 문자열은 TOML 로도 읽힌다(\\" \\\\ \\t \\uXXXX). ensure_ascii 면 BMP 밖 문자가
+    TOML 이 받지 않는 대리 쌍이 되므로 끄고, JSON 이 그대로 두는 DEL 만 TOML 이 막으므로 따로 바꾼다."""
+    return json.dumps(text, ensure_ascii=False).replace("\x7f", "\\u007f")
+
+
 def codex_startup_args(cwd: str | Path, *, resolve: bool = True) -> list[str]:
     """Codex 가 시작 창에서 멈추지 않게 하는 설정(설계 8장, 6단계 실환경). 처음 보는 폴더면 폴더 신뢰 창, 새 판이 있으면
     업데이트 창이 뜨고 그동안 상태 보고가 없다. 신뢰는 cwd 의 실경로(Codex 가 실경로로 찾는다)에 이 실행에서만 준다.
     `projects."<경로>".trust_level` 점 키는 경로의 점에서 갈라지므로 인라인 표 하나로 넘긴다. ~/.codex/config.toml 은 쓰지 않는다."""
     path = os.path.realpath(cwd) if resolve else str(cwd)
-    # JSON 문자열은 TOML 기본 문자열로도 읽힌다(\" \\ \t \uXXXX). JSON 이 그대로 두는 DEL 만 TOML 이 막는다
-    key = json.dumps(path, ensure_ascii=False).replace("\x7f", "\\u007f")
+    key = toml_str(path)
     return ["-c", "check_for_update_on_startup=false", "-c", "projects={" + key + '={trust_level="trusted"}}']
 
 

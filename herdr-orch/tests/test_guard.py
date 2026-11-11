@@ -146,7 +146,7 @@ class InjectTest(unittest.TestCase):
     def test_codex_env_values_round_trip_as_toml(self):
         # Codex 는 -c 값을 TOML 로 읽는다. BMP 밖 문자(이모지)를 \ud83d 같은 대리 쌍으로 쓰면 TOML 이 그대로 받지 못한다
         # (Codex 커밋 리뷰 a9e75d0)
-        values = {"E": "/tmp/😀", "K": "가나", "Q": 'a"b\\c', "T": "x\ty", "U": "\x1f"}
+        values = {"E": "/tmp/😀", "K": "가나", "Q": 'a"b\\c', "T": "x\ty", "U": "\x1f", "D": "a\x7fb"}
         argv = guard.inject_codex_env(["codex"], "t7", values)
         sets = [a.removeprefix("shell_environment_policy.set.") for a in argv if a.startswith("shell_environment_policy.set.")]
         parsed = tomllib.loads("\n".join(sets))

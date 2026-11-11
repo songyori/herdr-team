@@ -6,7 +6,7 @@ import os
 import signal
 from pathlib import Path
 
-from . import auth
+from . import agents, auth
 from .errors import CONFLICT, MISSING, USAGE, HorchError
 
 
@@ -14,10 +14,9 @@ def inject_codex_env(argv: list[str], terminal: str, env: dict[str, str] | None 
     """Codex 설정이 inherit=core 여도 Codex 셸에 HC_TERMINAL_ID 와 worker-start --env 값이 보이게 한다.
     --env 값은 HC_TERMINAL_ID 뒤에 이름 순서로 더한다(사전 검증 S2: 환경에만 두면 사용자 정책이 뺀다)."""
     if argv and Path(argv[0]).name == "codex":
-        extra = ["-c", f"shell_environment_policy.set.HC_TERMINAL_ID={json.dumps(terminal)}"]
+        extra = ["-c", f"shell_environment_policy.set.HC_TERMINAL_ID={agents.toml_str(terminal)}"]
         for name in sorted(env or {}):
-            # -c 값은 TOML 이다. ensure_ascii 면 BMP 밖 문자가 TOML 이 받지 않는 대리 쌍(\ud83d…)이 된다
-            extra += ["-c", f"shell_environment_policy.set.{name}={json.dumps(env[name], ensure_ascii=False)}"]
+            extra += ["-c", f"shell_environment_policy.set.{name}={agents.toml_str(env[name])}"]  # -c 값은 TOML 이다
         return [argv[0], *extra, *argv[1:]]
     return list(argv)
 
