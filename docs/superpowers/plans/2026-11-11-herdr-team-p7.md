@@ -6592,7 +6592,7 @@ Expected: 커밋 하나, grep 빈 출력, 리뷰 pane 주소. `hc wait <주소> 
 - `[workspace]` 기본 roles(Task 2): 표가 있고 `roles` 가 없으면 `developer`·`tester` 가운데 `[roles]` 에 정의된 것만, 둘 다 없으면 빈 튜플. 표가 없으면 기본값 그대로(shared 라 쓰이지 않는다).
 - env 값 1 KiB 는 UTF-8 1024바이트로 센다(Task 1 horch `--env`, Task 2 `[workspace.env]` 같다). 이름의 `KEY`·`SECRET`·`TOKEN` 은 부분 문자열로 본다(`MONKEY` 도 막힌다).
 - 템플릿 config.toml 의 env 예시 이름은 `APP_DB_PORT`·`APP_E2E_PORT_BASE` 다(설계의 `KCP_…` 는 요청 프로젝트 이름).
-- `--retry` 없는 `--task`(앞 시도 abandoned·released)는 env 를 물려받지 않는다(orch 설계 14.1 은 `--task --retry` 만 적었다). `--terminal` Dispatch 는 앞 고정 Dispatch 의 env 를 옮겨 적는다(떠 있는 세션의 기록, Task 1). Codex 에는 env 를 환경으로만 넘긴다(S2 결과로 Task 10 이 바꿀 수 있다).
+- `--retry` 없는 `--task`(앞 시도 abandoned·released)는 env 를 물려받지 않는다(orch 설계 14.1 은 `--task --retry` 만 적었다). `--terminal` Dispatch 는 앞 고정 Dispatch 의 env 를 옮겨 적는다(떠 있는 세션의 기록, Task 1). Codex 에는 env 를 환경으로만 넘긴다(S2 결과로 Task 10 이 바꿀 수 있다. S2 뒤 바뀌었다: 환경과 함께 `-c shell_environment_policy.set.<이름>` 인자로도 넘긴다, 설계 15.4 7단계).
 - 리뷰 프롬프트·워커 사양 템플릿 블록은 Step 1 이 아니라 Step 3 에 있다(Task 7, 6단계와 같다). `util.fill` 이 모르는 자리를 KeyError 로 내므로 템플릿만 먼저 바꾸면 모든 리뷰 시험이 깨져 RED 가 흐려진다.
 - 워커 사양 우선순위 줄은 `worker-rules.md` 의 소유 경로 문단과 규칙 1 사이 문단이다(규칙 7 이 아니다: 지금 시험이 규칙 6 바로 뒤 `## 테스트` 를 고정한다, Task 7). 태스크별 이슈 줄은 `compose.work_spec` 이 작업 규칙 바로 앞에 넣는다(인수인계 줄 → 작업 공간 절 → 이슈 줄 → 작업 규칙). Task 9 의 worker-rules.md 줄은 규칙 1·3 끝의 일반 문장이다.
 - `full_if`(Task 6): `repeat_test_failure` 를 full_if full 실패에도 건다(quick·full 이 섞이면 같은 실패로 보지 않는다). 저장된 full 기록은 상태와 관계없이 같은 라운드·code_head·식별값이면 다시 쓴다(설계 "tester 의 full 과 같다"). 프롬프트의 full_if 줄은 템플릿이 아니라 compose 상수다. `testgate.failed_quick` 은 `gate_failed` 로 바뀐다.
@@ -6638,8 +6638,8 @@ Expected: 커밋 하나, grep 빈 출력, 리뷰 pane 주소. `hc wait <주소> 
 
 확인하지 못한 것(실환경 Task 10 또는 구현 때 본다):
 
-- 실제 Codex 셸이 `--env` 값을 보는지(S2, 기본 설정과 사용자 `shell_environment_policy` 가 있을 때). 계획 단계에서 실제 Codex 를 띄우지 않았다(Task 10 Step 2, 컨트롤러가 Task 1 뒤).
-- 실제 Claude 가 슬롯 cwd 에서 뜰 때 `CLAUDE_PROJECT_DIR` 이 작업 루트인지(훅의 `find_root` 가 기대는 값), 슬롯 폴더에 신뢰 창이 뜨지 않는지(S1 은 신뢰한 프로젝트 아래 새 폴더로 봤다).
+- 실제 Codex 셸이 `--env` 값을 보는지(S2, 기본 설정과 사용자 `shell_environment_policy` 가 있을 때). 계획 단계에서 실제 Codex 를 띄우지 않았다(Task 10 Step 2, 컨트롤러가 Task 1 뒤). → 확인함(2026-11-11·12, 설계 15.4 7단계 S2): 사용자 설정 `inherit = "core"` 에서는 환경으로만 준 값이 보이지 않았고 `-c shell_environment_policy.set.<이름>` 이면 보였다(갈래 (b) 적용). `include_only` 는 `set` 값도 뺐다(갈래 (c), doctor `codex_env_policy`). 고친 뒤 실제 대화형 Codex 워커가 값을 봤다.
+- 실제 Claude 가 슬롯 cwd 에서 뜰 때 `CLAUDE_PROJECT_DIR` 이 작업 루트인지(훅의 `find_root` 가 기대는 값), 슬롯 폴더에 신뢰 창이 뜨지 않는지(S1 은 신뢰한 프로젝트 아래 새 폴더로 봤다). → 확인함(2026-11-12, 설계 15.4 7단계): 신뢰 창 없음, `~/.claude.json` 에 슬롯 항목 없음, 슬롯 워커 세션의 역할 캐시가 메인 상태 폴더에 생겼다(훅이 두 루트를 나눴다. `CLAUDE_PROJECT_DIR` 값 자체는 보지 않았다).
 - git 2.23 미만, 대소문자를 가리지 않는 파일 시스템에서 `--root` 철자가 git 이 아는 철자와 다를 때의 common dir 비교, 사용자가 슬롯 폴더만 지운 뒤의 `git worktree add`(방어 코드 없음).
 - `git merge` 가 "untracked working tree files would be overwritten" 로 거부할 때 `MERGE_HEAD` 를 남기지 않는 것(git 동작으로 알고 시험이 본다. 계획 단계에서 Task 5 시범 구현을 돌리지 못했다).
 - Task 5·8 의 시험은 Task 2–4 구현 없이 시범 구현을 돌리지 못했다(블랙박스 계약만으로 썼다). 구현 태스크에서 처음 돌릴 때 Task 4 와의 맞물림이 드러날 수 있다. Task 1·2·3·4·6·7·9 는 스크래치의 시범 구현으로 그 태스크 시험이 통과하는 것을 봤다(시범 코드는 계획에 넣지 않았다).
