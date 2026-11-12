@@ -573,8 +573,8 @@ def _save(path: Path, kind: str, entry: dict) -> None:
 def record_task(p, cfg: GateConfig, st: dict, commits: list[dict], kind: str, matched: list[str] | None = None) -> dict:
     """태스크 하나의 quick·full 을 돌려 종류별 마지막 기록으로 남긴다. 실행 불가(126·127)는 기록하지 않는다. 테스트는 그
     태스크의 작업 루트에서 그 태스크의 시험 env(workspace.task_env: 작업 공간 태스크는 슬롯 값, worktree 모드의 메인 폴더
-    태스크는 슬롯 0 값, shared 는 없음)로 돈다(설계 5.7 7단계). 설정은 검사 없이 읽는다(config.test_settings, 설계 4.2).
-    matched 가 있으면 full_if 로 고른 full 이다: quick 과 같은 사전 거부를 먼저 하고 기록에 reason·matched 를 더한다."""
+    태스크와 병합한 작업 공간 태스크는 슬롯 0 값, shared 는 없음)로 돈다(설계 5.7 7단계). 설정은 검사 없이 읽는다
+    (config.test_settings, 설계 4.2). matched 가 있으면 full_if 로 고른 full 이다: quick 과 같은 사전 거부를 먼저 하고 기록에 reason·matched 를 더한다."""
     from . import workspace  # workspace 가 이 모듈을 쓴다. 불러오는 순서가 꼬이지 않게 여기서 가져온다
     p = workspace.view(p, st)
     env = workspace.task_env(p, config.test_settings(p), st)

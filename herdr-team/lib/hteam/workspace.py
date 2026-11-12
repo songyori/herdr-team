@@ -141,9 +141,11 @@ def slot_env(cfg, n: int) -> dict[str, str]:
 
 def task_env(p, cfg, st: dict) -> dict[str, str]:
     """태스크의 시험 환경 변수: 작업 공간 태스크면 그 슬롯 값, worktree 모드의 메인 폴더 태스크면 슬롯 0 값(5.7), shared 면
-    없다."""
-    if st.get("workspace"):
-        return slot_env(cfg, st["workspace"]["slot"])
+    없다. 병합한 작업 공간 태스크는 메인 폴더 태스크와 같다(task_root 와 같은 판정): 메인 폴더에서 돌고, 놓은 슬롯은 다른
+    태스크가 다시 쓴다."""
+    ws = st.get("workspace")
+    if ws and not ws.get("merge"):
+        return slot_env(cfg, ws["slot"])
     return slot_env(cfg, 0) if cfg.workspace.on else {}
 
 

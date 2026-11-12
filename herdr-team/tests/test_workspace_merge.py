@@ -190,6 +190,19 @@ class MergeTest(MergeCase):
         self.assertIn("slot-1 T-001 놓기 시작", log)
         self.assertIn("slot-1 T-001 놓기 free", log)
 
+    def test_merged_task_retest_runs_in_main_with_slot_zero_env(self):
+        # 병합한 태스크의 작업 루트는 메인 폴더다. 그 재시험의 env 도 메인 폴더 값(슬롯 0)이다: 놓은 슬롯은 다른 태스크가 다시
+        # 쓰므로 옛 슬롯 값이면 같은 DB·포트를 건드린다(설계 5.7, Codex 브랜치 리뷰 P2)
+        self.use_gate(full='mkdir -p "$FAKE_DIR"; printf "%s %s\\n" "$HTEAM_SLOT" "$HT_PORT" >> "$FAKE_DIR/env.txt"; '
+                           'fake-test --all')
+        self.approved()
+        self.assertEqual(self.d.accept_task("T-001")["status"], "done")
+        self.wait_jobs()
+        code, out = self.hteam("test", "T-001", "--full")
+        self.assertEqual((code, out["status"]), (0, "passed"), out)
+        self.assertEqual(self.gate_calls()[-1]["cwd"], str(self.proj))
+        self.assertEqual((self.tmp / "fake" / "env.txt").read_text(encoding="utf-8").splitlines(), ["0 8100"])
+
     def test_release_after_cli_accept_and_after_a_dead_release_child(self):
         self.approved()
         code, out = self.hteam("accept", "T-001")  # 관제 안의 CLI accept 는 병합까지(놓기는 관제가 한다)
@@ -224,6 +237,27 @@ class MergeTest(MergeCase):
         self.assertEqual((code, out["error"]["code"]), (3, "task_open"), out)
         code, out = self.hteam("slot", "release", "T-001", as_="main")
         self.assertEqual((code, out["error"]["code"]), (5, "drive_only"), out)
+
+
+class HandoffTest(MergeCase):
+    """놓기가 끝난 슬롯을 다음 재확인까지 비워 두지 않는다(최종 리뷰 M1): 놓기 자식이 free 를 쓰면 관제가 그 자리에서
+    start-ready 를 돌려 빈 슬롯을 기다리던 태스크가 슬롯을 예약하고, 그 준비 자식도 바로 뜬다."""
+
+    config_text = ws_config().replace("slots = 2\n", "slots = 1\n")
+
+    def test_waiting_task_takes_the_slot_when_release_ends(self):
+        self.write_spec("T-002", owns="src/b/**")
+        self.approved()
+        code, out = self.hteam("start", "T-002")
+        self.assertEqual((code, out["status"], out["reason"]), (0, "waiting", "slot"), out)
+        self.assertEqual(self.d.accept_task("T-001")["status"], "done")
+        self.assertIn("slot:1", self.d.jobs)  # 놓기 자식
+        self.wait_jobs()  # 재확인(reconcile)을 부르지 않는다
+        log = self.log_text()
+        self.assertIn("slot-1 T-001 놓기 free", log)
+        self.assertIn("slot-1 T-002 준비 시작", log)
+        self.assertEqual(self.record(1)["task"], "T-002")
+        self.assertEqual(self.task_state("T-002")["workspace"]["slot"], 1)
 
 
 class ConflictTest(MergeCase):
@@ -435,6 +469,24 @@ class RefuseTest(MergeCase):
         res = self.d.accept_task("T-001")
         self.assertEqual(res["status"], "done", res)
         self.assertNotIn("merge_wait", self.task_state("T-001"))
+
+    def test_user_merge_autostash_does_not_hide_uncommitted_changes(self):
+        # 사용자 저장소 설정 merge.autoStash=true 면 git 은 stash → 병합 → 재적용 충돌에도 exit 0 이다. hteam 의 병합은 그
+        # 실행에만 autoStash 를 끈다: 겹치는 커밋 안 된 변경이 있으면 거부(merge_pending)로 가고 메인 파일은 그대로다
+        self.approved(files={"src/a/core.py": "task\n"})
+        self.git("config", "merge.autoStash", "true")  # 시험 임시 저장소의 설정(전역 아님)
+        (self.proj / "src/a/core.py").write_text("사람이 고친 줄\n", encoding="utf-8")
+        before = self.head()
+        self.assertIsNone(self.d.accept_task("T-001"))
+        self.assertEqual(self.task_state("T-001")["status"], "approved")
+        self.assertEqual(self.head(), before)
+        self.assertFalse(self.merging(self.proj))
+        self.assertEqual((self.proj / "src/a/core.py").read_text(encoding="utf-8"), "사람이 고친 줄\n")
+        self.assertEqual(self.git("status", "--porcelain", "--", "src"), " M src/a/core.py\n")
+        self.assertEqual(self.git("stash", "list"), "")
+        self.assertEqual(self.log_text().count("T-001 병합 거부:"), 1)
+        code, out = self.hteam("accept", "T-001")
+        self.assertEqual((code, out["error"]["code"]), (3, "merge_pending"), out)
 
     def test_unfinished_merge_in_main_is_blocked_at_once(self):
         self.approved()

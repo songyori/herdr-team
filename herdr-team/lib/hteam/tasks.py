@@ -983,6 +983,7 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
     allowed(first)
     if cfg.workspace.covers(spec.role):
         _require_slot(p, first)
+        workspace.require_worktree(p, first)  # 슬롯이 worktree 가 아니면 이전 워커 정리·새 라운드 전에 거부한다
     last = state.current_round(first) or {}
     member = cfg.crew.get(crew.round_crew(last) or "")  # 설정에서 그 고정 에이전트를 지웠으면 임시 경로
     if member is not None and cli.get("worker") and cli["worker"] != last.get("agent"):

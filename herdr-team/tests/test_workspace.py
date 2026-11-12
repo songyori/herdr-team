@@ -139,6 +139,10 @@ class SlotStateTest(TeamCase):
         self.assertEqual(workspace.task_env(self.p, cfg, {"id": "T-002"}), {"HT_PORT": "8100", "HTEAM_SLOT": "0"})
         self.assertEqual(workspace.task_root(self.p, slot_task), Path("/x/slot-2"))
         self.assertEqual(workspace.task_root(self.p, {"id": "T-002"}), self.p.root)
+        # 병합한 작업 공간 태스크는 메인 폴더 태스크와 같다: 작업 루트는 메인, 시험 env 는 슬롯 0 값
+        merged = {**slot_task, "workspace": {**slot_task["workspace"], "merge": "abc1234"}}
+        self.assertEqual((workspace.task_root(self.p, merged), workspace.task_env(self.p, cfg, merged)),
+                         (self.p.root, {"HT_PORT": "8100", "HTEAM_SLOT": "0"}))
         self.assertEqual(workspace.folder(self.p, 3), self.state_dir / "slots" / "slot-3")
         self.assertEqual(workspace.work_root(self.p, 3), self.state_dir / "slots" / "slot-3")
         self.assertEqual(workspace.branch_of("T-012"), "herdr/T-012")

@@ -1006,7 +1006,9 @@ class Drive:
 
     def _release_done(self, n: int, tid: str, code: int, data: dict | None) -> None:
         """놓기 자식이 끝났다(설계 5.10.6): 로그 `slot-<N> <T> 놓기 <free|dirty>`, teardown 이 통과하지 못했으면 progress,
-        dirty 로 남겼으면 progress. slot_locked(다른 실행자가 쥐었다)는 다음 재확인이 본다. 그 밖은 놓기 실패 로그."""
+        dirty 로 남겼으면 progress. free 면 start-ready(격리): 빈 슬롯을 기다리던 태스크의 예약과 이미 예약된 슬롯의 준비가
+        다음 재확인을 기다리지 않는다(start_ready 의 finally 가 slot_step 을 부른다). slot_locked(다른 실행자가 쥐었다)는 다음
+        재확인이 본다. 그 밖은 놓기 실패 로그."""
         err = (data or {}).get("error") or {}
         if not (code == 0 and data and data.get("ok")):
             if err.get("code") != "slot_locked":
@@ -1022,6 +1024,8 @@ class Drive:
             self.progress(f"slot-{n} {tid} teardown 이 {td['status']}(exit {td.get('exit')})로 끝났다(놓기는 마쳤다). "
                           f"로그: {td.get('log')}")
         if data["state"] != "dirty":
+            if data["state"] == "free":
+                self.isolated("start_ready", self.start_ready)
             return
         if data.get("reason") == "not_worktree":
             # teardown 결과가 있으면 teardown 이 .git 을 지웠다(teardown 뒤 다시 본 것)

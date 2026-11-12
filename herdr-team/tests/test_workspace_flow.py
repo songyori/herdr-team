@@ -449,6 +449,25 @@ class SlotReviewTest(WsCase):
         self.assertEqual((row["cwd"], json.loads(row["env"])["HTEAM_SLOT"]), (str(root), "1"))
         self.assertEqual((self.record(1)["state"], self.record(1)["task"]), ("busy", "T-001"))
 
+    def test_fix_refuses_slot_that_is_not_a_worktree(self):
+        # 슬롯의 .git 이 사라졌으면 fix 는 새 라운드를 열지 않는다: 열면 git 이 위로 올라가 메인 HEAD 를 round_base 로 적고
+        # 워커가 메인 저장소 안의 그 폴더에서 뜬다(Codex 브랜치 리뷰 P2). 이전 워커 정리·라운드 생성 전에 거부한다
+        self.ws_start("T-001")
+        self.work()
+        self.hteam("review", "T-001")
+        self.act_review("T-001", "REQUEST_CHANGES")
+        code, out = self.hteam("review-finish", "T-001")
+        self.assertEqual(out["status"], "changes", out)
+        st = self.task_state("T-001")
+        main_head, runs = self.head(), len([c for c in self.hc_calls() if c[:1] == ["run"]])
+        (self.slot_root(1) / ".git").unlink()
+        code, out = self.hteam("fix", "T-001")
+        self.assertEqual((code, out["error"]["code"], out["slot"]), (1, "slot_not_worktree", 1), out)
+        self.assertEqual(self.task_state("T-001"), st)
+        self.assertEqual((self.head(), self.git("branch", "--show-current").strip()), (main_head, "main"))
+        self.assertEqual(len([c for c in self.hc_calls() if c[:1] == ["run"]]), runs)  # horch worker-start 없음
+        self.assertFalse((self.state_dir / "tasks" / "T-001" / "r2-work.md").exists())
+
 
 class PlaceTest(TeamCase):
     """crew.place 의 0(설계 5.9.4): worktree 모드의 작업 공간 직무는 늘 임시 워커다."""
