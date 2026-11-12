@@ -95,12 +95,13 @@ CODEX_ENV_POLICY = ("Codex 의 shell_environment_policy(include_only) 가 [works
 
 
 def _codex_include_only() -> bool:
-    """사용자 ~/.codex/config.toml 의 shell_environment_policy.include_only 가 비어 있지 않은가(읽기만 한다). 파일이 없거나
-    읽지 못하면 False(경고하지 않는다). 사전 검증 S2: include_only 는 horch 가 `-c shell_environment_policy.set.<이름>` 으로
-    넘긴 값도 Codex 셸에서 뺀다."""
-    home = Path(os.environ.get("HOME") or Path.home())
+    """사용자 Codex 설정(`$CODEX_HOME/config.toml`, 없으면 ~/.codex/config.toml)의 shell_environment_policy.include_only 가
+    비어 있지 않은가(읽기만 한다). 파일이 없거나 읽지 못하면 False(경고하지 않는다). 사전 검증 S2: include_only 는 horch 가
+    `-c shell_environment_policy.set.<이름>` 으로 넘긴 값도 Codex 셸에서 뺀다."""
+    codex_home = os.environ.get("CODEX_HOME")
+    base = Path(codex_home) if codex_home else Path(os.environ.get("HOME") or Path.home()) / ".codex"
     try:
-        data = tomllib.loads((home / ".codex" / "config.toml").read_text(encoding="utf-8"))
+        data = tomllib.loads((base / "config.toml").read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         return False
     policy = data.get("shell_environment_policy")

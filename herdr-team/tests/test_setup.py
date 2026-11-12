@@ -965,6 +965,18 @@ class CodexEnvPolicyDoctorTest(TeamCase):
         self.assertEqual(names.index("codex_env_policy"), names.index("workspace_slots") + 1)
         self.assertEqual(path.read_bytes(), before)  # 읽기만 한다
 
+    def test_codex_home_config_is_read(self):
+        # Codex 는 CODEX_HOME 이 있으면 $CODEX_HOME/config.toml 을 쓴다(태스크 리뷰 d8c0bc6 M1)
+        self.init_project(WS_CONFIG)
+        alt = self.tmp / "codex-home"
+        alt.mkdir()
+        (alt / "config.toml").write_text('[shell_environment_policy]\ninclude_only = ["PATH"]\n', encoding="utf-8")
+        self.codex_config('[shell_environment_policy]\ninherit = "core"\n')  # HOME 쪽은 경고할 것이 없다
+        self.env["CODEX_HOME"] = str(alt)
+        code, out, checks = self.checks()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(checks["codex_env_policy"]["detail"], CODEX_ENV_POLICY)
+
     def test_no_warning_without_include_only(self):
         self.init_project(WS_CONFIG)
         for text in (None, '[shell_environment_policy]\ninherit = "core"\n', "include_only = 깨진 TOML\n",

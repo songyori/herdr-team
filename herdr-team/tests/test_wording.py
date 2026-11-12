@@ -327,7 +327,8 @@ P7_MERGE_ROW = ('| `merge_conflict` | 충돌 파일을 사용자에게 보이고
                 '풀지 사용자 지시>"`(상한이면 `--force-round`. 기준 병합 지시는 hteam 이 사양에 넣는다), 버리기로 하면 '
                 '`hteam drop T-xxx` |')
 P7_WORKSPACE_ROW = ("| `workspace_failed` | `detail.kind` 로 가른다. `setup_failed` 는 로그 끝을 보이고 사용자가 setup 이나 환경을 "
-                    "고친 뒤 `hteam start T-xxx`. `slot_dirty` 는 그 슬롯의 `git status` 를 보이고, 사용자가 버려도 된다고 하면 "
+                    "고친 뒤 `hteam start T-xxx`(decide 에 태스크가 없으면 마무리 전체 테스트다. `hteam start` 없이 닫으면 관제가 다시 돌린다). "
+                    "`slot_dirty` 는 그 슬롯의 `git status` 를 보이고, 사용자가 버려도 된다고 하면 "
                     "`hteam slot reset <N>`. `branch_exists`·`base_moved`·`merge_blocked` 는 git 상태를 보이고 사용자에게 "
                     "묻는다(메인 폴더를 기준 브랜치로 되돌리기, 남은 브랜치 지우기 등은 사용자가 정한다) |")
 P7_INDEX_LOCK = "- `git commit` 이 `index.lock` 오류로 실패하면 몇 초 뒤 같은 명령을 다시 한다(관제의 병합과 겹쳤다)."

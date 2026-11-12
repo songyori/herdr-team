@@ -1317,7 +1317,7 @@ orca-team 0.7.0 `queue.py` 를 옮긴다(`lib/hteam/queue.py`). 메인은 horch 
 | `unknown_regression` | 원인 태스크를 정해(모르면 사용자에게 묻는다) 회귀 수정 태스크를 만들어 시작한다: `hteam task new --role <원인 태스크 직무> --title "회귀 수정: <요약>" --owns "<원인 태스크 owns>"`, Change 첫 줄은 decide 의 `source`(예 `출처: T-xxx followups`), Acceptance 는 8.4 의 회귀 수정 두 줄. 커밋하고 `hteam start T-yyy` 한 뒤 닫는다 |
 | `token_update` | 관제가 기계적으로 하지 못한 디자인 보강 토큰 반영이다(8.9). UI 기반 개발 태스크가 done 이면 토큰 갱신 태스크(UI 기반과 같은 owns, `depends_on` 에 보강 태스크)를 만들고, 아직 시작하지 않은 화면 구현 태스크의 `depends_on` 에 더해 커밋한다. working 이면 `hteam scope`, 리뷰 중이면 결과를 기다린 뒤 정한다 |
 | `merge_conflict`(7단계) | 충돌 파일을 사용자에게 보이고 묻는다. 고치기로 하면 `hteam fix T-xxx --note "<충돌을 어떻게 풀지 사용자 지시>"`(상한이면 `--force-round`. 기준 병합 지시는 hteam 이 사양에 넣는다, 5.10.6), 버리기로 하면 `hteam drop T-xxx` |
-| `workspace_failed`(7단계) | `detail.kind` 로 가른다. `setup_failed` 는 로그 끝을 보이고 사용자가 setup 이나 환경을 고친 뒤 `hteam start T-xxx`. `slot_dirty` 는 그 슬롯의 `git status` 를 보이고, 사용자가 버려도 된다고 하면 `hteam slot reset <N>`. `branch_exists`·`base_moved`·`merge_blocked` 는 git 상태를 보이고 사용자에게 묻는다(메인 폴더를 기준 브랜치로 되돌리기, 남은 브랜치 지우기 등은 사용자가 정한다) |
+| `workspace_failed`(7단계) | `detail.kind` 로 가른다. `setup_failed` 는 로그 끝을 보이고 사용자가 setup 이나 환경을 고친 뒤 `hteam start T-xxx`(decide 에 태스크가 없으면 마무리 전체 테스트다. `hteam start` 없이 닫으면 관제가 다시 돌린다). `slot_dirty` 는 그 슬롯의 `git status` 를 보이고, 사용자가 버려도 된다고 하면 `hteam slot reset <N>`. `branch_exists`·`base_moved`·`merge_blocked` 는 git 상태를 보이고 사용자에게 묻는다(메인 폴더를 기준 브랜치로 되돌리기, 남은 브랜치 지우기 등은 사용자가 정한다) |
 
 7단계 메인 규칙 줄: "`git commit` 이 `index.lock` 오류로 실패하면 몇 초 뒤 같은 명령을 다시 한다(관제의 병합과 겹쳤다)." "Redmine 을 쓰는 프로젝트(`[redmine]`)면 이슈 상태·노트는 관제가 바꾼다. 메인도 바꾸지 않는다. `hteam status` 의 `redmine.failed` 가 늘면 사용자에게 알린다." "사용자가 묶음이 끝난 뒤 push 하라고 정했으면 `done` 의 마지막 전체 테스트가 통과했을 때 push 한다(플러그인은 push 하지 않는다)." 는 프로젝트가 고를 줄이라 템플릿에는 주석 예시로만 둔다(앞 두 줄은 넣는다).
 
@@ -1752,7 +1752,7 @@ kind 는 orca 의 `DECIDE_KINDS` 와 같다: `worker_failed`, `worker_question`,
 
 Python 3.11 이상, git(없으면 `git init` 과 빈 커밋을 권함), `horch` 찾기와 `horch doctor`(hc·herdr-app 포함), 이 터미널이 Herdr 터미널인가(`$HC_TERMINAL_ID`), `claude` 존재, `codex` 존재와 `codex login status`, Codex 래퍼 실행 가능, `codex features` 의 `image_generation`(경고만), Chrome DevTools MCP 설정 여부(경고만), Codex 리뷰어의 브라우저(`codex_browser`, 경고만: 설정의 `[agents.codex].args` 에 `hteam-browser` 정의(`-c`·`--config` 의 분리형·붙인 형 값이 `mcp_servers.hteam-browser=` 또는 `mcp_servers.hteam-browser.` 로 시작)가 없거나, 있는데 `npx` 가 PATH 에 없거나, 샌드박스·승인 우회가 없어 도구 호출이 거부될 때). doctor 는 사용자 Codex 의 MCP 서버를 조회하지 않는다: 디스패치가 띄울 때 `chrome-devtools` 만 읽기 전용으로 보고 끈다(14장). 우회를 승인하면 사용자 Codex 설정의 다른 MCP 서버도 승인 없이 쓸 수 있다(범위 밖).
 
-7단계: worktree 모드면 git 2.23 이상(`git switch`)과 첫 커밋이 있는지(오류), 슬롯 상태(`dirty` 면 경고)를 본다. `[redmine]` 이 있으면 키를 찾는지(값은 보이지 않는다)와 `GET <url>/users/current.json`(5초)이 200 인지(경고), `env_file` 이 git 이 추적하는 파일인지(추적하면 경고)를 본다.
+7단계: worktree 모드면 git 2.23 이상(`git switch`)과 첫 커밋이 있는지(오류), 슬롯 상태(`dirty` 면 경고)를 본다. `[workspace.env]` 가 있으면 사용자 Codex 설정(`$CODEX_HOME/config.toml`, 없으면 `~/.codex/config.toml`. 읽기만 한다)의 `shell_environment_policy.include_only` 가 있을 때 `codex_env_policy` 를 경고한다(사전 검증 S2: include_only 는 `-c shell_environment_policy.set` 으로 넘긴 값도 Codex 셸에서 뺀다, herdr-orch 설계 14.3). `[redmine]` 이 있으면 키를 찾는지(값은 보이지 않는다)와 `GET <url>/users/current.json`(5초)이 200 인지(경고), `env_file` 이 git 이 추적하는 파일인지(추적하면 경고)를 본다.
 
 ### 9.3 `hteam up` 과 관제
 
