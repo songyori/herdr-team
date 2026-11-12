@@ -625,12 +625,12 @@ def _final_dirty(p, n: int) -> None:
            {**SLOT_DEFAULT, "state": "dirty", "since": now()})
 
 
-def _final_not_worktree(p, n: int, when: str) -> None:
-    """마무리 full 이 잡은 슬롯 폴더가 git worktree 가 아니다(when: 비었거나 "setup 뒤 "): dirty 로 두고 exit 3 slot_dirty.
-    그 폴더에서 git·full·teardown 을 부르지 않는다."""
+def _final_not_worktree(p, n: int, when: str, skipped: str = "마무리 full 을 돌리지 않았다") -> None:
+    """마무리 full 이 잡은 슬롯 폴더가 git worktree 가 아니다(when: 비었거나 "setup 뒤 "·"full 뒤 "): dirty 로 두고 exit 3
+    slot_dirty. 그 폴더에서 git·full·teardown 을 부르지 않는다(skipped 는 하지 않은 것을 적는 글)."""
     _final_dirty(p, n)
-    raise HteamError("slot_dirty", f"slot-{n} 폴더가 {when}git worktree 가 아니어서(.git 이 없거나 깨졌다) 마무리 full 을 "
-                     "돌리지 않았다", CONFLICT, "사용자와 폴더를 확인한다(그 폴더에서 git 을 부르면 메인 저장소가 잡힌다). 쓸 "
+    raise HteamError("slot_dirty", f"slot-{n} 폴더가 {when}git worktree 가 아니어서(.git 이 없거나 깨졌다) {skipped}",
+                     CONFLICT, "사용자와 폴더를 확인한다(그 폴더에서 git 을 부르면 메인 저장소가 잡힌다). 쓸 "
                      f"것이 없으면 폴더를 치우고 git worktree prune 한 뒤 hteam slot reset {n}",
                      data={"slot": n, "kind": "slot_dirty", "reason": "not_worktree"})
 
@@ -641,8 +641,10 @@ def final_slot(p, cfg) -> Iterator[tuple[int, str]]:
     `git switch --detach` → setup(있으면. 실패면 setup_failed, teardown 은 돌리지 않는다) → 블록(full) → teardown(있으면,
     결과는 쓰지 않는다. 블록이 예외로 끝나도 돈다). 끝나면 늘 free_final. 폴더가 자기 worktree 가 아니면 git·setup 을 부르지
     않고, 커밋 안 된 변경이나 끝나지 않은 병합이 있으면 switch 하지 않고, 슬롯을 태스크 없는 dirty 로 두고 slot_dirty 다.
-    setup 뒤에도 다시 본다(아니면 full·teardown 없이 같은 slot_dirty). teardown 뒤에는 git 을 부르지 않으므로 보지 않는다
-    (다음에 그 슬롯을 쓰는 준비·마무리 full 이 git 전에 본다)."""
+    setup 뒤에도 다시 본다(아니면 full·teardown 없이 같은 slot_dirty). 블록 뒤 teardown 전에도 다시 본다: full 이 .git 을
+    지웠으면 teardown 의 git 이 메인 저장소를 잡는다. 아니면 teardown 없이 dirty 로 두고, 블록이 끝났으면 slot_dirty(그
+    폴더에서 돈 full 결과는 부르는 쪽이 기록하지 않는다), 블록이 예외로 끝났으면 그 예외를 그대로 올린다. teardown 뒤에는
+    git 을 부르지 않으므로 보지 않는다(다음에 그 슬롯을 쓰는 준비·마무리 full 이 git 전에 본다)."""
     n, base = claim_final(p, cfg)
     try:
         with slot_lock(p, n, nowait=True):
@@ -670,8 +672,15 @@ def final_slot(p, cfg) -> Iterator[tuple[int, str]]:
                     raise _setup_error(n, result)
             try:
                 yield n, base
-            finally:
-                run_hook(p, cfg, n, "teardown", None)  # setup 을 했으면 full 이 실패해도 정리한다
+            except BaseException:  # setup 을 했으면 full 이 실패해도 정리한다. 블록의 예외는 그대로 올린다
+                if own_worktree(top):
+                    run_hook(p, cfg, n, "teardown", None)
+                else:  # full 이 .git 을 지웠다: teardown 의 git(reset 등)이 메인 저장소를 잡는다
+                    _final_dirty(p, n)
+                raise
+            if not own_worktree(top):
+                _final_not_worktree(p, n, "full 뒤 ", "마무리 full 결과를 기록하지 않고 teardown 도 돌리지 않았다")
+            run_hook(p, cfg, n, "teardown", None)
     finally:
         free_final(p, n)
 

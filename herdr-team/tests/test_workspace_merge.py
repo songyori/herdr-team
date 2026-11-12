@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from tests.helpers import BASE_CONFIG, WS_CONFIG, TeamCase
-from hteam import gitio, queue, state, workspace
+from hteam import config, gitio, queue, state, workspace
 from hteam.paths import Project
 
 # setup·teardown 도우미(시험 폴더 밖 $OUT_DIR): 슬롯·작업 루트를 남긴다. setup 은 무시된 폴더(node_modules)에 표시를 쌓는다
@@ -895,6 +895,38 @@ class NotWorktreeTest(MergeCase):
         self.assertEqual(len(self.gate_calls()), calls)  # full 을 돌리지 않았다
         self.assertEqual(len(self.lines("setup.txt")), 1)
         self.assertEqual(self.lines("teardown.txt"), [])  # teardown 도 그 폴더에서 돌리지 않는다
+        self.assertEqual((self.record(1)["state"], self.record(1)["task"]), ("dirty", None))
+        self.assert_main_kept(head)
+
+    def test_final_full_that_removes_git_skips_teardown_and_is_not_recorded(self):
+        # full 이 .git 을 지우면 teardown 의 git(reset --hard)이 메인 저장소를 잡아 메인의 커밋 안 된 변경을 지웠고, full 은
+        # passed 로 기록되고 슬롯은 free 로 돌아갔다(Codex 브랜치 리뷰 2 P1). full 뒤 teardown 전에 다시 보고 teardown 없이
+        # slot_dirty(not_worktree). 그 폴더에서 돈 full 결과는 기록하지 않는다
+        self.use_gate(full="rm -f .git; fake-test --all")
+        (self.out / "teardown.sh").write_text("git reset --hard -q\n" + TEARDOWN_SH, encoding="utf-8")
+        (self.proj / "docs/other.md").write_text("사람이 고치는 중\n", encoding="utf-8")
+        head = self.head()
+        calls = len(self.gate_calls())
+        code, out = self.hteam("test", "--full")
+        self.assertEqual((code, out["error"]["code"], out["slot"], out["reason"]), (3, "slot_dirty", 1, "not_worktree"),
+                         out)
+        self.assertIn("full 뒤", out["error"]["message"])
+        self.assertEqual(len(self.gate_calls()), calls + 1)  # full 은 돌았다
+        self.assertEqual(self.lines("teardown.txt"), [])  # teardown 을 그 폴더에서 돌리지 않았다
+        self.assertEqual((self.record(1)["state"], self.record(1)["task"]), ("dirty", None))
+        self.assert_main_kept(head)
+        self.assertFalse((self.state_dir / "tests" / "final.json").exists())  # passed 로 남기지 않는다
+
+    def test_final_full_error_is_kept_when_git_is_gone(self):
+        # 블록(full)이 예외로 끝났는데 .git 도 사라졌다: teardown 없이 dirty 로 두고 블록의 예외를 그대로 올린다(가리지 않는다)
+        (self.out / "teardown.sh").write_text("git reset --hard -q\n" + TEARDOWN_SH, encoding="utf-8")
+        (self.proj / "docs/other.md").write_text("사람이 고치는 중\n", encoding="utf-8")
+        head = self.head()
+        with self.assertRaisesRegex(RuntimeError, "full 도중 실패"):
+            with workspace.final_slot(self.p, config.test_settings(self.p)) as (n, _base):
+                (workspace.folder(self.p, n) / ".git").unlink()
+                raise RuntimeError("full 도중 실패")
+        self.assertEqual(self.lines("teardown.txt"), [])
         self.assertEqual((self.record(1)["state"], self.record(1)["task"]), ("dirty", None))
         self.assert_main_kept(head)
 
