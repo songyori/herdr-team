@@ -32,6 +32,7 @@ enabled = true
 
 # Redmine(설계 8.12): 사양의 issue 가 가리키는 이슈의 상태·노트를 관제가 바꾼다(워커·리뷰어는 바꾸지 않는다). API 키 값은
 # 이 파일에 쓰지 않는다. env_file 은 git 이 추적하지 않는 파일이어야 한다.
+# env_file(git 제외 파일)을 권한다. 없으면 관제가 키를 읽도록 Herdr 터미널 환경에 키를 둬야 하고, 같은 환경으로 뜨는 워커·리뷰어 셸도 그 변수를 본다.
 # [redmine]
 # url = "https://redmine.example.com"
 # key_env = "REDMINE_API_KEY"       # API 키를 담은 환경 변수 이름

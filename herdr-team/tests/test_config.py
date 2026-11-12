@@ -744,6 +744,13 @@ class TemplateSevenExampleTest(unittest.TestCase):
         self.assertFalse(cfg.workspace.on)
         self.assertIsNone(cfg.redmine)
 
+    def test_redmine_example_recommends_env_file(self):
+        # env_file 이 없으면 관제와 같은 기본 환경으로 뜨는 워커·리뷰어 셸도 키를 본다(설계 8.12, 최종 리뷰 I1)
+        line = ("# env_file(git 제외 파일)을 권한다. 없으면 관제가 키를 읽도록 Herdr 터미널 환경에 키를 둬야 하고, 같은 "
+                "환경으로 뜨는 워커·리뷰어 셸도 그 변수를 본다.\n")
+        self.assertIn(line, self.text)
+        self.assertLess(self.text.index(line), self.text.index("# [redmine]\n"))
+
     def test_uncommented_example_is_valid(self):
         ws, rm = self.block("# [workspace]"), self.block("# [redmine]")
         raw = tomllib.loads(BASE_CONFIG + "\n" + ws + "\n" + rm)

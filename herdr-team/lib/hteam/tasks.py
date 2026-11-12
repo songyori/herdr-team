@@ -265,7 +265,9 @@ def _prepare_start(p, cfg, spec, choice, cli: dict, cap: Capacity | None = None,
 
     작업 공간 태스크(설계 5.10.3)는 배정 뒤 슬롯을 잡는다(_take_slot). 예약을 쓰면 상태(owns)를 저장한 뒤 slots.json 을 쓰고
     잠금을 놓은 다음 slot_preparing 을 올린다. slots.json 은 상태 쓰기가 끝난 뒤 같은 프로젝트 잠금 안에서 쓴다(상태 쓰기가
-    실패하면 슬롯도 그대로다)."""
+    실패하면 슬롯도 그대로다). 띄울 슬롯(busy·준비 끝)이 자기 worktree 가 아니면 아무것도 쓰지 않고 exit 1 slot_not_worktree
+    (workspace.require_worktree): 슬롯에 워커를 띄우는 start·start-ready·같은 라운드 복구가 모두 여기를 지난다. fix 는 fix 가
+    본다."""
     tid = spec.id
     wait, line = None, None
     with state.project_lock(p):
@@ -312,6 +314,8 @@ def _prepare_start(p, cfg, spec, choice, cli: dict, cap: Capacity | None = None,
             if cfg.workspace.covers(spec.role):
                 slots = workspace.load(p)
                 wait, line, keep = _take_slot(p, cfg, st, owns, slots)
+                if wait is None:  # 띄울 슬롯(busy·준비 끝)이 worktree 가 아니면 라운드·상태·slots.json 을 쓰기 전에 거부한다
+                    workspace.require_worktree(p, st)
             if wait is None:
                 if not recovering:
                     st["role"] = spec.role  # 워커는 이 사양의 직무로 뜬다. planner 하나 검사가 저장된 직무를 본다

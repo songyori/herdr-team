@@ -221,6 +221,44 @@ class LaunchTest(WsCase):
         row = self.dispatch_row(out["dispatch"])
         self.assertEqual((row["cwd"], json.loads(row["env"])), (str(self.slot_root(1)), {"HT_PORT": "8110", "HTEAM_SLOT": "1"}))
 
+    # 슬롯의 .git 이 사라졌으면 워커를 그 폴더에 띄우지 않는다: git 이 위로 올라가 메인 HEAD 를 round_base 로 적고 워커가 메인
+    # 저장소 안의 그 폴더에서 커밋한다(C2 와 같은 뿌리). 라운드·상태·slots.json 을 쓰기 전에 거부한다
+    def frozen(self) -> tuple:
+        """거부 뒤 그대로여야 하는 것: 태스크 상태, slots.json, 메인 HEAD·브랜치, hc run 호출 수."""
+        return (self.task_state("T-001"), self.slots(), self.head(), self.git("branch", "--show-current").strip(),
+                len([c for c in self.hc_calls() if c[:1] == ["run"]]))
+
+    def test_recovery_start_refuses_slot_that_is_not_a_worktree(self):
+        self.start()
+        self.assertEqual(self.hteam("slot", "prepare", "T-001")[0], 0)
+        self.fail_hc("run", "boom")
+        code, out = self.start()
+        self.assertEqual((code, out["error"]["code"]), (1, "launch_failed"), out)
+        with self._hc_locked() as hc:
+            hc["fail"].clear()
+        (self.slot_root(1) / ".git").unlink()
+        before = self.frozen()
+        self.assertEqual((before[0]["status"], before[1]["slots"]["1"]["state"]), ("launch_failed", "busy"))
+        code, out = self.start()  # 같은 라운드 복구(busy 슬롯)
+        self.assertEqual((code, out["error"]["code"], out["slot"]), (1, "slot_not_worktree", 1), out)
+        self.assertEqual(self.frozen(), before)
+        code, out = self.hteam("start-ready")  # 관제의 다시 띄우기도 같다
+        self.assertEqual((code, out["error"]["code"]), (1, "start_failed"), out)
+        self.assertEqual([(f["task"], f["error"]["code"]) for f in out["failed"]], [("T-001", "slot_not_worktree")])
+        self.assertEqual(self.frozen(), before)
+
+    def test_first_start_refuses_ready_slot_that_is_not_a_worktree(self):
+        self.start()
+        self.assertEqual(self.hteam("slot", "prepare", "T-001")[0], 0)
+        (self.slot_root(1) / ".git").unlink()
+        before = self.frozen()
+        self.assertEqual((before[0]["status"], before[0]["rounds"], before[1]["slots"]["1"]["state"]),
+                         ("pending", [], "preparing"))
+        code, out = self.start()  # 준비가 끝난 예약(ready)을 busy 로 바꾸기 전에 거부한다
+        self.assertEqual((code, out["error"]["code"], out["slot"]), (1, "slot_not_worktree", 1), out)
+        self.assertEqual(self.frozen(), before)
+        self.assertNotIn("workspace", self.task_state("T-001"))
+
 
 class NoEnvTest(WsCase):
     """[workspace.env] 가 없으면 작업 공간 절의 셋째 줄을 뺀다(설계 5.10.5). horch 에는 HTEAM_SLOT 만 넘긴다."""
