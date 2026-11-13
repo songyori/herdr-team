@@ -343,6 +343,15 @@ class TemplateContractTest(unittest.TestCase):
                        "테스트 명령 `docs/planning/tasks.toml` 의 `[test]`, QA 보고서 `docs/qa/`."):
             self.assertIn(needle, main)
 
+    def test_plain_question_rule_in_main(self):
+        # 설계 7.7 8단계: 평문 질문은 뒤이은 관제 메시지에 묻혀 지나간다. Stop 훅이 이 줄을 검사한다(9.4)
+        main = (ROOT / "templates/CLAUDE.section.md").read_text(encoding="utf-8")
+        self.assertIn("사용자의 답·결정·행동(고르기, 확인, 로그인, 확인 창 승인 등)이 필요하면 언제나 AskUserQuestion 으로 "
+                      "묻는다(질문 하나, 선택지 2–4개, 추천 하나. 자유 답은 Other 로 받는다). 진행 보고 글에 질문이나 부탁을 "
+                      "섞지 않는다.", main)
+        self.assertIn("마지막 글에 질문·부탁이 있으면 Stop 훅이 한 번 막는다.", main)
+        self.assertLess(main.index("4. `.herdr-team/bin/hteam start T-xxx`"), main.index("언제나 AskUserQuestion 으로 묻는다"))
+
     def test_skill_recovery_contract(self):
         init = (ROOT / "skills/init/SKILL.md").read_text(encoding="utf-8")
         up = (ROOT / "skills/up/SKILL.md").read_text(encoding="utf-8")

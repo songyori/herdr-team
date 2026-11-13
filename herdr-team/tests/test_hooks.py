@@ -1012,3 +1012,80 @@ class ContextWaitTest(HookCase):
         self.assertIn("[out-0002]", reason)
         self.assertNotIn("[out-0001]", reason)
         self.assertEqual(self.denied(), {"out-0002": 1})
+
+
+class PlainQuestionStopTest(HookCase):
+    """8단계(설계 9.4 Stop, 7.7): 메인이 평문으로 묻고 턴을 끝내면 한 번 막는다. 뒤이은 관제 메시지가 메인을 다시 깨워
+    질문이 밀려 지나간다(kakao 07:42 사례)."""
+
+    def setUp(self):
+        super().setUp()
+        (self.state_dir / "run.json").unlink()  # watch 검사가 끼지 않게(run_id 없음)
+
+    def stop(self, message, **extra):
+        return self.hook("stop", {"last_assistant_message": message, **extra}, terminal=MAIN)
+
+    def test_plain_questions_are_blocked_once(self):
+        kakao = ("기획을 확정했습니다.\n\n**#5682 종료 위험:** 묶음 5 전체 시험이 통과하면 닫힙니다. "
+                 "막아야 하면 시험이 끝나기 전에 말씀해 주세요.\n- 막는 방법은 태스크를 덧붙이는 것입니다.\n"
+                 "관제 메시지는 백그라운드에서 계속 받고 있습니다.")
+        login = "T-003 워커가 로그인 화면에서 멈췄습니다. 사용자께서 직접 로그인해 주셔야 이어 갈 수 있습니다."
+        long_line = ("길다 " * 40 + "할까요?").strip()
+        cases = ((kakao, "**#5682 종료 위험:** 묶음 5 전체 시험이 통과하면 닫힙니다. 막아야 하면 시험이 끝나기 전에 말씀해 주세요."),
+                 ("정리했습니다.\n이대로 진행할까요?", "이대로 진행할까요?"),
+                 ("두 안이 있습니다.\n어느 쪽이 괜찮을까요", "어느 쪽이 괜찮을까요"),
+                 (login, login),
+                 ("결과를 확인해주세요.", "결과를 확인해주세요."),
+                 (long_line, long_line[:120]))
+        for message, line in cases:
+            with self.subTest(line=line[:20]):
+                out = self.stop(message)
+                self.assertEqual(out and out["decision"], "block", message)
+                self.assertIn(f"마지막 글에 사용자에게 묻거나 부탁하는 말이 있다: \"{line}\".", out["reason"])
+                self.assertIn("AskUserQuestion 으로 다시 묻는다(질문 하나, 선택지 2–4개, 추천 하나)", out["reason"])
+                self.assertIn("질문이 아니면 그대로 턴을 끝낸다.", out["reason"])
+                self.assertIsNone(self.stop(message, stop_hook_active=True))  # 한 번만 막는다
+
+    def test_reports_code_and_quotes_are_not_questions(self):
+        for message in ("T-002 가 리뷰 승인 뒤 main 에 병합됐습니다. 제품 회귀는 없었습니다.",
+                        "다음 명령을 썼습니다: `git status --porcelain=v1 ?`",
+                        "```\nif x?\n  echo 주세요\n```\n끝났습니다.",
+                        "~~~\n괜찮을까요\n~~~\n끝났습니다.",
+                        "> 워커가 물었다: 계속할까요?\n답을 넘겼습니다.",
+                        ""):
+            with self.subTest(message=message[:20]):
+                self.assertIsNone(self.stop(message))
+
+    def test_setup_mode_other_roles_and_missing_message_are_not_checked(self):
+        (self.state_dir / "setup-mode").write_text("x")
+        self.assertIsNone(self.stop("이대로 진행할까요?"))
+        (self.state_dir / "setup-mode").unlink()
+        self.assertIsNone(self.hook("stop", {"session_id": "c", "last_assistant_message": "진행할까요?"}, drive=True))
+        self.assertIsNone(self.hook("stop", {"session_id": "w", "last_assistant_message": "진행할까요?"},
+                                    terminal=self.worker()))
+        self.assertIsNone(self.hook("stop", {}, terminal=MAIN))
+        self.assertIsNone(self.hook("stop", {"last_assistant_message": ["진행할까요?"]}, terminal=MAIN))
+
+    def test_outside_herdr_and_without_run_is_checked_too(self):
+        out = self.hook("stop", {"session_id": "out1", "last_assistant_message": "진행할까요?"})
+        self.assertEqual(out["decision"], "block")
+        self.assertNotIn("watch", out["reason"])
+
+    def test_plain_question_is_a_pure_function(self):
+        hook = load_hook()
+        self.assertEqual(hook.plain_question("보고\n진행할까요?"), "진행할까요?")
+        self.assertEqual(hook.plain_question("(정해 주세요)"), "(정해 주세요)")
+        self.assertIsNone(hook.plain_question("끝났습니다."))
+        self.assertIsNone(hook.plain_question(None))
+
+
+class PlainQuestionWatchTest(HookCase):
+    def test_watch_and_question_reasons_come_together(self):
+        out = self.hook("stop", {"last_assistant_message": "진행할까요?"}, terminal=MAIN)
+        self.assertEqual(out["decision"], "block")
+        self.assertIn("watch 가 꺼져 있다", out["reason"])
+        self.assertIn("\"진행할까요?\"", out["reason"])
+        self.assertLess(out["reason"].index("\"진행할까요?\""), out["reason"].index("watch 가 꺼져 있다"))
+        out = self.hook("stop", {"last_assistant_message": "끝났습니다."}, terminal=MAIN)
+        self.assertEqual(out["decision"], "block")  # watch 검사는 지금 그대로
+        self.assertNotIn("묻거나 부탁하는", out["reason"])

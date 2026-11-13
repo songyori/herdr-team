@@ -431,6 +431,34 @@ def role_mark(p, payload: dict):
     return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": notice}}
 
 
+_ASK_WORDS = ("주세요", "주시면", "주십시오", "주시겠어요", "주셔야")
+_ASK_ENDS = ("?", "？", "까요")
+_QUESTION_BLOCK = ("herdr-team: 마지막 글에 사용자에게 묻거나 부탁하는 말이 있다: \"{line}\". 평문 질문은 뒤이은 관제 메시지에 "
+                   "묻혀 지나간다. 사용자의 답·결정·행동이 필요하면 AskUserQuestion 으로 다시 묻는다(질문 하나, 선택지 "
+                   "2–4개, 추천 하나). 질문이 아니면 그대로 턴을 끝낸다.")
+
+
+def plain_question(message) -> str | None:
+    """마지막 글에서 사용자에게 묻거나 부탁하는 줄을 처음 하나 찾아 앞뒤 공백을 떼고 120자로 돌려준다(8단계, 설계 9.4).
+    줄 끝(뒤의 공백·`)`·`*`·`.` 를 뗀 뒤)이 `?`·`？`·`까요` 이거나 줄 어디든 부탁 말(`주세요` 등)이 있으면 질문이다.
+    펜스 코드 블록(여닫는 줄 포함)·인라인 코드·`>` 인용 줄은 보지 않는다. 문자열이 아니거나 없으면 None. 순수 함수다."""
+    if not isinstance(message, str):
+        return None
+    fenced = False
+    for raw in message.splitlines():
+        line = raw.strip()
+        if line.startswith(("```", "~~~")):
+            fenced = not fenced
+            continue
+        if fenced or line.startswith(">"):
+            continue
+        text = re.sub(r"`[^`]*`", "", line)
+        tail = text.rstrip(" \t)*.")
+        if tail.endswith(_ASK_ENDS) or any(w in text for w in _ASK_WORDS):
+            return line[:120]
+    return None
+
+
 def stop(p, payload: dict):
     """메인이고 run.json 에 run_id 가 있고 관제가 꺼지지 않았는데(8.2 의 alive·hung·starting) watch 가 없으면 턴을 끝내지
     못하게 한다(설계 9.4). 관제가 꺼졌으면 watch 가 곧바로 orphaned 로 끝나므로 막지 않는다(막으면 watch → orphaned → up
@@ -441,20 +469,21 @@ def stop(p, payload: dict):
     없음)의 메인은 watch 를 띄울 수 없으므로(require_main 이 exit 5) 막지 않는다.
 
     watch 생존은 watch.pid 기록(pid + 시작 시각)으로 본다. 죽었거나 pid 가 다른 프로세스에 다시 쓰였으면 watch 가 없다.
-    run.json 을 읽지 못하면 bad_run_file 이 오류 기록으로 남고 막지 않는다."""
+    run.json 을 읽지 못하면 bad_run_file 이 오류 기록으로 남고 막지 않는다.
+
+    8단계: 마지막 글(last_assistant_message)에 평문 질문·부탁이 있으면(plain_question) 한 번 막는다. Herdr 터미널 밖이거나
+    run_id 가 없어도 한다. 질문 글과 watch 글이 둘 다 있으면 질문을 앞에 \"\\n\\n\" 으로 잇는다."""
     if payload.get("stop_hook_active") or p.setup_mode.exists() or role_of(p, payload) != "main":
         return None
-    if not os.environ.get("HC_TERMINAL_ID", "").strip():
-        return None
-    if not outbox._run(p).get("run_id"):
-        return None
-    if outbox._orphaned(p) and not outbox.unread(p):
-        return None
-    if outbox.watch_alive(p):
-        return None
-    return {"decision": "block",
-            "reason": f"herdr-team: watch 가 꺼져 있다. Bash `run_in_background: true` 로 `{SHIM} watch` 를 띄우고 턴을 "
-                      "끝낸다. 이미 받은 메시지가 있으면 사용자에게 먼저 전한다."}
+    reasons = []
+    line = plain_question(payload.get("last_assistant_message"))
+    if line is not None:
+        reasons.append(_QUESTION_BLOCK.format(line=line))
+    if (os.environ.get("HC_TERMINAL_ID", "").strip() and outbox._run(p).get("run_id")
+            and not (outbox._orphaned(p) and not outbox.unread(p)) and not outbox.watch_alive(p)):
+        reasons.append(f"herdr-team: watch 가 꺼져 있다. Bash `run_in_background: true` 로 `{SHIM} watch` 를 띄우고 턴을 "
+                       "끝낸다. 이미 받은 메시지가 있으면 사용자에게 먼저 전한다.")
+    return {"decision": "block", "reason": "\n\n".join(reasons)} if reasons else None
 
 
 HANDLERS = {"session-start": session_start, "role-mark": role_mark, "guard": guard, "stop": stop}
