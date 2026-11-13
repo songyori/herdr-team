@@ -1,6 +1,6 @@
 # herdr-team 설계
 
-작성 2026-11-05, 4단계 추가 2026-11-08, 5단계 추가 2026-11-08, 5단계 병합 2026-11-09, 6단계 추가 2026-11-10, 6단계 병합 2026-11-11, 7단계 추가 2026-11-11. 상태: 1–3단계는 구현·실환경 확인을 마치고 0.1.0 으로 병합했다. 4단계(15.3 의 4)는 구현·실환경 확인을 마치고 herdr-team 0.2.0 으로 병합했다. 5단계(15.3 의 5)는 구현·실환경 확인을 마치고 herdr-team 0.3.0 으로 병합했다. 6단계(15.3 의 6)는 구현·실환경 확인을 마치고 herdr-team 0.4.0·herdr-orch 0.2.0 으로 병합했다. 7단계(15.3 의 7)는 구현·실환경 확인을 마쳤다(herdr-team 0.5.0·herdr-orch 0.3.0, 병합 대기).
+작성 2026-11-05, 4단계 추가 2026-11-08, 5단계 추가 2026-11-08, 5단계 병합 2026-11-09, 6단계 추가 2026-11-10, 6단계 병합 2026-11-11, 7단계 추가 2026-11-11, 7단계 병합 2026-11-12, 8단계 추가 2026-11-13. 상태: 1–3단계는 구현·실환경 확인을 마치고 0.1.0 으로 병합했다. 4단계(15.3 의 4)는 구현·실환경 확인을 마치고 herdr-team 0.2.0 으로 병합했다. 5단계(15.3 의 5)는 구현·실환경 확인을 마치고 herdr-team 0.3.0 으로 병합했다. 6단계(15.3 의 6)는 구현·실환경 확인을 마치고 herdr-team 0.4.0·herdr-orch 0.2.0 으로 병합했다. 7단계(15.3 의 7)는 구현·실환경 확인을 마치고 herdr-team 0.5.0·herdr-orch 0.3.0 으로 병합했다. 8단계(15.3 의 8)는 설계했다(herdr-team 0.6.0, herdr-orch 그대로).
 
 ## 1. 목적과 범위
 
@@ -13,6 +13,7 @@ herdr-team 은 Herdr(herdr-app 창 + herdr-core `hc`) 위에서 직무 팀으로
 - 5단계: orca-team 0.6.0 "묶음 검증"(`setup-with-orca` 커밋 0576df2 로 고정)까지 따라잡는다. 묶음(5.2), 테스트 관문 `[test]`·`hteam test`(5.7, 6.1), 수렴형 리뷰(6.2·6.3), `hteam followups`(8.4), `hteam upgrade`(9.6), 직무·코디네이터·메인 문서(5.8, 8.4, 10장)다. 코드는 가져오지 않고 규칙·템플릿 문구만 옮겨 쓴다(치환은 절마다 적는다). 목적은 orca-team 과 같다: 전체 테스트를 기능마다 여러 번(작업 워커·리뷰어·테스트 워커·그 리뷰어) 돌리지 않고, 수정 라운드를 처음부터 다시 리뷰하지 않고, P2·P3 만 남았을 때 판정 기준이 없어 라운드가 늘던 것을 줄인다. `[review] max_rounds` 상한은 그대로다. orca-team 0.6.0 의 다른 변경인 개발 직무 Codex 리뷰 모델(`gpt-6.1-sol`)은 herdr-team 에 이미 있다(커밋 455eaed, 4장 `[roles.developer]`). orca-team 도 0.6.0 을 실환경에서 확인하지 않았다(15.2).
 - 6단계: orca-team 0.7.0(`setup-with-orca` 커밋 cb365e9 로 고정)의 관제·고정 에이전트 구조를 Herdr 네이티브로 옮긴다. 코디네이터 LLM 을 없애고 셸 관제 `hteam drive` 가 절차를 코드로 돌린다(8장). 판단은 메인이 한다(7장). 고정 에이전트가 직무 태스크와 수정 라운드를 이어 맡고, 묶음이 끝나면 인수인계 파일을 쓴 뒤 같은 터미널에서 세션을 비운다(5.9). 고정 에이전트 태스크의 리뷰는 리뷰 동안만 에이전트 탭 오른쪽 pane 에 보인다(6.5). herdr-orch 에 고정 터미널(같은 터미널에 새 Dispatch, 세션 비우기)을 더한다(herdr-orch 설계 13장). 한 주기로 herdr-orch 0.1.2 → 0.2.0, herdr-team 0.3.0 → 0.4.0 이다. 코드는 가져오지 않고 개념과 orca-team 코드의 값·문구만 옮긴다(orca 설계와 코드가 다르면 코드 값). Herdr 에 없는 Orca 신호(`lastOutputAt`, tui-idle)는 7501 상태·`status_ms`·turn·사건(`hc events`)으로 바꾼다. orca 실환경 확인(§17)에서 나온 고칠 것도 처음부터 반영한다. 근거는 실제 Claude·Codex 세션 실험 X1–X6·X3b(2026-11-10, 이 문서에서 "X1" 처럼 적는다)다.
 - 7단계: Orca 로 직접 짠 오케스트레이션을 herdr-team 으로 옮기려는 프로젝트(pnpm 모노레포, 실제 PostgreSQL 을 쓰는 시험, Redmine 이슈로 일한다)가 보낸 보완 요청서(2026-11-11)를 검토해 받은 것을 넣는다. 병렬 개발용 작업 공간(슬롯 worktree 와 슬롯별 시험 환경, 5.10), tester 시험 경로와 `full_if`(5.2, 5.7), 리뷰의 프로젝트 점검표·우선순위·재검증 문구(6.2), 선택 적용 Redmine 연동(8.12)이다. herdr-orch 에 워커 환경 변수(`worker-start --env`, herdr-orch 설계 14장)를 더한다. 한 주기로 herdr-orch 0.2.0 → 0.3.0, herdr-team 0.4.0 → 0.5.0 이다. 기본값은 지금 동작 그대로다(새 기능은 설정이 있을 때만 켜진다).
+- 8단계: 7단계를 쓰기 시작한 그 프로젝트(2026-11-12–13)가 보고한 문제를 확인해 플러그인 결함을 고친다. 메인 질문 확인 훅이 같은 응답의 글을 찾지 못해 거부하는 것(9.4), 작업 공간 태스크가 기준 브랜치의 새 커밋을 받을 길이 없는 것(5.10.6 `fix --base-merge`), 메인의 평문 질문이 뒤이은 관제 메시지에 묻혀 지나가는 것(7.7, 9.4)이다. init 뒤 메인 세션을 새로 열라는 안내도 더한다(9.1). herdr-team 0.5.0 → 0.6.0 이고 herdr-orch 는 그대로다.
 
 ### 사용자 결정 (2026-11-05)
 
@@ -93,6 +94,28 @@ herdr-team 은 Herdr(herdr-app 창 + herdr-core `hc`) 위에서 직무 팀으로
 | R7 Artifact 디자인 | 이미 됨 | designer 는 저장소 화면 파일과 Claude Design 아티팩트를 함께 낸다(11.2). 파일을 빼면 Codex 리뷰어가 볼 것이 없어 URL 만으로 바꾸지 않는다 |
 | R8 모델·effort 표 | 이미 됨(설정) | 리뷰어는 늘 반대쪽이다. effort 는 `[crew.*].effort`, `[roles.*]` 의 `claude_effort`·`codex_effort` 로 따로 둔다 |
 | R9 묶음 끝 push | 받지 않음 | 프로젝트 `CLAUDE.md` 의 메인 규칙으로 둔다(메인이 done 을 받고 push 한다) |
+
+### 사용자 결정 (2026-11-13, 8단계)
+
+| 주제 | 결정 |
+|---|---|
+| 범위 | 그 프로젝트의 보고 셋과 사용자가 더한 하나를 확인해 플러그인 결함을 고친다(아래 표). herdr-team 0.6.0, herdr-orch 그대로 |
+| 질문 확인 훅 | 원인을 실험으로 확인한 뒤 고친다. 못 찾으면 바로 거부하지 않고 짧게 다시 읽는다(9.4) |
+| 기준 병합 | 메인이 부르는 `hteam fix T-xxx --base-merge` 로 충돌 경로와 같은 기준 병합 라운드를 연다(5.10.6). 워커가 스스로 한 병합을 자동으로 인정하지는 않는다. 부작용을 확인해 보고했고 대처 셋을 함께 넣는다: working 에서 열 때 병합 전에 커밋 안 된 변경을 먼저 커밋하게 하는 지시, 완료 요약의 바뀐 파일을 첫 라운드 시작 커밋부터 세기, 병합 커밋이 있는 리뷰 프롬프트의 안내 한 줄 |
+| 평문 질문 | 메인 규칙(사용자의 답·결정·행동이 필요하면 언제나 AskUserQuestion)과 Stop 훅 검사(마지막 글에 질문·부탁 표현이 있으면 한 번 막는다)를 함께 넣는다(7.7, 9.4) |
+| 리뷰 수정 범위 | P0·P1, 기본 경로의 P2, 회귀를 고친다. 가장자리 경우는 알려진 한계로 적는다 |
+
+### 보고 처리 (8단계)
+
+그 프로젝트(herdr-team 0.5.0, 작업 공간·Redmine 사용)의 메인 세션 transcript 와 상태 파일을 읽기만 해서 확인했다.
+
+| 보고 | 확인한 것 | 처리 |
+|---|---|---|
+| 질문 확인 훅이 같은 응답에서 먼저 보인 글을 찾지 못해 질문마다 세 번씩 거부한다 | 질문이 둘이었다. out-0001 은 메인이 세 번 모두 글 없이 질문만 다시 불렀다(transcript 에 text 블록이 없다. 훅은 맞게 거부했고 네 번째는 상한으로 통과했다). out-0002 는 같은 응답의 글이 질문 바로 앞 줄에 있고 정규화한 앞 80자도 맞는데 첫 시도가 거부되고 7초 뒤 두 번째 시도는 통과했다. 실험(Claude Code 2.1.323 `-p`, PreToolUse 훅 안에서 transcript 를 0.05초마다 다시 읽음): 두 번 모두 훅이 시작할 때 같은 응답(같은 message id)의 글과 도구 호출이 아직 없었고 약 0.11초 뒤 생겼다. 훅이 도는 동안에도 쓰기는 이어진다 | 결함. 고친다(9.4) |
+| 전체 시험 결과의 head 가 null 이다 | T-010(tester) 기록만 null 이다. 그 태스크 커밋은 보고서 경로(`docs/qa/`, `docs/tasks/T-010/`)만 바꿨다. `head` 는 보고서 밖을 바꾼 마지막 커밋이고 없으면 null 이다(5.7). 재사용 판단도 맞았다. 마무리 full 기록(`final.json`)의 head 는 채워져 있다 | 설계대로다. 고치지 않는다 |
+| 작업 공간 태스크에 main 병합을 지시하면 리뷰 사전 검사가 반려한다 | T-008(tester, 슬롯): 메인이 추가 범위로 `git merge --no-ff main` 을 지시했고 워커가 병합 커밋을 만들었다. `base` 가 그대로라 기준에서 들어온 다른 태스크의 파일 넷이 소유 경로 밖 변경으로 반려됐다. 메인은 버리고 새 태스크로 다시 했다. 기준 병합 라운드는 accept 충돌(5.10.6)에서만 열린다 | 지원 경로가 없다. `fix --base-merge` 를 더한다(5.10.6) |
+| (사용자) 메인이 평문으로 물으면 업무가 이어져 질문을 확인하지 못하고 지나간다 | 메인이 보고 글 중간에 "막아야 하면 시험이 끝나기 전에 말씀해 주세요" 로 묻고 턴을 끝냈다. 6분 뒤 watch 알림이 메인을 깨워 보고가 이어졌고 답은 오지 않았다. 1시간 47분 뒤 사용자가 진행을 묻자 메인은 "답할 질문은 없습니다" 라고 했다(평문 질문은 기록되지 않는다). 메인 규칙은 decide 처리에서만 AskUserQuestion 을 요구한다. 실험: Stop 훅 입력에 그 턴의 마지막 글 `last_assistant_message` 가 들어온다(transcript 에는 0.1초쯤 늦게 쓰인다) | 결함. 고친다(7.7, 9.4) |
+| (확인 중 발견) 그 메인 세션은 herdr-team 이전(2026-11-08)부터 이어 온 세션이다 | `CLAUDE.md` 의 herdr-team 절은 2026-11-12 16:09 에 커밋됐다. 그 뒤 세션을 다시 시작하지 않아 메인 규칙을 지시로 받지 못했다(편집한 파일 조각으로만 봤다). out-0001 과 T-008 의 병합 지시가 이것과 겹친다. init 은 세션을 새로 열라고 안내하지 않는다 | init·upgrade 보고와 README 에 "메인 세션을 새로 연다" 를 넣는다(9.1, 9.6) |
 
 ## 2. 용어
 
@@ -895,6 +918,7 @@ worker_done 이 오면 관제가 `task = null` 로 비우고(entry 의 `task` �
 
 - `hteam review`(6.1)의 git 조회(대상 커밋, 바뀐 파일, 사전 검사, 변조 기준점), 관문 테스트, 리뷰 파일 커밋(`[T-xxx] review rN:`)은 작업 루트에서 한다. 리뷰 커밋은 태스크 브랜치에 쌓이고 병합 때 기준 브랜치로 들어간다.
 - 리뷰어는 `--cwd <작업 루트>` 와 같은 `--env` 로 띄운다. 프롬프트의 경로는 작업 루트 기준이다.
+- 8단계: 리뷰 대상 커밋에 부모가 둘 이상인 커밋(기준 병합 커밋, 5.10.6)이 있으면 리뷰 프롬프트 `## 태스크` 의 작업 공간 줄 뒤에 한 줄을 더한다: "병합 커밋 <sha 7자, 쉼표로>은 기준 브랜치의 변경을 이 브랜치에 들여온 것이다. 그 커밋이 들여온 다른 태스크의 변경은 리뷰 대상이 아니다. 아래 바뀐 파일과 그 커밋의 충돌 해결만 본다." 라운드 절의 새 커밋 목록에도 그 커밋이 들고, 그 범위를 직접 diff 하면 기준의 변경까지 보이기 때문이다(프롬프트의 바뀐 파일 목록은 이미 지금 기준과의 차이만 담는다). shared 모드 태스크에는 붙이지 않는다.
 
 #### 5.10.5 워커 사양의 작업 공간 절
 
@@ -912,7 +936,13 @@ env 가 없으면 셋째 줄을 뺀다. 리뷰 프롬프트에도 첫째 줄(폴
 - accept(6.4): 작업 공간 태스크는 `approved` → 병합 → `done` 이다. 작업 공간 직무는 승인 직무가 될 수 없다(4.2, Codex 설계 리뷰 r1: 승인 직무끼리는 선행이 `awaiting_user` 여도 후행이 시작하는데, 병합 전이라 후행 브랜치에 선행 코드가 없다). 병합 전에는 `done` 이 아니므로 owns 잠금과 의존(5.3)이 병합까지 간다. 그래서 같은 파일을 바꾸는 두 브랜치가 동시에 살지 않고(마이그레이션처럼 순번이 있는 경로도 owns 로 한 줄로 선다), 후행 태스크는 선행이 병합된 기준 브랜치에서 브랜치를 딴다.
 - 병합(관제, 프로젝트 잠금과 git 잠금 `state/git.lock` 안): 메인 폴더 브랜치가 그 태스크의 기준 브랜치가 아니면 `workspace_failed`(`base_moved`)다. 맞으면 메인 폴더에서 `git merge --no-ff -m "[T-xxx] merge: <제목>" herdr/T-xxx`.
   - 충돌: `git merge --abort` 하고 그 성공을 확인한다(실패하면 `merge_blocked`). 그다음 태스크를 `changes` 로 바꾸고, 라운드 기록에 `merge_conflict: {base: <기준 브랜치 HEAD sha>, files}` 를, 태스크 상태에 풀어야 할 기준 병합 `base_merge: <sha>` 를 쓰고, 태스크의 `base` 를 그 sha 로 바꾼 뒤 decide `merge_conflict` 를 올린다(Codex 설계 리뷰 r1: `fix` 는 `approved` 에서 할 수 없다). 메인은 `fix T-xxx --note "<지시>"`(상한이면 `--force-round`)나 drop 을 고른다.
-  - 기준 병합 라운드: 태스크에 `base_merge` 가 있는 동안의 수정 라운드다. 리뷰 시작(6.1)이 `base..HEAD` 에서 그 sha 를 부모로 가진 `[T-xxx]` 커밋을 찾으면 `base_merge` 를 지운다. 그래서 워커가 커밋 전에 죽어 새 라운드가 열려도 표시가 남아 같은 지시를 받는다(Codex 설계 리뷰 r2). 슬롯에 그 sha 의 `MERGE_HEAD` 가 남아 있으면 지시 끝에 "앞 워커가 시작한 병합이 남아 있다. 이어서 푼다." 를 붙인다. 워커 사양의 작업 공간 절 둘째 줄은 "이 라운드는 기준 커밋 `<sha>` 를 이 브랜치에 병합한다: `git merge --no-ff --no-commit <sha>` 뒤 충돌을 풀고 푼 파일을 `git add -- <파일>` 한다. `git diff --cached --name-only` 가 병합과 푼 파일만 담는지 본 뒤 경로를 지정하지 않은 `git commit -m \"[T-xxx] 기준 병합: <sha 7자>\"` 로 커밋한다(병합 중에는 git 이 경로 지정 커밋을 받지 않는다. 이 커밋만 작업 규칙 5.5 의 경로 지정 예외다). 그 밖의 병합·rebase·push 는 하지 않는다." 다. `base` 를 옮겼으므로 리뷰 대상 커밋(`base..HEAD` 의 `[T-xxx]`)에 기준 병합 커밋과 태스크의 앞 커밋이 들고, 바뀐 파일·사전 검사·관문은 지금 기준과 태스크 브랜치의 차이만 본다. 다른 태스크가 기준에 넣은 변경은 owns 밖으로 잡히지 않는다. 리뷰를 거친 뒤 accept 가 다시 병합한다.
+  - 기준 병합 라운드: 태스크에 `base_merge` 가 있는 동안의 수정 라운드다. 리뷰 시작(6.1)이 `base..HEAD` 에서 그 sha 를 부모로 가진 `[T-xxx]` 커밋을 찾으면 `base_merge` 를 지운다. 그래서 워커가 커밋 전에 죽어 새 라운드가 열려도 표시가 남아 같은 지시를 받는다(Codex 설계 리뷰 r2). 슬롯에 그 sha 의 `MERGE_HEAD` 가 남아 있으면 지시 끝에 "앞 워커가 시작한 병합이 남아 있다. 이어서 푼다." 를 붙인다. 워커 사양의 작업 공간 절 둘째 줄은 "이 라운드는 기준 커밋 `<sha>` 를 이 브랜치에 병합한다: 먼저 `git status` 를 보고 이 태스크의 커밋하지 않은 변경이 있으면 경로 지정 커밋으로 커밋한다(8단계. index 에 올린 변경이 있으면 git 이 병합을 거부한다). 그다음 `git merge --no-ff --no-commit <sha>` 뒤 충돌을 풀고 푼 파일을 `git add -- <파일>` 한다. `git diff --cached --name-only` 가 병합과 푼 파일만 담는지 본 뒤 경로를 지정하지 않은 `git commit -m \"[T-xxx] 기준 병합: <sha 7자>\"` 로 커밋한다(병합 중에는 git 이 경로 지정 커밋을 받지 않는다. 이 커밋만 작업 규칙 5.5 의 경로 지정 예외다). 그 밖의 병합·rebase·push 는 하지 않는다." 다. `base` 를 옮겼으므로 리뷰 대상 커밋(`base..HEAD` 의 `[T-xxx]`)에 기준 병합 커밋과 태스크의 앞 커밋이 들고, 바뀐 파일·사전 검사·관문은 지금 기준과 태스크 브랜치의 차이만 본다. 다른 태스크가 기준에 넣은 변경은 owns 밖으로 잡히지 않는다. 리뷰를 거친 뒤 accept 가 다시 병합한다.
+  - 메인이 여는 기준 병합(8단계): `hteam fix T-xxx --base-merge [--note "<이유>"] [--force-round]`(6.4, 요청 큐). 작업 공간 태스크가 accept 전에 기준 브랜치의 새 커밋(나중에 병합된 회귀 수정, 바뀐 공용 코드)을 받아야 할 때 쓴다.
+    - 거부(아무것도 바꾸지 않는다. 이전 워커를 정리하기 전에 본다): 작업 공간 태스크가 아니면(shared 모드, 메인 폴더 직무) exit 2 `not_workspace`. 메인 폴더의 기준 브랜치 HEAD(`refs/heads/<기준 브랜치>`, 메인 폴더가 지금 어느 브랜치든)가 이미 태스크 브랜치 HEAD 의 조상이면 exit 3 `base_current`(`기준 브랜치의 새 커밋이 없다`). 그 밖의 거부는 지금 `fix` 와 같다(상태, `max_rounds`, 잠금, 끝나지 않은 결정).
+    - 그다음 `fix` 와 같이 이전 라운드를 정리하고(working 이면 지금 워커를 닫는다) 새 라운드를 쓰는 같은 저장에서 태스크의 `base_merge`·`base` 를 처음에 읽은 그 sha 로 바꾼다. 이미 `base_merge` 가 있으면(충돌 경로가 남긴 표시) 새 sha 로 바꾼다. history 의 fix 사건에 `base_merge: <sha>` 를 더한다.
+    - 그 뒤는 충돌 경로의 기준 병합 라운드와 같다: 워커 사양 둘째 줄의 병합 지시와 `--note`, 리뷰 시작이 그 sha 를 부모로 가진 `[T-xxx]` 커밋을 보면 표시를 지운다, 바뀐 파일·사전 검사·관문은 새 기준과의 차이만 본다, 관문은 병합 커밋을 코드 커밋으로 보므로(5.7 `code_head`) quick·full 을 다시 돌린다.
+    - 큐 요청의 `args` 에 `base_merge: true` 를 넣는다. 관제가 받아 같은 함수를 부른다(8.3).
+    - 메인은 워커에게 병합·rebase 를 직접 지시하지 않는다(7.7). 지시해 워커가 병합하면 `base` 가 그대로라 기준에서 들어온 다른 태스크의 파일이 소유 경로 밖 변경으로 반려된다(8단계 보고 처리, T-008).
   - 거부(index 에 올린 변경이 있다, 병합이 덮을 커밋 안 된 파일이 있다, `index.lock`): 아무것도 바꾸지 않고 다음 재확인에 다시 한다. 10분 넘게 거부되면 `workspace_failed`(`merge_blocked`, git 출력)를 한 번 올린다. 메인 세션이나 메인 폴더 고정 에이전트의 커밋과 겹칠 때 생긴다. 메인 폴더에 끝나지 않은 병합(`MERGE_HEAD`)이 있으면 다시 시도하지 않고 바로 `merge_blocked` 를 올린다(관제가 병합 도중 죽었을 수 있다. 사용자가 정리한다).
   - 성공: 병합 커밋 sha 를 `workspace.merge` 에 쓰고 `done`. 그다음 슬롯을 놓는다.
 - 놓기(병합 뒤, drop 뒤): teardown 이 있으면 setup 과 같은 환경으로 돌린다(실패해도 놓기는 계속하고 로그·progress 한 줄). 슬롯에서 `git switch --detach` 한다. 병합한 브랜치는 `git branch -d` 로 지운다. 버린 태스크의 브랜치는 기록으로 남긴다. 그다음 슬롯을 `free` 로 쓴다. `free` 로 끝나면 관제가 바로 start-ready 를 돌린다(빈 슬롯을 기다리던 태스크의 예약과 준비가 다음 재확인을 기다리지 않는다). 버린 태스크의 슬롯에 커밋 안 된 변경이 있으면 `dirty` 로 두고 progress 로 알린다.
@@ -944,6 +974,8 @@ worktree 모드의 마무리 full(8.4 의 6)은 메인 폴더에서 돌리지 �
 - (7단계 브랜치 최종 리뷰 M2, 가장자리 경우라 기록만) git 훅이 거부한 병합은 재확인마다 다시 시도한다(사용자가 훅을 고치면 저절로 이어 가는 길이다. decide 는 한 번만 올린다). 그동안 메인 작업 트리가 잠깐 병합됐다 되돌려지고 사용자 훅이 매번 돌며, 훅이 도는 동안(`MERGE_HEAD` 가 있는 동안) 메인 폴더의 경로 지정 커밋이 실패할 수 있다.
 - (7단계 브랜치 최종 리뷰 M3, 기록만) 병합 커밋 경로 거르기(`diff(base, HEAD)` 에 든 경로만 남긴다)가 shared 모드 태스크에도 걸린다. 워커 규칙을 어겨 `[T-xxx]` 병합 커밋이 있을 때만 다르고, 그때도 quick 파일 목록과 관문 재사용 판단(`code_head`)만 달라질 수 있다.
 - (7단계 브랜치 Codex 리뷰 r3, 가장자리 경우라 기록만) drop 한 작업 공간 태스크를 슬롯을 놓은 뒤 `hteam test T` 로 다시 시험하면, 그 슬롯을 다시 잡은 다른 태스크의 작업 루트와 시험 env 에서 돌고 결과가 drop 한 태스크의 기록으로 남는다. drop 한 태스크는 다시 시험하지 않는다(다시 할 일이면 새 태스크로 만든다).
+- (8단계, 사용자 결정으로 대처하지 않음) 기준 병합 라운드의 developer quick 은 태스크가 바꾼 파일만 본다. 들여온 기준 변경과의 상호작용은 묶음 tester 와 마무리 full 이 잡는다.
+- (8단계, 기록만) `fix --base-merge` 는 기준 브랜치가 다시 쓰여(force push·reset) 옛 `base` 가 새 sha 의 조상이 아니어도 막지 않는다(충돌 경로와 같다).
 
 ## 6. 교차 리뷰
 
@@ -1143,7 +1175,7 @@ Codex 리뷰어에게는 `AGENTS.md` 의 리뷰어 규칙도 적용된다(9.1). 
 
 - `hteam accept T [--round N]`: `approved` → `done`, 승인 직무면 `awaiting_user`. `awaiting_user` → `done`(사용자 승인 뒤). 작업 Dispatch 를 release 한다(실패하면 경고). 6단계: 고정 에이전트의 작업 Dispatch 는 release 해도 터미널이 남는다(herdr-orch 13.5). 태스크의 작업·리뷰 Dispatch 가 `launching`·`active` 면(리뷰는 retain 실패를 견디므로 승인 뒤에도 작업 워커가 살아 있을 수 있다) 바꾸지 않고 exit 3 이다(owns 잠금을 풀기 전에 `horch worker-abandon --kill` 뒤 `worker-release`, 또는 `drop --force`. 6단계: 고정 Dispatch 는 `--kill` 대신 쉬는 세션이면 `--keep-terminal`, 일하는 세션이면 `terminal-close --abandon`, 5.9.6). `horch worker-list` 를 읽지 못하면 살아 있는 워커가 없음을 확인할 수 없으므로 역시 바꾸지 않고 `horch_failed`(exit 1, horch 가 의존성 없음을 내면 12)로 끝난다.
 - 7단계: 작업 공간 태스크의 accept 는 `done` 으로 바꾸기 전에 기준 브랜치에 병합한다(5.10.6). 작업 공간 직무는 승인 직무가 될 수 없다(4.2). 병합이 거부되면 상태를 바꾸지 않고 exit 3 `merge_pending`(관제가 다시 시도한다), 충돌이면 `changes` 로 가고 decide `merge_conflict` 다. drop 은 슬롯을 놓는다(5.10.6).
-- `hteam fix T [--note "…"] [--supplement T-yyy] [--force-round] [--round N] [--model …] [--effort …] [--worker …]`: `changes`·`launch_failed`·`working`(작업 워커가 실패로 끝남)·`awaiting_user`(사용자 수정 요청) 에서 새 라운드를 띄운다. 입력 검사(owns 범위·잠금)를 먼저 하고, 이전 라운드의 작업 Dispatch 와 끝나지 않은 리뷰 Dispatch 를 정리한다(기록되지 않은 Dispatch 도 저장된 horch Task 나 실행 키로 찾는다. 정리를 확인한 뒤에만 새 라운드를 쓴다): `settled`·`retained`·`abandoned` 는 바로 release(release 가 살아 있는 터미널도 끈다), `active` 면 `worker-abandon --kill` 뒤 release. `round >= max_rounds` 이면 exit 3 과 `max_rounds`(`--force-round` 는 사용자가 계속하라고 했을 때 한 라운드만 넘긴다). `awaiting_user` 에서의 수정은 상한을 보지 않는다. `--supplement` 는 디렉터 보강을 반영하는 수정이라는 표시다(11.4). 6단계: 고정 에이전트 태스크는 정리 규칙이 다르다(5.9.5): 끝난 Dispatch 는 release(터미널은 남는다), `active` 이고 세션이 쉬면 `worker-abandon --keep-terminal`, 일하는 중이면 `--force` 가 있어야 하고 세션을 닫고 새로 띄운다(5.9.6). 새 라운드는 같은 에이전트에 넣거나 대기열에 넣는다.
+- `hteam fix T [--note "…"] [--supplement T-yyy] [--base-merge] [--force-round] [--round N] [--model …] [--effort …] [--worker …]`: `changes`·`launch_failed`·`working`(작업 워커가 실패로 끝남)·`awaiting_user`(사용자 수정 요청) 에서 새 라운드를 띄운다. `--base-merge`(8단계)는 작업 공간 태스크의 기준 병합 라운드를 연다(5.10.6). 입력 검사(owns 범위·잠금)를 먼저 하고, 이전 라운드의 작업 Dispatch 와 끝나지 않은 리뷰 Dispatch 를 정리한다(기록되지 않은 Dispatch 도 저장된 horch Task 나 실행 키로 찾는다. 정리를 확인한 뒤에만 새 라운드를 쓴다): `settled`·`retained`·`abandoned` 는 바로 release(release 가 살아 있는 터미널도 끈다), `active` 면 `worker-abandon --kill` 뒤 release. `round >= max_rounds` 이면 exit 3 과 `max_rounds`(`--force-round` 는 사용자가 계속하라고 했을 때 한 라운드만 넘긴다). `awaiting_user` 에서의 수정은 상한을 보지 않는다. `--supplement` 는 디렉터 보강을 반영하는 수정이라는 표시다(11.4). 6단계: 고정 에이전트 태스크는 정리 규칙이 다르다(5.9.5): 끝난 Dispatch 는 release(터미널은 남는다), `active` 이고 세션이 쉬면 `worker-abandon --keep-terminal`, 일하는 중이면 `--force` 가 있어야 하고 세션을 닫고 새로 띄운다(5.9.6). 새 라운드는 같은 에이전트에 넣거나 대기열에 넣는다.
 - `hteam drop T [--force]`: 태스크를 `dropped` 로. 끝나지 않은 작업 실행 키와 리뷰 시도 기록을 `canceled` 로 표시한다(이후 `start`·`review` 의 복구 대상이 아니다). `active` Dispatch 가 있으면 `--force` 가 있어야 하고 `worker-abandon --kill` 뒤 release 한다. `settled`·`retained`·`abandoned` 는 release 한다. `launch_failed` 는 건드리지 않는다(horch 가 가드가 거부한 터미널을 정리한다). 6단계: 고정 에이전트 태스크는 5.9.6. `launching` 이면 먼저 `horch worker-list` 로 조정하고, 그래도 `launching`(실행자가 살아 있음)이면 exit 3 으로 나중에 다시 하게 한다.
 - `fix`·`drop` 의 순서 규칙: 바꾸기 전에 거부할 것을 확인하고(입력, launching, `--force` 없는 active) → 현재 라운드의 끝나지 않은 실행 키·리뷰 시도의 `canceled` 를 먼저 저장하고(취소된 기록이 있는 라운드에는 `start`·`review` 가 Dispatch 를 띄우지 않는다) → 정리 대상을 다시 골라 정리하고 → 그다음에만 새 라운드나 `dropped` 를 쓴다. 정리 대상은 horch 의 실제 상태로 고른다: 모든 라운드의 실행 기록마다 그 horch Task(없으면 실행 키)의 모든 시도 가운데 끝나지 않은 것. `cleaned` 는 기록일 뿐 대상 선택에 쓰지 않는다. 어디서 멈춰도 같은 명령을 다시 부르면 이어 한다.
 - `max_rounds` 에 닿으면 관제가 메인에 decide(`max_rounds`)를 올린다(8.6). 메인이 사용자에게 묻고(계속 / 버림) 계속이면 `--note` 와 함께 `fix --force-round`(상한을 한 번 넘긴다).
@@ -1324,6 +1356,12 @@ orca-team 0.7.0 `queue.py` 를 옮긴다(`lib/hteam/queue.py`). 메인은 horch 
 
 7단계 메인 규칙 줄: "`git commit` 이 `index.lock` 오류로 실패하면 몇 초 뒤 같은 명령을 다시 한다(관제의 병합과 겹쳤다)." "Redmine 을 쓰는 프로젝트(`[redmine]`)면 이슈 상태·노트는 관제가 바꾼다. 메인도 바꾸지 않는다. `hteam status` 의 `redmine.failed` 가 늘면 사용자에게 알린다." "사용자가 묶음이 끝난 뒤 push 하라고 정했으면 `done` 의 마지막 전체 테스트가 통과했을 때 push 한다(플러그인은 push 하지 않는다)." 는 프로젝트가 고를 줄이라 템플릿에는 주석 예시로만 둔다(앞 두 줄은 넣는다).
 
+8단계 메인 규칙 줄(둘 다 템플릿에 넣는다):
+
+- 사용자 요청 처리 줄 뒤: "사용자의 답·결정·행동(고르기, 확인, 로그인, 확인 창 승인 등)이 필요하면 언제나 AskUserQuestion 으로 묻는다(질문 하나, 선택지 2–4개, 추천 하나. 자유 답은 Other 로 받는다). 진행 보고 글에 질문이나 부탁을 섞지 않는다. 평문 질문은 턴을 끝내고, 뒤이은 관제 메시지가 메인을 다시 깨워 질문이 밀려 지나간다(어디에도 기록되지 않는다). AskUserQuestion 은 답할 때까지 화면에 남고 그동안 관제는 따로 돈다." Stop 훅이 이 줄을 검사한다(9.4).
+- 범위 추가 줄 뒤: "작업 공간 태스크가 기준 브랜치의 새 커밋(나중에 병합된 회귀 수정 등)을 받아야 하면 `hteam fix T-xxx --base-merge --note "<이유>"` 를 한다. 일하는 중이면 그 워커를 닫고 새 라운드가 병합부터 한다. 워커에게 병합·rebase 를 직접 지시하지 않는다(사전 검사가 기준에서 들어온 파일을 소유 경로 밖 변경으로 반려한다)."
+- 업그레이드 줄 끝에 더한다: "`CLAUDE.md` 절이 바뀌었으면 사용자에게 메인 세션을 새로 열라고 알린다(메인 규칙은 세션을 시작할 때 읽힌다)."
+
 질문 표시 규칙은 그대로다(`render` 를 그대로, 질문 하나, 하나씩). `approval` 줄은 "사용자 답을 태스크별로 정리해 `hteam design-decide <id> --json -` 으로 넘긴다. 사용자가 `수정 요청` 을 고르면 어느 태스크를 어떻게 고칠지 대화로 물은 뒤 넘긴다" 로 바꾼다(0.3.0 의 `수정 요청: …` 한 줄 답 대신).
 
 위치 절에 더한다: 설정의 `[crew.*]`·`[overflow]`·`[drive]`, 관제 기록 `.herdr-team/state/drive/drive.log`, 고정 에이전트 상태 `.herdr-team/state/crew.json`, 인수인계 `docs/handoff/<이름>.md`. 상태 줄은 "상태 `hteam status`(태스크별 상태·next, 관제·고정 에이전트·watch 생사, 열린 질문)" 다.
@@ -1472,7 +1510,7 @@ orca-team 0.6.0 의 `orch followups`(`lib/orch/followups.py`)를 `lib/hteam/foll
    마지막 전체 테스트: <status> (<seconds>초)  (돌렸을 때만)
    ```
 
-   바뀐 파일은 처음 시작한 태스크의 base 부터 HEAD 까지 `git diff --name-only` 에서 `.herdr-team/` 로 시작하는 경로를 뺀 것이다(orca §17 P3-12: 사양 파일로 채워졌다). 그 뒤 `reported` 를 적는다.
+   바뀐 파일은 처음 시작한 태스크의 첫 라운드 시작 커밋(`rounds[0].round_base`, 없으면 `base`)부터 HEAD 까지 `git diff --name-only` 에서 `.herdr-team/` 로 시작하는 경로를 뺀 것이다(orca §17 P3-12: 사양 파일로 채워졌다. 8단계: 기준 병합(5.10.6)이 `base` 를 옮겨도 앞 변경이 빠지지 않게 첫 라운드 기준을 쓴다). 그 뒤 `reported` 를 적는다.
 
 `[test]` 확정 질문(관제, 5.7): 리뷰 출력에 `tests_skipped: "unapproved"` 가 있거나 `test_gate.state` 가 `unapproved` 면, 그 식별값(`test_gate.digest`)으로 아직 묻지 않았고 같은 질문이 열려 있지 않을 때 한 번 올린다(`hteam test-confirm` 요청이면 이미 물었어도 올린다). render 는 정해진 글이다: header `테스트 확정`, question `커밋된 [test] 명령을 리뷰 전에 자동으로 돌려도 되는가\n예: 확정하면 다음 리뷰부터 quick 이 돌고 묶음 리뷰와 마무리가 full 을 돈다`, options `확정한다 (추천)`(`추천 사유: 기획자가 쓴 명령이고 아래에 그대로 보인다`) / `고친다`(`[test] 를 고치는 기획 태스크를 만든다`). hteam 이 `## 테스트 명령` 절과 `test_digest` 를 붙인다(5.7). 물은 식별값은 `state/drive/test-confirm.json` 에 남긴다. 확정 기록 손상(`bad_test_approvals`)이면 묻지 않고 decide escalation(경로 포함)을 올린다.
 
@@ -1749,7 +1787,7 @@ kind 는 orca 의 `DECIDE_KINDS` 와 같다: `worker_failed`, `worker_question`,
 4. 판단이 필요한 한 단계: 표 하나로 제안하고 AskUserQuestion 한 번으로 승인받는다. 직무별 owns, 추가 직무, 고정 에이전트 구성(6단계: `[crew.*]` 의 직무 묶음과 에이전트·모델, `[overflow]`), 필요한 도구(Chrome DevTools MCP 등), Claude 권한 모드(`[agents.claude].args`. bypass 는 사람 없이 돌 때 필요하지만 워커가 사용자 자격 증명을 그대로 쓴다는 위험을 적는다), Codex 우회는 묻지 않는다(`[agents.codex].args` 의 `--dangerously-bypass-approvals-and-sandbox` 는 템플릿 기본(사용자 결정 2026-11-11). Codex 워커·리뷰어가 샌드박스·승인 없이 돌아 리뷰어가 chrome-devtools 로 화면을 렌더하고 개발 서버를 띄운다. 표에는 위험만 적는다: 사용자 권한·자격 증명·네트워크를 그대로 쓴다, 리뷰어가 읽는 워커 코드·웹 페이지의 글이 명령을 실행시킬 수 있다, 저장소 밖 변경은 변조 검사가 잡지 못한다, 사용자 Codex 설정의 다른 MCP 서버도 승인 없이 쓸 수 있다(hteam 은 같은 일을 하는 `chrome-devtools` 만 끄고 다른 이름은 범위 밖이다)). `hteam image`(designer 의 래스터 에셋)도 `codex exec` 를 샌드박스 우회로 돌린다(image_gen 결과 파일을 읽으려고, 14장). 프롬프트는 이미지 생성만 시키고 결과는 검사한 PNG 만 게시한다.
 4a. 7단계: 같은 표에 두 줄을 더한다. 둘 다 기본은 끔이다. (1) 작업 공간: 병렬 개발이 필요한지(동시에 개발 태스크를 둘 이상 돌리고 시험이 DB·포트를 쓰는지), 쓰면 슬롯 수·setup·teardown·env. worktree 모드면 작업 공간 직무를 `[crew.*]` 에서 빼고(4.2) 시험 도구 설정에서 `.herdr-team/` 를 빼자고 제안한다. (2) Redmine: 쓰는지, 쓰면 URL·키를 담은 변수 이름(`key_env`)·`env_file`(git 제외 파일, 기본으로 제안한다. 없으면 워커·리뷰어 셸도 키를 본다, 8.12)·상태 번호. 키 값은 묻지도 받지도 않는다. 승인한 것만 `[workspace]`·`[redmine]` 으로 쓴다.
 5. `hteam up --wait-run 180`(관제를 띄운다, 9.3)과 백그라운드 `hteam watch`.
-6. `hteam setup-done`, 경로 지정 커밋 `chore: herdr-team 세팅`, 보고.
+6. `hteam setup-done`, 경로 지정 커밋 `chore: herdr-team 세팅`, 보고. 8단계: 보고 끝에 "메인 규칙(`CLAUDE.md` 의 herdr-team 절)은 세션을 시작할 때 읽힌다. 이 세션을 끝내고 같은 폴더에서 메인 세션을 새로 연 뒤 일을 맡긴다(관제는 그대로 돈다. 새 세션의 watch 는 Stop 훅이 띄우게 한다)." 를 넣는다. 지금 세션은 init 이 쓴 절을 지시로 받지 못한다(8단계 보고 처리).
 
 ### 9.2 `hteam doctor`
 
@@ -1790,9 +1828,9 @@ Python 3.11 이상, git(없으면 `git init` 과 빈 커밋을 권함), `horch` 
 | SessionStart | `state/plugin-root` 기록. 메인이면 "너는 메인이다" 와 열린 질문 수(decide 포함)를 넣는다. Herdr 터미널 밖(`$HC_TERMINAL_ID` 없음)이면 watch·answer·큐 명령이 되지 않으니 Herdr 안에서 다시 열라는 안내도 넣는다. 메인이면 자동 부활 확인(9.5, 간격과 관계없이)을 하고 그 결과 문구나 기본 줄을 넣는다 |
 | UserPromptSubmit(`role-mark`) | 역할 캐시가 없으면 다시 판별한다. 고정 에이전트 터미널이면 늘 다시 판별한다(6단계). 그 뒤 매 프롬프트, 역할이 메인이면 자동 부활 확인(9.5, 60초 간격). 결과 문구가 있으면 `additionalContext` 로 넣는다 |
 | PreToolUse (Edit·Write·MultiEdit·NotebookEdit) | 경로는 `..`·심볼릭 링크를 실제 경로로 푼 뒤 본다. 누구나 `state/` 를 고칠 수 없다. 메인은 `setup-mode` 가 아니면 제품 파일(`.herdr-team/`·`.claude/`·`docs/superpowers/`·`CLAUDE.md`·`AGENTS.md`·`.gitignore` 밖의 프로젝트 파일)을 고칠 수 없다. 메인은 태스크 사양(`.herdr-team/tasks/`)을 쓴다. 프로젝트 밖은 메인에게 제품 파일이 아니다. 풀 수 없는 경로는 메인에게 거부한다 |
-| PreToolUse (AskUserQuestion) | planner·director 워커 → `hteam ask-user` 안내. 다른 워커 → `horch ask` 안내("프리앰블의 ask 명령으로 묻는다(메인이 답한다)"). 리뷰어 → 묻지 않고 리뷰 파일에 적으라고 거부("리뷰어는 묻지 않는다. 판단할 수 없는 것은 리뷰 파일에 적고 판정을 마친다"). 메인 → outbox 질문의 `context` 를 먼저 보여 주지 않았으면 보일 때까지 거부한다(메인의 답변 글 끝부분에 정규화한 `context` 앞 80자가 있어야 보인 것이다). 같은 질문은 세 번까지만 거부하고 그 뒤는 통과시킨다(2단계 실환경에서 메인이 `context` 를 생각 줄에만 남긴 일이 5건 중 2건 있었다) |
+| PreToolUse (AskUserQuestion) | planner·director 워커 → `hteam ask-user` 안내. 다른 워커 → `horch ask` 안내("프리앰블의 ask 명령으로 묻는다(메인이 답한다)"). 리뷰어 → 묻지 않고 리뷰 파일에 적으라고 거부("리뷰어는 묻지 않는다. 판단할 수 없는 것은 리뷰 파일에 적고 판정을 마친다"). 메인 → outbox 질문의 `context` 를 먼저 보여 주지 않았으면 보일 때까지 거부한다(메인의 답변 글 끝부분에 정규화한 `context` 앞 80자가 있어야 보인 것이다). 같은 질문은 세 번까지만 거부하고 그 뒤는 통과시킨다(2단계 실환경에서 메인이 `context` 를 생각 줄에만 남긴 일이 5건 중 2건 있었다). 8단계: Claude Code 는 같은 응답의 글과 도구 호출을 PreToolUse 훅이 시작한 뒤에 transcript 에 쓴다(실험에서 약 0.11초 뒤, 8단계 보고 처리). 그래서 처음 읽어 못 찾은 질문이 있으면 바로 거부하지 않고 2초(`CONTEXT_WAIT_S`) 동안 0.05초(`CONTEXT_POLL_S`) 간격으로 transcript 끝부분을 다시 읽어, 그래도 못 찾은 질문만 거부하고 센다. 처음에 모두 찾으면 기다리지 않는다. 기다리는 동안 `context-denied.lock` 을 쥔다(겹친 질문 확인은 그만큼 기다린다). 2초 안에 쓰이지 않으면 예전처럼 거부한다(상한 셋 그대로) |
 | PreToolUse (Bash) | 메인이 `horch` 를 직접 부르면 거부(같은 일을 하는 `hteam` 큐 명령을 안내). 6단계: 메인의 `hteam drive` 도 거부(`hteam drive 는 관제 탭에서만 돈다. 메인 터미널이 관제가 되면 horch 깨우기 글이 사용자 입력란에 들어온다. 관제를 띄우려면 /herdr-team:up 을 쓴다`). `hteam` 판별은 0.3.0 의 `HORCH_RE` 와 같은 경계 규칙으로 하고, 앞 옵션(`--root …`)을 건너뛴 하위 명령이 정확히 `drive` 일 때만 막는다(따옴표·절대 경로 포함, `hteam drive-x` 는 통과) |
-| Stop | 메인이고 `run.json` 에 `run_id` 가 있고 관제가 꺼짐(8.2 의 alive·hung·starting 이 모두 아님)이 아닌데 watch 가 없으면 턴을 끝내지 못하게 하고 watch 를 다시 띄우라고 한다. 관제가 꺼졌으면 watch 가 곧바로 `orphaned` 로 끝나므로 outbox 에 미전달 항목이 없을 때는 막지 않는다(막으면 watch → orphaned → up 실패 → Stop 이 사용자 입력 없이 되풀이된다. 꺼진 관제는 다음 프롬프트의 자동 부활 확인이 알린다, 9.5. 최종 리뷰 I1). 미전달 항목이 있으면(커서 뒤 줄, `status` 의 `unread_outbox` 와 같은 기준) 관제가 꺼졌어도 막는다. watch 는 관제 생존을 보기 전에 그것을 주고, 전달하면 커서가 따라잡아 다음 Stop 은 막지 않는다(Codex 커밋 리뷰 81c2c30). Herdr 터미널 밖의 메인, `setup-mode`, `stop_hook_active` 는 막지 않는다 |
+| Stop | 메인이고 `run.json` 에 `run_id` 가 있고 관제가 꺼짐(8.2 의 alive·hung·starting 이 모두 아님)이 아닌데 watch 가 없으면 턴을 끝내지 못하게 하고 watch 를 다시 띄우라고 한다. 관제가 꺼졌으면 watch 가 곧바로 `orphaned` 로 끝나므로 outbox 에 미전달 항목이 없을 때는 막지 않는다(막으면 watch → orphaned → up 실패 → Stop 이 사용자 입력 없이 되풀이된다. 꺼진 관제는 다음 프롬프트의 자동 부활 확인이 알린다, 9.5. 최종 리뷰 I1). 미전달 항목이 있으면(커서 뒤 줄, `status` 의 `unread_outbox` 와 같은 기준) 관제가 꺼졌어도 막는다. watch 는 관제 생존을 보기 전에 그것을 주고, 전달하면 커서가 따라잡아 다음 Stop 은 막지 않는다(Codex 커밋 리뷰 81c2c30). Herdr 터미널 밖의 메인, `setup-mode`, `stop_hook_active` 는 막지 않는다. 8단계 평문 질문 검사: 메인이고 `setup-mode` 가 아니고 `stop_hook_active` 가 아니면, 훅 입력의 `last_assistant_message`(그 턴의 마지막 글. 없거나 문자열이 아니면 검사하지 않는다)에서 펜스 코드 블록·인라인 코드·인용 줄(`>`)을 뺀 줄 가운데 `QUESTION_RE` 에 맞는 첫 줄을 찾는다. `QUESTION_RE` 는 끝(뒤의 공백·`)`·`*`·`.` 를 떼고)이 `?`·`？`·`까요` 인 줄, 또는 어디든 `주세요`·`주시면`·`주십시오`·`주시겠어요`·`주셔야` 가 있는 줄이다(사용자에게 부탁하는 말. kakao 의 `말씀해 주세요`·`로그인해 주셔야`). 찾으면 막는다: `herdr-team: 마지막 글에 사용자에게 묻거나 부탁하는 말이 있다: "<그 줄 120자>". 평문 질문은 뒤이은 관제 메시지에 묻혀 지나간다. 사용자의 답·결정·행동이 필요하면 AskUserQuestion 으로 다시 묻는다(질문 하나, 선택지 2–4개, 추천 하나). 질문이 아니면 그대로 턴을 끝낸다.` watch 검사와 둘 다 걸리면 두 글을 한 번에 낸다. 이 검사는 Herdr 터미널 밖이거나 `run_id` 가 없어도 한다(메인 규칙은 관제와 관계없다). `stop_hook_active` 면 다시 막지 않으므로 질문이 아닌 글을 막아도 한 번 더 돌고 끝난다(한계: 표현으로 찾으므로 표현이 없는 질문은 놓친다) |
 
 Codex 워커·리뷰어에는 Claude 훅이 걸리지 않는다. 그쪽은 `AGENTS.md` 의 규칙(owns 밖 커밋 금지, 리뷰어는 리뷰 파일만)과 리뷰 사전 검사·변조 검사로 막는다. Bash 로 하는 파일 수정(`sed -i` 등)은 훅이 막지 못한다(리뷰가 잡는다). Codex 고정 에이전트(6단계)도 같다.
 
@@ -1872,6 +1910,7 @@ orca-team 0.6.0 의 `orch upgrade`(`setup.upgrade`)를 옮긴다. scaffold 는 �
   `diff_stat` 은 바꾸거나 만든 파일만 넣는다(건너뛴 파일의 사용자 변경이 섞이지 않게, orca-team 09c78a4). `created` 는 추적하지 않는 새 파일이라 `git diff --stat` 에 실제로는 나오지 않는다. git 이 실패해도 `diff_stat` 은 빈 문자열로 두고 나머지 결과를 낸다.
 - README "이미 세팅한 프로젝트 업그레이드" 에 "0.2.0 → 0.3.0" 을 더한다: (1) 플러그인을 0.3.0 으로 올린다. 리뷰의 수렴형 규칙·판정 맞추기, 워커 사양 테스트 절, 리뷰 절 템플릿은 이것만으로 적용된다. (2) 프로젝트 루트에서 `.herdr-team/bin/hteam upgrade`(또는 메인에 부탁). (3) `git diff -- .herdr-team` 을 확인하고 커밋한다. `skipped` 는 까닭대로 정리한 뒤 다시 한다. (4) `manual` 의 `CLAUDE.md`·`AGENTS.md` 절을 템플릿과 견줘 고친다. (5) 테스트 관문을 쓰려면 `docs/planning/tasks.toml` 에 `[test]` 를 넣고 커밋한다(직접 쓰거나 메인에 증분 기획을 요청). (6) 코디네이터를 다시 띄운다. 0.1.x 절의 "템플릿과 비교해 손으로 바꾼다" 는 복사한 규칙 파일이면 `hteam upgrade` 로 대신할 수 있다고 적는다(config.toml 은 여전히 손으로).
 
+- 8단계: 출력 `next` 끝에 "`CLAUDE.md` 절을 고쳤으면 메인 세션을 새로 연다(메인 규칙은 세션을 시작할 때 읽힌다)." 를 더한다. README 업그레이드 절에 "0.5.0 → 0.6.0" 을 더한다: (1) 플러그인을 0.6.0 으로 올린다(질문 확인 훅 대기, 평문 질문 검사, `fix --base-merge`, 병합 지시문·리뷰 안내 줄은 이것만으로 적용된다). (2) `hteam upgrade` 의 `manual` 에 나온 `CLAUDE.md` 절을 템플릿과 견줘 바꾼다(새 메인 규칙 두 줄과 업그레이드 줄). (3) 메인 세션을 새로 연다.
 - 6단계: `FILES`·대상에서 `coordinator.md` 를 뺀다(남아 있는 옛 파일은 건드리지 않는다). 0.3.0 → 0.4.0 이전 로직(설정의 `[coordinator]` 를 `[drive]`·`[crew.*]` 로 바꾸기, `CLAUDE.md` 절 바꾸기)은 더하지 않는다(1장 6단계 결정). README 의 업그레이드 절에 "0.3.0 → 0.4.0" 을 더한다: 이전하지 않는다. 플러그인을 올리면 `[coordinator]` 가 설정 오류가 되므로(4.2) `config.toml` 을 지운 뒤 다시 세팅하거나(scaffold 는 있는 파일을 덮어쓰지 않으므로 그 파일만 새로 생긴다) 템플릿의 `[drive]`·`[overflow]`·`[crew.*]` 로 손으로 바꾼다. 그다음 `hteam upgrade` 로 직무 문서를 바꾸고 `CLAUDE.md` 절은 `manual` 대로 템플릿과 견줘 고친다.
 
 ## 10. 기획 인터뷰 (planner)
@@ -2327,6 +2366,14 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
   - 템플릿: `handoff.md` 의 자리표시·`200줄`·done 명령, `CLAUDE.section.md` 의 역할 표(코디네이터 행 없음)·decide 표 아홉 kind·`design-decide`·`scope`, 템플릿(역사 설명 밖)에 "코디네이터" 가 없음, `coordinator.md` 가 scaffold `FILES`·upgrade 대상에 없음.
   - herdr-orch 0.2.0 테스트는 그 설계 13.10.
   - 버전: herdr-team 세 곳이 0.4.0, `HORCH_MIN` 이 0.2.0, herdr-orch 세 곳이 0.2.0(`tests/test_cli.py`, herdr-orch `tests/test_meta.py`).
+- 8단계(실제 Claude·Herdr 를 부르지 않는다. 훅은 지금 훅 테스트처럼 입력 JSON 을 넣어 부른다):
+  - 질문 확인 훅: 처음 읽을 때 글이 없고 0.2초 뒤 다른 스레드가 transcript 에 같은 응답의 글을 덧붙이면 거부하지 않고 `context-denied.json` 도 그대로다. 끝내 쓰이지 않으면 대기 상한(테스트는 짧게 바꾼다) 뒤 거부하고 센다. 처음에 찾으면 다시 읽지 않는다(읽은 횟수). 질문 둘 가운데 하나만 늦게 보이면 그것만 기다려 찾고 나머지는 거부한다.
+  - 평문 질문 검사: `last_assistant_message` 에 `…말씀해 주세요.` 가 든 줄, `…할까요?`·`괜찮을까요` 로 끝나는 줄, `로그인해 주셔야` 가 든 줄이 있으면 막고 그 줄을 글에 넣는다. 펜스 코드·인라인 코드·인용 줄 안의 `?` 는 막지 않는다. 질문 없는 보고는 막지 않는다. `stop_hook_active`·`setup-mode`·메인 아님·`last_assistant_message` 없음은 막지 않는다. Herdr 터미널 밖·`run_id` 없음에서도 검사한다. watch 꺼짐과 함께 걸리면 두 글을 한 번에 낸다.
+  - `fix --base-merge`: shared 모드·메인 폴더 직무는 exit 2 `not_workspace`, 기준 HEAD 가 이미 조상이면 exit 3 `base_current`(둘 다 이전 워커를 정리하지 않고 상태 그대로). changes·working·launch_failed 에서 새 라운드의 `base_merge`·`base` 가 그 sha, 워커 사양 둘째 줄이 병합 지시(커밋 안 된 변경 먼저 커밋 문장 포함), history 의 `base_merge`. 충돌 경로가 남긴 `base_merge` 는 새 sha 로 바뀐다. 워커가 병합 커밋을 만든 뒤 리뷰 사전 검사가 기준에서 들어온 다른 태스크 파일을 소유 경로 밖으로 잡지 않고 표시가 지워진다. 같은 상황에서 `--base-merge` 없이 병합하면 지금처럼 반려된다(회귀 기준). 요청 큐로 넣으면 관제가 같은 결과를 낸다. CLI 사용법에 옵션이 있다.
+  - 리뷰 프롬프트: 작업 공간 태스크의 대상 커밋에 병합 커밋이 있으면 안내 줄과 그 sha 7자, 없거나 shared 모드면 없다.
+  - 완료 요약: 처음 시작한 태스크의 `base` 가 옮겨져도 바뀐 파일에 첫 라운드 이후의 앞 변경이 든다. `round_base` 가 없는 옛 상태는 `base` 를 쓴다.
+  - 템플릿·문서: `CLAUDE.section.md` 의 새 메인 규칙 두 줄과 업그레이드 줄, init 스킬 보고의 새 세션 안내, upgrade `next` 의 새 문장.
+  - 버전: herdr-team 세 곳이 0.6.0, `HORCH_MIN` 은 0.3.0 그대로.
 
 ### 15.2 실환경 확인 (단계마다)
 
@@ -2423,9 +2470,19 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
 2. Redmine: 로컬 가짜 Redmine HTTP 서버(요청을 기록한다)로 사건별 상태·노트·순서, 4xx 실패 기록, 키가 로그·outbox·프롬프트에 없는지 본다. 사용자 Redmine 의 시험 이슈로 보는 것은 사용자에게 묻는다.
 3. 회귀: shared 모드 프로젝트가 지금처럼 도는지(6단계 실환경 2–3 의 축소판).
 
+8단계(2026-11-13):
+
+사전 검증(했다, 2026-11-13, 8단계 보고 처리): Claude Code 2.1.323 `-p` 에서 PreToolUse 훅이 시작할 때 같은 응답의 글이 transcript 에 없고 약 0.11초 뒤 생긴다. Stop 훅 입력에 `last_assistant_message` 가 있다. 대화형 세션에서도 같은지는 아래 1 에서 본다(kakao 메인 세션 2.1.322 의 out-0002 가 같은 현상이었다).
+
+실환경(사용자 hc core 는 건드리지 않고 시험 터미널만 쓴다. 7단계와 같은 운영 규칙):
+
+1. 메인 질문: 시험 프로젝트에서 대화형 메인 Claude 세션(시험 터미널, 플러그인은 이 저장소 폴더)을 연다. `render.context` 가 있는 질문 하나를 outbox 에 만든다(가장 가벼운 방법은 계획에서 정한다. 실제 기획 태스크면 sonnet). 메인이 같은 응답에서 글을 쓰고 AskUserQuestion 을 불러 첫 시도에 통과하는지(`context-denied.json` 에 그 id 가 없다) 본다. 그다음 메인에 "보고 글 끝에 평문으로 하나 묻고 턴을 끝내라" 는 시험 프롬프트를 보내 Stop 훅이 한 번 막고 메인이 AskUserQuestion 으로 다시 묻는지, 질문 없는 보고는 막지 않는지 본다.
+2. 기준 병합: worktree 모드 시험 프로젝트(7단계 실환경 1 의 축소판, 실제 임시 워커 sonnet)에서 developer 태스크 하나가 슬롯에서 일하는 동안 메인 폴더 기준 브랜치에 다른 커밋을 넣는다(다른 태스크의 병합 대신). 메인이 `hteam fix T --base-merge --note "<이유>"` 를 큐로 넣는다. 워커가 닫히고 새 라운드 워커가 지시대로 병합 커밋을 만드는지, 리뷰 사전 검사가 통과하고 리뷰 프롬프트에 안내 줄이 있는지, accept 가 기준 브랜치에 병합하는지, 완료 요약의 바뀐 파일에 앞 변경이 드는지 본다. 병합 뒤 같은 명령은 `base_current` 다.
+3. 회귀: 단위 테스트 전체와 7단계 실환경 1 의 기본 흐름(병렬 두 태스크와 병합) 하나.
+
 ### 15.3 구현 단계
 
-설계 문서는 이것 하나다. 구현 계획·서브에이전트 구현·Codex 리뷰·실환경 확인을 세 번 한다. 세 단계를 마치면 herdr-team 0.1.0 으로 main 에 병합한다(병합했다). 4단계는 같은 절차를 한 번 더 하고 herdr-team 0.2.0 으로 병합한다(병합했다). 5단계도 같은 절차를 한 번 하고 herdr-team 0.3.0 으로 병합한다(병합했다). 6단계도 같은 절차를 한 번 하고 herdr-orch 0.2.0·herdr-team 0.4.0 으로 병합한다(병합했다). 7단계도 같은 절차를 한 번 하고 herdr-orch 0.3.0·herdr-team 0.5.0 으로 병합한다.
+설계 문서는 이것 하나다. 구현 계획·서브에이전트 구현·Codex 리뷰·실환경 확인을 세 번 한다. 세 단계를 마치면 herdr-team 0.1.0 으로 main 에 병합한다(병합했다). 4단계는 같은 절차를 한 번 더 하고 herdr-team 0.2.0 으로 병합한다(병합했다). 5단계도 같은 절차를 한 번 하고 herdr-team 0.3.0 으로 병합한다(병합했다). 6단계도 같은 절차를 한 번 하고 herdr-orch 0.2.0·herdr-team 0.4.0 으로 병합한다(병합했다). 7단계도 같은 절차를 한 번 하고 herdr-orch 0.3.0·herdr-team 0.5.0 으로 병합한다(병합했다). 8단계도 같은 절차를 한 번 하고 herdr-team 0.6.0 으로 병합한다.
 
 1. **핵심**: 플러그인 골격·shim, 설정, 사양·`task new`, tasks.toml·plan, owns 잠금, start·start-ready, 워커 사양 조립, 리뷰(review·review-finish, 사전 검사, 변조 검사, 프롬프트), accept·fix·drop, status·`next`, wait, 메인 연결(tell·notify·watch·answer·ask-user·reask·`render`), 훅, doctor·scaffold·up·bind, init·up 스킬, 코디네이터 사용법, 직무 문서(planner 기본·developer·tester). 실환경: 기획 → 개발·테스트 병렬 → Codex 리뷰 pane → 수정 라운드 → accept, 메인 질문 중계.
 2. **기획 인터뷰와 승인**: 인터뷰 체크리스트·확정 질문(10장), 승인 직무와 `awaiting_user`, `design-review`, designer 기본. 실환경: 사용자가 인터뷰에 답하고 일괄 승인.
@@ -2479,6 +2536,14 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
    8. init·문서: init 스킬(작업 공간·Redmine 줄, 9.1), `CLAUDE.section.md`(새 decide 처리, `index.lock` 다시 시도, Redmine 줄, 7.7), `AGENTS.section.md`·`worker-rules.md` 의 작업 공간·이슈 줄, config 템플릿의 주석 예시(4장), README(작업 공간, Redmine, 시험 도구에서 `.herdr-team/` 빼기, 프로젝트 점검표, "0.4.0 → 0.5.0": 플러그인만 올리면 되고 새 기능은 설정으로 켠다), 버전 0.5.0 과 `HORCH_MIN` 0.3.0.
 
    그다음 브랜치 Codex 리뷰, 실환경(15.2 의 7단계), main 병합. 리뷰 지적은 P0·P1, 기본 경로의 P2, 회귀를 고치고 가장자리 경우는 알려진 한계로 적는다.
+
+8. **실사용 보고 결함**(2026-11-13 사용자 결정, 1장 8단계 표): herdr-team 0.6.0, herdr-orch 그대로. 태스크 순서 개요:
+   1. 질문 확인 훅 대기(9.4 PreToolUse): `CONTEXT_WAIT_S`·`CONTEXT_POLL_S`, 못 찾은 질문만 다시 읽기.
+   2. 평문 질문 검사(9.4 Stop): `QUESTION_RE`, 코드·인용 빼기, watch 검사와 합치기. `CLAUDE.section.md` 의 AskUserQuestion 규칙 줄(7.7).
+   3. `fix --base-merge`(5.10.6, 6.4): CLI·요청 큐·`tasks.fix` 의 거부 검사와 `base_merge`·`base` 쓰기, 병합 지시문의 커밋 먼저 문장, 리뷰 프롬프트 안내 줄(5.10.4), 완료 요약의 첫 라운드 기준(8.4). `CLAUDE.section.md` 의 기준 병합 줄(7.7).
+   4. 문서·버전: init 스킬 보고의 새 세션 안내(9.1), upgrade `next` 문장(9.6), `CLAUDE.section.md` 업그레이드 줄(7.7), README(질문 표시·평문 질문·기준 병합 안내, "0.5.0 → 0.6.0"), 버전 0.6.0.
+
+   그다음 브랜치 Codex 리뷰, 실환경(15.2 의 8단계), main 병합. 리뷰 지적은 P0·P1, 기본 경로의 P2, 회귀를 고치고 가장자리 경우는 알려진 한계로 적는다.
 
 ### 15.4 실환경 확인 결과
 
