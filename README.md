@@ -93,7 +93,7 @@ claude plugin update herdr-orch@herdr-team
 claude plugin update herdr-team@herdr-team
 ```
 
-- 업데이트한 뒤 Claude Code 세션을 다시 연다.
+- 업데이트한 뒤 Claude Code 세션을 다시 연다. 이미 떠 있는 관제(`hteam drive`)는 뜰 때의 플러그인 버전으로 계속 돌므로 관제도 다시 띄운다(순서는 아래 버전별 절).
 - 이미 세팅한 프로젝트는 버전에 따라 손으로 옮길 것이 있다(아래 "이미 세팅한 프로젝트 업그레이드").
 - 복사해 둔 규칙 파일은 `.herdr-team/bin/hteam upgrade` 로 새 템플릿으로 바꾼다.
 
@@ -286,11 +286,39 @@ scaffold 는 있는 파일을 덮어쓰지 않는다. 앞 버전에서 세팅한
 
 #### 0.5.0 → 0.6.0
 
-herdr-orch 는 그대로(0.3.0)다.
+herdr-orch 는 그대로(0.3.0)다. 아래 순서대로 한다. 순서를 바꾸면 옛 관제나 옛 메인 규칙이 남는다. 일이 덜 몰린 때(리뷰가 돌지 않는 때)에 하면 편하지만, 일하는 태스크가 있어도 다시 뜬 관제가 이어 간다.
 
-1. 플러그인을 올리는 것만으로 적용되는 것: 질문 표시(훅이 거부하지 않고 표를 선택 창 미리보기에 넣는다, 긴 표는 메인 옆 '질문 보기' pane), 평문 질문 검사, `hteam fix --base-merge`, 병합 지시문·리뷰 안내 줄, 완료 요약.
-2. `.herdr-team/bin/hteam upgrade` 의 `manual` 대로 `CLAUDE.md` 의 `<!-- herdr-team -->` 절을 `herdr-team/templates/CLAUDE.section.md` 와 견줘 고친다(새 메인 규칙 두 줄(평문 질문, 기준 병합), 업그레이드 줄 끝의 새 세션 문장, 질문 표시 규칙의 바뀐 두 줄).
-3. 메인 세션을 새로 연다(메인 규칙은 세션을 시작할 때 읽힌다).
+1. 플러그인을 올린다.
+
+   ```sh
+   claude plugin marketplace update herdr-team
+   claude plugin update herdr-team@herdr-team
+   ```
+
+2. 프로젝트 루트에서 `.herdr-team/bin/hteam upgrade` 를 실행한다.
+   - `manual` 에 `CLAUDE.md` 가 나온다. `CLAUDE.md` 의 `<!-- herdr-team -->` 절을 `herdr-team/templates/CLAUDE.section.md` 와 견줘 고친다. 바뀐 곳은 넷이다.
+     - 메인 규칙의 새 줄: 사용자의 답·결정·행동이 필요하면 언제나 AskUserQuestion 으로 묻는다.
+     - 메인 규칙의 새 줄: 작업 공간 태스크가 기준 브랜치의 새 커밋을 받아야 하면 `hteam fix T-xxx --base-merge --note "<이유>"` 를 쓴다.
+     - 업그레이드 줄 끝: `CLAUDE.md` 절이 바뀌었으면 메인 세션을 새로 열라고 알린다.
+     - 질문 표시 규칙의 첫 두 줄: `render` 그대로 곧바로 묻고, `render.context` 는 훅이 선택 창에 넣는다.
+   - `created` 에 init 때 지운 직무 문서(예: `.herdr-team/roles/director.md`·`designer.md`)가 있으면 지운다. upgrade 는 없는 파일을 템플릿에서 다시 만든다.
+   - 바꾼 파일을 경로를 지정해 커밋한다(`git add -- <경로> && git commit -m "chore: herdr-team 0.6.0" -- <경로>`).
+3. 지금 메인 세션을 끝낸다(`/exit`).
+4. 관제를 끈다. "herdr-team 관제" 탭의 관제 pane 을 닫거나, `.herdr-team/bin/hteam status` 에 나오는 관제 터미널을 `hc kill <터미널>` 한다.
+   - 관제와 그 자식(리뷰 시작·마무리, 슬롯 준비, 테스트)은 관제가 뜰 때의 플러그인 경로로 돈다. 다시 띄우지 않으면 0.5.0 으로 남는다. 그러면 메인의 `hteam fix --base-merge` 를 옛 관제가 보통 `fix` 로 처리한다(오류 없이 병합 지시가 빠진다).
+   - 3 을 먼저 한다. 옛 메인 세션이 살아 있으면 그 세션의 0.5.0 훅이 관제를 0.5.0 으로 다시 띄운다.
+5. 같은 폴더에서 메인 세션을 새로 열고 메시지를 하나 보낸다(예: "관제와 watch 상태를 확인해 줘"). 새 세션의 훅이 관제를 0.6.0 으로 다시 띄우고, 메인은 새 메인 규칙을 읽고 watch 를 띄운다. 관제가 뜨지 않으면 `/herdr-team:up` 을 실행한다.
+6. 확인한다.
+   - `.herdr-team/bin/hteam version` 이 `0.6.0` 이다.
+   - `.herdr-team/bin/hteam status` 의 관제가 살아 있고, `hc get <관제 터미널>` 의 `argv` 가 `…/herdr-team/0.6.0/bin/hteam` 이다.
+
+올린 뒤 달라지는 것:
+
+- 질문 표시: 관제·기획자 질문의 표(`render.context`)를 훅이 선택 창 오른쪽 미리보기에 넣는다. 길면 앞부분만 넣고 전체는 메인 옆 "질문 보기" pane 에 띄운다(답하면 닫힌다). 훅은 질문을 거부하지 않는다(0.5.0 은 메인이 표를 글로 먼저 보이지 않으면 세 번까지 거부했다).
+- 평문 질문 검사: 메인이 평문으로 묻고 턴을 끝내면 Stop 훅이 한 번 막고 AskUserQuestion 으로 다시 묻게 한다.
+- `hteam fix T-xxx --base-merge`: 작업 공간 태스크에 기준 브랜치의 새 커밋을 받게 하는 기준 병합 라운드를 연다. 워커에게 병합을 직접 지시하면 사전 검사가 기준에서 들어온 파일을 소유 경로 밖 변경으로 반려한다.
+- 기준 병합 라운드의 병합 지시문(먼저 커밋 안 된 변경을 커밋한다), 병합 커밋이 있는 리뷰의 안내 줄, 완료 요약의 바뀐 파일(첫 라운드부터).
+- init·upgrade 가 메인 세션을 새로 열라고 안내한다.
 
 #### 0.4.0 → 0.5.0
 
