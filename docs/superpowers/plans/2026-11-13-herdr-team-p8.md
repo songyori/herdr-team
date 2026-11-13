@@ -35,7 +35,7 @@
 - 버전: Task 4 가 herdr-team 을 `0.6.0` 으로 올린다(`herdr-team/lib/hteam/paths.py` 의 `VERSION`, `herdr-team/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` 의 herdr-team 항목). `HORCH_MIN` 은 `0.3.0` 그대로, herdr-orch 는 바꾸지 않는다.
 - 기본값은 지금 동작 그대로다. 달라지는 것은 설계가 정한 넷뿐이다: 질문 확인 훅의 대기, Stop 의 평문 질문 검사, 병합 지시문 문장, 완료 요약의 기준 커밋. 그 밖의 출력·상태·명령은 0.5.0 과 같다.
 - 작업 브랜치 `design/herdr-team-p8` 에서 한다. main 에 직접 커밋하지 않는다. main 병합은 이 계획 밖이다(컨트롤러가 한다).
-- 테스트: 저장소 루트에서 `bash herdr-team/tests/run.sh`(전체 10–15분). 태스크 중간에는 모듈이나 `-k` 로 고른다(`run.sh` 는 인자를 `unittest discover` 에 넘긴다). **전체 모음은 백그라운드로 하나씩 돌린다. 다른 무거운 일과 함께 돌리지 않는다(이 기계는 함께 돌면 exit 137 로 죽는다).** herdr-orch 는 바꾸지 않으므로 Task 5 에서 한 번만 돌린다.
+- 테스트: 저장소 루트에서 `bash herdr-team/tests/run.sh`(전체 10–15분). 태스크 중간에는 `bash herdr-team/tests/run.sh -k <이름>` 으로 고르거나, 모듈을 `(cd herdr-team && python3 -m unittest tests.test_a tests.test_b)` 로 고른다(`run.sh` 는 인자를 `unittest discover` 에 넘기므로 위치 인자로 모듈 이름을 주지 않는다. Codex 계획 리뷰 r1). **전체 모음은 백그라운드로 하나씩 돌린다. 다른 무거운 일과 함께 돌리지 않는다(이 기계는 함께 돌면 exit 137 로 죽는다).** herdr-orch 는 바꾸지 않으므로 Task 5 에서 한 번만 돌린다.
 - **Codex 교차 검증(CLAUDE.md):** 이 계획은 실행 전에 컨트롤러가 `scripts/codex-review.sh doc <이름> <프롬프트 파일>` 로 검토받는다. 각 태스크의 마지막 단계는 커밋이다. **구현자는 커밋에서 멈춘다.** 그 뒤 컨트롤러가 `scripts/codex-review.sh commit <sha>` 를 돌리고(`hc wait <주소> --timeout 3600` 백그라운드), 지적을 코드로 확인해 고치거나 고치지 않는 까닭을 적는다. 리뷰 지적은 P0·P1, 기본 경로의 P2, 회귀를 고치고 가장자리 경우는 알려진 한계로 적는다(사용자 결정).
 
 ## File Structure
@@ -126,14 +126,18 @@ class ContextWaitTest(HookCase):
         self.assertEqual((hook.CONTEXT_WAIT_S, hook.CONTEXT_POLL_S, hook.FINGERPRINT, hook.CONTEXT_DENY_MAX),
                          (2.0, 0.05, 80, 3))
 
-    def test_text_written_after_the_first_read_is_found(self):
+    def test_text_written_during_the_wait_is_found_quickly(self):
         text, ctx = self.ask(1)
         transcript = self.transcript()
         proc, gate = self.paused(self.payload(transcript, text))
+        gate.touch()  # 다시 읽기를 시작한다
+        time.sleep(0.3)  # 기다리는 도중에
         with open(transcript, "a", encoding="utf-8") as fh:  # 같은 응답의 글이 늦게 쓰였다
             fh.write(self.line("표를 먼저 보인다.\n\n" + ctx))
-        gate.touch()
+        written = time.monotonic()
         out, err = proc.communicate(timeout=30)
+        # 2초를 다 기다린 뒤 한 번 읽는 구현이면 1.7초쯤 걸린다. CONTEXT_POLL_S 간격으로 다시 읽어야 곧 끝난다
+        self.assertLess(time.monotonic() - written, 1.0)
         self.assertEqual(proc.returncode, 0, err)
         self.assertEqual(out.strip(), "")  # 통과(거부 JSON 없음)
         self.assertEqual(self.denied(), {})
@@ -156,11 +160,13 @@ class ContextWaitTest(HookCase):
             fh.write(self.line(ctx))
         self.hook("session-start", terminal=MAIN)
         gate = self.tmp / "gate"
+        start = time.monotonic()
         proc = self.hook_bg("guard", self.payload(transcript, text), terminal=MAIN,
                             env={"HTEAM_TEST_PAUSE_AT": "context_first_miss", "HTEAM_TEST_PAUSE_FILE": str(gate)})
         out, err = proc.communicate(timeout=20)  # 멈춤 지점에 닿으면 문이 없어 여기서 시간 초과다
         self.assertEqual((proc.returncode, out.strip()), (0, ""), err)
         self.assertFalse(gate.with_name("gate.reached").exists())
+        self.assertLess(time.monotonic() - start, 2.0)  # 기다리지 않았다(CONTEXT_WAIT_S 보다 짧다)
 
     def test_only_the_late_question_is_waited_for(self):
         (t1, c1), (t2, _) = self.ask(1), self.ask(2)
@@ -180,7 +186,7 @@ class ContextWaitTest(HookCase):
 - [ ] **Step 2: 시험이 실패하는지 본다**
 
 Run: `bash herdr-team/tests/run.sh -k ContextWaitTest`
-Expected: FAIL. `test_constants` 는 `AttributeError: ... 'CONTEXT_WAIT_S'`, `test_text_written_after_the_first_read_is_found` 는 멈춤 지점에 닿지 않아 "멈춤 지점 전에 끝났다".
+Expected: FAIL. `test_constants` 는 `AttributeError: ... 'CONTEXT_WAIT_S'`, `test_text_written_during_the_wait_is_found_quickly` 는 멈춤 지점에 닿지 않아 "멈춤 지점 전에 끝났다".
 
 - [ ] **Step 3: 구현**
 
@@ -189,7 +195,7 @@ Expected: FAIL. `test_constants` 는 `AttributeError: ... 'CONTEXT_WAIT_S'`, `te
 - [ ] **Step 4: 시험이 통과하는지 본다**
 
 Run: `bash herdr-team/tests/run.sh -k ContextWaitTest` → PASS.
-Run: `bash herdr-team/tests/run.sh tests.test_hooks` → 모두 PASS(기존 거부 시험은 거부마다 2초씩 길어진다. `test_context_denied_updates_do_not_race` 의 `communicate(timeout=30)` 안에 든다).
+Run: `(cd herdr-team && python3 -m unittest tests.test_hooks)` → 모두 PASS(기존 거부 시험은 거부마다 2초씩 길어진다. `test_context_denied_updates_do_not_race` 의 `communicate(timeout=30)` 안에 든다).
 
 - [ ] **Step 5: 커밋**
 
@@ -341,7 +347,7 @@ Run: `bash herdr-team/tests/run.sh -k test_plain_question_rule_in_main` → FAIL
 
 - [ ] **Step 4: 시험이 통과하는지 본다**
 
-Run: `bash herdr-team/tests/run.sh tests.test_hooks tests.test_setup` → 모두 PASS(기존 `StopTest` 는 `last_assistant_message` 가 없어 그대로다. scaffold 가 템플릿을 복사하는 시험은 새 줄을 그대로 복사한다).
+Run: `(cd herdr-team && python3 -m unittest tests.test_hooks tests.test_setup)` → 모두 PASS(기존 `StopTest` 는 `last_assistant_message` 가 없어 그대로다. scaffold 가 템플릿을 복사하는 시험은 새 줄을 그대로 복사한다).
 
 - [ ] **Step 5: 커밋**
 
@@ -364,7 +370,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/hooks/hte
 - Modify: `herdr-team/lib/hteam/compose.py`(`BASE_MERGE_LINE`·`workspace_section`, `merge_commit_line`, 리뷰 프롬프트 조립)
 - Modify: `herdr-team/lib/hteam/drive.py`(`_changed_files`)
 - Modify: `herdr-team/templates/CLAUDE.section.md`
-- Test: `herdr-team/tests/test_workspace_merge.py`, `herdr-team/tests/test_drive_flows.py`, `herdr-team/tests/test_setup.py`
+- Test: `herdr-team/tests/test_workspace_merge.py`, `herdr-team/tests/test_drive_flows.py`, `herdr-team/tests/test_setup.py`, `herdr-team/tests/test_cli.py`
 
 **Interfaces:**
 - `tasks.fix(p, tid, *, note, supplement, force_round, cli, ..., base_merge: bool = False) -> dict`(키워드 하나를 더한다. 나머지 시그니처 그대로).
@@ -614,7 +620,36 @@ class RefuseTest(MergeCase):
         lines = self.done_items()[0]["body"].splitlines()
         self.assertEqual(lines[-1], "바뀐 주요 파일: src/early.py, src/late.py")
 
+    def test_changed_files_fall_back_to_base_without_round_base(self):
+        # round_base 가 없는 옛 상태는 base 부터 센다(task 도우미는 round_base 를 늘 넣으므로 지워서 본다)
+        first = self.head()
+        self.task("T-001", base=first)
+        with state.edit(self.p, "T-001") as st:
+            st["rounds"][0].pop("round_base")
+        self.commit("src/early.py", "x\n", "[T-001] 앞 변경")
+        self.d.finish_step()
+        lines = self.done_items()[0]["body"].splitlines()
+        self.assertEqual(lines[-1], "바뀐 주요 파일: src/early.py")
+
     def test_changed_files_skip_team_folder_and_stop_at_15(self):
+```
+
+**Edit** `herdr-team/tests/test_cli.py`
+
+```python
+    def test_unknown_command_is_usage_json(self):
+```
+
+```python
+    def test_fix_usage_lists_base_merge(self):
+        # 설계 6.4 8단계: fix 사용법에 --base-merge 가 보인다
+        import argparse
+        from hteam import cli
+        parser = cli.build_parser()
+        sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+        self.assertIn("--base-merge", sub.choices["fix"].format_help())
+
+    def test_unknown_command_is_usage_json(self):
 ```
 
 **Edit** `herdr-team/tests/test_setup.py`
@@ -636,8 +671,9 @@ class RefuseTest(MergeCase):
 - [ ] **Step 2: 시험이 실패하는지 본다**
 
 Run: `bash herdr-team/tests/run.sh -k BaseMerge` → FAIL(`hteam fix` 가 `--base-merge` 를 모르는 인자로 exit 2, `BASE_MERGE` 문장 없음, `merge_commit_line` 없음).
-Run: `bash herdr-team/tests/run.sh -k test_changed_files_start_at_the_first_round_even_if_base_moved` → FAIL(바뀐 파일 줄이 없다).
+Run: `bash herdr-team/tests/run.sh -k test_changed_files_start_at_the_first_round_even_if_base_moved` → FAIL(바뀐 파일 줄이 없다). `test_changed_files_fall_back_to_base_without_round_base` 는 지금 코드에서도 통과한다(회귀 기준).
 Run: `bash herdr-team/tests/run.sh -k test_base_merge_rule_in_main` → FAIL.
+Run: `bash herdr-team/tests/run.sh -k test_fix_usage_lists_base_merge` → FAIL.
 
 - [ ] **Step 3: 구현**
 
@@ -645,17 +681,17 @@ Interfaces·Rules 대로 `tasks.py`·`queue.py`·`compose.py`·`drive.py`·`CLAU
 
 - [ ] **Step 4: 시험이 통과하는지 본다**
 
-Run: `bash herdr-team/tests/run.sh tests.test_workspace_merge tests.test_drive_flows tests.test_setup tests.test_queue tests.test_review tests.test_workspace_flow` → 모두 PASS.
+Run: `(cd herdr-team && python3 -m unittest tests.test_workspace_merge tests.test_drive_flows tests.test_setup tests.test_cli tests.test_queue tests.test_review tests.test_workspace_flow)` → 모두 PASS.
 
 - [ ] **Step 5: 커밋**
 
 ```bash
 python3 -m py_compile herdr-team/lib/hteam/tasks.py herdr-team/lib/hteam/queue.py herdr-team/lib/hteam/compose.py herdr-team/lib/hteam/drive.py
 git grep -n -I -P '/[U]sers/|/private/[t]mp|~[/]Workspace' -- . ':!.codex-reviews'
-git add -- herdr-team/lib/hteam/tasks.py herdr-team/lib/hteam/queue.py herdr-team/lib/hteam/compose.py herdr-team/lib/hteam/drive.py herdr-team/templates/CLAUDE.section.md herdr-team/tests/test_workspace_merge.py herdr-team/tests/test_drive_flows.py herdr-team/tests/test_setup.py
+git add -- herdr-team/lib/hteam/tasks.py herdr-team/lib/hteam/queue.py herdr-team/lib/hteam/compose.py herdr-team/lib/hteam/drive.py herdr-team/templates/CLAUDE.section.md herdr-team/tests/test_workspace_merge.py herdr-team/tests/test_drive_flows.py herdr-team/tests/test_setup.py herdr-team/tests/test_cli.py
 git commit -m "feat(herdr-team): fix --base-merge 로 메인이 작업 공간 태스크의 기준 병합 라운드를 연다, 병합 전 커밋 먼저 지시, 병합 커밋 리뷰 안내, 완료 요약은 첫 라운드부터
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam/tasks.py herdr-team/lib/hteam/queue.py herdr-team/lib/hteam/compose.py herdr-team/lib/hteam/drive.py herdr-team/templates/CLAUDE.section.md herdr-team/tests/test_workspace_merge.py herdr-team/tests/test_drive_flows.py herdr-team/tests/test_setup.py
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam/tasks.py herdr-team/lib/hteam/queue.py herdr-team/lib/hteam/compose.py herdr-team/lib/hteam/drive.py herdr-team/templates/CLAUDE.section.md herdr-team/tests/test_workspace_merge.py herdr-team/tests/test_drive_flows.py herdr-team/tests/test_setup.py herdr-team/tests/test_cli.py
 ```
 
 ---
@@ -721,6 +757,16 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam
     def test_skill_recovery_contract(self):
 ```
 
+**Edit** `herdr-team/tests/test_setup.py`
+
+```python
+        self.assertEqual(json.loads(out.stdout)["version"], "0.5.0")
+```
+
+```python
+        self.assertEqual(json.loads(out.stdout)["version"], "0.6.0")
+```
+
 **Edit** `herdr-team/tests/test_cli.py`
 
 ```python
@@ -744,7 +790,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam
 - [ ] **Step 2: 시험이 실패하는지 본다**
 
 Run: `bash herdr-team/tests/run.sh -k test_new_main_session_after_init_and_upgrade` → FAIL.
-Run: `bash herdr-team/tests/run.sh tests.test_cli` → FAIL(0.5.0).
+Run: `(cd herdr-team && python3 -m unittest tests.test_cli)` → FAIL(0.5.0). `test_shim_finds_plugin` 도 구현 전에는 0.6.0 단언으로 FAIL 이다.
 
 - [ ] **Step 3: 구현**
 
@@ -752,7 +798,7 @@ Interfaces 대로 스킬·`UPGRADE_NEXT`·템플릿·README·버전을 고친다
 
 - [ ] **Step 4: 시험이 통과하는지 본다**
 
-Run: `bash herdr-team/tests/run.sh tests.test_setup tests.test_cli` → 모두 PASS.
+Run: `(cd herdr-team && python3 -m unittest tests.test_setup tests.test_cli)` → 모두 PASS.
 Run(백그라운드, 다른 무거운 일 없이): `bash herdr-team/tests/run.sh` → 모두 PASS.
 
 - [ ] **Step 5: 커밋**
