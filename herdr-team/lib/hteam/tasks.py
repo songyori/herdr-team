@@ -928,8 +928,9 @@ def _not_workspace(tid: str) -> HteamError:
 
 def _base_merge_target(p, st: dict) -> str:
     """`fix --base-merge`(설계 5.10.6 8단계)의 기준 병합 대상: 메인 폴더 기준 브랜치의 끝 sha. 아무것도 쓰지 않는다. 거부는
-    차례대로 작업 공간 태스크가 아니다(exit 2 not_workspace), 슬롯에 끝나지 않은 병합이 있다(exit 3 merge_in_progress: 그
-    병합은 --base-merge 없는 fix 가 이어 푼다), 기준 브랜치가 없다(exit 3 no_base_branch), 기준 브랜치의 새 커밋이 없다(그
+    차례대로 작업 공간 태스크가 아니다(exit 2 not_workspace), 슬롯에 끝나지 않은 병합이 있다(exit 3 merge_in_progress: 충돌
+    경로의 기준 병합 라운드가 남긴 병합이면 --base-merge 없는 fix 가 이어 푼다. 워커가 스스로 시작한 병합이면 이어 풀기 표시가
+    붙지 않는다, 설계 5.10.9 한계), 기준 브랜치가 없다(exit 3 no_base_branch), 기준 브랜치의 새 커밋이 없다(그
     끝이 이미 슬롯 HEAD 에 들었다, exit 3 base_current)."""
     tid = st["id"]
     if not st.get("workspace"):

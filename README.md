@@ -16,9 +16,9 @@
 
 | 항목 | 쓰는 곳 | 확인한 버전 |
 |---|---|---|
-| Herdr: herdr-app, herdr-core `hc` | 에이전트 터미널과 창 | herdr-app 0.1.14, hc 0.1.19 |
-| Claude Code(로그인한 것) | 메인 세션, Claude 워커·리뷰어 | 2.1.322 |
-| Codex CLI(로그인한 것) | Codex 워커·리뷰어 | codex-cli 0.167.0 |
+| Herdr: herdr-app, herdr-core `hc` | 에이전트 터미널과 창 | herdr-app 0.1.15, hc 0.1.20 |
+| Claude Code(로그인한 것) | 메인 세션, Claude 워커·리뷰어 | 2.1.323 |
+| Codex CLI(로그인한 것) | Codex 워커·리뷰어 | codex-cli 0.167.1 |
 | Python 3.11 이상 | `horch`·`hteam`(표준 라이브러리만 쓴다) | 3.14.6 |
 | git | 태스크 사양과 산출물 커밋. 작업 공간(worktree 모드)은 2.23 이상 | |
 | Node/npx | Codex 리뷰어 브라우저 `hteam-browser`(첫 실행에 `chrome-devtools-mcp@1.10.1` 을 내려받는다) | |
@@ -157,6 +157,7 @@ Run 소유자가 Claude·Codex 워커를 Herdr pane 으로 띄우고, SQLite 메
 
 - 메인: 사용자가 연 Claude 세션. 사용자 요청을 기획 태스크 사양으로 써서 커밋하고 `hteam start` 한다. 산출물을 만들지 않고 `horch`·`hteam drive` 를 직접 부르지 않는다(훅이 막는다). `hteam watch` 를 늘 하나 띄워 두고, 관제가 올린 decide 를 `CLAUDE.md` 의 판단 기준대로 처리한 뒤 `hteam answer` 로 닫는다.
   - 메인은 사용자에게 언제나 선택 창(AskUserQuestion)으로 묻는다. 평문 질문은 Stop 훅이 한 번 막는다.
+  - 관제·기획자 질문의 표(`render.context`)는 훅이 선택 창 오른쪽 미리보기에 넣는다. 길면 앞부분만 넣고 전체는 메인 옆 "질문 보기" pane 에 띄운다(답하면 닫힌다). 훅은 질문을 거부하지 않는다. 미리보기를 받지 않는 옛 Claude Code 에서는 표가 보이지 않는다(위 표의 버전에서 확인했다).
   - 작업 공간 태스크가 기준의 새 커밋을 받아야 하면 `hteam fix T-xxx --base-merge` 로 기준 병합 라운드를 연다(메인에 부탁한다).
 - 관제(`hteam drive`): 관제 탭(`herdr-team 관제`)에서 도는 Python 프로그램(Claude 가 아니다). horch Run 을 갖고 디스패치, 리뷰, accept·fix, 묶음 후속, 마무리, 디자인 보강, 세션 리셋, 복구를 정해진 절차로 돌린다. 판단이 필요한 일(워커 질문, 실패, 최대 라운드, 회귀의 원인 등)만 outbox `decide` 로 메인에 올린다. 기록은 `.herdr-team/state/drive/drive.log`.
 - 요청 큐: horch 를 건드리는 메인 명령(`start`, `start-ready`, `fix`, `accept`, `drop`, `review --retry`, `design-decide`, `scope`, `agent reset`, `test-confirm`, `slot reset`)은 파일 큐(`.herdr-team/state/drive/queue/`)로 관제에 넘어간다. 관제가 90초 안에 실행하면 그 결과를, 아니면 `status: queued` 를 돌려주고 결과는 watch 의 `result` 로 온다. 관제가 꺼져 있으면 큐에 넣지 않고 `drive_down` 으로 거부한다.
@@ -288,7 +289,7 @@ scaffold 는 있는 파일을 덮어쓰지 않는다. 앞 버전에서 세팅한
 herdr-orch 는 그대로(0.3.0)다.
 
 1. 플러그인을 올리는 것만으로 적용되는 것: 질문 표시(훅이 거부하지 않고 표를 선택 창 미리보기에 넣는다, 긴 표는 메인 옆 '질문 보기' pane), 평문 질문 검사, `hteam fix --base-merge`, 병합 지시문·리뷰 안내 줄, 완료 요약.
-2. `.herdr-team/bin/hteam upgrade` 의 `manual` 대로 `CLAUDE.md` 의 `<!-- herdr-team -->` 절을 `herdr-team/templates/CLAUDE.section.md` 와 견줘 고친다(메인 규칙 새 줄 셋: 평문 질문, 기준 병합, 업그레이드 뒤 새 세션. 질문 표시 규칙의 바뀐 두 줄).
+2. `.herdr-team/bin/hteam upgrade` 의 `manual` 대로 `CLAUDE.md` 의 `<!-- herdr-team -->` 절을 `herdr-team/templates/CLAUDE.section.md` 와 견줘 고친다(새 메인 규칙 두 줄(평문 질문, 기준 병합), 업그레이드 줄 끝의 새 세션 문장, 질문 표시 규칙의 바뀐 두 줄).
 3. 메인 세션을 새로 연다(메인 규칙은 세션을 시작할 때 읽힌다).
 
 #### 0.4.0 → 0.5.0
