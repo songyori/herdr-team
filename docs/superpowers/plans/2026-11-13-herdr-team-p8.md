@@ -846,11 +846,11 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/skills/in
 - 보기 명령 띄우기: `subprocess.Popen([sys.executable, str(PLUGIN_ROOT / "bin" / "hteam"), "--root", str(p.root), "question-view", id], stdin=DEVNULL, stdout=<p.questions/<id>.log 덧붙이기>, stderr=STDOUT, start_new_session=True)`. 기다리지 않는다. 훅의 표준 출력을 물려주지 않는다(그래야 훅이 바로 끝난다).
 - `paths.Project.questions = state / "questions"`. `context_denied` 는 뺀다.
 - `hteam question-view <out-id>`(내부 명령. 출력 `{"ok": true, "view": <값>, ...}`, 늘 exit 0. 잘못된 id 는 exit 2 `usage`):
-  1. 남은 보기 정리(설계 7.4a): `p.questions/*.view.json` 가운데 이 id 가 아닌 것마다, 그 질문이 답을 받았거나 열린 질문이 아니거나 그 터미널이 끝났으면 정리한다. 터미널을 `herdr.get` 으로 본다: `not_found` 면 기록만 지운다. 다른 오류면 그대로 둔다. `state` 가 `live` 면 `herdr.close_pane(pane)` 뒤 `herdr.rm`, 끝났으면 `herdr.rm`. 그다음 기록을 지운다. `close_pane`·`rm` 이 실패하면 기록을 둔다.
+  1. 남은 보기 정리(설계 7.4a): `p.questions/*.view.json` 가운데 이 id 가 아닌 것마다, 그 id 의 잠금을 비차단으로 쥘 수 있을 때만(못 쥐면 건너뛴다) 잠금 안에서 기록을 다시 읽어, 그 질문이 답을 받았거나 열린 질문이 아니거나 그 터미널이 끝났으면 정리한다. 터미널을 `herdr.get` 으로 본다: `not_found` 면 기록만 지운다. 다른 오류면 그대로 둔다. `state` 가 `live` 면 `herdr.close_pane(pane)` 뒤 `herdr.rm`, 끝났으면 `herdr.rm`. 그다음 기록을 지운다. `close_pane`·`rm` 이 실패하면 기록을 둔다.
   2. `p.questions/<id>.lock` 을 `fcntl.LOCK_EX | fcntl.LOCK_NB` 로 쥔다. 못 쥐면 `{"view": "busy"}`.
-  3. 잠금 안에서: 답이 있으면(`outbox.answer_of`) `"answered"`, `<id>.md` 가 없으면 `"no_file"`, `$HC_TERMINAL_ID` 가 비면 `"no_main"`. `view.json` 이 있고 그 터미널이 `live` 면, `main` 이 지금 메인이면 `"exists"`, 다른 메인이면 그 pane 을 닫고 터미널을 지운다(실패하면 로그만). `herdr.pane_of(main)` 이 없으면 `"no_pane"`. `herdr.split_right(pane, [sys.executable, str(PLUGIN_ROOT / "bin" / "hteam"), "--root", str(p.root), "question-pager", id])` 가 실패하면 `"split_failed"`(로그). 성공하면 `view.json` = `{"pane", "terminal", "main", "at": util.now(), "pid": os.getpid()}` 를 원자적으로 쓴다. 쓰기가 실패하면 그 pane 을 닫고 터미널을 지운 뒤 `"split_failed"`.
-  4. 잠금을 풀고 `VIEW_POLL_S = 2.0` 마다 그 터미널을 본다. 끝났거나 없으면 `herdr.rm` 하고, `view.json` 이 아직 그 터미널을 가리키면 지운다. 출력 `{"view": "closed", "terminal"}`. `VIEW_MAX_S = 7200` 이 지나면 `close_pane` 뒤 같이 정리하고 `{"view": "timeout"}`.
-- `hteam question-pager <out-id>`(내부 명령, 보기 pane 안. **JSON 이 아니라 글을 출력하는 예외다**): `<id>.md` 전문을 출력하고 빈 줄 뒤 `PAGER_END = "(답하면 이 pane 은 닫힌다)"` 를 출력한다(`flush`). 그다음 `PAGER_POLL_S = 2.0` 마다 답 파일이 생겼거나 그 id 가 열린 질문이 아니면 exit 0. `PAGER_MAX_S = 7200` 이 지나도 exit 0. 파일이 없으면 `(질문 보기 파일이 없다: <경로>)` 를 출력하고 exit 0.
+  3. 잠금 안에서: 답이 있으면(`outbox.answer_of`) `"answered"`, `<id>.md` 가 없으면 `"no_file"`, `$HC_TERMINAL_ID` 가 비면 `"no_main"`. `view.json` 이 있으면 그 터미널을 `herdr.get` 으로 본다: `live` 면 `main` 이 지금 메인이면 `"exists"`, 다른 메인이면 그 pane 을 닫고 터미널을 지운다(실패하면 로그만). 끝났으면 `herdr.rm` 뒤 기록을 지우고, `not_found` 면 기록만 지운다(앞 보기 명령이 죽었다, Codex 계획 리뷰 r1). 다른 오류면 `"view_unknown"`(기록을 둔다. 살아 있을지 모르는 보기 옆에 또 열지 않는다). `herdr.pane_of(main)` 이 없으면 `"no_pane"`. `herdr.split_right(pane, [sys.executable, str(PLUGIN_ROOT / "bin" / "hteam"), "--root", str(p.root), "question-pager", id])` 가 실패하면 `"split_failed"`(로그). 성공하면 `view.json` = `{"pane", "terminal", "main", "at": util.now(), "pid": os.getpid()}` 를 원자적으로 쓴다. 쓰기가 실패하면 그 pane 을 닫고 터미널을 지운 뒤 `"split_failed"`.
+  4. 잠금을 풀고 `VIEW_POLL_S = 2.0` 마다 그 터미널을 본다. 끝났거나 없으면 `herdr.rm` 하고, 같은 id 잠금을 (막히며) 다시 쥔 안에서 `view.json` 이 아직 그 터미널을 가리키면 지운다(다른 메인 옆에 새로 연 기록을 지우지 않게). 출력 `{"view": "closed", "terminal"}`. `VIEW_MAX_S = 7200` 이 지나면 `close_pane` 뒤 같이 정리하고 `{"view": "timeout"}`.
+- `hteam question-pager <out-id>`(내부 명령, 보기 pane 안. **JSON 이 아니라 글을 출력하는 예외다**): `<id>.md` 전문을 출력하고 빈 줄 뒤 `PAGER_END = "(답하면 이 pane 은 닫힌다)"` 를 출력한다(`flush`). 그다음 `PAGER_POLL_S = 2.0` 마다 답 파일이 생겼거나 그 id 가 열린 질문이 아니면 exit 0. `PAGER_MAX_S = 7200` 이 지나도 exit 0. 파일이 없으면 `(질문 보기 파일이 없다: <경로>)` 를 출력하고 exit 0. 끝낼 때는 글을 `flush` 한 뒤 `raise SystemExit(0)` 으로 끝낸다(`cli.main` 의 JSON 출력을 거치지 않는다. `cli.main` 은 `Exception` 만 잡으므로 `SystemExit` 는 그대로 나간다).
 - `CLAUDE.section.md` 의 `### 질문 표시 규칙` 첫 두 줄(`- \`render.context\` 가 있으면 그 내용을 먼저 답변 글…` 과 `- 그다음 같은 응답에서 이어서 AskUserQuestion 을 부른다…`)을 설계 7.7 의 두 줄로 바꾼다.
 
 ```
@@ -977,6 +977,24 @@ class QuestionPreviewTest(HookCase):
             with self.subTest(q=q["question"][:8], header=q["header"]):
                 self.assertIsNone(self.guard(q))
 
+    def test_two_different_questions_each_get_their_own_context(self):
+        t1, t2 = self.ask("첫 표", n=1), self.ask("둘째 표", n=2)
+        q1, q2 = self.updated(self.guard(self.call(t1), self.call(t2)))
+        self.assertEqual((q1["options"][0]["preview"], q2["options"][0]["preview"]), ("첫 표", "둘째 표"))
+
+    def test_unreadable_outbox_returns_nothing(self):
+        text = self.ask("표")
+        outbox_file = self.state_dir / "outbox.jsonl"
+        outbox_file.unlink()
+        outbox_file.mkdir()  # 읽을 수 없다
+        self.assertIsNone(self.guard(self.call(text)))  # 거부하지 않고 그대로 통과한다
+
+    def test_file_write_failure_still_returns_the_preview(self):
+        text = self.ask(self.long_ctx())
+        (self.state_dir / "questions").write_text("폴더 자리에 파일", encoding="utf-8")
+        [q] = self.updated(self.guard(self.call(text)))
+        self.assertIn("표가 길어 앞부분만 보인다", q["options"][0]["preview"])
+
     def test_two_matching_open_questions_use_the_earlier_one(self):
         text = self.ask("앞 질문의 표")
         self.ask("뒤 질문의 표")
@@ -1020,11 +1038,14 @@ class QuestionPreviewTest(HookCase):
         self.assertEqual((split["direction"], split["pane"]), ("right", f"p{MAIN}"))
         self.assertEqual(split["argv"][2:], ["--root", str(self.p.root), "question-pager", "out-0001"])
         self.assertTrue(split["argv"][1].endswith("/bin/hteam"), split["argv"])
+        self.assertTrue((self.state_dir / "questions" / "out-0001.log").exists())  # 보기 명령의 출력
+        self.assertNotEqual(os.getsid(rec["pid"]), os.getsid(0))  # 새 세션으로 분리해 띄웠다
 
     def test_long_context_outside_herdr_writes_the_file_only(self):
         text = self.ask(self.long_ctx())
         self.updated(self.guard(self.call(text)))
         self.assertTrue((self.state_dir / "questions" / "out-0001.md").exists())
+        self.assertFalse((self.state_dir / "questions" / "out-0001.log").exists())  # 보기 명령을 띄우지 않았다
         time.sleep(1.5)  # 띄웠다면 보기가 기록을 썼을 시간
         self.assertFalse((self.state_dir / "questions" / "out-0001.view.json").exists())
         self.assertEqual([c for c in self.herdr_calls() if c[:2] == ["do", "pane.split"]], [])
@@ -1037,10 +1058,12 @@ class QuestionPreviewTest(HookCase):
 답이 오거나 질문이 닫히면 끝난다). 가짜 hc·herdr-app 을 쓴다."""
 import fcntl
 import json
+import subprocess
+import sys
 import time
 import unittest
 
-from tests.helpers import MAIN, TeamCase
+from tests.helpers import BIN, MAIN, TeamCase
 from hteam import outbox, state
 from hteam.paths import Project
 
@@ -1181,6 +1204,27 @@ class QuestionViewTest(QuestionCase):
         self.assertEqual((code, out["view"]), (0, "no_main"), out)
         self.assertIsNotNone(self.record(kept))
 
+    def test_finished_terminal_of_this_question_is_removed_before_reopening(self):
+        oid = self.question()
+        self.add_terminal("t70", argv=["python3"], state="finished")
+        (self.qdir / f"{oid}.view.json").write_text(json.dumps(
+            {"pane": "pt70", "terminal": "t70", "main": MAIN, "at": "2026-11-13T00:00:00Z", "pid": 1}))
+        self.view_bg(oid)
+        new = self.wait_for(lambda: (self.record(oid) or {}).get("terminal") not in (None, "t70") and self.record(oid))
+        self.assertIn("t70", self.removed())
+        self.assertEqual(new["main"], MAIN)
+
+    def test_close_failure_keeps_the_record_for_the_next_sweep(self):
+        kept = self.question()
+        self.add_terminal("t80", argv=["python3"], labels={"herdr.space": "spA", "herdr.tab": "tbMain"})
+        (self.qdir / f"{kept}.view.json").write_text(json.dumps(
+            {"pane": "pt80", "terminal": "t80", "main": MAIN, "at": "2026-11-13T00:00:00Z", "pid": 1}))
+        self.write_answer(kept)
+        self.fail_hc("herdr-app pane.close", "boom")
+        code, out = self.hteam("question-view", self.question(), as_="main", env={"HC_TERMINAL_ID": ""})
+        self.assertEqual((code, out["view"]), (0, "no_main"), out)
+        self.assertIsNotNone(self.record(kept))
+
     def test_split_failure_and_missing_pane_only_log(self):
         self.fail_hc("herdr-app pane.split", "boom")
         code, out = self.hteam("question-view", self.question(), as_="main")
@@ -1191,16 +1235,36 @@ class QuestionViewTest(QuestionCase):
 
 
 class QuestionPagerTest(QuestionCase):
+    def pager_bg(self, oid):
+        """pager 를 띄우고 출력을 파일로 받는다(끝 줄이 나온 것을 보고 상태를 바꾼다, Codex 계획 리뷰 r1)."""
+        out = self.tmp / f"pager-{oid}.txt"
+        fh = open(out, "w", encoding="utf-8")
+        proc = subprocess.Popen([sys.executable, str(BIN), "question-pager", oid], stdin=subprocess.DEVNULL, stdout=fh,
+                                stderr=subprocess.STDOUT, env=self._env("main", None, None), cwd=str(self.proj))
+        self.addCleanup(self._stop_pager, proc, fh)
+        return proc, out
+
+    @staticmethod
+    def _stop_pager(proc, fh):
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=30)
+        fh.close()
+
+    def wait_ready(self, out):
+        self.wait_for(lambda: "(답하면 이 pane 은 닫힌다)" in out.read_text(encoding="utf-8"))
+
     def test_prints_the_table_and_ends_when_answered(self):
         oid = self.question(ctx="## 표\n| 가 | 1 |")
-        proc = self.hteam_bg("question-pager", oid, as_="main")
-        time.sleep(1.0)
+        proc, out = self.pager_bg(oid)
+        self.wait_ready(out)
         self.assertIsNone(proc.poll())
         self.write_answer(oid)
-        out, err = proc.communicate(timeout=30)
-        self.assertEqual(proc.returncode, 0, err)
-        self.assertIn(f"# 질문 보기 {oid}: 시험\n\n## 표\n| 가 | 1 |", out)
-        self.assertTrue(out.rstrip().endswith("(답하면 이 pane 은 닫힌다)"), out)
+        self.assertEqual(proc.wait(timeout=30), 0)
+        text = out.read_text(encoding="utf-8")
+        self.assertIn(f"# 질문 보기 {oid}: 시험\n\n## 표\n| 가 | 1 |", text)
+        self.assertTrue(text.rstrip().endswith("(답하면 이 pane 은 닫힌다)"), text)
+        self.assertNotIn('"ok"', text)  # JSON 봉투를 쓰지 않는다
 
     def test_ends_when_the_question_is_no_longer_open(self):
         self.write_spec("T-001", "planner", owns="docs/planning/**")
@@ -1213,19 +1277,19 @@ class QuestionPagerTest(QuestionCase):
         oid = item["id"]
         self.qdir.mkdir(parents=True, exist_ok=True)
         (self.qdir / f"{oid}.md").write_text(f"# 질문 보기 {oid}: 기획\n\n표\n", encoding="utf-8")
-        proc = self.hteam_bg("question-pager", oid, as_="main")
-        time.sleep(1.0)
+        proc, out = self.pager_bg(oid)
+        self.wait_ready(out)
         self.assertIsNone(proc.poll())
         with state.edit(self.p, "T-001") as st:
             st["status"] = "dropped"
-        out, err = proc.communicate(timeout=30)
-        self.assertEqual(proc.returncode, 0, err)
+        self.assertEqual(proc.wait(timeout=30), 0)
 
     def test_missing_file_says_so_and_ends(self):
         oid = self.question()
         (self.qdir / f"{oid}.md").unlink()
-        code_out = self.hteam_bg("question-pager", oid, as_="main").communicate(timeout=30)
-        self.assertIn("질문 보기 파일이 없다", code_out[0])
+        proc, out = self.pager_bg(oid)
+        self.assertEqual(proc.wait(timeout=30), 0)
+        self.assertIn("질문 보기 파일이 없다", out.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
