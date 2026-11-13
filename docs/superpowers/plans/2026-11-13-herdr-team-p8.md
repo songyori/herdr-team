@@ -823,3 +823,470 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/skills/in
 - [ ] **Step 3: 회귀(15.2 8단계 3)**: 전체 시험(`bash herdr-team/tests/run.sh`, `bash herdr-orch/tests/run.sh`, 하나씩 백그라운드)과 7단계 실환경 1 의 기본 흐름(병렬 두 태스크와 병합) 하나.
 - [ ] **Step 4: 기록**: 설계 15.4 에 "8단계 실환경 확인(2026-11-…)" 절을 더한다(본 것, 결과, 발견한 문제와 처리). 머리말 상태 줄을 "8단계(15.3 의 8)는 구현·실환경 확인을 마쳤다(herdr-team 0.6.0, 병합 대기)" 로 바꾼다. 경로 지정 커밋 `docs: herdr-team 8단계 실환경 확인 결과`.
 - [ ] **Step 5: 브랜치 리뷰**: 최종 코드 리뷰(서브에이전트, 가장 능력 있는 모델, `review-package $(git merge-base main HEAD) HEAD`)와 `scripts/codex-review.sh base main`(최대 3라운드, P0·P1 이 남지 않을 때까지). 지적은 사용자 결정 기준(기본 경로만)으로 고치거나 한계로 적는다. 그 뒤 main 병합은 사용자에게 묻는다.
+
+---
+
+### Task 6: 질문 보기 — 훅이 거부하지 않고 `render.context` 를 선택 창에 넣는다, 긴 표는 "질문 보기" pane (설계 7.4a, 9.4, 7.4, 7.7. 실환경 뒤 사용자 결정 2026-11-13)
+
+실환경(Task 5 Step 1)에서 시험 메인(sonnet)이 지시를 받고도 표를 생각 블록에만 써서 질문마다 세 번씩 거부됐다(kakao 와 같다). 근본 원인은 훅이 사용자가 봤는지를 transcript 의 글이라는 믿을 수 없는 신호로 확인해 막는 구조다(설계 9.4). 사용자 결정: 어떤 데이터에도 훅이 거부하지 않는다. Task 1 의 다시 읽기·거부 코드는 이 태스크가 뺀다. Task 5 의 Step 1(메인 질문)은 이 태스크 뒤 다시 한다.
+
+**Files:**
+- Modify: `herdr-team/hooks/hteam_hook.py`(질문 확인을 미리보기 넣기로 바꾼다)
+- Modify: `herdr-team/lib/hteam/paths.py`(`questions` 폴더 더하기, `context_denied` 빼기), `herdr-team/lib/hteam/cli.py`(`COMMAND_MODULES` 에 `"questions"`)
+- Create: `herdr-team/lib/hteam/questions.py`(`question-view`, `question-pager`)
+- Modify: `herdr-team/templates/CLAUDE.section.md`(질문 표시 규칙의 첫 두 줄), `README.md`("0.5.0 → 0.6.0" 의 (1)(2))
+- Test: `herdr-team/tests/test_hooks.py`, Create `herdr-team/tests/test_questions.py`, `herdr-team/tests/test_approval.py`, `herdr-team/tests/test_setup.py`
+
+**Interfaces:**
+- 훅 상수(빼는 것): `FINGERPRINT`, `CONTEXT_DENY_MAX`, `TAIL_BYTES`, `CONTEXT_WAIT_S`, `CONTEXT_POLL_S`, 그리고 질문 확인에만 쓰던 `NOISE_RE`·`_transcript_text`·`_denied`·`_context_guard_locked`·옛 거부 글. `deny()` 는 다른 거부가 쓰므로 둔다. 다른 곳이 아직 쓰는 이름은 빼지 않는다.
+- 훅 상수(더하는 것): `PREVIEW_WIDTH = 56`, `PREVIEW_MAX_ROWS = 15`, `PREVIEW_HEAD_ROWS = 10`, `LONG_NOTE = '…(표가 길어 앞부분만 보인다. 전체 {n}줄은 옆 "질문 보기" pane 에 있다. pane 이 없으면 {path})'`.
+- `screen_rows(text, width=PREVIEW_WIDTH) -> int`(순수): `text.split("\n")` 의 줄마다 칸 수(`unicodedata.east_asian_width` 가 `W`·`F` 면 2, 아니면 1)를 세고 `max(1, ceil(칸 / width))` 를 더한다. 빈 글은 1.
+- `preview_for(oid, context) -> tuple[str, bool]`(순수): `screen_rows(context) <= PREVIEW_MAX_ROWS` 면 `(context, False)`. 아니면 앞에서부터 줄을 더해 화면 줄 합이 `PREVIEW_HEAD_ROWS` 를 넘기 전까지의 줄을 `"\n"` 으로 잇고 `"\n\n" + LONG_NOTE.format(n=<전체 줄 수>, path=f".herdr-team/state/questions/{oid}.md")` 를 붙여 `(preview, True)`.
+- `context_guard(p, payload, tool_input) -> dict | None`(메인의 AskUserQuestion, `guard` 가 지금처럼 부른다): `tool_input["questions"]` 의 질문마다 맞는 열린 질문(설계 7.4a: `outbox.open_questions(p)` 가운데 `render.context` 가 비지 않고 `render.question`·`render.header`·`render.options` 의 label 순서가 그 질문의 `question`·`header`·`options` 의 label 순서와 같은 것. 둘 이상이면 목록에서 앞선 것)을 찾는다. 찾으면 `preview_for(id, context)` 로 그 질문의 모든 선택지 `preview` 를 바꾼다. 긴 표면 `p.questions/<id>.md` 에 `f"# 질문 보기 {id}: {header}\n\n{context}\n"` 를 원자적으로 쓰고(`util.write_atomic`), `$HC_TERMINAL_ID` 가 비지 않으면 보기 명령을 띄운다(아래). 바꾼 질문이 하나라도 있으면 `{"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": <바꾼 tool_input 전체>}}`, 없으면 `None`. `permissionDecision` 은 넣지 않는다. 바꾸지 않은 질문은 그대로 둔다.
+- 보기 명령 띄우기: `subprocess.Popen([sys.executable, str(PLUGIN_ROOT / "bin" / "hteam"), "--root", str(p.root), "question-view", id], stdin=DEVNULL, stdout=<p.questions/<id>.log 덧붙이기>, stderr=STDOUT, start_new_session=True)`. 기다리지 않는다. 훅의 표준 출력을 물려주지 않는다(그래야 훅이 바로 끝난다).
+- `paths.Project.questions = state / "questions"`. `context_denied` 는 뺀다.
+- `hteam question-view <out-id>`(내부 명령. 출력 `{"ok": true, "view": <값>, ...}`, 늘 exit 0. 잘못된 id 는 exit 2 `usage`):
+  1. 남은 보기 정리(설계 7.4a): `p.questions/*.view.json` 가운데 이 id 가 아닌 것마다, 그 질문이 답을 받았거나 열린 질문이 아니거나 그 터미널이 끝났으면 정리한다. 터미널을 `herdr.get` 으로 본다: `not_found` 면 기록만 지운다. 다른 오류면 그대로 둔다. `state` 가 `live` 면 `herdr.close_pane(pane)` 뒤 `herdr.rm`, 끝났으면 `herdr.rm`. 그다음 기록을 지운다. `close_pane`·`rm` 이 실패하면 기록을 둔다.
+  2. `p.questions/<id>.lock` 을 `fcntl.LOCK_EX | fcntl.LOCK_NB` 로 쥔다. 못 쥐면 `{"view": "busy"}`.
+  3. 잠금 안에서: 답이 있으면(`outbox.answer_of`) `"answered"`, `<id>.md` 가 없으면 `"no_file"`, `$HC_TERMINAL_ID` 가 비면 `"no_main"`. `view.json` 이 있고 그 터미널이 `live` 면, `main` 이 지금 메인이면 `"exists"`, 다른 메인이면 그 pane 을 닫고 터미널을 지운다(실패하면 로그만). `herdr.pane_of(main)` 이 없으면 `"no_pane"`. `herdr.split_right(pane, [sys.executable, str(PLUGIN_ROOT / "bin" / "hteam"), "--root", str(p.root), "question-pager", id])` 가 실패하면 `"split_failed"`(로그). 성공하면 `view.json` = `{"pane", "terminal", "main", "at": util.now(), "pid": os.getpid()}` 를 원자적으로 쓴다. 쓰기가 실패하면 그 pane 을 닫고 터미널을 지운 뒤 `"split_failed"`.
+  4. 잠금을 풀고 `VIEW_POLL_S = 2.0` 마다 그 터미널을 본다. 끝났거나 없으면 `herdr.rm` 하고, `view.json` 이 아직 그 터미널을 가리키면 지운다. 출력 `{"view": "closed", "terminal"}`. `VIEW_MAX_S = 7200` 이 지나면 `close_pane` 뒤 같이 정리하고 `{"view": "timeout"}`.
+- `hteam question-pager <out-id>`(내부 명령, 보기 pane 안. **JSON 이 아니라 글을 출력하는 예외다**): `<id>.md` 전문을 출력하고 빈 줄 뒤 `PAGER_END = "(답하면 이 pane 은 닫힌다)"` 를 출력한다(`flush`). 그다음 `PAGER_POLL_S = 2.0` 마다 답 파일이 생겼거나 그 id 가 열린 질문이 아니면 exit 0. `PAGER_MAX_S = 7200` 이 지나도 exit 0. 파일이 없으면 `(질문 보기 파일이 없다: <경로>)` 를 출력하고 exit 0.
+- `CLAUDE.section.md` 의 `### 질문 표시 규칙` 첫 두 줄(`- \`render.context\` 가 있으면 그 내용을 먼저 답변 글…` 과 `- 그다음 같은 응답에서 이어서 AskUserQuestion 을 부른다…`)을 설계 7.7 의 두 줄로 바꾼다.
+
+```
+- `render` 그대로 곧바로 AskUserQuestion 을 부른다: question 은 `render.question`, header 는 `render.header`, 선택지는 `render.options` 의 label·description 을 순서대로, `multiSelect: false`. 질문 하나만 묻는다. 턴을 끝내지 않는다(사용자의 다른 말을 기다리지 않는다).
+- `render.context` 는 훅이 선택 창 미리보기에 넣는다(길면 앞부분만 넣고 전체는 옆 '질문 보기' pane 에 띄운다). 메인이 글로 옮겨 쓰지 않아도 된다. 훅은 이 질문을 거부하지 않는다.
+```
+
+- README "0.5.0 → 0.6.0" 의 (1) 에서 "질문 확인 훅 대기" 를 "질문 표시(훅이 거부하지 않고 표를 선택 창 미리보기에 넣는다, 긴 표는 메인 옆 '질문 보기' pane)" 로, (2) 의 새 줄 목록에 "질문 표시 규칙의 바뀐 두 줄" 을 더한다.
+
+**Rules:**
+- 훅의 메인 AskUserQuestion 경로는 어떤 입력·transcript·파일 상태에서도 `deny` 를 돌려주지 않는다. 내부 오류는 지금처럼 오류 기록만 남기고 아무것도 돌려주지 않는다.
+- 미리보기 넣기와 보기 띄우기는 서로 독립이다. 파일 쓰기·띄우기가 실패해도 미리보기를 넣은 `updatedInput` 은 돌려준다.
+- 보기 명령과 pager 는 hteam 모듈 경계를 지킨다(Herdr 는 `herdr.py` 로만).
+
+- [ ] **Step 1: 시험 쓰기**
+
+옛 질문 확인 시험을 지운다(이 동작은 없어진다): `tests/test_hooks.py` 의 `GuardTest.ask_with_context`·`test_context_already_shown_is_allowed`·`test_context_denied_updates_do_not_race`·`test_main_context_guard_once`·`test_context_guard_reads_the_old_record` 와 클래스 `ContextWaitTest` 전체(Task 1).
+
+**Edit** `herdr-team/tests/test_hooks.py`
+
+```python
+import shutil
+import subprocess
+```
+
+```python
+import shutil
+import signal
+import subprocess
+```
+
+**Append** `herdr-team/tests/test_hooks.py`
+
+```python
+class QuestionPreviewTest(HookCase):
+    """8단계(설계 7.4a, 9.4, 실환경 뒤 사용자 결정): 메인의 AskUserQuestion 은 어떤 경우에도 거부하지 않는다. 맞는 열린
+    질문의 render.context 를 선택지마다 preview 로 넣어 updatedInput 으로 돌려준다(permissionDecision 없음)."""
+
+    LABELS = ("확정 (추천)", "수정")
+
+    def ask(self, ctx, *, n=1, header="시험", labels=LABELS):
+        text = f"질문 {n} 을 확정할까요?\n예: 확정이면 진행한다"
+        self.drive_question({"question": text, "header": header, "context": ctx,
+                             "options": [{"label": labels[0], "description": "추천 사유: 빠진 것이 없다"},
+                                         {"label": labels[1], "description": "고칠 곳을 말한다"}]})
+        return text
+
+    @staticmethod
+    def call(text, *, header="시험", labels=LABELS, preview=None):
+        options = [{"label": label, "description": "설명"} for label in labels]
+        if preview is not None:
+            options[0]["preview"] = preview
+        return {"question": text, "header": header, "multiSelect": False, "options": options}
+
+    def guard(self, *questions, transcript=None, herdr=False):
+        payload = {"tool_name": "AskUserQuestion", "tool_input": {"questions": list(questions)}}
+        if transcript is not None:
+            payload["transcript_path"] = str(transcript)
+        env = None if herdr else {"HC_TERMINAL_ID": ""}  # Herdr 밖이면 보기 명령을 띄우지 않는다
+        return self.hook("guard", payload, terminal=MAIN, env=env)
+
+    @staticmethod
+    def updated(out):
+        spec = out["hookSpecificOutput"]
+        assert "permissionDecision" not in spec, spec  # allow 를 주면 선택 창 없이 "답하지 않음" 이 된다(실험)
+        return spec["updatedInput"]["questions"]
+
+    @staticmethod
+    def long_ctx(rows=40):
+        return "## 긴 표\n\n| 이슈 | 개수 |\n|---|---|\n" + "\n".join(f"| #{i} 항목 | {i} |" for i in range(rows))
+
+    def wait_view(self, oid):
+        path = self.state_dir / "questions" / f"{oid}.view.json"
+        deadline = time.monotonic() + 20
+        while not path.exists():
+            self.assertLess(time.monotonic(), deadline, "보기 명령이 기록을 쓰지 않았다")
+            time.sleep(0.1)
+        rec = json.loads(path.read_text(encoding="utf-8"))
+        self.addCleanup(self._stop_view, rec)
+        return rec
+
+    @staticmethod
+    def _stop_view(rec):
+        try:
+            os.kill(rec["pid"], signal.SIGTERM)
+        except (ProcessLookupError, KeyError):
+            pass
+
+    def test_short_context_goes_into_every_preview_and_nothing_is_denied(self):
+        ctx = "## 표\n\n| 항목 | 값 |\n|---|---|\n| 가 | 1 |"
+        text = self.ask(ctx)
+        empty = self.tmp / "empty.jsonl"
+        empty.write_text("", encoding="utf-8")
+        for transcript in (None, empty):
+            [q] = self.updated(self.guard(self.call(text), transcript=transcript))
+            self.assertEqual([o["preview"] for o in q["options"]], [ctx, ctx])
+            self.assertEqual(([o["label"] for o in q["options"]], q["question"], q["header"]),
+                             (list(self.LABELS), text, "시험"))
+        self.assertFalse((self.state_dir / "context-denied.json").exists())
+        self.assertFalse((self.state_dir / "questions").exists())  # 짧은 표는 파일·보기가 없다
+
+    def test_never_denies_whatever_the_transcript_holds(self):
+        text = self.ask("## 표\n" + "가나다 " * 10)
+        t = self.tmp / "t.jsonl"
+        for content in ("", "깨진 줄\n", json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "thinking", "thinking": "표를 요약했다"}]}}, ensure_ascii=False) + "\n"):
+            t.write_text(content, encoding="utf-8")
+            self.assertEqual(len(self.updated(self.guard(self.call(text), transcript=t))), 1)
+
+    def test_model_preview_is_replaced_and_other_questions_are_untouched(self):
+        text = self.ask("짧은 표")
+        other = self.call("묻지 않은 질문?\n예: 아무것", labels=("가", "나"))
+        q1, q2 = self.updated(self.guard(self.call(text, preview="모델이 넣은 것"), other))
+        self.assertEqual([o["preview"] for o in q1["options"]], ["짧은 표", "짧은 표"])
+        self.assertEqual(q2, other)
+
+    def test_unmatched_questions_pass_untouched(self):
+        text = self.ask("표 하나")
+        self.drive_question({"question": "맥락 없는 질문?\n예: 없다", "header": "질문", "options": [
+            {"label": "가 (추천)", "description": "추천 사유: x"}, {"label": "나", "description": "y"}]})
+        for q in (self.call(text, header="다른 머리"), self.call(text, labels=("확정 (추천)", "다른 것")),
+                  self.call("맥락 없는 질문?\n예: 없다", header="질문", labels=("가 (추천)", "나")),
+                  self.call("모르는 질문?")):
+            with self.subTest(q=q["question"][:8], header=q["header"]):
+                self.assertIsNone(self.guard(q))
+
+    def test_two_matching_open_questions_use_the_earlier_one(self):
+        text = self.ask("앞 질문의 표")
+        self.ask("뒤 질문의 표")
+        [q] = self.updated(self.guard(self.call(text)))
+        self.assertEqual(q["options"][0]["preview"], "앞 질문의 표")
+
+    def test_answered_question_is_not_matched(self):
+        text = self.ask("표")
+        (self.state_dir / "answers").mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "answers" / "out-0001.json").write_text(
+            json.dumps({"id": "out-0001", "answer": "확정 (추천)", "at": "2026-11-13T00:00:00Z"}))
+        self.assertIsNone(self.guard(self.call(text)))
+
+    def test_screen_rows_and_preview_split_are_pure(self):
+        hook = load_hook()
+        self.assertEqual((hook.PREVIEW_WIDTH, hook.PREVIEW_MAX_ROWS, hook.PREVIEW_HEAD_ROWS), (56, 15, 10))
+        self.assertEqual([hook.screen_rows(s) for s in ("", "a" * 56, "a" * 57, "가" * 28, "가" * 29, "a\nb")],
+                         [1, 1, 2, 1, 2, 2])
+        short = "\n".join(f"줄 {i}" for i in range(15))
+        self.assertEqual(hook.preview_for("out-0007", short), (short, False))
+        wide = "\n".join("가" * 40 for _ in range(8))  # 8줄이지만 화면 줄은 16
+        preview, long = hook.preview_for("out-0007", wide)
+        self.assertTrue(long)
+        self.assertTrue(preview.startswith("\n".join(["가" * 40] * 5) + "\n\n…(표가 길어 앞부분만 보인다. 전체 8줄은"), preview)
+        self.assertTrue(preview.endswith("pane 이 없으면 .herdr-team/state/questions/out-0007.md)"), preview)
+
+    def test_long_context_writes_file_and_opens_the_view(self):
+        ctx = self.long_ctx()
+        text = self.ask(ctx)
+        [q] = self.updated(self.guard(self.call(text), herdr=True))
+        lines = ctx.splitlines()
+        preview = q["options"][0]["preview"]
+        self.assertEqual(preview, "\n".join(lines[:10]) + f"\n\n…(표가 길어 앞부분만 보인다. 전체 {len(lines)}줄은 옆 "
+                         "\"질문 보기\" pane 에 있다. pane 이 없으면 .herdr-team/state/questions/out-0001.md)")
+        self.assertEqual(q["options"][1]["preview"], preview)
+        body = (self.state_dir / "questions" / "out-0001.md").read_text(encoding="utf-8")
+        self.assertEqual(body, f"# 질문 보기 out-0001: 시험\n\n{ctx}\n")
+        rec = self.wait_view("out-0001")
+        self.assertEqual(rec["main"], MAIN)
+        [split] = [json.loads(c[2]) for c in self.herdr_calls() if c[:2] == ["do", "pane.split"]]
+        self.assertEqual((split["direction"], split["pane"]), ("right", f"p{MAIN}"))
+        self.assertEqual(split["argv"][2:], ["--root", str(self.p.root), "question-pager", "out-0001"])
+        self.assertTrue(split["argv"][1].endswith("/bin/hteam"), split["argv"])
+
+    def test_long_context_outside_herdr_writes_the_file_only(self):
+        text = self.ask(self.long_ctx())
+        self.updated(self.guard(self.call(text)))
+        self.assertTrue((self.state_dir / "questions" / "out-0001.md").exists())
+        time.sleep(1.5)  # 띄웠다면 보기가 기록을 썼을 시간
+        self.assertFalse((self.state_dir / "questions" / "out-0001.view.json").exists())
+        self.assertEqual([c for c in self.herdr_calls() if c[:2] == ["do", "pane.split"]], [])
+```
+
+**Create** `herdr-team/tests/test_questions.py`
+
+```python
+"""8단계 질문 보기(설계 7.4a): hteam question-view(메인 옆 보기 pane 을 열고 정리한다)와 question-pager(전문을 보이고
+답이 오거나 질문이 닫히면 끝난다). 가짜 hc·herdr-app 을 쓴다."""
+import fcntl
+import json
+import time
+import unittest
+
+from tests.helpers import MAIN, TeamCase
+from hteam import outbox, state
+from hteam.paths import Project
+
+LONG = "## 긴 표\n" + "\n".join(f"| {i} |" for i in range(40))
+
+
+class QuestionCase(TeamCase):
+    def setUp(self):
+        super().setUp()
+        self.init_project()
+        self.setup_run()
+        self.p = Project(self.proj)
+        self.qdir = self.state_dir / "questions"
+
+    def question(self, ctx=LONG, header="시험"):
+        item = outbox.append(self.p, {"type": "question", "from": "drive", "render": outbox.validate_render(
+            {"question": "시험 질문?\n예: 확인", "header": header, "context": ctx,
+             "options": [{"label": "가 (추천)", "description": "추천 사유: x"}, {"label": "나", "description": "y"}]},
+            "질문")})
+        self.qdir.mkdir(parents=True, exist_ok=True)
+        (self.qdir / f"{item['id']}.md").write_text(f"# 질문 보기 {item['id']}: {header}\n\n{ctx}\n", encoding="utf-8")
+        return item["id"]
+
+    def write_answer(self, oid):
+        (self.state_dir / "answers").mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "answers" / f"{oid}.json").write_text(
+            json.dumps({"id": oid, "answer": "가 (추천)", "at": "2026-11-13T00:00:00Z"}), encoding="utf-8")
+
+    def splits(self):
+        return [json.loads(c[2]) for c in self.herdr_calls() if c[:2] == ["do", "pane.split"]]
+
+    def closes(self):
+        return [json.loads(c[2]) for c in self.herdr_calls() if c[:2] == ["do", "pane.close"]]
+
+    def removed(self):
+        return [c[1] for c in self.hc_calls() if c[:1] == ["rm"]]
+
+    def record(self, oid):
+        path = self.qdir / f"{oid}.view.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+    def wait_for(self, check, limit=20.0):
+        deadline = time.monotonic() + limit
+        while True:
+            got = check()
+            if got:
+                return got
+            self.assertLess(time.monotonic(), deadline, "기다린 것이 오지 않았다")
+            time.sleep(0.1)
+
+    def view_bg(self, oid, terminal=MAIN):
+        return self.hteam_bg("question-view", oid, as_="main", terminal=terminal)
+
+
+class QuestionViewTest(QuestionCase):
+    def test_opens_the_pager_next_to_main_and_cleans_up_when_it_ends(self):
+        oid = self.question()
+        proc = self.view_bg(oid)
+        rec = self.wait_for(lambda: self.record(oid))
+        [split] = self.splits()
+        self.assertEqual((split["direction"], split["pane"]), ("right", f"p{MAIN}"))
+        self.assertEqual(split["argv"][2:], ["--root", str(self.p.root), "question-pager", oid])
+        self.assertEqual((rec["main"], rec["pid"]), (MAIN, proc.pid))
+        self.assertEqual(rec["pane"], f"p{rec['terminal']}")
+        time.sleep(1.0)
+        self.assertIsNone(proc.poll())  # 보기 터미널이 끝나기를 기다린다
+        self.update_terminal(rec["terminal"], state="finished")
+        out, err = proc.communicate(timeout=30)
+        self.assertEqual(proc.returncode, 0, err)
+        self.assertEqual(json.loads(out)["view"], "closed")
+        self.assertIsNone(self.record(oid))
+        self.assertIn(rec["terminal"], self.removed())
+
+    def test_answered_missing_file_busy_and_outside_herdr_do_not_open(self):
+        answered = self.question()
+        self.write_answer(answered)
+        missing = self.question()
+        (self.qdir / f"{missing}.md").unlink()
+        busy = self.question()
+        for oid, want, env in ((answered, "answered", None), (missing, "no_file", None),
+                               (self.question(), "no_main", {"HC_TERMINAL_ID": ""})):
+            with self.subTest(want=want):
+                code, out = self.hteam("question-view", oid, as_="main", env=env)
+                self.assertEqual((code, out["view"]), (0, want), out)
+        with open(self.qdir / f"{busy}.lock", "w") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            code, out = self.hteam("question-view", busy, as_="main")
+        self.assertEqual((code, out["view"]), (0, "busy"), out)
+        self.assertEqual(self.splits(), [])
+
+    def test_live_view_of_the_same_main_is_not_opened_again(self):
+        oid = self.question()
+        self.view_bg(oid)
+        self.wait_for(lambda: self.record(oid))
+        code, out = self.hteam("question-view", oid, as_="main")
+        self.assertEqual((code, out["view"]), (0, "exists"), out)
+        self.assertEqual(len(self.splits()), 1)
+
+    def test_live_view_of_another_main_moves_next_to_the_current_main(self):
+        oid = self.question()
+        first = self.view_bg(oid)
+        old = self.wait_for(lambda: self.record(oid))
+        self.add_terminal("t2", argv=["claude"], labels={"herdr.space": "spA", "herdr.tab": "tbMain2"}, status="idle")
+        second = self.view_bg(oid, terminal="t2")
+        new = self.wait_for(lambda: (self.record(oid) or {}).get("main") == "t2" and self.record(oid))
+        self.assertIn({"pane": old["pane"]}, self.closes())  # 옛 메인 옆 보기를 닫았다
+        self.assertEqual(self.splits()[-1]["pane"], "pt2")
+        first.communicate(timeout=30)  # 옛 보기 명령은 자기 터미널이 끝나 정리하고 끝난다
+        self.assertEqual(self.record(oid)["terminal"], new["terminal"])  # 새 기록은 지우지 않는다
+        self.update_terminal(new["terminal"], state="finished")
+        second.communicate(timeout=30)
+        self.assertIsNone(self.record(oid))
+
+    def test_start_sweeps_views_of_closed_questions_and_gone_terminals(self):
+        answered = self.question()
+        self.add_terminal("t50", argv=["python3"], labels={"herdr.space": "spA", "herdr.tab": "tbMain"})
+        (self.qdir / f"{answered}.view.json").write_text(json.dumps(
+            {"pane": "pt50", "terminal": "t50", "main": MAIN, "at": "2026-11-13T00:00:00Z", "pid": 1}))
+        self.write_answer(answered)
+        gone = self.question()
+        (self.qdir / f"{gone}.view.json").write_text(json.dumps(
+            {"pane": "pt999", "terminal": "t999", "main": MAIN, "at": "2026-11-13T00:00:00Z", "pid": 1}))
+        new = self.question()
+        self.view_bg(new)
+        self.wait_for(lambda: self.record(new))
+        self.assertIsNone(self.record(answered))
+        self.assertIn({"pane": "pt50"}, self.closes())  # 살아 있던 보기는 닫고 지운다
+        self.assertIn("t50", self.removed())
+        self.assertIsNone(self.record(gone))  # 없는 터미널(not_found)은 기록만 지운다
+
+    def test_sweep_keeps_the_record_when_the_terminal_cannot_be_read(self):
+        kept = self.question()
+        self.write_answer(kept)
+        (self.qdir / f"{kept}.view.json").write_text(json.dumps(
+            {"pane": "pt60", "terminal": "t60", "main": MAIN, "at": "2026-11-13T00:00:00Z", "pid": 1}))
+        self.fail_hc("get", "boom")
+        code, out = self.hteam("question-view", self.question(), as_="main", env={"HC_TERMINAL_ID": ""})
+        self.assertEqual((code, out["view"]), (0, "no_main"), out)
+        self.assertIsNotNone(self.record(kept))
+
+    def test_split_failure_and_missing_pane_only_log(self):
+        self.fail_hc("herdr-app pane.split", "boom")
+        code, out = self.hteam("question-view", self.question(), as_="main")
+        self.assertEqual((code, out["view"]), (0, "split_failed"), out)
+        self.add_terminal("t3", argv=["claude"], status="idle")  # Herdr 라벨이 없어 herdr-app ls 에 없다
+        code, out = self.hteam("question-view", self.question(), as_="main", terminal="t3")
+        self.assertEqual((code, out["view"]), (0, "no_pane"), out)
+
+
+class QuestionPagerTest(QuestionCase):
+    def test_prints_the_table_and_ends_when_answered(self):
+        oid = self.question(ctx="## 표\n| 가 | 1 |")
+        proc = self.hteam_bg("question-pager", oid, as_="main")
+        time.sleep(1.0)
+        self.assertIsNone(proc.poll())
+        self.write_answer(oid)
+        out, err = proc.communicate(timeout=30)
+        self.assertEqual(proc.returncode, 0, err)
+        self.assertIn(f"# 질문 보기 {oid}: 시험\n\n## 표\n| 가 | 1 |", out)
+        self.assertTrue(out.rstrip().endswith("(답하면 이 pane 은 닫힌다)"), out)
+
+    def test_ends_when_the_question_is_no_longer_open(self):
+        self.write_spec("T-001", "planner", owns="docs/planning/**")
+        state.create(self.p, "T-001", "planner")
+        with state.edit(self.p, "T-001") as st:
+            st.update(status="working", round=1)
+        item = outbox.append(self.p, {"type": "ask", "from": "T-001", "round": 1, "render": outbox.validate_render(
+            {"question": "물어볼까요?\n예: 확인", "header": "기획", "context": "표", "options": [
+                {"label": "가 (추천)", "description": "추천 사유: x"}, {"label": "나", "description": "y"}]}, "질문")})
+        oid = item["id"]
+        self.qdir.mkdir(parents=True, exist_ok=True)
+        (self.qdir / f"{oid}.md").write_text(f"# 질문 보기 {oid}: 기획\n\n표\n", encoding="utf-8")
+        proc = self.hteam_bg("question-pager", oid, as_="main")
+        time.sleep(1.0)
+        self.assertIsNone(proc.poll())
+        with state.edit(self.p, "T-001") as st:
+            st["status"] = "dropped"
+        out, err = proc.communicate(timeout=30)
+        self.assertEqual(proc.returncode, 0, err)
+
+    def test_missing_file_says_so_and_ends(self):
+        oid = self.question()
+        (self.qdir / f"{oid}.md").unlink()
+        code_out = self.hteam_bg("question-pager", oid, as_="main").communicate(timeout=30)
+        self.assertIn("질문 보기 파일이 없다", code_out[0])
+
+
+if __name__ == "__main__":
+    unittest.main()
+```
+
+**Edit** `herdr-team/tests/test_approval.py`
+
+```python
+        # 실환경(3단계): context 를 보인 뒤 턴을 끝내고 사용자의 다른 말을 기다렸다. 같은 응답에서 이어서 묻는다
+        self.assertIn("같은 응답에서 이어서 AskUserQuestion 을 부른다", main)
+```
+
+```python
+        # 실환경(3단계): context 를 보인 뒤 턴을 끝내고 사용자의 다른 말을 기다렸다. 8단계: 곧바로 묻고 표는 훅이 넣는다
+        self.assertIn("`render` 그대로 곧바로 AskUserQuestion 을 부른다", main)
+```
+
+**Edit** `herdr-team/tests/test_setup.py`
+
+```python
+    def test_skill_recovery_contract(self):
+```
+
+```python
+    def test_question_display_rule_in_main(self):
+        # 설계 7.7·7.4a 8단계: 표는 훅이 선택 창에 넣고 거부하지 않는다. 옛 "답변 글로 먼저" 규칙은 없다
+        main = (ROOT / "templates/CLAUDE.section.md").read_text(encoding="utf-8")
+        self.assertIn("`render.context` 는 훅이 선택 창 미리보기에 넣는다(길면 앞부분만 넣고 전체는 옆 '질문 보기' pane 에 "
+                      "띄운다). 메인이 글로 옮겨 쓰지 않아도 된다. 훅은 이 질문을 거부하지 않는다.", main)
+        self.assertNotIn("먼저 답변 글(텍스트)로 그대로 보여 준다", main)
+        self.assertNotIn("훅이 보일 때까지 그 질문을 거부한다", main)
+        hook = (ROOT / "hooks/hteam_hook.py").read_text(encoding="utf-8")
+        for gone in ("context-denied", "CONTEXT_DENY_MAX", "먼저 보여 줄 `render.context` 가 있다"):
+            self.assertNotIn(gone, hook)
+
+    def test_skill_recovery_contract(self):
+```
+
+- [ ] **Step 2: 시험이 실패하는지 본다**
+
+Run: `bash herdr-team/tests/run.sh -k QuestionPreviewTest` → FAIL(훅이 아직 거부하거나 `None` 을 돌려준다, `preview_for` 없음).
+Run: `(cd herdr-team && python3 -m unittest tests.test_questions)` → FAIL(`question-view` 를 모르는 명령으로 exit 2).
+Run: `bash herdr-team/tests/run.sh -k test_question_display_rule_in_main` → FAIL.
+
+- [ ] **Step 3: 구현**
+
+Interfaces·Rules 대로 훅·`paths.py`·`cli.py`·`questions.py`·템플릿·README 를 고친다. 남은 `context_denied` 참조가 없게 한다(`git grep -n context_denied -- herdr-team` 이 비어야 한다).
+
+- [ ] **Step 4: 시험이 통과하는지 본다**
+
+Run: `(cd herdr-team && python3 -m unittest tests.test_hooks tests.test_questions tests.test_approval tests.test_setup)` → 모두 PASS.
+Run(백그라운드, 다른 무거운 일 없이): `bash herdr-team/tests/run.sh` → 모두 PASS.
+
+- [ ] **Step 5: 커밋**
+
+```bash
+python3 -m py_compile herdr-team/hooks/hteam_hook.py herdr-team/lib/hteam/questions.py herdr-team/lib/hteam/paths.py herdr-team/lib/hteam/cli.py
+git grep -n -I -P '/[U]sers/|/private/[t]mp|~[/]Workspace' -- . ':!.codex-reviews'
+git add -- herdr-team/hooks/hteam_hook.py herdr-team/lib/hteam/paths.py herdr-team/lib/hteam/cli.py herdr-team/lib/hteam/questions.py herdr-team/templates/CLAUDE.section.md README.md herdr-team/tests/test_hooks.py herdr-team/tests/test_questions.py herdr-team/tests/test_approval.py herdr-team/tests/test_setup.py
+git commit -m "fix(herdr-team): 질문 확인 훅이 거부하지 않고 render.context 를 선택 창 미리보기에 넣는다, 긴 표는 메인 옆 질문 보기 pane
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/hooks/hteam_hook.py herdr-team/lib/hteam/paths.py herdr-team/lib/hteam/cli.py herdr-team/lib/hteam/questions.py herdr-team/templates/CLAUDE.section.md README.md herdr-team/tests/test_hooks.py herdr-team/tests/test_questions.py herdr-team/tests/test_approval.py herdr-team/tests/test_setup.py
+```
