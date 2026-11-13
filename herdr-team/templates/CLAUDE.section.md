@@ -36,7 +36,7 @@
   - `decide`: 아래 "decide 처리 기준"대로 처리하고 `.herdr-team/bin/hteam answer <id> "<처리 내용>"` 으로 닫는다.
   - `result`(메인이 기다리지 않은 큐 요청의 결과): 실패면 다시 판단한다.
 - decide 가 열린 동안 관제는 그 태스크를 자동으로 다루지 않는다. 처리했으면 명령이 적히지 않은 escalation 도 반드시 `hteam answer <id> "<처리 내용>"` 으로 닫는다.
-- 플러그인을 올린 뒤 사용자가 업그레이드를 부탁하면 `.herdr-team/bin/hteam upgrade` 를 실행해 바꾼 것·건너뛴 것·`manual` 을 보여 주고, 사용자가 확인하면 바뀐 파일을 경로 지정 커밋한다(README "업그레이드").
+- 플러그인을 올린 뒤 사용자가 업그레이드를 부탁하면 `.herdr-team/bin/hteam upgrade` 를 실행해 바꾼 것·건너뛴 것·`manual` 을 보여 주고, 사용자가 확인하면 바뀐 파일을 경로 지정 커밋한다(README "업그레이드"). `CLAUDE.md` 절이 바뀌었으면 사용자에게 메인 세션을 새로 열라고 알린다(메인 규칙은 세션을 시작할 때 읽힌다).
 - 관제는 훅이 확인하고 꺼져 있으면 자동으로 다시 띄운다(config.toml `[drive] auto_up`). 훅 안내가 없는데 관제 상태가 의심되면 `/herdr-team:up` 을 실행한다. 메인을 다시 열었는데 답하지 않은 질문이 있으면 `/herdr-team:up` 이 다시 묻는다.
 
 ### decide 처리 기준

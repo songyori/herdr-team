@@ -60,10 +60,10 @@ argument-hint: "<프로젝트 설명>"
 ## 6. 마무리
 1. `.herdr-team/bin/hteam setup-done` 을 실행한다.
 2. 세팅 파일을 경로를 지정해 커밋한다. 경로는 `CLAUDE.md AGENTS.md .gitignore .herdr-team` 과 4단계에서 바뀐 파일이다: `git add -- <경로> && git commit -m "chore: herdr-team 세팅" -- <경로>`. `.herdr-team/state/` 는 `.gitignore` 로 빠진다.
-3. 보고한다: 준비 완료, 관제 터미널, 고정 에이전트 구성, 적용 결과 표, 경고, "다음 메시지로 첫 업무를 주면 된다".
+3. 보고한다: 준비 완료, 관제 터미널, 고정 에이전트 구성, 적용 결과 표, 경고, "메인 규칙(`CLAUDE.md` 의 herdr-team 절)은 세션을 시작할 때 읽힌다. 이 세션을 끝내고 같은 폴더에서 메인 세션을 새로 연 뒤 첫 업무를 준다(관제는 그대로 돈다. 새 세션의 watch 는 Stop 훅이 띄우게 한다)".
 
 ## 하지 않는 것
 - `horch` 와 `hteam drive` 직접 호출. 메인이 Run 에 묶이거나 관제가 되면 깨우기 글이 사용자 입력란에 들어온다.
-- 기획·코드 작업 시작. 첫 업무는 사용자의 다음 메시지부터다.
+- 기획·코드 작업 시작. 첫 업무는 새로 연 메인 세션에서 받는다(이 세션은 init 이 쓴 메인 규칙을 지시로 받지 못했다).
 - 사용자 전역 Claude·Codex 설정 고치기, 승인받지 않은 Claude 권한 우회.
 - Redmine API 키 값을 묻거나 받거나 `config.toml` 에 쓰기.

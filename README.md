@@ -5,7 +5,7 @@
 | 플러그인 | 버전 | 하는 일 |
 |---|---|---|
 | `herdr-orch` | 0.3.0 | Claude·Codex 워커를 Herdr pane 으로 띄우고 메일함으로 질문·보고를 주고받는 `horch` CLI 와 스킬 |
-| `herdr-team` | 0.5.0 | `herdr-orch` 위의 직무 팀. 사용자는 메인 Claude 세션과 대화하고, 기획·디자인·개발·테스트는 직무 에이전트가 맡고, 산출물은 반대쪽 모델(Claude ↔ Codex)이 리뷰한다 |
+| `herdr-team` | 0.6.0 | `herdr-orch` 위의 직무 팀. 사용자는 메인 Claude 세션과 대화하고, 기획·디자인·개발·테스트는 직무 에이전트가 맡고, 산출물은 반대쪽 모델(Claude ↔ Codex)이 리뷰한다 |
 
 - 문서, 명령 출력, 에이전트끼리 주고받는 글은 한국어다.
 - 개인 프로젝트이고 0.x 버전이다. 버전이 바뀌면 설정과 동작이 바뀔 수 있다(아래 "이미 세팅한 프로젝트 업그레이드").
@@ -77,7 +77,7 @@ Claude Code 안에서는 `/plugin marketplace add songyori/herdr-team` 다음 `/
    2. 세팅 파일 생성: `.herdr-team/`, `CLAUDE.md`·`AGENTS.md` 의 herdr-team 절, `.gitignore` 줄을 만든다. 있는 파일은 덮어쓰지 않는다.
    3. 제안 표: 직무별로 맡을 파일, 고정 에이전트 구성과 모델, 도구, 권한을 표로 제안한다. 사용자가 승인한 것만 적용한다. Claude 권한 우회도 여기서 승인할 때만 들어간다.
    4. 관제 띄우기: 관제 탭(`herdr-team 관제`)을 띄우고 세팅 파일을 커밋한다.
-4. 다음 메시지로 만들 것을 말한다. 메인이 기획 태스크를 만들어 넘긴다. 다음 일은 메인 세션에서 사용자에게 묻는다.
+4. init 이 끝나면 메인 세션을 새로 연다(메인 규칙은 세션을 시작할 때 읽힌다). 새 세션에서 만들 것을 말한다. 메인이 기획 태스크를 만들어 넘긴다. 다음 일은 메인 세션에서 사용자에게 묻는다.
    - 기획자·디렉터의 질문
    - 디자인 일괄 승인
    - 테스트 명령 확정
@@ -156,6 +156,8 @@ Run 소유자가 Claude·Codex 워커를 Herdr pane 으로 띄우고, SQLite 메
 ### 관제와 고정 에이전트
 
 - 메인: 사용자가 연 Claude 세션. 사용자 요청을 기획 태스크 사양으로 써서 커밋하고 `hteam start` 한다. 산출물을 만들지 않고 `horch`·`hteam drive` 를 직접 부르지 않는다(훅이 막는다). `hteam watch` 를 늘 하나 띄워 두고, 관제가 올린 decide 를 `CLAUDE.md` 의 판단 기준대로 처리한 뒤 `hteam answer` 로 닫는다.
+  - 메인은 사용자에게 언제나 선택 창(AskUserQuestion)으로 묻는다. 평문 질문은 Stop 훅이 한 번 막는다.
+  - 작업 공간 태스크가 기준의 새 커밋을 받아야 하면 `hteam fix T-xxx --base-merge` 로 기준 병합 라운드를 연다(메인에 부탁한다).
 - 관제(`hteam drive`): 관제 탭(`herdr-team 관제`)에서 도는 Python 프로그램(Claude 가 아니다). horch Run 을 갖고 디스패치, 리뷰, accept·fix, 묶음 후속, 마무리, 디자인 보강, 세션 리셋, 복구를 정해진 절차로 돌린다. 판단이 필요한 일(워커 질문, 실패, 최대 라운드, 회귀의 원인 등)만 outbox `decide` 로 메인에 올린다. 기록은 `.herdr-team/state/drive/drive.log`.
 - 요청 큐: horch 를 건드리는 메인 명령(`start`, `start-ready`, `fix`, `accept`, `drop`, `review --retry`, `design-decide`, `scope`, `agent reset`, `test-confirm`, `slot reset`)은 파일 큐(`.herdr-team/state/drive/queue/`)로 관제에 넘어간다. 관제가 90초 안에 실행하면 그 결과를, 아니면 `status: queued` 를 돌려주고 결과는 watch 의 `result` 로 온다. 관제가 꺼져 있으면 큐에 넣지 않고 `drive_down` 으로 거부한다.
 - 고정 에이전트: `config.toml` 의 `[crew.<이름>]`(직무 목록, `agent` claude·codex, 모델)마다 하나씩 있는 오래 사는 작업 세션. 같은 세션이 그 직무 태스크와 수정 라운드를 이어 맡는다(에이전트 탭 `herdr-team <제목>` 의 왼쪽 pane). 묶음이 끝나면 인수인계 `docs/handoff/<이름>.md` 를 쓰고 제자리에서 `/clear` 로 비운다(Codex 는 `/clear <이름>`). 비웠다는 신호가 10초 안에 없으면 새 터미널로 띄운다. 상태는 `.herdr-team/state/crew.json`.
@@ -280,6 +282,14 @@ Run 소유자가 Claude·Codex 워커를 Herdr pane 으로 띄우고, SQLite 메
 ### 이미 세팅한 프로젝트 업그레이드
 
 scaffold 는 있는 파일을 덮어쓰지 않는다. 앞 버전에서 세팅한 프로젝트는 새 기능을 손으로 옮겨야 하고, 옮기지 않으면 조용히 빠진다(예: `[roles.director]` 가 없으면 디자인 디렉터 단계와 시스템 보강이 없다).
+
+#### 0.5.0 → 0.6.0
+
+herdr-orch 는 그대로(0.3.0)다.
+
+1. 플러그인을 올리는 것만으로 적용되는 것: 질문 확인 훅 대기, 평문 질문 검사, `hteam fix --base-merge`, 병합 지시문·리뷰 안내 줄, 완료 요약.
+2. `.herdr-team/bin/hteam upgrade` 의 `manual` 대로 `CLAUDE.md` 의 `<!-- herdr-team -->` 절을 `herdr-team/templates/CLAUDE.section.md` 와 견줘 고친다(메인 규칙 새 줄 셋: 평문 질문, 기준 병합, 업그레이드 뒤 새 세션).
+3. 메인 세션을 새로 연다(메인 규칙은 세션을 시작할 때 읽힌다).
 
 #### 0.4.0 → 0.5.0
 

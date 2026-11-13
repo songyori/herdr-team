@@ -38,7 +38,8 @@ UPGRADE = {src: rel for src, rel in FILES.items() if src != "config.toml"}
 SECTIONS = (("CLAUDE.md", "CLAUDE.section.md"), ("AGENTS.md", "AGENTS.section.md"))  # 덧붙인 절은 바꾸지 않고 알린다
 UPGRADE_NEXT = ("바뀐 파일을 확인하고(git diff -- .herdr-team) 커밋한다. manual 의 절은 템플릿과 견줘 직접 고친다. 직무 문서는 "
                 "워커 사양에 라운드마다 들어가므로 커밋하면 다음 라운드부터 적용된다. 테스트 관문을 쓰려면 "
-                "docs/planning/tasks.toml 에 [test] 를 넣고 커밋한다(README \"묶음 검증\").")
+                "docs/planning/tasks.toml 에 [test] 를 넣고 커밋한다(README \"묶음 검증\"). "
+                "CLAUDE.md 절을 고쳤으면 메인 세션을 새로 연다(메인 규칙은 세션을 시작할 때 읽힌다).")
 # up 이 띄울 때 바꾸는 run.json 키. 띄우기가 확실히 실패하면 이것만 되돌린다(main_terminals 등 다른 키는 그대로 둔다).
 LAUNCH_KEYS = ("pending_launch", "team_space", "team_tab", "launched_at", "drive_terminal", "drive_argv")
 # up 이 판정한 뒤 이 키가 바뀌었으면 판정이 낡았다(다른 up 이 띄웠거나 관제가 Run 에 묶였다): launch_raced.

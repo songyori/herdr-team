@@ -13,7 +13,7 @@ from tests.helpers import BIN, REPO, ROOT, TeamCase
 class CliTest(TeamCase):
     def test_version_envelope(self):
         code, out = self.hteam("version", as_=None)
-        self.assertEqual((code, out["ok"], out["version"]), (0, True, "0.5.0"))
+        self.assertEqual((code, out["ok"], out["version"]), (0, True, "0.6.0"))
 
     def test_fix_usage_lists_base_merge(self):
         # 설계 6.4 8단계: fix 사용법에 --base-merge 가 보인다
@@ -52,7 +52,7 @@ class CliTest(TeamCase):
         plugin = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())
         market = json.loads((REPO / ".claude-plugin" / "marketplace.json").read_text())
         entry = [p for p in market["plugins"] if p["name"] == "herdr-team"][0]
-        self.assertEqual({VERSION, plugin["version"], entry["version"]}, {"0.5.0"})
+        self.assertEqual({VERSION, plugin["version"], entry["version"]}, {"0.6.0"})
         self.assertEqual(entry["source"], "./herdr-team")
         # hteam 이 설치 기록에서 받는 가장 낮은 herdr-orch 는 함께 배포하는 herdr-orch 와 같다(워커 환경 변수 --env, 0.3.0)
         from hteam.horch import HORCH_MIN

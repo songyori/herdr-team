@@ -143,7 +143,7 @@ class ScaffoldTest(TeamCase):
         shim = str(self.proj / ".herdr-team/bin/hteam")
         env = dict(self.env, HERDR_TEAM_PLUGIN_ROOT=str(ROOT))
         out = subprocess.run([sys.executable, shim, "version"], capture_output=True, text=True, env=env)
-        self.assertEqual(json.loads(out.stdout)["version"], "0.5.0")
+        self.assertEqual(json.loads(out.stdout)["version"], "0.6.0")
         registry = self.tmp / "installed.json"
         registry.write_text(json.dumps({"plugins": {"herdr-team@herdr-team": [{"installPath": str(ROOT)}]}}))
         env = dict(self.env, HTEAM_PLUGINS_JSON=str(registry))
@@ -193,7 +193,8 @@ class UpgradeTest(TeamCase):
         # 설계 9.6(6단계): 코디네이터를 다시 띄우라는 줄이 없다. 직무 문서는 워커 사양에 라운드마다 들어간다
         self.assertEqual(out["next"], "바뀐 파일을 확인하고(git diff -- .herdr-team) 커밋한다. manual 의 절은 템플릿과 견줘 직접 "
                          "고친다. 직무 문서는 워커 사양에 라운드마다 들어가므로 커밋하면 다음 라운드부터 적용된다. 테스트 관문을 "
-                         "쓰려면 docs/planning/tasks.toml 에 [test] 를 넣고 커밋한다(README \"묶음 검증\").")
+                         "쓰려면 docs/planning/tasks.toml 에 [test] 를 넣고 커밋한다(README \"묶음 검증\"). CLAUDE.md 절을 "
+                         "고쳤으면 메인 세션을 새로 연다(메인 규칙은 세션을 시작할 때 읽힌다).")
 
     def test_overwrites_committed_copies_and_skips_the_rest(self):
         self.edit_commit(".herdr-team/coordinator.md", "옛 코디네이터 사본\n")  # 0.3.0 이 복사한 옛 파일: 건드리지 않는다
@@ -357,6 +358,23 @@ class TemplateContractTest(unittest.TestCase):
         main = (ROOT / "templates/CLAUDE.section.md").read_text(encoding="utf-8")
         self.assertIn("`.herdr-team/bin/hteam fix T-xxx --base-merge --note \"<이유>\"` 를 한다. 일하는 중이면 그 워커를 닫고 "
                       "새 라운드가 병합부터 한다. 워커에게 병합·rebase 를 직접 지시하지 않는다", main)
+
+    def test_new_main_session_after_init_and_upgrade(self):
+        # 설계 9.1·9.6·7.7 8단계: 메인 규칙은 세션을 시작할 때 읽힌다. kakao 메인은 init 뒤 같은 세션에서 일해 규칙을 받지 못했다
+        init = (ROOT / "skills/init/SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("메인 규칙(`CLAUDE.md` 의 herdr-team 절)은 세션을 시작할 때 읽힌다. 이 세션을 끝내고 같은 폴더에서 메인 "
+                      "세션을 새로 연 뒤 첫 업무를 준다", init)
+        self.assertIn("첫 업무는 새로 연 메인 세션에서 받는다", init)
+        self.assertNotIn("다음 메시지로 첫 업무를 주면 된다", init)
+        self.assertNotIn("첫 업무는 사용자의 다음 메시지부터다", init)
+        main = (ROOT / "templates/CLAUDE.section.md").read_text(encoding="utf-8")
+        self.assertIn("`CLAUDE.md` 절이 바뀌었으면 사용자에게 메인 세션을 새로 열라고 알린다(메인 규칙은 세션을 시작할 때 "
+                      "읽힌다).", main)
+        readme = (ROOT.parent / "README.md").read_text(encoding="utf-8")
+        self.assertIn("#### 0.5.0 → 0.6.0", readme)
+        self.assertLess(readme.index("#### 0.5.0 → 0.6.0"), readme.index("#### 0.4.0 → 0.5.0"))
+        self.assertIn("init 이 끝나면 메인 세션을 새로 연다", readme)
+        self.assertIn("--base-merge", readme)
 
     def test_skill_recovery_contract(self):
         init = (ROOT / "skills/init/SKILL.md").read_text(encoding="utf-8")
