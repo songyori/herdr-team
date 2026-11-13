@@ -142,7 +142,8 @@ def _open(p, oid: str) -> dict:
                 _close(rec, live=state == "live")
             _view_file(p, oid).unlink(missing_ok=True)
         except HteamError as exc:
-            _log(oid, f"앞 보기 {rec['terminal']} 를 닫지 못했다: {exc.message}")
+            _log(oid, f"앞 보기 {rec['terminal']} 를 닫지 못해 기록을 두고 새로 열지 않는다: {exc.message}")
+            return {"view": "view_unknown", "terminal": rec["terminal"]}
     pane = herdr.pane_of(main)
     if not pane:
         _log(oid, f"메인 터미널 {main} 의 pane 을 찾지 못했다")

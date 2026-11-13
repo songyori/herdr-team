@@ -319,7 +319,8 @@ def context_guard(p, payload: dict, tool_input: dict):
             asked.append(q)  # 바꾸지 않은 질문은 그대로 둔다
             continue
         preview, long = preview_for(item["id"], item["render"]["context"])
-        asked.append({**q, "options": [{**o, "preview": preview} for o in q["options"]]})
+        # 질문 보기 render 는 늘 단일 선택이다. preview 는 단일 선택에서만 보이므로 multiSelect 를 끈다
+        asked.append({**q, "multiSelect": False, "options": [{**o, "preview": preview} for o in q["options"]]})
         changed = True
         if long:
             _open_view(p, item["id"], item["render"])

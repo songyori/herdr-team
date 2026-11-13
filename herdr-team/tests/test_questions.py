@@ -121,6 +121,31 @@ class QuestionViewTest(QuestionCase):
         second.communicate(timeout=30)
         self.assertIsNone(self.record(oid))
 
+    def test_failed_move_keeps_the_record_and_does_not_reopen(self):
+        oid = self.question()
+        first = self.view_bg(oid)
+        old = self.wait_for(lambda: self.record(oid))
+        self.add_terminal("t2", argv=["claude"], labels={"herdr.space": "spA", "herdr.tab": "tbMain2"}, status="idle")
+        self.fail_hc("herdr-app pane.close", "boom")
+        code, out = self.hteam("question-view", oid, as_="main", terminal="t2")
+        self.assertEqual((code, out["view"]), (0, "view_unknown"), out)
+        self.assertEqual(self.record(oid), old)  # 옛 보기 기록을 그대로 둔다
+        self.assertEqual(len(self.splits()), 1)  # 새로 열지 않았다
+        self.update_terminal(old["terminal"], state="finished")
+        first.communicate(timeout=30)
+
+    def test_finished_terminal_rm_failure_keeps_the_record(self):
+        oid = self.question()
+        self.add_terminal("t71", argv=["python3"], state="finished")
+        (self.qdir / f"{oid}.view.json").write_text(json.dumps(
+            {"pane": "pt71", "terminal": "t71", "main": MAIN, "at": "2026-11-13T00:00:00Z", "pid": 1}))
+        before = self.record(oid)
+        self.fail_hc("rm", "boom")
+        code, out = self.hteam("question-view", oid, as_="main")
+        self.assertEqual((code, out["view"]), (0, "view_unknown"), out)
+        self.assertEqual(self.record(oid), before)
+        self.assertEqual(self.splits(), [])
+
     def test_start_sweeps_views_of_closed_questions_and_gone_terminals(self):
         answered = self.question()
         self.add_terminal("t50", argv=["python3"], labels={"herdr.space": "spA", "herdr.tab": "tbMain"})

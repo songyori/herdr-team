@@ -951,6 +951,14 @@ class QuestionPreviewTest(HookCase):
         self.addCleanup(self._stop_view, rec)
         return rec
 
+    def _stop_view_of(self, oid):
+        path = self.state_dir / "questions" / f"{oid}.view.json"
+        try:
+            rec = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        self._stop_view(rec)
+
     @staticmethod
     def _stop_view(rec):
         try:
@@ -1041,6 +1049,7 @@ class QuestionPreviewTest(HookCase):
         self.assertTrue(preview.endswith("pane 이 없으면 .herdr-team/state/questions/out-0007.md)"), preview)
 
     def test_long_context_writes_file_and_opens_the_view(self):
+        self.addCleanup(self._stop_view_of, "out-0001")  # 앞 단언이 실패해도 보기 명령이 남지 않게
         ctx = self.long_ctx()
         text = self.ask(ctx)
         [q] = self.updated(self.guard(self.call(text), herdr=True))
@@ -1059,6 +1068,16 @@ class QuestionPreviewTest(HookCase):
         self.assertTrue(split["argv"][1].endswith("/bin/hteam"), split["argv"])
         self.assertTrue((self.state_dir / "questions" / "out-0001.log").exists())  # 보기 명령의 출력
         self.assertNotEqual(os.getsid(rec["pid"]), os.getsid(0))  # 새 세션으로 분리해 띄웠다
+
+    def test_multiselect_is_forced_off_for_matched_questions(self):
+        text = self.ask("## 표\n\n| 항목 | 값 |\n|---|---|\n| 가 | 1 |")
+        other = {**self.call("다른 질문?", header="다름"), "multiSelect": True}
+        matched = {**self.call(text), "multiSelect": True}
+        got = self.updated(self.guard(matched, other))
+        self.assertIs(got[0]["multiSelect"], False)
+        self.assertTrue(all("preview" in o for o in got[0]["options"]))
+        self.assertIs(got[1]["multiSelect"], True)
+        self.assertNotIn("preview", got[1]["options"][0])
 
     def test_long_context_outside_herdr_writes_the_file_only(self):
         text = self.ask(self.long_ctx())
