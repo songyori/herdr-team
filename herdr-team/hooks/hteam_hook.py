@@ -32,6 +32,8 @@ CACHED_RE = re.compile(r"^(main|reviewer|worker(:[a-z][a-z0-9-]*)?)$")
 NOISE_RE = re.compile(r"[\s#*_>|\-`]+")
 FINGERPRINT = 80  # 정규화한 render.context 앞 80자가 메인 텍스트에 있으면 보여 준 것으로 본다
 CONTEXT_DENY_MAX = 3  # 같은 질문을 context 없이 물으면 보일 때까지 거부하되 이만큼만(그 뒤는 통과시킨다: 탈출구)
+CONTEXT_WAIT_S = 2.0  # 같은 응답의 글이 transcript 에 늦게 쓰인다(설계 9.4 8단계, 실험 약 0.11초)
+CONTEXT_POLL_S = 0.05
 TAIL_BYTES = 1 << 20
 
 # 메인 Bash 의 horch 거부(horch_denied). brief 의 낱말 규칙 그대로다
@@ -296,6 +298,17 @@ def _context_guard_locked(p, payload: dict, asked: set):
         return None
     shown = NOISE_RE.sub("", text)
     unshown = [q for q in items if NOISE_RE.sub("", q["render"]["context"])[:FINGERPRINT] not in shown]
+    if not unshown:
+        return None
+    die_at("context_first_miss")  # 테스트: 첫 읽기에서 못 찾은 뒤 멈춘다
+    deadline = time.monotonic() + CONTEXT_WAIT_S
+    while unshown and time.monotonic() < deadline:
+        time.sleep(CONTEXT_POLL_S)
+        text = _transcript_text(payload.get("transcript_path"))
+        if text is None:
+            return None
+        shown = NOISE_RE.sub("", text)
+        unshown = [q for q in unshown if NOISE_RE.sub("", q["render"]["context"])[:FINGERPRINT] not in shown]
     if not unshown:
         return None
     for q in unshown:

@@ -906,3 +906,109 @@ class SlotHookTest(HookCase):
         self.assertIsNone(self.write(self.state_dir / "run.json", self.slot1, terminal=worker))
         self.assertEqual(self.decision(self.write(self.slot1 / ".herdr-team" / "state" / "x", self.slot1, terminal=worker)),
                          "deny")
+
+
+class ContextWaitTest(HookCase):
+    """8단계(설계 9.4): Claude Code 는 같은 응답의 글을 PreToolUse 훅이 시작한 뒤에 transcript 에 쓴다(실험에서 약 0.11초).
+    처음 읽어 못 찾은 질문은 CONTEXT_WAIT_S 동안 다시 읽은 뒤에만 거부한다."""
+
+    def ask(self, n):
+        text = f"질문 {n} 을 확정할까요?\n예: 확정이면 진행한다"
+        ctx = f"## 맥락 {n}\n" + f"질문 {n} 의 배경 설명이다. 앞 80자가 넘게 길다. " * 3
+        self.drive_question({"question": text, "context": ctx,
+                             "options": [{"label": "확정 (추천)", "description": "추천 사유: 빠진 것이 없다"},
+                                         {"label": "수정", "description": "고칠 곳을 말한다"}]})
+        return text, ctx
+
+    @staticmethod
+    def line(text):
+        return json.dumps({"type": "assistant", "message": {"id": "msg_1", "content": [{"type": "text", "text": text}]}},
+                          ensure_ascii=False) + "\n"
+
+    def transcript(self):
+        path = self.tmp / "t.jsonl"
+        path.write_text(self.line("앞 응답의 글"), encoding="utf-8")
+        return path
+
+    @staticmethod
+    def payload(transcript, *texts):
+        return {"tool_name": "AskUserQuestion", "transcript_path": str(transcript),
+                "tool_input": {"questions": [{"question": t} for t in texts]}}
+
+    def paused(self, payload):
+        """첫 읽기에서 못 찾은 뒤(멈춤 지점 context_first_miss) 멈춘 훅과 그 문 파일."""
+        self.hook("session-start", terminal=MAIN)  # 역할 캐시를 먼저 만든다
+        gate = self.tmp / "gate"
+        proc = self.hook_bg("guard", payload, terminal=MAIN,
+                            env={"HTEAM_TEST_PAUSE_AT": "context_first_miss", "HTEAM_TEST_PAUSE_FILE": str(gate)})
+        deadline = time.monotonic() + 20
+        while not gate.with_name("gate.reached").exists():
+            self.assertLess(time.monotonic(), deadline)
+            self.assertIsNone(proc.poll(), "멈춤 지점 전에 끝났다")
+            time.sleep(0.05)
+        return proc, gate
+
+    def denied(self):
+        path = self.state_dir / "context-denied.json"
+        return json.loads(path.read_text())["denied"] if path.exists() else {}
+
+    def test_constants(self):
+        hook = load_hook()
+        self.assertEqual((hook.CONTEXT_WAIT_S, hook.CONTEXT_POLL_S, hook.FINGERPRINT, hook.CONTEXT_DENY_MAX),
+                         (2.0, 0.05, 80, 3))
+
+    def test_text_written_during_the_wait_is_found_quickly(self):
+        text, ctx = self.ask(1)
+        transcript = self.transcript()
+        proc, gate = self.paused(self.payload(transcript, text))
+        gate.touch()  # 다시 읽기를 시작한다
+        time.sleep(0.3)  # 기다리는 도중에
+        with open(transcript, "a", encoding="utf-8") as fh:  # 같은 응답의 글이 늦게 쓰였다
+            fh.write(self.line("표를 먼저 보인다.\n\n" + ctx))
+        written = time.monotonic()
+        out, err = proc.communicate(timeout=30)
+        # 2초를 다 기다린 뒤 한 번 읽는 구현이면 1.7초쯤 걸린다. CONTEXT_POLL_S 간격으로 다시 읽어야 곧 끝난다
+        self.assertLess(time.monotonic() - written, 1.0)
+        self.assertEqual(proc.returncode, 0, err)
+        self.assertEqual(out.strip(), "")  # 통과(거부 JSON 없음)
+        self.assertEqual(self.denied(), {})
+
+    def test_never_written_is_denied_after_the_wait(self):
+        text, _ = self.ask(1)
+        transcript = self.transcript()
+        self.hook("session-start", terminal=MAIN)
+        start = time.monotonic()
+        out = self.hook("guard", self.payload(transcript, text), terminal=MAIN)
+        self.assertGreaterEqual(time.monotonic() - start, 2.0)
+        self.assertEqual(self.decision(out), "deny")
+        self.assertIn("[out-0001]", out["hookSpecificOutput"]["permissionDecisionReason"])
+        self.assertEqual(self.denied(), {"out-0001": 1})
+
+    def test_found_at_first_read_does_not_wait(self):
+        text, ctx = self.ask(1)
+        transcript = self.transcript()
+        with open(transcript, "a", encoding="utf-8") as fh:
+            fh.write(self.line(ctx))
+        self.hook("session-start", terminal=MAIN)
+        gate = self.tmp / "gate"
+        start = time.monotonic()
+        proc = self.hook_bg("guard", self.payload(transcript, text), terminal=MAIN,
+                            env={"HTEAM_TEST_PAUSE_AT": "context_first_miss", "HTEAM_TEST_PAUSE_FILE": str(gate)})
+        out, err = proc.communicate(timeout=20)  # 멈춤 지점에 닿으면 문이 없어 여기서 시간 초과다
+        self.assertEqual((proc.returncode, out.strip()), (0, ""), err)
+        self.assertFalse(gate.with_name("gate.reached").exists())
+        self.assertLess(time.monotonic() - start, 2.0)  # 기다리지 않았다(CONTEXT_WAIT_S 보다 짧다)
+
+    def test_only_the_late_question_is_waited_for(self):
+        (t1, c1), (t2, _) = self.ask(1), self.ask(2)
+        transcript = self.transcript()
+        proc, gate = self.paused(self.payload(transcript, t1, t2))
+        with open(transcript, "a", encoding="utf-8") as fh:
+            fh.write(self.line(c1))
+        gate.touch()
+        out, err = proc.communicate(timeout=30)
+        self.assertEqual(proc.returncode, 0, err)
+        reason = json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertIn("[out-0002]", reason)
+        self.assertNotIn("[out-0001]", reason)
+        self.assertEqual(self.denied(), {"out-0002": 1})
