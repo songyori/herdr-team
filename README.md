@@ -287,8 +287,8 @@ scaffold 는 있는 파일을 덮어쓰지 않는다. 앞 버전에서 세팅한
 
 herdr-orch 는 그대로(0.3.0)다.
 
-1. 플러그인을 올리는 것만으로 적용되는 것: 질문 확인 훅 대기, 평문 질문 검사, `hteam fix --base-merge`, 병합 지시문·리뷰 안내 줄, 완료 요약.
-2. `.herdr-team/bin/hteam upgrade` 의 `manual` 대로 `CLAUDE.md` 의 `<!-- herdr-team -->` 절을 `herdr-team/templates/CLAUDE.section.md` 와 견줘 고친다(메인 규칙 새 줄 셋: 평문 질문, 기준 병합, 업그레이드 뒤 새 세션).
+1. 플러그인을 올리는 것만으로 적용되는 것: 질문 표시(훅이 거부하지 않고 표를 선택 창 미리보기에 넣는다, 긴 표는 메인 옆 '질문 보기' pane), 평문 질문 검사, `hteam fix --base-merge`, 병합 지시문·리뷰 안내 줄, 완료 요약.
+2. `.herdr-team/bin/hteam upgrade` 의 `manual` 대로 `CLAUDE.md` 의 `<!-- herdr-team -->` 절을 `herdr-team/templates/CLAUDE.section.md` 와 견줘 고친다(메인 규칙 새 줄 셋: 평문 질문, 기준 병합, 업그레이드 뒤 새 세션. 질문 표시 규칙의 바뀐 두 줄).
 3. 메인 세션을 새로 연다(메인 규칙은 세션을 시작할 때 읽힌다).
 
 #### 0.4.0 → 0.5.0

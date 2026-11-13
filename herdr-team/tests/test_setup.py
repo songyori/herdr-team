@@ -376,6 +376,17 @@ class TemplateContractTest(unittest.TestCase):
         self.assertIn("init 이 끝나면 메인 세션을 새로 연다", readme)
         self.assertIn("--base-merge", readme)
 
+    def test_question_display_rule_in_main(self):
+        # 설계 7.7·7.4a 8단계: 표는 훅이 선택 창에 넣고 거부하지 않는다. 옛 "답변 글로 먼저" 규칙은 없다
+        main = (ROOT / "templates/CLAUDE.section.md").read_text(encoding="utf-8")
+        self.assertIn("`render.context` 는 훅이 선택 창 미리보기에 넣는다(길면 앞부분만 넣고 전체는 옆 '질문 보기' pane 에 "
+                      "띄운다). 메인이 글로 옮겨 쓰지 않아도 된다. 훅은 이 질문을 거부하지 않는다.", main)
+        self.assertNotIn("먼저 답변 글(텍스트)로 그대로 보여 준다", main)
+        self.assertNotIn("훅이 보일 때까지 그 질문을 거부한다", main)
+        hook = (ROOT / "hooks/hteam_hook.py").read_text(encoding="utf-8")
+        for gone in ("context-denied", "CONTEXT_DENY_MAX", "먼저 보여 줄 `render.context` 가 있다"):
+            self.assertNotIn(gone, hook)
+
     def test_skill_recovery_contract(self):
         init = (ROOT / "skills/init/SKILL.md").read_text(encoding="utf-8")
         up = (ROOT / "skills/up/SKILL.md").read_text(encoding="utf-8")

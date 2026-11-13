@@ -11,16 +11,17 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import sys
 import time
 import traceback
+import unicodedata
 from pathlib import Path
 
 HOOK_START = time.monotonic()  # 자동 부활의 4초 규칙과 마감은 훅이 시작한 때부터 잰다(설계 9.5)
 LIB = Path(__file__).resolve().parents[1] / "lib"
 # hteam 모듈. _load() 가 herdr-team 프로젝트에서만 채운다
-outbox = roles = HteamError = PLUGIN_ROOT = SHIM = project_at = None
-die_at = flock = read_json = write_atomic = write_json = None
+outbox = roles = HteamError = PLUGIN_ROOT = SHIM = project_at = write_atomic = None
 
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 SETUP_PREFIXES = (".herdr-team/", ".claude/", "docs/superpowers/")
@@ -29,12 +30,12 @@ STATE_DIR = ".herdr-team/state"
 SESSION_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 # 캐시하는 역할. 관제는 Claude 세션이 아니다(관제 환경의 세션은 캐시하지 않고 늘 환경 변수와 run.json 으로 본다)
 CACHED_RE = re.compile(r"^(main|reviewer|worker(:[a-z][a-z0-9-]*)?)$")
-NOISE_RE = re.compile(r"[\s#*_>|\-`]+")
-FINGERPRINT = 80  # 정규화한 render.context 앞 80자가 메인 텍스트에 있으면 보여 준 것으로 본다
-CONTEXT_DENY_MAX = 3  # 같은 질문을 context 없이 물으면 보일 때까지 거부하되 이만큼만(그 뒤는 통과시킨다: 탈출구)
-CONTEXT_WAIT_S = 2.0  # 같은 응답의 글이 transcript 에 늦게 쓰인다(설계 9.4 8단계, 실험 약 0.11초)
-CONTEXT_POLL_S = 0.05
-TAIL_BYTES = 1 << 20
+# 질문 보기(설계 7.4a 8단계): 메인의 AskUserQuestion 선택지 preview 에 render.context 를 넣는다. 미리보기 상자는 화면에 다
+# 들어가지 않으면 아무것도 보이지 않는다(실험). 상자 크기는 사용자 터미널에 달려 넉넉한 기준을 쓴다
+PREVIEW_WIDTH = 56  # 화면 줄을 셀 때 접는 칸 수(동아시아 넓은 글자는 2칸)
+PREVIEW_MAX_ROWS = 15  # 화면 줄이 이 이하면 짧은 표다(그대로 넣는다)
+PREVIEW_HEAD_ROWS = 10  # 긴 표는 앞에서부터 이 화면 줄까지의 줄만 넣는다
+LONG_NOTE = '…(표가 길어 앞부분만 보인다. 전체 {n}줄은 옆 "질문 보기" pane 에 있다. pane 이 없으면 {path})'
 
 # 메인 Bash 의 horch 거부(horch_denied). brief 의 낱말 규칙 그대로다
 HORCH_RE = re.compile(r"(^|[\s;&|(`'\"/<>])horch(?=$|[\s;&|)`'\"<>])")
@@ -46,14 +47,13 @@ DRIVE_RE = re.compile(r"(^|[\s;&|(`'\"/<>])hteam['\"]?(?:\s+--root(?:=\S+|\s+\S+
 
 def _load() -> None:
     """hteam 모듈을 가져온다. herdr-team 프로젝트를 찾은 뒤에만 부른다. 실패는 main() 이 오류 기록으로 남긴다."""
-    global outbox, roles, HteamError, PLUGIN_ROOT, SHIM, project_at
-    global die_at, flock, read_json, write_atomic, write_json
+    global outbox, roles, HteamError, PLUGIN_ROOT, SHIM, project_at, write_atomic
     if str(LIB) not in sys.path:
         sys.path.insert(0, str(LIB))
     from hteam import outbox, roles
     from hteam.errors import HteamError
     from hteam.paths import PLUGIN_ROOT, SHIM, project_at
-    from hteam.util import die_at, flock, read_json, write_atomic, write_json
+    from hteam.util import write_atomic
 
 
 def find_root(payload: dict) -> Path | None:
@@ -230,99 +230,102 @@ def deny(reason: str) -> dict:
                                    "permissionDecisionReason": reason}}
 
 
-def _transcript_text(path) -> str | None:
-    """transcript(JSONL) 끝부분의 assistant text. 읽지 못하면 None(판단 불가 → 통과)."""
-    if not isinstance(path, str) or not path or not Path(path).is_file():
+def screen_rows(text: str, width: int = PREVIEW_WIDTH) -> int:
+    """text 를 width 칸으로 접은 화면 줄 수(설계 7.4a). 줄(`\n`)마다 칸 수(east_asian_width 가 W·F 면 2, 아니면 1)를 width
+    로 나눠 올림하고 빈 줄도 1줄로 센다. 빈 글은 1. 순수 함수다."""
+    rows = 0
+    for line in text.split("\n"):
+        cells = sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in line)
+        rows += max(1, -(-cells // width))
+    return rows
+
+
+def preview_for(oid: str, context: str) -> tuple[str, bool]:
+    """선택지 preview 에 넣을 글과 긴 표인가(설계 7.4a). 화면 줄이 PREVIEW_MAX_ROWS 이하면 그대로. 아니면 앞에서부터 화면 줄
+    합이 PREVIEW_HEAD_ROWS 를 넘기 전까지의 줄 뒤에 빈 줄과 LONG_NOTE(전체 줄 수, 전문 파일의 프로젝트 기준 경로)를 붙인다.
+    첫 줄부터 넘으면 LONG_NOTE 만 넣는다. 순수 함수다."""
+    if screen_rows(context) <= PREVIEW_MAX_ROWS:
+        return context, False
+    lines = context.splitlines()
+    head, used = [], 0
+    for line in lines:
+        rows = screen_rows(line)
+        if used + rows > PREVIEW_HEAD_ROWS:
+            break
+        head.append(line)
+        used += rows
+    note = LONG_NOTE.format(n=len(lines), path=f".herdr-team/state/questions/{oid}.md")
+    return ("\n".join(head) + "\n\n" if head else "") + note, True
+
+
+def _key(question, header, options) -> tuple | None:
+    """맞는 질문을 가리는 값(question, header, 선택지 label 순서. 앞뒤 공백은 뗀다). 모양이 틀리면 None."""
+    if not (isinstance(question, str) and isinstance(header, str) and isinstance(options, list)):
         return None
-    try:
-        with open(path, "rb") as fh:
-            size = fh.seek(0, os.SEEK_END)
-            fh.seek(max(0, size - TAIL_BYTES))
-            data = fh.read()
-    except OSError:
+    labels = [o.get("label") for o in options if isinstance(o, dict)]
+    if len(labels) != len(options) or not all(isinstance(label, str) for label in labels):
         return None
-    texts = []
-    for raw in data.split(b"\n")[1 if size > TAIL_BYTES else 0:]:
-        line = raw.decode("utf-8", errors="replace").strip()
-        if not line:
+    return question.strip(), header.strip(), tuple(label.strip() for label in labels)
+
+
+def _match(items: list, q: dict) -> dict | None:
+    """q 와 맞는 열린 outbox 질문(설계 7.4a): render.context 가 비지 않고 question·header·선택지 label 순서가 같은 것. 둘
+    이상이면 outbox 에서 앞선 것(메인은 받은 순서대로 묻는다)."""
+    want = _key(q.get("question"), q.get("header"), q.get("options"))
+    if want is None:
+        return None
+    for item in items:
+        render = item.get("render")
+        if not isinstance(render, dict):
             continue
-        try:
-            entry = json.loads(line)
-        except ValueError:
-            return None
-        message = entry.get("message") if isinstance(entry, dict) and entry.get("type") == "assistant" else None
-        content = message.get("content") if isinstance(message, dict) else None
-        if isinstance(content, list):
-            texts += [b["text"] for b in content if isinstance(b, dict) and b.get("type") == "text"
-                      and isinstance(b.get("text"), str)]
-    return "\n".join(texts)
+        context = render.get("context")
+        if (isinstance(context, str) and context.strip()
+                and _key(render.get("question"), render.get("header"), render.get("options")) == want):
+            return item
+    return None
 
 
-def _denied(p) -> dict:
-    """context-denied.json = {"denied": {out-id: 거부한 횟수}}. 옛 형식 {"ids": [...]} 는 한 번씩 거부한 것으로 읽는다.
-    읽지 못하면 빈 기록이다(한 번 더 거부할 뿐이다)."""
-    data = read_json(p.context_denied, {})
-    if not isinstance(data, dict):
-        return {}
-    found = {i: 1 for i in data.get("ids") or [] if isinstance(i, str)} if isinstance(data.get("ids"), list) else {}
-    counts = data.get("denied")
-    if isinstance(counts, dict):
-        found.update({k: v for k, v in counts.items() if isinstance(k, str) and isinstance(v, int)
-                      and not isinstance(v, bool)})
-    return found
+def _open_view(p, oid: str, render: dict) -> None:
+    """긴 표(설계 7.4a): 전문을 state/questions/<out-id>.md 에 원자적으로 쓰고, 메인이 Herdr 터미널이면 질문 보기 명령을
+    새 세션의 분리된 자식으로 띄운다(기다리지 않는다. 출력은 <out-id>.log 이고 훅의 표준 출력을 물려주지 않는다). 플러그인
+    경로는 훅이 자기 위치로 안다(새 터미널은 부른 쪽 환경을 물려받지 않아 shim 에 기대지 않는다). 실패는 오류 기록만 남긴다:
+    미리보기를 넣은 updatedInput 은 그대로 돌려준다."""
+    try:
+        write_atomic(p.questions / f"{oid}.md", f"# 질문 보기 {oid}: {render.get('header')}\n\n{render['context']}\n")
+        if not os.environ.get("HC_TERMINAL_ID", "").strip():
+            return  # Herdr 밖이면 띄우지 않는다(미리보기의 안내 줄에 파일 경로가 있다)
+        with open(p.questions / f"{oid}.log", "a", encoding="utf-8") as log:
+            subprocess.Popen([sys.executable, str(PLUGIN_ROOT / "bin" / "hteam"), "--root", str(p.root), "question-view",
+                              oid], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                             start_new_session=True)
+    except Exception:  # noqa: BLE001  질문 보기는 질문을 막지 않는다
+        log_error(p.root, f"질문 보기 {oid}\n" + traceback.format_exc())
 
 
 def context_guard(p, payload: dict, tool_input: dict):
-    """메인이 render.context 를 먼저 보여 주지 않고 그 질문을 물으면 보일 때까지 거부한다. 같은 질문은 CONTEXT_DENY_MAX
-    번까지만 거부하고 그 뒤는 통과시킨다(메인이 끝내 보여 주지 못해도 질문이 막히지 않는다)."""
+    """메인의 AskUserQuestion(설계 9.4, 7.4a 8단계). 거부하지 않는다. 질문마다 맞는 열린 질문이 있으면 그 render.context 를
+    그 질문의 모든 선택지 preview 로 넣는다(모델이 넣은 preview 는 덮는다). 긴 표면 전문 파일을 쓰고 질문 보기를 띄운다.
+    바꾼 질문이 하나라도 있으면 tool_input 전체를 updatedInput 으로 돌려준다. permissionDecision 은 넣지 않는다(allow 를
+    주면 Claude Code 가 선택 창 없이 "답하지 않음" 으로 넘긴다, 실험). 맞는 질문이 없으면 None(그대로 통과). payload 는
+    보지 않는다(transcript 로 확인하지 않는다)."""
     questions = tool_input.get("questions")
-    asked = {q["question"].strip() for q in questions if isinstance(q, dict) and isinstance(q.get("question"), str)} \
-        if isinstance(questions, list) else set()
-    if not asked:
+    if not isinstance(questions, list) or not questions:
         return None
-    with flock(p.state / "context-denied.lock"):  # context-denied.json 읽고 고쳐 쓰기가 겹쳐 기록을 잃지 않게
-        return _context_guard_locked(p, payload, asked)
-
-
-def _context_guard_locked(p, payload: dict, asked: set):
-    denied = _denied(p)
-    die_at("context_denied_read")  # 테스트: 읽은 뒤 멈춰 겹친 호출을 재현한다
-    items = [q for q in outbox.open_questions(p)
-             if denied.get(q["id"], 0) < CONTEXT_DENY_MAX and isinstance(q.get("render"), dict)
-             and isinstance(q["render"].get("context"), str) and NOISE_RE.sub("", q["render"]["context"])
-             and q["render"].get("question", "").strip() in asked]
-    if not items:
+    items = outbox.open_questions(p)
+    asked, changed = [], False
+    for q in questions:
+        item = _match(items, q) if isinstance(q, dict) else None
+        if item is None:
+            asked.append(q)  # 바꾸지 않은 질문은 그대로 둔다
+            continue
+        preview, long = preview_for(item["id"], item["render"]["context"])
+        asked.append({**q, "options": [{**o, "preview": preview} for o in q["options"]]})
+        changed = True
+        if long:
+            _open_view(p, item["id"], item["render"])
+    if not changed:
         return None
-    text = _transcript_text(payload.get("transcript_path"))
-    if text is None:
-        return None
-    shown = NOISE_RE.sub("", text)
-    unshown = [q for q in items if NOISE_RE.sub("", q["render"]["context"])[:FINGERPRINT] not in shown]
-    if not unshown:
-        return None
-    die_at("context_first_miss")  # 테스트: 첫 읽기에서 못 찾은 뒤 멈춘다
-    deadline = time.monotonic() + CONTEXT_WAIT_S
-    while unshown and time.monotonic() < deadline:
-        time.sleep(CONTEXT_POLL_S)
-        text = _transcript_text(payload.get("transcript_path"))
-        if text is None:
-            return None
-        shown = NOISE_RE.sub("", text)
-        unshown = [q for q in unshown if NOISE_RE.sub("", q["render"]["context"])[:FINGERPRINT] not in shown]
-    if not unshown:
-        return None
-    for q in unshown:
-        denied[q["id"]] = denied.get(q["id"], 0) + 1
-    write_json(p.context_denied, {"denied": denied})  # 임시 파일 + os.replace
-    blocks = "\n\n".join(f"[{q['id']}]\n{q['render']['context']}" for q in unshown)
-    last = [q["id"] for q in unshown if denied[q["id"]] >= CONTEXT_DENY_MAX]
-    tail = (f"\n\n({', '.join(last)}: 이번이 마지막 거부다. 다음에는 확인하지 않고 통과시킨다. 그래도 먼저 보여 준다.)"
-            if last else "")
-    return deny("이 질문에는 먼저 보여 줄 `render.context` 가 있다. 아래 내용을 요약하거나 바꾸지 말고 답변 글(텍스트)로 "
-                "그대로 출력한 뒤 같은 render 로 AskUserQuestion 을 다시 부른다([out-id] 줄은 출력하지 않는다). 생각·도구 설명 "
-                "줄(화면에 짧은 진행 설명으로 보이는 줄 포함)은 원문이 아니라 요약으로 보이고 훅도 보인 것으로 세지 않는다. 글을 "
-                "쓴 뒤 같은 응답에서 이어서 AskUserQuestion 을 부른다. 턴을 끝내지 않는다(사용자의 다른 말을 기다리지 않는다). "
-                f"보여 줄 때까지 거부한다.\n\n{blocks}{tail}")
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": {**tool_input, "questions": asked}}}
 
 
 def guard(p, payload: dict):

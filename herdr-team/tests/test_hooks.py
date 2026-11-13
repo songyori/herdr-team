@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -232,50 +233,6 @@ class GuardTest(HookCase):
         self.assertEqual(tool("MultiEdit", "file_path", "src/a.py", terminal=MAIN), "deny")
         self.assertIsNone(tool("MultiEdit", "file_path", "CLAUDE.md", terminal=MAIN))
 
-    def ask_with_context(self, n):
-        text = f"질문 {n} 을 확정할까요?\n예: 확정이면 진행한다"
-        ctx = f"## 맥락 {n}\n" + f"질문 {n} 의 배경 설명이다. 앞 80자가 넘게 길다. " * 3
-        self.drive_question({"question": text, "context": ctx,
-                             "options": [{"label": "확정 (추천)", "description": "추천 사유: 빠진 것이 없다"},
-                                         {"label": "수정", "description": "고칠 곳을 말한다"}]})
-        return text, ctx
-
-    def test_context_already_shown_is_allowed(self):
-        text, ctx = self.ask_with_context(1)
-        transcript = self.tmp / "t.jsonl"
-        transcript.write_text(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": ctx}]}})
-                              + "\n")
-        out = self.hook("guard", {"tool_name": "AskUserQuestion", "transcript_path": str(transcript),
-                                  "tool_input": {"questions": [{"question": text}]}}, terminal=MAIN)
-        self.assertIsNone(out)
-        self.assertFalse((self.state_dir / "context-denied.json").exists())
-
-    def test_context_denied_updates_do_not_race(self):
-        """두 질문을 거의 함께 물어도 거부 기록이 사라지지 않는다(읽고 고쳐 쓰기를 잠금 안에서 한다)."""
-        texts = [self.ask_with_context(n)[0] for n in (1, 2)]
-        transcript = self.tmp / "t.jsonl"
-        transcript.write_text("")
-        self.hook("session-start", terminal=MAIN)  # 역할 캐시를 먼저 만든다
-        gate = self.tmp / "gate"
-
-        def ask(text, env=None):
-            return self.hook_bg("guard", {"tool_name": "AskUserQuestion", "transcript_path": str(transcript),
-                                          "tool_input": {"questions": [{"question": text}]}}, terminal=MAIN, env=env)
-        first = ask(texts[0], {"HTEAM_TEST_PAUSE_AT": "context_denied_read", "HTEAM_TEST_PAUSE_FILE": str(gate)})
-        deadline = time.monotonic() + 20
-        while not gate.with_name("gate.reached").exists():
-            self.assertLess(time.monotonic(), deadline)
-            time.sleep(0.05)
-        second = ask(texts[1])
-        time.sleep(1.5)  # 잠금이 없으면 이 사이에 둘째가 읽고 쓰고 끝난다
-        gate.touch()
-        for proc in (first, second):
-            out, err = proc.communicate(timeout=30)
-            self.assertEqual(proc.returncode, 0, err)
-            self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "deny")
-        denied = json.loads((self.state_dir / "context-denied.json").read_text())["denied"]
-        self.assertEqual(sorted(denied.values()), [1, 1], denied)
-
     def test_worker_ask_hints(self):
         planner = self.worker_terminal("T-001", "planner")
         dev = self.worker_terminal("T-002", "developer")
@@ -285,44 +242,6 @@ class GuardTest(HookCase):
         out = self.hook("guard", {**ask, "session_id": "d"}, terminal=dev)
         self.assertIn("horch ask", out["hookSpecificOutput"]["permissionDecisionReason"])
         self.assertIsNone(self.edit("src/app.py", terminal=dev))  # 워커의 owns 는 리뷰가 본다
-
-    def test_main_context_guard_once(self):
-        ctx = "## 계획 요약\n- 화면 셋과 저장소는 localStorage 로 정한다. 표는 아래와 같다. " * 2
-        self.drive_question({"question": "이대로 확정할까요?\n예: 확정이면 개발을 시작한다", "context": ctx,
-                             "options": [{"label": "확정 (추천)", "description": "추천 사유: 빠진 항목이 없다"},
-                                         {"label": "수정", "description": "고칠 곳을 말한다"}]})
-        transcript = self.tmp / "t.jsonl"
-        transcript.write_text(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "안녕"}]}}) + "\n")
-        payload = {"tool_name": "AskUserQuestion", "transcript_path": str(transcript),
-                   "tool_input": {"questions": [{"question": "이대로 확정할까요?\n예: 확정이면 개발을 시작한다"}]}}
-        out = self.hook("guard", payload, terminal=MAIN)
-        self.assertEqual(self.decision(out), "deny")
-        self.assertIn("계획 요약", out["hookSpecificOutput"]["permissionDecisionReason"])
-        self.assertIn("보여 줄 때까지 거부한다", out["hookSpecificOutput"]["permissionDecisionReason"])
-        # 실환경(3단계): 진행 설명 줄(생각 요약)은 화면에 보이지만 원문이 아니고, 거부 뒤 메인이 글만 쓰고 턴을 끝내
-        # 사용자가 "선택 창 띄워 줘" 를 보내야 했다. 같은 응답에서 이어서 묻고 턴을 끝내지 않게 안내한다
-        reason = out["hookSpecificOutput"]["permissionDecisionReason"]
-        self.assertIn("같은 응답에서 이어서 AskUserQuestion 을 부른다", reason)
-        self.assertIn("턴을 끝내지 않는다", reason)
-        self.assertNotIn("사용자에게 보이지 않는다", reason)
-        # 실환경(2단계): 한 번 거부해도 메인이 다시 보이지 않고 물었다. 보일 때까지 거부하되 세 번까지만(탈출구)
-        out = self.hook("guard", payload, terminal=MAIN)
-        self.assertEqual(self.decision(out), "deny")
-        out = self.hook("guard", payload, terminal=MAIN)
-        self.assertIn("이번이 마지막 거부다", out["hookSpecificOutput"]["permissionDecisionReason"])
-        self.assertIsNone(self.hook("guard", payload, terminal=MAIN))
-        self.assertEqual(json.loads((self.state_dir / "context-denied.json").read_text())["denied"], {"out-0001": 3})
-
-    def test_context_guard_reads_the_old_record(self):
-        text, ctx = self.ask_with_context(1)
-        (self.state_dir / "context-denied.json").write_text(json.dumps({"ids": ["out-0001"]}))  # 옛 형식: 한 번 거부했다
-        transcript = self.tmp / "t.jsonl"
-        transcript.write_text("")
-        payload = {"tool_name": "AskUserQuestion", "transcript_path": str(transcript),
-                   "tool_input": {"questions": [{"question": text}]}}
-        self.assertEqual(self.decision(self.hook("guard", payload, terminal=MAIN)), "deny")
-        self.assertEqual(self.decision(self.hook("guard", payload, terminal=MAIN)), "deny")
-        self.assertIsNone(self.hook("guard", payload, terminal=MAIN))
 
 
 class StopTest(HookCase):
@@ -908,112 +827,6 @@ class SlotHookTest(HookCase):
                          "deny")
 
 
-class ContextWaitTest(HookCase):
-    """8단계(설계 9.4): Claude Code 는 같은 응답의 글을 PreToolUse 훅이 시작한 뒤에 transcript 에 쓴다(실험에서 약 0.11초).
-    처음 읽어 못 찾은 질문은 CONTEXT_WAIT_S 동안 다시 읽은 뒤에만 거부한다."""
-
-    def ask(self, n):
-        text = f"질문 {n} 을 확정할까요?\n예: 확정이면 진행한다"
-        ctx = f"## 맥락 {n}\n" + f"질문 {n} 의 배경 설명이다. 앞 80자가 넘게 길다. " * 3
-        self.drive_question({"question": text, "context": ctx,
-                             "options": [{"label": "확정 (추천)", "description": "추천 사유: 빠진 것이 없다"},
-                                         {"label": "수정", "description": "고칠 곳을 말한다"}]})
-        return text, ctx
-
-    @staticmethod
-    def line(text):
-        return json.dumps({"type": "assistant", "message": {"id": "msg_1", "content": [{"type": "text", "text": text}]}},
-                          ensure_ascii=False) + "\n"
-
-    def transcript(self):
-        path = self.tmp / "t.jsonl"
-        path.write_text(self.line("앞 응답의 글"), encoding="utf-8")
-        return path
-
-    @staticmethod
-    def payload(transcript, *texts):
-        return {"tool_name": "AskUserQuestion", "transcript_path": str(transcript),
-                "tool_input": {"questions": [{"question": t} for t in texts]}}
-
-    def paused(self, payload):
-        """첫 읽기에서 못 찾은 뒤(멈춤 지점 context_first_miss) 멈춘 훅과 그 문 파일."""
-        self.hook("session-start", terminal=MAIN)  # 역할 캐시를 먼저 만든다
-        gate = self.tmp / "gate"
-        proc = self.hook_bg("guard", payload, terminal=MAIN,
-                            env={"HTEAM_TEST_PAUSE_AT": "context_first_miss", "HTEAM_TEST_PAUSE_FILE": str(gate)})
-        deadline = time.monotonic() + 20
-        while not gate.with_name("gate.reached").exists():
-            self.assertLess(time.monotonic(), deadline)
-            self.assertIsNone(proc.poll(), "멈춤 지점 전에 끝났다")
-            time.sleep(0.05)
-        return proc, gate
-
-    def denied(self):
-        path = self.state_dir / "context-denied.json"
-        return json.loads(path.read_text())["denied"] if path.exists() else {}
-
-    def test_constants(self):
-        hook = load_hook()
-        self.assertEqual((hook.CONTEXT_WAIT_S, hook.CONTEXT_POLL_S, hook.FINGERPRINT, hook.CONTEXT_DENY_MAX),
-                         (2.0, 0.05, 80, 3))
-
-    def test_text_written_during_the_wait_is_found_quickly(self):
-        text, ctx = self.ask(1)
-        transcript = self.transcript()
-        proc, gate = self.paused(self.payload(transcript, text))
-        gate.touch()  # 다시 읽기를 시작한다
-        time.sleep(0.3)  # 기다리는 도중에
-        with open(transcript, "a", encoding="utf-8") as fh:  # 같은 응답의 글이 늦게 쓰였다
-            fh.write(self.line("표를 먼저 보인다.\n\n" + ctx))
-        written = time.monotonic()
-        out, err = proc.communicate(timeout=30)
-        # 2초를 다 기다린 뒤 한 번 읽는 구현이면 1.7초쯤 걸린다. CONTEXT_POLL_S 간격으로 다시 읽어야 곧 끝난다
-        self.assertLess(time.monotonic() - written, 1.0)
-        self.assertEqual(proc.returncode, 0, err)
-        self.assertEqual(out.strip(), "")  # 통과(거부 JSON 없음)
-        self.assertEqual(self.denied(), {})
-
-    def test_never_written_is_denied_after_the_wait(self):
-        text, _ = self.ask(1)
-        transcript = self.transcript()
-        self.hook("session-start", terminal=MAIN)
-        start = time.monotonic()
-        out = self.hook("guard", self.payload(transcript, text), terminal=MAIN)
-        self.assertGreaterEqual(time.monotonic() - start, 2.0)
-        self.assertEqual(self.decision(out), "deny")
-        self.assertIn("[out-0001]", out["hookSpecificOutput"]["permissionDecisionReason"])
-        self.assertEqual(self.denied(), {"out-0001": 1})
-
-    def test_found_at_first_read_does_not_wait(self):
-        text, ctx = self.ask(1)
-        transcript = self.transcript()
-        with open(transcript, "a", encoding="utf-8") as fh:
-            fh.write(self.line(ctx))
-        self.hook("session-start", terminal=MAIN)
-        gate = self.tmp / "gate"
-        start = time.monotonic()
-        proc = self.hook_bg("guard", self.payload(transcript, text), terminal=MAIN,
-                            env={"HTEAM_TEST_PAUSE_AT": "context_first_miss", "HTEAM_TEST_PAUSE_FILE": str(gate)})
-        out, err = proc.communicate(timeout=20)  # 멈춤 지점에 닿으면 문이 없어 여기서 시간 초과다
-        self.assertEqual((proc.returncode, out.strip()), (0, ""), err)
-        self.assertFalse(gate.with_name("gate.reached").exists())
-        self.assertLess(time.monotonic() - start, 2.0)  # 기다리지 않았다(CONTEXT_WAIT_S 보다 짧다)
-
-    def test_only_the_late_question_is_waited_for(self):
-        (t1, c1), (t2, _) = self.ask(1), self.ask(2)
-        transcript = self.transcript()
-        proc, gate = self.paused(self.payload(transcript, t1, t2))
-        with open(transcript, "a", encoding="utf-8") as fh:
-            fh.write(self.line(c1))
-        gate.touch()
-        out, err = proc.communicate(timeout=30)
-        self.assertEqual(proc.returncode, 0, err)
-        reason = json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"]
-        self.assertIn("[out-0002]", reason)
-        self.assertNotIn("[out-0001]", reason)
-        self.assertEqual(self.denied(), {"out-0002": 1})
-
-
 class PlainQuestionStopTest(HookCase):
     """8단계(설계 9.4 Stop, 7.7): 메인이 평문으로 묻고 턴을 끝내면 한 번 막는다. 뒤이은 관제 메시지가 메인을 다시 깨워
     질문이 밀려 지나간다(kakao 07:42 사례)."""
@@ -1089,3 +902,169 @@ class PlainQuestionWatchTest(HookCase):
         out = self.hook("stop", {"last_assistant_message": "끝났습니다."}, terminal=MAIN)
         self.assertEqual(out["decision"], "block")  # watch 검사는 지금 그대로
         self.assertNotIn("묻거나 부탁하는", out["reason"])
+
+
+class QuestionPreviewTest(HookCase):
+    """8단계(설계 7.4a, 9.4, 실환경 뒤 사용자 결정): 메인의 AskUserQuestion 은 어떤 경우에도 거부하지 않는다. 맞는 열린
+    질문의 render.context 를 선택지마다 preview 로 넣어 updatedInput 으로 돌려준다(permissionDecision 없음)."""
+
+    LABELS = ("확정 (추천)", "수정")
+
+    def ask(self, ctx, *, n=1, header="시험", labels=LABELS):
+        text = f"질문 {n} 을 확정할까요?\n예: 확정이면 진행한다"
+        self.drive_question({"question": text, "header": header, "context": ctx,
+                             "options": [{"label": labels[0], "description": "추천 사유: 빠진 것이 없다"},
+                                         {"label": labels[1], "description": "고칠 곳을 말한다"}]})
+        return text
+
+    @staticmethod
+    def call(text, *, header="시험", labels=LABELS, preview=None):
+        options = [{"label": label, "description": "설명"} for label in labels]
+        if preview is not None:
+            options[0]["preview"] = preview
+        return {"question": text, "header": header, "multiSelect": False, "options": options}
+
+    def guard(self, *questions, transcript=None, herdr=False):
+        payload = {"tool_name": "AskUserQuestion", "tool_input": {"questions": list(questions)}}
+        if transcript is not None:
+            payload["transcript_path"] = str(transcript)
+        env = None if herdr else {"HC_TERMINAL_ID": ""}  # Herdr 밖이면 보기 명령을 띄우지 않는다
+        return self.hook("guard", payload, terminal=MAIN, env=env)
+
+    @staticmethod
+    def updated(out):
+        spec = out["hookSpecificOutput"]
+        assert "permissionDecision" not in spec, spec  # allow 를 주면 선택 창 없이 "답하지 않음" 이 된다(실험)
+        return spec["updatedInput"]["questions"]
+
+    @staticmethod
+    def long_ctx(rows=40):
+        return "## 긴 표\n\n| 이슈 | 개수 |\n|---|---|\n" + "\n".join(f"| #{i} 항목 | {i} |" for i in range(rows))
+
+    def wait_view(self, oid):
+        path = self.state_dir / "questions" / f"{oid}.view.json"
+        deadline = time.monotonic() + 20
+        while not path.exists():
+            self.assertLess(time.monotonic(), deadline, "보기 명령이 기록을 쓰지 않았다")
+            time.sleep(0.1)
+        rec = json.loads(path.read_text(encoding="utf-8"))
+        self.addCleanup(self._stop_view, rec)
+        return rec
+
+    @staticmethod
+    def _stop_view(rec):
+        try:
+            os.kill(rec["pid"], signal.SIGTERM)
+        except (ProcessLookupError, KeyError):
+            pass
+
+    def test_short_context_goes_into_every_preview_and_nothing_is_denied(self):
+        ctx = "## 표\n\n| 항목 | 값 |\n|---|---|\n| 가 | 1 |"
+        text = self.ask(ctx)
+        empty = self.tmp / "empty.jsonl"
+        empty.write_text("", encoding="utf-8")
+        for transcript in (None, empty):
+            [q] = self.updated(self.guard(self.call(text), transcript=transcript))
+            self.assertEqual([o["preview"] for o in q["options"]], [ctx, ctx])
+            self.assertEqual(([o["label"] for o in q["options"]], q["question"], q["header"]),
+                             (list(self.LABELS), text, "시험"))
+        self.assertFalse((self.state_dir / "context-denied.json").exists())
+        self.assertFalse((self.state_dir / "questions").exists())  # 짧은 표는 파일·보기가 없다
+
+    def test_never_denies_whatever_the_transcript_holds(self):
+        text = self.ask("## 표\n" + "가나다 " * 10)
+        t = self.tmp / "t.jsonl"
+        for content in ("", "깨진 줄\n", json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "thinking", "thinking": "표를 요약했다"}]}}, ensure_ascii=False) + "\n"):
+            t.write_text(content, encoding="utf-8")
+            self.assertEqual(len(self.updated(self.guard(self.call(text), transcript=t))), 1)
+
+    def test_model_preview_is_replaced_and_other_questions_are_untouched(self):
+        text = self.ask("짧은 표")
+        other = self.call("묻지 않은 질문?\n예: 아무것", labels=("가", "나"))
+        q1, q2 = self.updated(self.guard(self.call(text, preview="모델이 넣은 것"), other))
+        self.assertEqual([o["preview"] for o in q1["options"]], ["짧은 표", "짧은 표"])
+        self.assertEqual(q2, other)
+
+    def test_unmatched_questions_pass_untouched(self):
+        text = self.ask("표 하나")
+        self.drive_question({"question": "맥락 없는 질문?\n예: 없다", "header": "질문", "options": [
+            {"label": "가 (추천)", "description": "추천 사유: x"}, {"label": "나", "description": "y"}]})
+        for q in (self.call(text, header="다른 머리"), self.call(text, labels=("확정 (추천)", "다른 것")),
+                  self.call("맥락 없는 질문?\n예: 없다", header="질문", labels=("가 (추천)", "나")),
+                  self.call("모르는 질문?")):
+            with self.subTest(q=q["question"][:8], header=q["header"]):
+                self.assertIsNone(self.guard(q))
+
+    def test_two_different_questions_each_get_their_own_context(self):
+        t1, t2 = self.ask("첫 표", n=1), self.ask("둘째 표", n=2)
+        q1, q2 = self.updated(self.guard(self.call(t1), self.call(t2)))
+        self.assertEqual((q1["options"][0]["preview"], q2["options"][0]["preview"]), ("첫 표", "둘째 표"))
+
+    def test_unreadable_outbox_returns_nothing(self):
+        text = self.ask("표")
+        outbox_file = self.state_dir / "outbox.jsonl"
+        outbox_file.unlink()
+        outbox_file.mkdir()  # 읽을 수 없다
+        self.assertIsNone(self.guard(self.call(text)))  # 거부하지 않고 그대로 통과한다
+
+    def test_file_write_failure_still_returns_the_preview(self):
+        text = self.ask(self.long_ctx())
+        (self.state_dir / "questions").write_text("폴더 자리에 파일", encoding="utf-8")
+        [q] = self.updated(self.guard(self.call(text)))
+        self.assertIn("표가 길어 앞부분만 보인다", q["options"][0]["preview"])
+
+    def test_two_matching_open_questions_use_the_earlier_one(self):
+        text = self.ask("앞 질문의 표")
+        self.ask("뒤 질문의 표")
+        [q] = self.updated(self.guard(self.call(text)))
+        self.assertEqual(q["options"][0]["preview"], "앞 질문의 표")
+
+    def test_answered_question_is_not_matched(self):
+        text = self.ask("표")
+        (self.state_dir / "answers").mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "answers" / "out-0001.json").write_text(
+            json.dumps({"id": "out-0001", "answer": "확정 (추천)", "at": "2026-11-13T00:00:00Z"}))
+        self.assertIsNone(self.guard(self.call(text)))
+
+    def test_screen_rows_and_preview_split_are_pure(self):
+        hook = load_hook()
+        self.assertEqual((hook.PREVIEW_WIDTH, hook.PREVIEW_MAX_ROWS, hook.PREVIEW_HEAD_ROWS), (56, 15, 10))
+        self.assertEqual([hook.screen_rows(s) for s in ("", "a" * 56, "a" * 57, "가" * 28, "가" * 29, "a\nb")],
+                         [1, 1, 2, 1, 2, 2])
+        short = "\n".join(f"줄 {i}" for i in range(15))
+        self.assertEqual(hook.preview_for("out-0007", short), (short, False))
+        wide = "\n".join("가" * 40 for _ in range(8))  # 8줄이지만 화면 줄은 16
+        preview, long = hook.preview_for("out-0007", wide)
+        self.assertTrue(long)
+        self.assertTrue(preview.startswith("\n".join(["가" * 40] * 5) + "\n\n…(표가 길어 앞부분만 보인다. 전체 8줄은"), preview)
+        self.assertTrue(preview.endswith("pane 이 없으면 .herdr-team/state/questions/out-0007.md)"), preview)
+
+    def test_long_context_writes_file_and_opens_the_view(self):
+        ctx = self.long_ctx()
+        text = self.ask(ctx)
+        [q] = self.updated(self.guard(self.call(text), herdr=True))
+        lines = ctx.splitlines()
+        preview = q["options"][0]["preview"]
+        self.assertEqual(preview, "\n".join(lines[:10]) + f"\n\n…(표가 길어 앞부분만 보인다. 전체 {len(lines)}줄은 옆 "
+                         "\"질문 보기\" pane 에 있다. pane 이 없으면 .herdr-team/state/questions/out-0001.md)")
+        self.assertEqual(q["options"][1]["preview"], preview)
+        body = (self.state_dir / "questions" / "out-0001.md").read_text(encoding="utf-8")
+        self.assertEqual(body, f"# 질문 보기 out-0001: 시험\n\n{ctx}\n")
+        rec = self.wait_view("out-0001")
+        self.assertEqual(rec["main"], MAIN)
+        [split] = [json.loads(c[2]) for c in self.herdr_calls() if c[:2] == ["do", "pane.split"]]
+        self.assertEqual((split["direction"], split["pane"]), ("right", f"p{MAIN}"))
+        self.assertEqual(split["argv"][2:], ["--root", str(self.p.root), "question-pager", "out-0001"])
+        self.assertTrue(split["argv"][1].endswith("/bin/hteam"), split["argv"])
+        self.assertTrue((self.state_dir / "questions" / "out-0001.log").exists())  # 보기 명령의 출력
+        self.assertNotEqual(os.getsid(rec["pid"]), os.getsid(0))  # 새 세션으로 분리해 띄웠다
+
+    def test_long_context_outside_herdr_writes_the_file_only(self):
+        text = self.ask(self.long_ctx())
+        self.updated(self.guard(self.call(text)))
+        self.assertTrue((self.state_dir / "questions" / "out-0001.md").exists())
+        self.assertFalse((self.state_dir / "questions" / "out-0001.log").exists())  # 보기 명령을 띄우지 않았다
+        time.sleep(1.5)  # 띄웠다면 보기가 기록을 썼을 시간
+        self.assertFalse((self.state_dir / "questions" / "out-0001.view.json").exists())
+        self.assertEqual([c for c in self.herdr_calls() if c[:2] == ["do", "pane.split"]], [])

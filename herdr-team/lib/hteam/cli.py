@@ -33,6 +33,7 @@ COMMAND_MODULES: tuple[str, ...] = (
     "crew",
     "workspace",
     "redmine",
+    "questions",
 )
 
 

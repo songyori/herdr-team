@@ -63,7 +63,8 @@ class Project:
         self.lock = self.state / "lock"
         self.watch_pid = self.state / "watch.pid"
         self.attention = self.state / "attention.json"
-        self.context_denied = self.state / "context-denied.json"
+        # 질문 보기(설계 7.4a 8단계): 긴 render.context 전문 <out-id>.md, 보기 명령 출력 .log, 보기 기록 .view.json, 잠금 .lock
+        self.questions = self.state / "questions"
         self.design_review = self.state / "design-review.json"
         self.text_rules = self.team / "text-rules.md"
         self.auto_up = self.state / "auto-up.json"
