@@ -26,10 +26,16 @@ TEARDOWN_SH = """printf '%s|%s|%s\\n' "$HTEAM_SLOT" "$(pwd -P)" "$HT_PORT" >> "$
 [ -f "$OUT_DIR/teardown-fail" ] && { echo "정리 실패"; exit 4; }
 exit 0
 """
-BASE_MERGE = ("- 이 라운드는 기준 커밋 `{sha}` 를 이 브랜치에 병합한다: `git merge --no-ff --no-commit {sha}` 뒤 충돌을 풀고 "
-              "푼 파일을 `git add -- <파일>` 한다. `git diff --cached --name-only` 가 병합과 푼 파일만 담는지 본 뒤 경로를 "
-              "지정하지 않은 `git commit -m \"[{tid}] 기준 병합: {sha7}\"` 로 커밋한다(병합 중에는 git 이 경로 지정 커밋을 "
-              "받지 않는다. 이 커밋만 작업 규칙 5.5 의 경로 지정 예외다). 그 밖의 병합·rebase·push 는 하지 않는다.")
+# 이어 풀기 라운드(merge_resume)의 둘째 줄은 7단계 원문 그대로다. 남은 변경이 그 병합이라 먼저 커밋하라고 하지 않는다
+BASE_MERGE_RESUME = ("- 이 라운드는 기준 커밋 `{sha}` 를 이 브랜치에 병합한다: `git merge --no-ff --no-commit {sha}` 뒤 충돌을 "
+                     "풀고 푼 파일을 `git add -- <파일>` 한다. `git diff --cached --name-only` 가 병합과 푼 파일만 담는지 본 뒤 "
+                     "경로를 지정하지 않은 `git commit -m \"[{tid}] 기준 병합: {sha7}\"` 로 커밋한다(병합 중에는 git 이 경로 "
+                     "지정 커밋을 받지 않는다. 이 커밋만 작업 규칙 5.5 의 경로 지정 예외다). 그 밖의 병합·rebase·push 는 하지 "
+                     "않는다.")
+# 8단계(설계 5.10.6): 그 밖의 기준 병합 라운드는 병합 전에 커밋 안 된 변경을 먼저 커밋한다(working 에서 연 --base-merge)
+BASE_MERGE = BASE_MERGE_RESUME.replace(
+    "병합한다: `git merge", "병합한다: 먼저 `git status` 를 보고 이 태스크의 커밋하지 않은 변경이 있으면 경로 지정 커밋으로 "
+    "커밋한다(index 에 올린 변경이 있으면 git 이 병합을 거부한다). 그다음 `git merge")
 RESUME = "앞 워커가 시작한 병합이 남아 있다. 이어서 푼다."
 NORMAL_SECOND = "리뷰가 승인하면 관제가 병합한다"  # 작업 공간 절 둘째 줄(Task 4, 설계 5.10.5)의 끝
 
@@ -406,7 +412,8 @@ class ConflictTest(MergeCase):
         self.assertEqual((code, out.get("round")), (0, 3), out)
         st = self.task_state("T-001")
         self.assertEqual((st["base_merge"], st["rounds"][-1]["merge_resume"]), (base, True))
-        self.assertIn(BASE_MERGE.format(sha=base, sha7=base[:7], tid="T-001") + " " + RESUME, self.spec_text(3))
+        self.assertIn(BASE_MERGE_RESUME.format(sha=base, sha7=base[:7], tid="T-001") + " " + RESUME, self.spec_text(3))
+        self.assertNotIn("먼저 `git status`", self.spec_text(3))
 
     def test_abort_that_leaves_merge_head_is_merge_blocked(self):
         self.approved(files={"src/a/core.py": "task\n"})
@@ -436,6 +443,167 @@ class ConflictTest(MergeCase):
         self.assertEqual(self.gate_calls()[-1]["args"], ["src/a/core.py"])
         quick = json.loads((self.state_dir / "tests" / "T-001.json").read_text(encoding="utf-8"))["quick"]
         self.assertEqual(quick["head"], merge)  # code_head 가 기준 병합 커밋이다
+
+
+class BaseMergeCommandTest(MergeCase):
+    """8단계(설계 5.10.6): 메인이 여는 기준 병합 `hteam fix T --base-merge`. 충돌 경로의 기준 병합 라운드를 다시 쓴다."""
+
+    def other_task_merged(self, rel: str = "docs/other.md", text: str = "o2\n") -> str:
+        """다른 태스크가 기준 브랜치에 병합된 것과 같다: 메인 폴더 main 에 owns 밖 파일 커밋. 그 sha."""
+        return self.commit(rel, text, "[T-009] merge: 다른 태스크")
+
+    def merge_in_slot(self, base: str) -> str:
+        """새 라운드 워커가 지시대로 한 기준 병합(충돌 없음): --no-commit 병합 → 경로 지정 없는 커밋. 병합 커밋 sha."""
+        slot = self.slot_root(1)
+        self.git_at(slot, "merge", "--no-ff", "--no-commit", base)
+        self.git_at(slot, "commit", "-q", "-m", f"[T-001] 기준 병합: {base[:7]}")
+        return self.git_at(slot, "rev-parse", "HEAD").strip()
+
+    def prompt(self, n: int) -> str:
+        return (self.state_dir / "tasks" / "T-001" / f"r{n}-review-a1.md").read_text(encoding="utf-8")
+
+    def test_working_task_gets_a_base_merge_round(self):
+        self.ws_start("T-001")
+        base = self.other_task_merged()
+        code, out = self.hteam("fix", "T-001", "--base-merge", "--note=T-009 의 수정을 받아 다시 시험한다")
+        self.assertEqual((code, out.get("round")), (0, 2), out)
+        st = self.task_state("T-001")
+        self.assertEqual((st["status"], st["base_merge"], st["base"]), ("working", base, base))
+        self.assertEqual(st["rounds"][-1]["base_merge"], base)
+        self.assertNotIn("merge_resume", st["rounds"][-1])
+        fix = [h for h in st["history"] if h.get("event") == "fix"][-1]
+        self.assertEqual(fix["base_merge"], base)
+        r2 = self.spec_text(2)
+        self.assertIn(BASE_MERGE.format(sha=base, sha7=base[:7], tid="T-001"), r2)
+        self.assertIn("T-009 의 수정을 받아 다시 시험한다", r2)
+        self.assertNotIn(NORMAL_SECOND, r2)
+        self.assertEqual((self.record(1)["state"], self.record(1)["task"]), ("busy", "T-001"))  # 같은 슬롯·같은 브랜치
+        merge = self.merge_in_slot(base)
+        code, out = self.act_work("T-001", {"src/a/x.py": "x = 1\n"})
+        self.assertEqual(code, 0, out)
+        code, out = self.hteam("review", "T-001")
+        # 기준에서 들어온 docs/other.md 는 owns 밖 변경으로 잡히지 않는다(kakao T-008 은 여기서 반려됐다)
+        self.assertEqual((code, out.get("status")), (0, "reviewing"), out)
+        self.assertNotIn("base_merge", self.task_state("T-001"))
+        prompt = self.prompt(2)
+        self.assertIn(f"병합 커밋 {merge[:7]}은 기준 브랜치의 변경을 이 브랜치에 들여온 것이다. 그 커밋이 들여온 다른 태스크의 "
+                      "변경은 이 태스크의 변경으로 리뷰하지 않는다(그 태스크의 리뷰를 이미 거쳤다).", prompt)
+        self.assertIn("리뷰 범위의 다른 규칙(라운드 확인 범위, 묶음 리뷰)은 그대로다.", prompt)
+        code, out = self.act_review("T-001", "APPROVE")
+        self.assertEqual(code, 0, out)
+        code, out = self.hteam("review-finish", "T-001")
+        self.assertEqual((code, out["status"]), (0, "approved"), out)
+        res = self.d.accept_task("T-001")
+        self.assertEqual(res["status"], "done", res)
+        self.assertEqual(self.subjects(1), ["[T-001] merge: 앱 만들기"])
+        self.assertEqual((self.proj / "src/a/x.py").read_text(encoding="utf-8"), "x = 1\n")
+        self.assertEqual((self.proj / "docs/other.md").read_text(encoding="utf-8"), "o2\n")
+
+    def test_merge_by_the_worker_without_base_merge_is_still_rejected(self):
+        # kakao T-008: 메인이 범위 추가로 병합을 지시했다. base 가 그대로라 기준에서 들어온 파일이 owns 밖 변경이다. 이 동작은
+        # 그대로 두고 메인 규칙(7.7)과 --base-merge 로 피한다(설계 8단계 보고 처리)
+        self.ws_start("T-001")
+        base = self.other_task_merged()
+        self.merge_in_slot(base)
+        code, out = self.act_work("T-001", {"src/a/x.py": "x = 1\n"})
+        self.assertEqual(code, 0, out)
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual((code, out.get("status")), (0, "changes"), out)
+        review = (self.slot_root(1) / "docs/reviews/T-001/r1.md").read_text(encoding="utf-8")
+        self.assertIn("owns 밖 경로의 내용이 base 와 다르다: docs/other.md", review)
+
+    def test_up_to_date_task_is_refused_and_nothing_changes(self):
+        self.ws_start("T-001")
+        before = self.task_state("T-001")
+        code, out = self.hteam("fix", "T-001", "--base-merge")
+        self.assertEqual((code, out["error"]["code"]), (3, "base_current"), out)
+        self.assertEqual(self.task_state("T-001"), before)  # 워커를 닫지 않았다
+
+    def test_unfinished_merge_in_the_slot_is_refused(self):
+        self.ws_start("T-001")
+        slot = self.slot_root(1)
+        (slot / "src/a/core.py").write_text("task\n", encoding="utf-8")
+        self.git_at(slot, "commit", "-q", "-m", "[T-001] core", "--", "src/a/core.py")
+        first = self.commit("src/a/core.py", "main\n", "사람: core")
+        proc = subprocess.run(["git", "-C", str(slot), "merge", "--no-ff", "--no-commit", first], capture_output=True,
+                              text=True, env=self.env)
+        self.assertNotEqual(proc.returncode, 0, proc.stdout)  # 충돌로 멈춘 병합이 남았다
+        self.assertTrue(self.merging(slot))
+        self.other_task_merged()
+        before = self.task_state("T-001")
+        code, out = self.hteam("fix", "T-001", "--base-merge")
+        self.assertEqual((code, out["error"]["code"]), (3, "merge_in_progress"), out)
+        self.assertEqual(self.task_state("T-001"), before)
+        self.git_at(slot, "merge", "--abort")
+
+    def test_conflict_base_merge_is_replaced_by_the_newer_base(self):
+        self.approved(files={"src/a/core.py": "task\n"})
+        self.commit("src/a/core.py", "main\n", "사람: core")
+        first = self.commit("docs/other.md", "o2\n", "사람: other")
+        self.assertEqual(self.d.accept_task("T-001")["status"], "changes")
+        self.assertEqual(self.task_state("T-001")["base_merge"], first)
+        newer = self.other_task_merged("docs/more.md", "m\n")
+        code, out = self.hteam("fix", "T-001", "--base-merge", "--note=최신 기준까지 받는다")
+        self.assertEqual((code, out.get("round")), (0, 2), out)
+        st = self.task_state("T-001")
+        self.assertEqual((st["base_merge"], st["base"], st["rounds"][-1]["base_merge"]), (newer, newer, newer))
+        self.assertIn(BASE_MERGE.format(sha=newer, sha7=newer[:7], tid="T-001"), self.spec_text(2))
+
+    def test_main_folder_task_is_not_a_workspace_task(self):
+        self.write_spec("T-002", "planner", owns="docs/planning/**")
+        state.create(self.p, "T-002", "planner")
+        code, out = self.hteam("start", "T-002")
+        self.assertEqual(code, 0, out)
+        before = self.task_state("T-002")
+        code, out = self.hteam("fix", "T-002", "--base-merge")
+        self.assertEqual((code, out["error"]["code"]), (2, "not_workspace"), out)
+        self.assertEqual(self.task_state("T-002"), before)
+
+    def test_main_puts_base_merge_on_the_queue(self):
+        self.ws_start("T-001")
+        base = self.other_task_merged()
+        code, out = self.hteam("fix", "T-001", "--base-merge", "--note=다시 시험", as_="main",
+                               env={"HTEAM_QUEUE_WAIT_S": "0.3"})
+        self.assertEqual((code, out.get("status")), (0, "queued"), out)
+        reqs = [json.loads(f.read_text(encoding="utf-8")) for f in sorted((self.drive_dir / "queue").iterdir())
+                if queue.REQUEST_RE.match(f.name)]
+        self.assertEqual([(r["command"], r["args"]) for r in reqs],
+                         [("fix", {"task": "T-001", "note": "다시 시험", "base_merge": True})])
+        self.d.run_queue()
+        st = self.task_state("T-001")
+        self.assertEqual((st["round"], st["base_merge"], st["base"]), (2, base, base))
+
+    def test_review_without_merge_commit_has_no_merge_line(self):
+        self.approved()
+        self.assertNotIn("들여온 것이다", self.prompt(1))
+
+    def test_merge_line_is_only_for_workspace_tasks(self):
+        from hteam import compose
+        self.ws_start("T-001")
+        merge = self.merge_in_slot(self.other_task_merged())
+        st = self.task_state("T-001")
+        view = workspace.view(self.p, st)
+        commits = [{"sha": merge, "subject": "[T-001] 기준 병합"}]
+        self.assertIn(f"병합 커밋 {merge[:7]}은", compose.merge_commit_line(view, st, commits))
+        shared = {k: v for k, v in st.items() if k != "workspace"}
+        self.assertEqual(compose.merge_commit_line(self.p, shared, commits), "")
+        self.assertEqual(compose.merge_commit_line(view, st, []), "")
+
+
+class SharedBaseMergeTest(MergeCase):
+    config_text = BASE_CONFIG
+
+    def test_shared_task_is_not_a_workspace_task(self):
+        code, out = self.hteam("start", "T-001")
+        self.assertEqual(code, 0, out)
+        self.commit("docs/other.md", "o2\n", "[T-009] 다른 태스크")
+        before = self.task_state("T-001")
+        code, out = self.hteam("fix", "T-001", "--base-merge")
+        self.assertEqual((code, out["error"]["code"]), (2, "not_workspace"), out)
+        self.assertEqual(self.task_state("T-001"), before)
+        code, out = self.hteam("fix", "T-001", "--base-merge", as_="main", env={"HTEAM_QUEUE_WAIT_S": "0.3"})
+        self.assertEqual((code, out["error"]["code"]), (2, "not_workspace"), out)  # 큐에 넣기 전에 거부한다
+        self.assertFalse(any(queue.REQUEST_RE.match(f.name) for f in (self.drive_dir / "queue").glob("*")))
 
 
 class RefuseTest(MergeCase):

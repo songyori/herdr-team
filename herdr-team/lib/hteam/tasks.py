@@ -922,10 +922,35 @@ def _require_slot(p, st: dict) -> None:
                          data={"status": st["status"], "slot": n})
 
 
+def _not_workspace(tid: str) -> HteamError:
+    return HteamError("not_workspace", f"{tid} 는 작업 공간 태스크가 아니다(--base-merge 는 슬롯에서 도는 태스크만)", USAGE)
+
+
+def _base_merge_target(p, st: dict) -> str:
+    """`fix --base-merge`(설계 5.10.6 8단계)의 기준 병합 대상: 메인 폴더 기준 브랜치의 끝 sha. 아무것도 쓰지 않는다. 거부는
+    차례대로 작업 공간 태스크가 아니다(exit 2 not_workspace), 슬롯에 끝나지 않은 병합이 있다(exit 3 merge_in_progress: 그
+    병합은 --base-merge 없는 fix 가 이어 푼다), 기준 브랜치가 없다(exit 3 no_base_branch), 기준 브랜치의 새 커밋이 없다(그
+    끝이 이미 슬롯 HEAD 에 들었다, exit 3 base_current)."""
+    tid = st["id"]
+    if not st.get("workspace"):
+        raise _not_workspace(tid)
+    root = workspace.task_root(p, st)
+    if gitio.merge_head(root):
+        raise HteamError("merge_in_progress", "앞 워커가 시작한 병합이 슬롯에 남아 있다. --base-merge 없이 fix 해 그 병합을 "
+                         "먼저 끝낸다", CONFLICT, f"hteam fix {tid}")
+    name = st["workspace"]["base_branch"]
+    sha = gitio.branch_tip(p.root, name)
+    if sha is None:
+        raise HteamError("no_base_branch", f"기준 브랜치 {name} 이 메인 폴더에 없다", CONFLICT)
+    if gitio.is_ancestor(root, sha, gitio.head(root)):
+        raise HteamError("base_current", "기준 브랜치의 새 커밋이 없다", CONFLICT, data={"base": sha})
+    return sha
+
+
 def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: bool, cli: dict,
         expect_round: int | None = None, queue: bool = False, from_user: bool = False,
         extra_from: tuple[str, ...] = (), follower: bool = False, request: str | None = None,
-        nowait: bool = False, force: bool = False, from_queue: bool = False) -> dict:
+        nowait: bool = False, force: bool = False, from_queue: bool = False, base_merge: bool = False) -> dict:
     """새 라운드(설계 6.4). 입력(사양·owns·잠금)을 먼저 검사하고, 이전 라운드들의 작업·리뷰 Dispatch 를 모두 정리한
     뒤에만 새 라운드를 쓰고 띄운다(이전 워커와 새 워커가 같은 폴더에서 함께 일하지 않게). 일하는 중인 워커는
     abandon --kill 뒤 release.
@@ -942,7 +967,11 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
 
     고정 에이전트 라운드(설계 5.9.5)는 같은 에이전트가 고친다: 비어 있으면 같은 터미널에 넣고, 바쁘면 queued_fix 로 대기열에
     넣어 {id, status: queued, agent} 를 돌려준다(새 라운드는 드레인이 꺼낼 때 연다). force 는 일하는 세션을 닫고 새 세션으로
-    띄운다(5.9.6, 임시 워커는 무시한다). from_queue 는 드레인이 맨 앞을 골라 부를 때다(큐 자리를 세지 않는다)."""
+    띄운다(5.9.6, 임시 워커는 무시한다). from_queue 는 드레인이 맨 앞을 골라 부를 때다(큐 자리를 세지 않는다).
+
+    base_merge 면 메인이 여는 기준 병합 라운드다(설계 5.10.6 8단계, `fix --base-merge`): 상태·라운드와 슬롯 검사 뒤, 입력 검사·
+    이전 워커 정리 전에 대상(_base_merge_target)을 정하고, 새 라운드를 쓰는 저장에서 base_merge·base 를 그 sha 로 옮긴다
+    (accept 충돌 경로와 같은 라운드. 충돌 경로가 남긴 base_merge 는 새 sha 로 바뀐다). fix 사건에 base_merge 를 남긴다."""
     cfg = config.load(p)
     spec = specs.check(p, cfg, tid)
     choice = config.resolve(cfg, spec.role, spec.front, cli)
@@ -988,6 +1017,7 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
     if cfg.workspace.covers(spec.role):
         _require_slot(p, first)
         workspace.require_worktree(p, first)  # 슬롯이 worktree 가 아니면 이전 워커 정리·새 라운드 전에 거부한다
+    target = _base_merge_target(p, first) if base_merge else None  # 거부는 입력 검사·이전 워커 정리 전이다
     last = state.current_round(first) or {}
     member = cfg.crew.get(crew.round_crew(last) or "")  # 설정에서 그 고정 에이전트를 지웠으면 임시 경로
     if member is not None and cli.get("worker") and cli["worker"] != last.get("agent"):
@@ -1029,6 +1059,8 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
             # (수정 블록이 보강 결과를 계속 보이고, 다시 승인된 뒤 그 라운드의 제안을 보강 대상으로 보지 않는다)
             supplement = prior["supplement"]
         st["role"] = spec.role  # 첫 실행과 같이 워커가 뜨는 사양의 직무로 맞춘다. planner 하나 검사가 저장된 직무를 본다
+        if target:  # 메인이 연 기준 병합(설계 5.10.6 8단계): 아래가 이 sha 로 기준 병합 라운드를 만든다. base 가 옮겨 가므로
+            st["base_merge"] = st["base"] = target  # 사전 검사·바뀐 파일·관문은 새 기준과의 차이만 본다
         rd = _new_round(st, st["round"] + 1, gitio.head(workspace.task_root(p, st)), rchoice, note=note,
                         supplement=supplement, coord_note=coord_note)
         _crew_round(rd, plc, ignored, forced)
@@ -1050,7 +1082,8 @@ def fix(p, tid: str, *, note: str | None, supplement: str | None, force_round: b
         st["note"] = note
         st.pop("drive_fix", None)  # 관제 fix 표시는 새 라운드를 쓰는 이 쓰기에서 지운다(설계 8.7)
         st.pop("queued_fix", None)  # 대기열의 수정도 이 라운드가 한다(설계 5.9.5)
-        _begin(p, st, rd, text, "fix", previous=old, force_round=force_round, **_req(request))
+        _begin(p, st, rd, text, "fix", previous=old, force_round=force_round, **_req(request),
+               **({"base_merge": target} if target else {}))
     crew.unqueue(p, tid)  # 라운드 전이가 확정된 뒤에 큐에서 뺀다(그 사이 멈추면 큐 맞추기가 뺀다)
     fixed, skipped = _queue_followers(p, followers, supplement, tid) if followers else ([], [])
     if queue or defer:  # 띄우지 않는다. start-ready 의 의존 검사가 선행이 다시 승인된 뒤에 띄운다(설계 11.4)
@@ -1489,14 +1522,16 @@ def _cmd_fix(args) -> dict:
 
     def check() -> None:
         specs.check(p, config.load(p), args.task)
-        state.require(p, args.task)
+        st = state.require(p, args.task)
+        if args.base_merge and not st.get("workspace"):  # 작업 공간 태스크가 아니면 큐에 넣지 않는다(설계 5.10.6 8단계)
+            raise _not_workspace(args.task)
 
     given = {"note": args.note, "supplement": args.supplement, "force_round": args.force_round or None,
-             "force": args.force or None}
+             "force": args.force or None, "base_merge": args.base_merge or None}
     return queue.route(p, "fix", {"task": args.task, **{k: v for k, v in given.items() if v is not None}, **cli},
                        lambda req: fix(p, args.task, note=args.note, supplement=args.supplement,
                                        force_round=args.force_round, cli=cli, expect_round=args.expect_round,
-                                       nowait=True, force=args.force),
+                                       nowait=True, force=args.force, base_merge=args.base_merge),
                        check=check, expect_round=_round(p, args.task, args.expect_round))
 
 
@@ -1540,6 +1575,7 @@ def register(sub) -> None:
     s.add_argument("task")
     s.add_argument("--note")
     s.add_argument("--supplement", help="디렉터 보강 태스크 ID(설계 11.4)")
+    s.add_argument("--base-merge", action="store_true", help="작업 공간 태스크의 기준 병합 라운드(설계 5.10.6)")
     s.add_argument("--force-round", action="store_true")
     s.add_argument("--force", action="store_true", help="고정 에이전트의 일하는 세션을 닫고 새 세션으로(설계 5.9.6)")
     s.add_argument("--round", type=int, dest="expect_round", help="지금 라운드가 이것일 때만(설계 6.4)")

@@ -15,6 +15,14 @@ class CliTest(TeamCase):
         code, out = self.hteam("version", as_=None)
         self.assertEqual((code, out["ok"], out["version"]), (0, True, "0.5.0"))
 
+    def test_fix_usage_lists_base_merge(self):
+        # 설계 6.4 8단계: fix 사용법에 --base-merge 가 보인다
+        import argparse
+        from hteam import cli
+        parser = cli.build_parser()
+        sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+        self.assertIn("--base-merge", sub.choices["fix"].format_help())
+
     def test_unknown_command_is_usage_json(self):
         code, out = self.hteam("nope", as_=None)
         self.assertEqual(code, 2)

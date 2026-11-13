@@ -352,6 +352,12 @@ class TemplateContractTest(unittest.TestCase):
         self.assertIn("마지막 글에 질문·부탁이 있으면 Stop 훅이 한 번 막는다.", main)
         self.assertLess(main.index("4. `.herdr-team/bin/hteam start T-xxx`"), main.index("언제나 AskUserQuestion 으로 묻는다"))
 
+    def test_base_merge_rule_in_main(self):
+        # 설계 7.7 8단계: 작업 공간 태스크의 기준 병합은 메인이 --base-merge 로 연다(kakao T-008)
+        main = (ROOT / "templates/CLAUDE.section.md").read_text(encoding="utf-8")
+        self.assertIn("`.herdr-team/bin/hteam fix T-xxx --base-merge --note \"<이유>\"` 를 한다. 일하는 중이면 그 워커를 닫고 "
+                      "새 라운드가 병합부터 한다. 워커에게 병합·rebase 를 직접 지시하지 않는다", main)
+
     def test_skill_recovery_contract(self):
         init = (ROOT / "skills/init/SKILL.md").read_text(encoding="utf-8")
         up = (ROOT / "skills/up/SKILL.md").read_text(encoding="utf-8")

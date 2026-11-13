@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 
-from . import designdiff, lint, specs, state, testgate, textlint, workspace
+from . import designdiff, gitio, lint, specs, state, testgate, textlint, workspace
 from .errors import USAGE, HteamError
 from .paths import SHIM, TEMPLATES, handoff_rel, report_rel, review_rel
 from .util import fill, show
@@ -99,25 +99,51 @@ def workspace_lines(cfg, st: dict) -> list[str]:
     return lines
 
 
-# 기준 병합 라운드의 작업 공간 절 둘째 줄(설계 5.10.6 원문)
-BASE_MERGE_LINE = ("- 이 라운드는 기준 커밋 `{sha}` 를 이 브랜치에 병합한다: `git merge --no-ff --no-commit {sha}` 뒤 충돌을 풀고 "
-                   "푼 파일을 `git add -- <파일>` 한다. `git diff --cached --name-only` 가 병합과 푼 파일만 담는지 본 뒤 경로를 "
-                   "지정하지 않은 `git commit -m \"[{tid}] 기준 병합: {sha7}\"` 로 커밋한다(병합 중에는 git 이 경로 지정 커밋을 "
-                   "받지 않는다. 이 커밋만 작업 규칙 5.5 의 경로 지정 예외다). 그 밖의 병합·rebase·push 는 하지 않는다.")
+# 기준 병합 라운드의 작업 공간 절 둘째 줄(설계 5.10.6). 병합 전에 이 태스크의 커밋하지 않은 변경을 먼저 커밋하게 한다
+# (일하는 중에 연 `fix --base-merge` 는 앞 워커가 커밋하지 않은 변경을 남길 수 있다. index 에 올린 변경이 있으면 git 이
+# 병합을 거부한다)
+BASE_MERGE_LINE = ("- 이 라운드는 기준 커밋 `{sha}` 를 이 브랜치에 병합한다: 먼저 `git status` 를 보고 이 태스크의 커밋하지 "
+                   "않은 변경이 있으면 경로 지정 커밋으로 커밋한다(index 에 올린 변경이 있으면 git 이 병합을 거부한다). 그다음 "
+                   "`git merge --no-ff --no-commit {sha}` 뒤 충돌을 풀고 푼 파일을 `git add -- <파일>` 한다. "
+                   "`git diff --cached --name-only` 가 병합과 푼 파일만 담는지 본 뒤 경로를 지정하지 않은 "
+                   "`git commit -m \"[{tid}] 기준 병합: {sha7}\"` 로 커밋한다(병합 중에는 git 이 경로 지정 커밋을 받지 않는다. "
+                   "이 커밋만 작업 규칙 5.5 의 경로 지정 예외다). 그 밖의 병합·rebase·push 는 하지 않는다.")
+# 이어 풀기 라운드(merge_resume)의 둘째 줄(7단계 원문 그대로). 남은 변경이 그 병합이라 먼저 커밋하라고 하지 않는다
+BASE_MERGE_RESUME_LINE = ("- 이 라운드는 기준 커밋 `{sha}` 를 이 브랜치에 병합한다: `git merge --no-ff --no-commit {sha}` 뒤 "
+                          "충돌을 풀고 푼 파일을 `git add -- <파일>` 한다. `git diff --cached --name-only` 가 병합과 푼 파일만 "
+                          "담는지 본 뒤 경로를 지정하지 않은 `git commit -m \"[{tid}] 기준 병합: {sha7}\"` 로 커밋한다(병합 "
+                          "중에는 git 이 경로 지정 커밋을 받지 않는다. 이 커밋만 작업 규칙 5.5 의 경로 지정 예외다). 그 밖의 "
+                          "병합·rebase·push 는 하지 않는다.")
 MERGE_RESUME = "앞 워커가 시작한 병합이 남아 있다. 이어서 푼다."
+# 리뷰 프롬프트의 병합 커밋 안내 줄(설계 5.10.6 8단계). {shas} 는 병합 커밋 sha 7자를 ", " 로 이은 것
+MERGE_COMMIT_LINE = ("병합 커밋 {shas}은 기준 브랜치의 변경을 이 브랜치에 들여온 것이다. 그 커밋이 들여온 다른 태스크의 변경은 "
+                     "이 태스크의 변경으로 리뷰하지 않는다(그 태스크의 리뷰를 이미 거쳤다). 이 태스크의 변경은 아래 바뀐 파일과 "
+                     "그 커밋의 충돌 해결이다. 리뷰 범위의 다른 규칙(라운드 확인 범위, 묶음 리뷰)은 그대로다.")
 
 
 def workspace_section(cfg, st: dict, rd: dict | None = None) -> str:
     """워커 사양의 작업 공간 절(설계 5.10.5). 작업 공간 태스크가 아니면 빈 글. 라운드 rd 에 base_merge 가 있으면(기준 병합
-    라운드, 5.10.6) 둘째 줄을 그 병합 지시로 바꾸고, merge_resume 이면 그 줄 끝에 MERGE_RESUME 을 붙인다."""
+    라운드, 5.10.6) 둘째 줄을 그 병합 지시로 바꾼다: merge_resume 이면 BASE_MERGE_RESUME_LINE 끝에 MERGE_RESUME 을 붙이고,
+    아니면 먼저 커밋하라는 문장이 든 BASE_MERGE_LINE 이다."""
     if not st.get("workspace"):
         return ""
     lines = [f"- {x}" for x in workspace_lines(cfg, st)]
     if rd and rd.get("base_merge"):
         sha = rd["base_merge"]
-        lines[1] = BASE_MERGE_LINE.format(sha=sha, sha7=sha[:7], tid=st["id"]) + \
-            (f" {MERGE_RESUME}" if rd.get("merge_resume") else "")
+        values = {"sha": sha, "sha7": sha[:7], "tid": st["id"]}
+        lines[1] = (BASE_MERGE_RESUME_LINE.format(**values) + f" {MERGE_RESUME}" if rd.get("merge_resume")
+                    else BASE_MERGE_LINE.format(**values))
     return "## 작업 공간\n" + "\n".join(lines)
+
+
+def merge_commit_line(p, st: dict, commits: list[dict]) -> str:
+    """리뷰 프롬프트 `## 태스크` 의 병합 커밋 안내 줄(설계 5.10.6 8단계). 작업 공간 태스크의 대상 커밋(commits, {sha, subject})
+    가운데 부모가 둘 이상인 병합 커밋이 있을 때만 그 sha 7자를 차례대로 ", " 로 이어 넣는다. 아니면 빈 글. p 는 그 태스크의
+    작업 루트 보기(workspace.view)다."""
+    if not st.get("workspace"):
+        return ""
+    merges = [c["sha"][:7] for c in commits if len(gitio.parents(p.work_root, c["sha"])) > 1]
+    return MERGE_COMMIT_LINE.format(shas=", ".join(merges)) if merges else ""
 
 
 def review_workspace(cfg, st: dict) -> str:
@@ -425,7 +451,8 @@ def review_prompt(p, cfg, spec, rd: dict, att: dict, rounds: list[dict] | None =
                   warnings: list[str] | None = None) -> str:
     """리뷰 프롬프트(설계 6.2). 입력(대상 커밋, 바뀐 파일)은 시도 기록에 저장된 것을 쓴다. 이번 라운드에 요청(사용자
     요청·지시·디렉터 보강, round_requests)이 있으면 그 요청과 그 라운드 작업 사양을 보이고 기준에 한 줄을 더한다
-    (없으면 그대로). 사양에 issue 가 있으면 태스크 줄 바로 뒤에 이슈 줄(issue_line)을 넣는다.
+    (없으면 그대로). 사양에 issue 가 있으면 태스크 줄 바로 뒤에 이슈 줄(issue_line)을 넣는다. 작업 공간 태스크의 대상 커밋에
+    병합 커밋이 있으면 작업 공간 줄 뒤에 그 안내 줄(merge_commit_line)을 넣는다.
     기준 뒤에 프로젝트 점검표(review_extra), 테스트 절(tests_section), 묶음 절(group_section), 디자인 절(design_section),
     문구 절(text_section) 순서로 붙인다. 없는 절은 빈 문자열이다. 점검표를 읽지 못한 경고는 warnings(리스트면)에 더한다.
     관문 결과는 시도 기록 inputs.tests 를 쓴다(관문을 다시 돌리지 않는다). 라운드 2 부터는
@@ -452,13 +479,14 @@ def review_prompt(p, cfg, spec, rd: dict, att: dict, rounds: list[dict] | None =
     if warned and warnings is not None:
         warnings.append(warned)
     issue = issue_line(cfg, spec)
+    merged = merge_commit_line(p, st, commits)  # 작업 공간 줄 뒤의 병합 커밋 안내(설계 5.10.6 8단계)
     return fill(_template("review-prompt.md"), role=spec.role, role_title=cfg.role_title(spec.role), task_id=tid,
                 round=str(n), attempt=str(att["attempt"]), title=spec.title, review_file=att["file"],
                 issue=f"\n- {issue}" if issue else "", extra=team_refs(p, extra),
                 spec_path=p.state_ref(f".herdr-team/tasks/{tid}.md"),
                 role_doc=p.state_ref(f".herdr-team/roles/{spec.role}.md"),
                 report=report_rel(tid), prior=", ".join(f"`{x}`" for x in prior) or "없음", request=request,
-                workspace=review_workspace(cfg, st),
+                workspace=review_workspace(cfg, st) + (f"\n- {merged}" if merged else ""),
                 request_rule=request_rule, verify_rule=verify_rule(p, spec.role, tests), tests=tests_section(tests, p),
                 round_scope=round_section(p, tid, rd, rounds or [], commits, bool(asks)),
                 group=group_section(p, spec, tests),

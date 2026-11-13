@@ -19,6 +19,7 @@
   4. `.herdr-team/bin/hteam start T-xxx`, 넘겼다고 한 줄로 알린다. 지금 시작할 수 없으면 `start` 가 `{"status": "waiting"}` 을 돌려주고 관제가 나중에 띄운다.
 - 사용자의 답·결정·행동(고르기, 확인, 로그인, 확인 창 승인 등)이 필요하면 언제나 AskUserQuestion 으로 묻는다(질문 하나, 선택지 2–4개, 추천 하나. 자유 답은 Other 로 받는다). 진행 보고 글에 질문이나 부탁을 섞지 않는다. 평문 질문은 턴을 끝내고, 뒤이은 관제 메시지가 메인을 다시 깨워 질문이 밀려 지나간다(어디에도 기록되지 않는다). AskUserQuestion 은 답할 때까지 화면에 남고 그동안 관제는 따로 돈다. 마지막 글에 질문·부탁이 있으면 Stop 훅이 한 번 막는다.
 - 진행 중 태스크에 범위를 더할 때: 사양에 "추가 범위" 를 커밋하고, working 이면 `.herdr-team/bin/hteam scope T-xxx "<내용>"`, pending 이면 커밋으로 끝난다.
+- 작업 공간 태스크가 기준 브랜치의 새 커밋(나중에 병합된 회귀 수정 등)을 받아야 하면 `.herdr-team/bin/hteam fix T-xxx --base-merge --note "<이유>"` 를 한다. 일하는 중이면 그 워커를 닫고 새 라운드가 병합부터 한다. 워커에게 병합·rebase 를 직접 지시하지 않는다(사전 검사가 기준에서 들어온 파일을 소유 경로 밖 변경으로 반려한다).
 - decide 를 처리하며 만든 태스크(회귀 수정, `[test]` 고치기, 증분 기획)도 같은 순서(task new → 채우기 → 커밋 → start)를 마친 뒤 decide 를 `hteam answer` 로 닫는다.
 - `git commit` 이 `index.lock` 오류로 실패하면 몇 초 뒤 같은 명령을 다시 한다(관제의 병합과 겹쳤다).
 - Redmine 을 쓰는 프로젝트(`[redmine]`)면 이슈 상태·노트는 관제가 바꾼다. 메인도 바꾸지 않는다. `hteam status` 의 `redmine.failed` 가 늘면 사용자에게 알린다.

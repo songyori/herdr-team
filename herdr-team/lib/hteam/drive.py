@@ -1625,14 +1625,17 @@ class Drive:
         self._write_finish(fin)
 
     def _changed_files(self, states: list[dict]) -> list[str]:
-        """처음 시작한 태스크(history 첫 start 시각, 같으면 번호 순)의 base 부터 HEAD 까지 바뀐 경로(프로젝트 기준)에서
-        `.herdr-team/` 아래를 뺀 것(orca §17 P3-12)."""
+        """처음 시작한 태스크(history 첫 start 시각, 같으면 번호 순)의 첫 라운드 시작(round_base, 없는 옛 상태·라운드 없는
+        상태는 base)부터 HEAD 까지 바뀐 경로(프로젝트 기준)에서 `.herdr-team/` 아래를 뺀 것(orca §17 P3-12). 기준 병합
+        (설계 5.10.6)이 base 를 옮겨도 그 앞 변경을 빼지 않는다(설계 8.4 의 7)."""
         based = [st for st in states if st.get("base")]
         if not based:
             return []
         first = min(based, key=lambda st: (_started_at(st) is None, _started_at(st) or "", state.id_number(st["id"])))
+        rounds = first.get("rounds") or []
+        since = (rounds[0].get("round_base") if rounds else None) or first["base"]
         prefix = gitio.top_prefix(self.p.root)
-        names = [n[len(prefix):] for n in gitio.diff_names(self.p.root, first["base"], "HEAD") if n.startswith(prefix)]
+        names = [n[len(prefix):] for n in gitio.diff_names(self.p.root, since, "HEAD") if n.startswith(prefix)]
         return [n for n in names if not n.startswith(".herdr-team/")]
 
     # --- 기획 적용(8.9) ---

@@ -436,6 +436,29 @@ class FinishTest(FlowCase):
         self.d.finish_step()
         self.assertEqual(len(self.done_items()), 2)  # 태스크가 늘었으면 다시 알린다
 
+    def test_changed_files_start_at_the_first_round_even_if_base_moved(self):
+        # 8단계(설계 8.4 의 7): 기준 병합(5.10.6)이 base 를 옮겨도 첫 라운드 이후의 앞 변경이 빠지지 않는다
+        first = self.head()
+        self.task("T-001", base=first)
+        self.commit("src/early.py", "x\n", "[T-001] 앞 변경")
+        moved = self.commit("src/late.py", "y\n", "[T-001] 뒤 변경")
+        with state.edit(self.p, "T-001") as st:
+            st["base"] = moved
+        self.d.finish_step()
+        lines = self.done_items()[0]["body"].splitlines()
+        self.assertEqual(lines[-1], "바뀐 주요 파일: src/early.py, src/late.py")
+
+    def test_changed_files_fall_back_to_base_without_round_base(self):
+        # round_base 가 없는 옛 상태는 base 부터 센다(task 도우미는 round_base 를 늘 넣으므로 지워서 본다)
+        first = self.head()
+        self.task("T-001", base=first)
+        with state.edit(self.p, "T-001") as st:
+            st["rounds"][0].pop("round_base")
+        self.commit("src/early.py", "x\n", "[T-001] 앞 변경")
+        self.d.finish_step()
+        lines = self.done_items()[0]["body"].splitlines()
+        self.assertEqual(lines[-1], "바뀐 주요 파일: src/early.py")
+
     def test_changed_files_skip_team_folder_and_stop_at_15(self):
         self.task("T-001", base=self.head())
         for i in range(17):

@@ -241,7 +241,7 @@ def _x_fix(p, d, req):
     a = req["args"]
     res = tasks.fix(p, a["task"], note=a.get("note"), supplement=a.get("supplement"),
                     force_round=bool(a.get("force_round")), cli=_overrides(a), expect_round=req.get("expect_round"),
-                    request=req["id"], nowait=True, force=bool(a.get("force")))
+                    request=req["id"], nowait=True, force=bool(a.get("force")), base_merge=bool(a.get("base_merge")))
     if "round" in res:  # 새 라운드를 열었다(설계 8.11. 대기열에만 넣은 결과에는 round 가 없다)
         d.log(f"{a['task']} r{res['round']} 수정 시작")
     return res
