@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .errors import USAGE, HteamError
 
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATES = PLUGIN_ROOT / "templates"
 # 관제·워커·메인이 부르는 hteam 명령. 프로젝트 루트 기준 shim 경로다(작업 폴더는 늘 프로젝트 루트).

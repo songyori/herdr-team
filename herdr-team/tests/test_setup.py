@@ -143,7 +143,7 @@ class ScaffoldTest(TeamCase):
         shim = str(self.proj / ".herdr-team/bin/hteam")
         env = dict(self.env, HERDR_TEAM_PLUGIN_ROOT=str(ROOT))
         out = subprocess.run([sys.executable, shim, "version"], capture_output=True, text=True, env=env)
-        self.assertEqual(json.loads(out.stdout)["version"], "0.6.0")
+        self.assertEqual(json.loads(out.stdout)["version"], "0.6.1")
         registry = self.tmp / "installed.json"
         registry.write_text(json.dumps({"plugins": {"herdr-team@herdr-team": [{"installPath": str(ROOT)}]}}))
         env = dict(self.env, HTEAM_PLUGINS_JSON=str(registry))
@@ -373,6 +373,13 @@ class TemplateContractTest(unittest.TestCase):
         readme = (ROOT.parent / "README.md").read_text(encoding="utf-8")
         self.assertIn("#### 0.5.0 → 0.6.0", readme)
         self.assertLess(readme.index("#### 0.5.0 → 0.6.0"), readme.index("#### 0.4.0 → 0.5.0"))
+        # 9단계(0.6.1): 플러그인과 새 메인 세션만. 떠 있는 0.6.0 보기 안내(Codex 설계 리뷰 r1)
+        self.assertLess(readme.index("#### 0.6.0 → 0.6.1"), readme.index("#### 0.5.0 → 0.6.0"))
+        patch = readme[readme.index("#### 0.6.0 → 0.6.1"):readme.index("#### 0.5.0 → 0.6.0")]
+        self.assertIn("메인 세션을 새로 연다", patch)
+        self.assertIn("관제 다시 띄우기는 필요 없다", patch)
+        self.assertIn("이미 떠 있는 질문 보기 pane 은 0.6.0 그대로다", patch)
+        self.assertIn("pane 폭이 바뀌면 다시 그린다", readme)
         self.assertIn("init 이 끝나면 메인 세션을 새로 연다", readme)
         self.assertIn("--base-merge", readme)
 

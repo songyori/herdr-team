@@ -5,7 +5,7 @@
 | 플러그인 | 버전 | 하는 일 |
 |---|---|---|
 | `herdr-orch` | 0.3.0 | Claude·Codex 워커를 Herdr pane 으로 띄우고 메일함으로 질문·보고를 주고받는 `horch` CLI 와 스킬 |
-| `herdr-team` | 0.6.0 | `herdr-orch` 위의 직무 팀. 사용자는 메인 Claude 세션과 대화하고, 기획·디자인·개발·테스트는 직무 에이전트가 맡고, 산출물은 반대쪽 모델(Claude ↔ Codex)이 리뷰한다 |
+| `herdr-team` | 0.6.1 | `herdr-orch` 위의 직무 팀. 사용자는 메인 Claude 세션과 대화하고, 기획·디자인·개발·테스트는 직무 에이전트가 맡고, 산출물은 반대쪽 모델(Claude ↔ Codex)이 리뷰한다 |
 
 - 문서, 명령 출력, 에이전트끼리 주고받는 글은 한국어다.
 - 개인 프로젝트이고 0.x 버전이다. 버전이 바뀌면 설정과 동작이 바뀔 수 있다(아래 "이미 세팅한 프로젝트 업그레이드").
@@ -157,7 +157,7 @@ Run 소유자가 Claude·Codex 워커를 Herdr pane 으로 띄우고, SQLite 메
 
 - 메인: 사용자가 연 Claude 세션. 사용자 요청을 기획 태스크 사양으로 써서 커밋하고 `hteam start` 한다. 산출물을 만들지 않고 `horch`·`hteam drive` 를 직접 부르지 않는다(훅이 막는다). `hteam watch` 를 늘 하나 띄워 두고, 관제가 올린 decide 를 `CLAUDE.md` 의 판단 기준대로 처리한 뒤 `hteam answer` 로 닫는다.
   - 메인은 사용자에게 언제나 선택 창(AskUserQuestion)으로 묻는다. 평문 질문은 Stop 훅이 한 번 막는다.
-  - 관제·기획자 질문의 표(`render.context`)는 훅이 선택 창 오른쪽 미리보기에 넣는다. 길면 앞부분만 넣고 전체는 메인 옆 "질문 보기" pane 에 띄운다(답하면 닫힌다). 훅은 질문을 거부하지 않는다. 미리보기를 받지 않는 옛 Claude Code 에서는 표가 보이지 않는다(위 표의 버전에서 확인했다).
+  - 관제·기획자 질문의 표(`render.context`)는 훅이 선택 창 오른쪽 미리보기에 넣는다. 길면 앞부분만 넣고 전체는 메인 옆 "질문 보기" pane 에 띄운다(답하면 닫힌다). 훅은 질문을 거부하지 않는다. 미리보기를 받지 않는 옛 Claude Code 에서는 표가 보이지 않는다(위 표의 버전에서 확인했다). "질문 보기" pane 은 마크다운(제목·목록·표·코드)을 그 pane 폭에 맞춰 그리고, pane 폭이 바뀌면 다시 그린다.
   - 작업 공간 태스크가 기준의 새 커밋을 받아야 하면 `hteam fix T-xxx --base-merge` 로 기준 병합 라운드를 연다(메인에 부탁한다).
 - 관제(`hteam drive`): 관제 탭(`herdr-team 관제`)에서 도는 Python 프로그램(Claude 가 아니다). horch Run 을 갖고 디스패치, 리뷰, accept·fix, 묶음 후속, 마무리, 디자인 보강, 세션 리셋, 복구를 정해진 절차로 돌린다. 판단이 필요한 일(워커 질문, 실패, 최대 라운드, 회귀의 원인 등)만 outbox `decide` 로 메인에 올린다. 기록은 `.herdr-team/state/drive/drive.log`.
 - 요청 큐: horch 를 건드리는 메인 명령(`start`, `start-ready`, `fix`, `accept`, `drop`, `review --retry`, `design-decide`, `scope`, `agent reset`, `test-confirm`, `slot reset`)은 파일 큐(`.herdr-team/state/drive/queue/`)로 관제에 넘어간다. 관제가 90초 안에 실행하면 그 결과를, 아니면 `status: queued` 를 돌려주고 결과는 watch 의 `result` 로 온다. 관제가 꺼져 있으면 큐에 넣지 않고 `drive_down` 으로 거부한다.
@@ -283,6 +283,15 @@ Run 소유자가 Claude·Codex 워커를 Herdr pane 으로 띄우고, SQLite 메
 ### 이미 세팅한 프로젝트 업그레이드
 
 scaffold 는 있는 파일을 덮어쓰지 않는다. 앞 버전에서 세팅한 프로젝트는 새 기능을 손으로 옮겨야 하고, 옮기지 않으면 조용히 빠진다(예: `[roles.director]` 가 없으면 디자인 디렉터 단계와 시스템 보강이 없다).
+
+#### 0.6.0 → 0.6.1
+
+herdr-orch 는 그대로(0.3.0)다. "질문 보기" pane 이 마크다운을 글 그대로 보이던 것을 고쳤다(제목·목록·표·코드를 pane 폭에 맞춰 그리고, 폭이 바뀌면 다시 그린다).
+
+1. 플러그인을 올린다(`claude plugin marketplace update herdr-team`, `claude plugin update herdr-team@herdr-team`).
+2. 메인 세션을 새로 연다(`/exit` 뒤 같은 폴더에서 다시 연다). 질문 보기는 메인 세션 훅의 플러그인 경로로 뜬다.
+
+`hteam upgrade`·`CLAUDE.md` 수정·관제 다시 띄우기는 필요 없다(관제는 질문 보기를 쓰지 않는다). 이미 떠 있는 질문 보기 pane 은 0.6.0 그대로다: 같은 터미널에서 메인 세션만 새로 열면 그 질문을 다시 물어도 같은 pane 이 남는다. 그 질문에 답하면 닫히고 다음 질문부터 새로 그린다. 바로 바꾸려면 그 pane 을 닫고 다시 묻는다.
 
 #### 0.5.0 → 0.6.0
 
