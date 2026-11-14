@@ -336,6 +336,20 @@ class PagerWidthTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"COLUMNS": "37"}), mock.patch.object(questions.sys, "stdout", io.StringIO()):
             self.assertEqual(questions._width(), 37)
 
+    def test_draw_colors_only_on_a_terminal(self):
+        # 설계 7.4a 9단계: 색은 표준 출력이 터미널일 때만(최종 리뷰)
+        class Tty(io.StringIO):
+            def isatty(self):
+                return True
+
+        for out, want in ((Tty(), True), (io.StringIO(), False)):
+            seen = []
+            with mock.patch.object(questions.mdrender, "render", side_effect=lambda t, w, c: seen.append(c) or "글"), \
+                    contextlib.redirect_stdout(out):
+                questions._draw("## 표", 40, False)
+            self.assertEqual(seen, [want])
+            self.assertEqual(out.getvalue(), "글\n\n" + questions.PAGER_END + "\n")
+
 
 if __name__ == "__main__":
     unittest.main()
