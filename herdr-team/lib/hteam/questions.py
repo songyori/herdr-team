@@ -2,8 +2,9 @@
 
 - `hteam question-view <out-id>`: 훅(9.4 PreToolUse)이 새 세션의 분리된 자식으로 띄우는 내부 명령. 남은 보기를 정리하고, 메인
   pane 오른쪽에 pager pane 을 열고, 그 터미널이 끝날 때까지 기다린 뒤 지운다. 늘 exit 0 이다(질문을 막지 않는다).
-- `hteam question-pager <out-id>`: 보기 pane 안에서 돈다. 전문을 출력하고 답이 오거나 질문이 닫히면 끝난다. JSON 이 아니라
-  글을 출력하는 예외 명령이다(cli.main 의 JSON 봉투를 거치지 않고 SystemExit 으로 끝난다).
+- `hteam question-pager <out-id>`: 보기 pane 안에서 돈다. 전문을 마크다운으로 그려(mdrender, 설계 7.4a 9단계) 출력하고, pane
+  폭이 바뀌면 다시 그리고, 답이 오거나 질문이 닫히면 끝난다. JSON 이 아니라 글을 출력하는 예외 명령이다(cli.main 의 JSON
+  봉투를 거치지 않고 SystemExit 으로 끝난다).
 
 파일은 state/questions/ 아래 <out-id>.md(전문, 훅이 쓴다)·.log(보기 명령 출력)·.view.json(연 보기 {pane, terminal, main, at,
 pid})·.lock(보기 기록 잠금)이다. Herdr 는 herdr.py 로만 부른다.
@@ -14,11 +15,12 @@ import contextlib
 import fcntl
 import os
 import re
+import shutil
 import sys
 import time
 from typing import Iterator
 
-from . import herdr, outbox
+from . import herdr, mdrender, outbox
 from .errors import USAGE, HteamError
 from .paths import PLUGIN_ROOT, find_project
 from .util import flock, now, read_json, write_json
@@ -29,6 +31,7 @@ VIEW_MAX_S = 7200  # 이만큼 지나면 보기 pane 을 닫고 끝난다
 PAGER_POLL_S = 2.0  # pager 가 답·질문 닫힘을 보는 간격
 PAGER_MAX_S = 7200
 PAGER_END = "(답하면 이 pane 은 닫힌다)"
+CLEAR = "\x1b[H\x1b[2J\x1b[3J"  # 다시 그리기 전에 화면과 스크롤을 지운다
 
 
 def _oid(raw: str) -> str:
@@ -206,18 +209,41 @@ def view(p, oid: str) -> dict:
     return _wait(p, oid, got["rec"])
 
 
+def _width() -> int:
+    """pane 의 열 수(설계 7.4a 9단계). 표준 출력 터미널의 크기가 먼저다(환경의 COLUMNS 가 실제 폭을 가리지 않게). 터미널이
+    아니거나 읽지 못하면 shutil(COLUMNS, 없으면 80)."""
+    try:
+        return os.get_terminal_size(sys.stdout.fileno()).columns
+    except (OSError, ValueError):
+        return shutil.get_terminal_size((80, 24)).columns
+
+
+def _draw(text: str, width: int, clear: bool) -> None:
+    """text 를 width 칸으로 그려 PAGER_END 와 함께 쓴다. 색은 표준 출력이 터미널일 때만. 렌더가 예외를 내면 글 그대로 쓴다
+    (렌더 결함이 보기를 막지 않게, 설계 7.4a). clear 면 화면과 스크롤을 먼저 지운다."""
+    try:
+        body = mdrender.render(text, width, sys.stdout.isatty())
+    except Exception:  # noqa: BLE001 - 어떤 렌더 결함이어도 글은 보인다
+        body = text
+    if clear:
+        sys.stdout.write(CLEAR)
+    sys.stdout.write(body + "\n\n" + PAGER_END + "\n")
+    sys.stdout.flush()
+
+
 def pager(p, oid: str) -> None:
-    """보기 pane 안(설계 7.4a): 전문과 빈 줄 뒤 PAGER_END 를 출력하고, PAGER_POLL_S 마다 답 파일이 생겼거나 그 질문이 열린 질문이
-    아니면 끝난다. PAGER_MAX_S 가 지나도 끝난다. 파일이 없으면 그렇게 적고 끝난다. 늘 exit 0(SystemExit, JSON 출력 없음)."""
+    """보기 pane 안(설계 7.4a): 전문을 마크다운으로 그려(9단계) 빈 줄 뒤 PAGER_END 와 함께 출력하고, PAGER_POLL_S 마다 답 파일이
+    생겼거나 그 질문이 열린 질문이 아니면 끝난다. 그 사이 pane 폭이 바뀌면 같은 글을 새 폭으로 다시 그린다. PAGER_MAX_S 가
+    지나도 끝난다. 파일이 없으면 그렇게 적고 끝난다. 늘 exit 0(SystemExit, JSON 출력 없음)."""
     md = p.questions / f"{oid}.md"
     try:
-        text = md.read_text(encoding="utf-8")
+        text = md.read_text(encoding="utf-8").rstrip("\n")
     except (OSError, ValueError):
         sys.stdout.write(f"(질문 보기 파일이 없다: {md})\n")
         sys.stdout.flush()
         raise SystemExit(0)
-    sys.stdout.write(text.rstrip("\n") + "\n\n" + PAGER_END + "\n")
-    sys.stdout.flush()
+    width = _width()
+    _draw(text, width, False)
     deadline = time.monotonic() + PAGER_MAX_S
     while time.monotonic() < deadline:
         time.sleep(PAGER_POLL_S)
@@ -228,6 +254,10 @@ def pager(p, oid: str) -> None:
                 break
         except OSError:
             continue  # outbox 를 읽지 못했다: 다음에 다시 본다
+        now_width = _width()
+        if now_width != width:
+            width = now_width
+            _draw(text, width, True)
     sys.stdout.flush()
     raise SystemExit(0)
 

@@ -1,14 +1,18 @@
 """8단계 질문 보기(설계 7.4a): hteam question-view(메인 옆 보기 pane 을 열고 정리한다)와 question-pager(전문을 보이고
 답이 오거나 질문이 닫히면 끝난다). 가짜 hc·herdr-app 을 쓴다."""
+import contextlib
 import fcntl
+import io
 import json
+import os
 import subprocess
 import sys
 import time
 import unittest
+from unittest import mock
 
 from tests.helpers import BIN, MAIN, TeamCase
-from hteam import outbox, state
+from hteam import mdrender, outbox, questions, state
 from hteam.paths import Project
 
 LONG = "## 긴 표\n" + "\n".join(f"| {i} |" for i in range(40))
@@ -204,12 +208,13 @@ class QuestionViewTest(QuestionCase):
 
 
 class QuestionPagerTest(QuestionCase):
-    def pager_bg(self, oid):
+    def pager_bg(self, oid, columns="40"):
         """pager 를 띄우고 출력을 파일로 받는다(끝 줄이 나온 것을 보고 상태를 바꾼다, Codex 계획 리뷰 r1)."""
         out = self.tmp / f"pager-{oid}.txt"
         fh = open(out, "w", encoding="utf-8")
         proc = subprocess.Popen([sys.executable, str(BIN), "question-pager", oid], stdin=subprocess.DEVNULL, stdout=fh,
-                                stderr=subprocess.STDOUT, env=self._env("main", None, None), cwd=str(self.proj))
+                                stderr=subprocess.STDOUT, env=self._env("main", None, {"COLUMNS": columns}),
+                                cwd=str(self.proj))
         self.addCleanup(self._stop_pager, proc, fh)
         return proc, out
 
@@ -223,17 +228,19 @@ class QuestionPagerTest(QuestionCase):
     def wait_ready(self, out):
         self.wait_for(lambda: "(답하면 이 pane 은 닫힌다)" in out.read_text(encoding="utf-8"))
 
-    def test_prints_the_table_and_ends_when_answered(self):
-        oid = self.question(ctx="## 표\n| 가 | 1 |")
-        proc, out = self.pager_bg(oid)
+    def test_draws_the_markdown_and_ends_when_answered(self):
+        # 설계 7.4a 9단계: 표준 출력이 터미널이 아니면 COLUMNS 폭(30 에서만 접히는 목록 줄로 본다), 색 없음
+        oid = self.question(ctx="## 표\n| 가 | 1 |\n|---|---|\n| 나 | 2 |\n- 가나다 라마바 사아자 차카타 파하\n```\n**코드**\n```")
+        proc, out = self.pager_bg(oid, columns="30")
         self.wait_ready(out)
         self.assertIsNone(proc.poll())
         self.write_answer(oid)
         self.assertEqual(proc.wait(timeout=30), 0)
-        text = out.read_text(encoding="utf-8")
-        self.assertIn(f"# 질문 보기 {oid}: 시험\n\n## 표\n| 가 | 1 |", text)
-        self.assertTrue(text.rstrip().endswith("(답하면 이 pane 은 닫힌다)"), text)
-        self.assertNotIn('"ok"', text)  # JSON 봉투를 쓰지 않는다
+        self.assertEqual(out.read_text(encoding="utf-8").split("\n"), [
+            f"질문 보기 {oid}: 시험", "", "표",
+            "┌────┬───┐", "│ 가 │ 1 │", "├────┼───┤", "│ 나 │ 2 │", "└────┴───┘",
+            "• 가나다 라마바 사아자 차카타", "  파하",
+            "  **코드**", "", "(답하면 이 pane 은 닫힌다)", ""])  # JSON 봉투도 색도 없다
 
     def test_ends_when_the_question_is_no_longer_open(self):
         self.write_spec("T-001", "planner", owns="docs/planning/**")
@@ -259,6 +266,75 @@ class QuestionPagerTest(QuestionCase):
         proc, out = self.pager_bg(oid)
         self.assertEqual(proc.wait(timeout=30), 0)
         self.assertIn("질문 보기 파일이 없다", out.read_text(encoding="utf-8"))
+
+
+class PagerLoopTest(QuestionCase):
+    """pager 반복문(설계 7.4a 9단계, Codex 설계 리뷰 r1): 같은 프로세스에서 부르고 폭 읽기·대기·렌더를 바꿔 끼운다."""
+
+    def run_pager(self, oid, widths, on_sleep):
+        out = io.StringIO()
+        count = []
+
+        def fake_sleep(_seconds):
+            count.append(1)
+            on_sleep(len(count))
+
+        with mock.patch.object(questions, "_width", side_effect=lambda: next(widths)), \
+                mock.patch.object(questions.time, "sleep", fake_sleep), contextlib.redirect_stdout(out), \
+                self.assertRaises(SystemExit) as end:
+            questions.pager(self.p, oid)
+        self.assertEqual(end.exception.code, 0)
+        return out.getvalue(), len(count)
+
+    def test_redraws_on_width_change_and_falls_back_on_render_error(self):
+        oid = self.question(ctx="| 가 | 1 |\n|---|---|")
+        real = mdrender.render
+
+        def flaky(text, width, color=False):
+            if width == 30:
+                raise RuntimeError("시험")
+            return real(text, width, color)
+
+        def on_sleep(n):
+            if n == 3:
+                self.write_answer(oid)
+
+        with mock.patch.object(questions.mdrender, "render", flaky):
+            text, sleeps = self.run_pager(oid, iter([60, 60, 30, 30]), on_sleep)
+        self.assertEqual(sleeps, 3)  # 다시 그린 뒤에도 기다렸고, 셋째 대기에 쓴 답으로 끝났다(Codex 계획 리뷰 r1)
+        first, cleared, second = text.partition(questions.CLEAR)
+        self.assertEqual(cleared, questions.CLEAR)  # 폭이 같은 회차는 다시 그리지 않고, 바뀐 회차에 한 번 지웠다
+        self.assertNotIn(questions.CLEAR, second)
+        self.assertEqual(first, "\n".join([f"질문 보기 {oid}: 시험", "", "┌────┬───┐", "│ 가 │ 1 │", "├────┼───┤",
+                                           "└────┴───┘", "", questions.PAGER_END, ""]))
+        self.assertEqual(second, f"# 질문 보기 {oid}: 시험\n\n| 가 | 1 |\n|---|---|\n\n{questions.PAGER_END}\n")
+
+    def test_ends_when_closed_after_a_redraw(self):
+        oid = self.question(ctx="가나다 라마바 사아자 차카타")
+        opened = iter([[{"id": oid}], []])
+        with mock.patch.object(questions.outbox, "open_questions", side_effect=lambda p: next(opened)) as seen:
+            text, sleeps = self.run_pager(oid, iter([60, 20, 20]), lambda n: None)
+        self.assertEqual((sleeps, seen.call_count), (2, 2))  # 다시 그린 뒤 둘째 조회에서 닫힘을 보고 끝났다
+        body = (self.qdir / f"{oid}.md").read_text(encoding="utf-8").rstrip("\n")
+        self.assertNotEqual(mdrender.render(body, 60), mdrender.render(body, 20))  # 두 폭에서 접기가 다르다
+        first, cleared, second = text.partition(questions.CLEAR)
+        self.assertEqual(cleared, questions.CLEAR)
+        self.assertEqual(first, mdrender.render(body, 60) + "\n\n" + questions.PAGER_END + "\n")
+        self.assertEqual(second, mdrender.render(body, 20) + "\n\n" + questions.PAGER_END + "\n")
+
+
+class PagerWidthTest(unittest.TestCase):
+    def test_terminal_size_first_then_columns(self):
+        # 설계 7.4a 9단계: COLUMNS 가 있어도 터미널 크기가 먼저다(Codex 설계 리뷰 r1)
+        class Tty:
+            def fileno(self):
+                return 1
+
+        with mock.patch.dict(os.environ, {"COLUMNS": "37"}), mock.patch.object(questions.sys, "stdout", Tty()), \
+                mock.patch.object(questions.os, "get_terminal_size", return_value=os.terminal_size((91, 30))):
+            self.assertEqual(questions._width(), 91)
+        with mock.patch.dict(os.environ, {"COLUMNS": "37"}), mock.patch.object(questions.sys, "stdout", io.StringIO()):
+            self.assertEqual(questions._width(), 37)
 
 
 if __name__ == "__main__":
