@@ -88,6 +88,13 @@ class InlineTest(unittest.TestCase):
         self.assertEqual(lines("`a|b` **굵게** [글](https://x.y/z) ``a`b`` ` 공백 `"),
                          ["a|b 굵게 글 (https://x.y/z) a`b 공백"])
 
+    def test_word_across_format_boundary_folds_as_one(self):
+        # Codex 커밋 리뷰 ed57ea7: 서식 조각 경계는 낱말 경계가 아니다
+        self.assertEqual(lines("선택 **회원**입니다", width=10), ["선택", "회원입니다"])
+        self.assertEqual(lines("값은 `XXXX`를 쓴다", width=10), ["값은", "XXXX를", "쓴다"])
+        self.assertEqual(render("선택 **회원**입니다", 10, color=True).split("\n"),
+                         ["선택", "\x1b[1m회원\x1b[0m입니다"])
+
     def test_code_is_literal_and_unpaired_marks_stay(self):
         self.assertEqual(lines("`**x**` **열림 `닫힘"), ["**x** **열림 `닫힘"])
 

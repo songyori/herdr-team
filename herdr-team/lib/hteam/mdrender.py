@@ -56,6 +56,21 @@ def inline(text: str, base: tuple[str, ...] = ()) -> list[Span]:
     return [s for s in out if s[0]]
 
 
+def _tokens(spans: list[Span]) -> list[tuple[bool, list[Span]]]:
+    """조각을 (공백인가, 조각들) 덩어리로 가른다. 낱말은 서식 경계를 가로지른다(`**회원**입니다` 는 한 낱말)."""
+    out: list[tuple[bool, list[Span]]] = []
+    for text, st in spans:
+        for part in re.split(r"( +)", text):
+            if not part:
+                continue
+            space = part.startswith(" ")
+            if out and out[-1][0] == space:
+                out[-1][1].append((part, st))
+            else:
+                out.append((space, [(part, st)]))
+    return out
+
+
 def wrap(spans: list[Span], avail: int) -> list[list[Span]]:
     """조각을 avail 칸 줄들로 접는다. 공백에서 끊고, 줄 끝·줄 앞 공백은 뺀다. 한 줄보다 긴 낱말은 글자에서 자른다."""
     avail = max(1, avail)
@@ -74,30 +89,27 @@ def wrap(spans: list[Span], avail: int) -> list[list[Span]]:
         lines.append([])
         used = 0
 
-    for text, st in spans:
-        for tok in re.split(r"( +)", text):
-            if not tok:
-                continue
-            w = cells(tok)
-            if tok.startswith(" "):
-                if used == 0:
-                    continue  # 줄 앞 공백은 뺀다
-                if used + w <= avail:
-                    put(tok, st)
-                    used += w
-                else:
-                    newline()
-                continue
+    for space, pieces in _tokens(spans):
+        w = sum(cells(t) for t, _ in pieces)
+        if space:
+            if used == 0:
+                continue  # 줄 앞 공백은 뺀다
             if used + w <= avail:
-                put(tok, st)
+                for t, st in pieces:
+                    put(t, st)
                 used += w
-                continue
-            if used and w <= avail:
+            else:
                 newline()
-                put(tok, st)
-                used = w
-                continue
-            for ch in tok:  # 한 줄보다 긴 낱말: 글자에서 자른다
+            continue
+        if used and used + w > avail and w <= avail:
+            newline()  # 낱말이 다음 줄에는 들어간다
+        if used + w <= avail:
+            for t, st in pieces:
+                put(t, st)
+            used += w
+            continue
+        for t, st in pieces:  # 한 줄보다 긴 낱말: 글자에서 자른다
+            for ch in t:
                 cw = cells(ch)
                 if used and used + cw > avail:
                     newline()
