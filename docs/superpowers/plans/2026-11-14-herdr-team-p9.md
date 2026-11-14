@@ -60,7 +60,7 @@
 - 입력 줄은 `expandtabs(4)` 한 뒤 `"\n"` 으로 나눈다. 블록은 설계에 적은 순서(펜스 → 표 → 빈 줄 → 제목 → 가로줄 → 인용 → 목록 → 문단)로 가른다. 가로줄을 목록보다 먼저 보므로 `- - -`·`* * *` 는 가로줄이다.
 - 펜스를 닫는 줄: 여는 펜스 글자와 같은 글자가 여는 개수 이상이고 뒤가 공백뿐(앞 공백 3칸까지). 펜스 안의 빈 줄은 빈 줄로(들여쓰기·색 없이) 둔다.
 - 표 판정은 설계대로 "`|` 가 든 줄 + 다음 줄이 같은 칸 수의 구분 줄" 이다. 구분 줄 칸은 `^:?-+:?$`. 행은 빈 줄이 아니고 `|` 가 든 줄이 이어지는 동안이다.
-- 표 열 폭: 칸 글(인라인 서식을 적용한 글)의 화면 폭 최댓값, 최소 1. 줄이기는 "최소 폭보다 넓은 열 가운데 가장 넓은 열(같으면 왼쪽)을 1칸 줄이기" 를 넘친 칸 수만큼 되풀이한다. 머리 줄은 굵게(`1`), 선은 흐리게(`2`). 행 사이 가로선은 접힌 칸이 하나라도 있을 때만 행과 행 사이(머리 줄 아래 선과 마지막 행 아래는 원래 있다)에 넣는다.
+- 표 열 폭: 칸 글(인라인 서식을 적용한 글)의 화면 폭 최댓값이다(모두 빈 열은 0칸, 설계 그대로. Codex 계획 리뷰 r1). 줄이기는 "최소 폭보다 넓은 열 가운데 가장 넓은 열(같으면 왼쪽)을 1칸 줄이기" 를 넘친 칸 수만큼 되풀이한다. 머리 줄은 굵게(`1`), 선은 흐리게(`2`). 행 사이 가로선은 접힌 칸이 하나라도 있을 때만 행과 행 사이(머리 줄 아래 선과 마지막 행 아래는 원래 있다)에 넣는다.
 - 제목: 끝의 `#` 들은 앞에 공백이 있거나 본문 전체가 `#` 일 때만 뺀다(`C#` 은 그대로). 1·3–6단계는 굵게(`1`), 2단계는 `1;36`.
 - 인라인 짝 찾기: 하나의 정규식으로 왼쪽부터 가장 먼저 시작하는 짝을 쓴다. 같은 자리에서는 코드 → 굵게 → 링크 순이다. 코드: 앞뒤에 백틱이 더 붙지 않은 같은 개수의 백틱 짝(``(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)``). 굵게: `\*\*(.+?)\*\*`. 링크: `\[([^\]\n]+)\]\(([^)\s]+)\)`. 인라인 서식의 SGR 은 감싼 블록의 SGR 뒤에 붙인다(예: 2단계 제목 안의 코드는 `1;36;33`).
 - 색: 조각마다 `\x1b[<번호들>m<글>\x1b[0m`. SGR 이 없는 조각은 글 그대로. 색이 켜져 있어도 SGR 을 지운 글은 색이 꺼진 결과와 같다.
@@ -75,6 +75,7 @@
 import re
 import unittest
 
+from tests import helpers  # noqa: F401  lib 를 sys.path 에 넣는다(다른 시험과 같다)
 from hteam import mdrender
 from hteam.mdrender import cells, render
 
@@ -202,6 +203,9 @@ class TableTest(unittest.TestCase):
         out = lines("| " + " | ".join("가나다라" for _ in range(6)) + " |\n|" + "---|" * 6, width=20)
         self.assertEqual(out[0], "┌" + "┬".join("─" * 6 for _ in range(6)) + "┐")  # 열마다 4칸 아래로 줄이지 않는다
 
+    def test_empty_column_is_zero_wide(self):
+        self.assertEqual(lines("| | x |\n|---|---|"), ["┌──┬───┐", "│  │ x │", "├──┼───┤", "└──┴───┘"])
+
     def test_header_only_table(self):
         self.assertEqual(lines("| 가 | 1 |\n|---|---|"), ["┌────┬───┐", "│ 가 │ 1 │", "├────┼───┤", "└────┴───┘"])
 
@@ -239,6 +243,9 @@ class WholeTest(unittest.TestCase):
         self.assertEqual(render("## 제목", 40, color=True), "\x1b[1;36m제목\x1b[0m")
         self.assertEqual(render("`x`", 40, color=True), "\x1b[33mx\x1b[0m")
         self.assertEqual(render("## `x`", 40, color=True), "\x1b[1;36;33mx\x1b[0m")
+        self.assertEqual(render("| a |\n|---|", 40, color=True).split("\n"), [
+            "\x1b[2m┌───┐\x1b[0m", "\x1b[2m│\x1b[0m \x1b[1ma\x1b[0m \x1b[2m│\x1b[0m", "\x1b[2m├───┤\x1b[0m",
+            "\x1b[2m└───┘\x1b[0m"])  # 선은 흐리게, 머리 줄은 굵게
 
 
 def _cols(line):
@@ -400,7 +407,7 @@ class PagerLoopTest(QuestionCase):
                 self.assertRaises(SystemExit) as end:
             questions.pager(self.p, oid)
         self.assertEqual(end.exception.code, 0)
-        return out.getvalue()
+        return out.getvalue(), len(count)
 
     def test_redraws_on_width_change_and_falls_back_on_render_error(self):
         oid = self.question(ctx="| 가 | 1 |\n|---|---|")
@@ -416,7 +423,8 @@ class PagerLoopTest(QuestionCase):
                 self.write_answer(oid)
 
         with mock.patch.object(questions.mdrender, "render", flaky):
-            text = self.run_pager(oid, iter([60, 60, 30, 30]), on_sleep)
+            text, sleeps = self.run_pager(oid, iter([60, 60, 30, 30]), on_sleep)
+        self.assertEqual(sleeps, 3)  # 다시 그린 뒤에도 기다렸고, 셋째 대기에 쓴 답으로 끝났다(Codex 계획 리뷰 r1)
         first, cleared, second = text.partition(questions.CLEAR)
         self.assertEqual(cleared, questions.CLEAR)  # 폭이 같은 회차는 다시 그리지 않고, 바뀐 회차에 한 번 지웠다
         self.assertNotIn(questions.CLEAR, second)
@@ -427,8 +435,9 @@ class PagerLoopTest(QuestionCase):
     def test_ends_when_closed_after_a_redraw(self):
         oid = self.question(ctx="## 표")
         opened = iter([[{"id": oid}], []])
-        with mock.patch.object(questions.outbox, "open_questions", side_effect=lambda p: next(opened)):
-            text = self.run_pager(oid, iter([60, 40, 40]), lambda n: None)
+        with mock.patch.object(questions.outbox, "open_questions", side_effect=lambda p: next(opened)) as seen:
+            text, sleeps = self.run_pager(oid, iter([60, 40, 40]), lambda n: None)
+        self.assertEqual((sleeps, seen.call_count), (2, 2))  # 다시 그린 뒤 둘째 조회에서 닫힘을 보고 끝났다
         self.assertEqual(text.count(questions.CLEAR), 1)
         self.assertTrue(text.endswith(questions.PAGER_END + "\n"), text)
 
