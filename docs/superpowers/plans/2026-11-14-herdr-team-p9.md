@@ -57,13 +57,14 @@
   - `RESET = "\x1b[0m"`.
 
 **Rules:** 설계 7.4a "렌더 규칙" 그대로다. 그 위에 정한 것:
-- 입력 줄은 `expandtabs(4)` 한 뒤 `"\n"` 으로 나눈다. 블록은 설계에 적은 순서(펜스 → 표 → 빈 줄 → 제목 → 가로줄 → 인용 → 목록 → 문단)로 가른다. 가로줄을 목록보다 먼저 보므로 `- - -`·`* * *` 는 가로줄이다.
+- 입력은 `"\n"` 으로 나누고, 펜스 밖 줄(펜스 판정·표·문단 등)은 `expandtabs(4)` 한 줄로 본다. 펜스 안 줄은 원래 줄 그대로(탭 포함) 2칸 들여 쓴다(Codex 계획 리뷰 r2). 블록은 설계에 적은 순서(펜스 → 표 → 빈 줄 → 제목 → 가로줄 → 인용 → 목록 → 문단)로 가른다. 가로줄을 목록보다 먼저 보므로 `- - -`·`* * *` 는 가로줄이다.
 - 펜스를 닫는 줄: 여는 펜스 글자와 같은 글자가 여는 개수 이상이고 뒤가 공백뿐(앞 공백 3칸까지). 펜스 안의 빈 줄은 빈 줄로(들여쓰기·색 없이) 둔다.
 - 표 판정은 설계대로 "`|` 가 든 줄 + 다음 줄이 같은 칸 수의 구분 줄" 이다. 구분 줄 칸은 `^:?-+:?$`. 행은 빈 줄이 아니고 `|` 가 든 줄이 이어지는 동안이다.
 - 표 열 폭: 칸 글(인라인 서식을 적용한 글)의 화면 폭 최댓값이다(모두 빈 열은 0칸, 설계 그대로. Codex 계획 리뷰 r1). 줄이기는 "최소 폭보다 넓은 열 가운데 가장 넓은 열(같으면 왼쪽)을 1칸 줄이기" 를 넘친 칸 수만큼 되풀이한다. 머리 줄은 굵게(`1`), 선은 흐리게(`2`). 행 사이 가로선은 접힌 칸이 하나라도 있을 때만 행과 행 사이(머리 줄 아래 선과 마지막 행 아래는 원래 있다)에 넣는다.
 - 제목: 끝의 `#` 들은 앞에 공백이 있거나 본문 전체가 `#` 일 때만 뺀다(`C#` 은 그대로). 1·3–6단계는 굵게(`1`), 2단계는 `1;36`.
 - 인라인 짝 찾기: 하나의 정규식으로 왼쪽부터 가장 먼저 시작하는 짝을 쓴다. 같은 자리에서는 코드 → 굵게 → 링크 순이다. 코드: 앞뒤에 백틱이 더 붙지 않은 같은 개수의 백틱 짝(``(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)``). 굵게: `\*\*(.+?)\*\*`. 링크: `\[([^\]\n]+)\]\(([^)\s]+)\)`. 인라인 서식의 SGR 은 감싼 블록의 SGR 뒤에 붙인다(예: 2단계 제목 안의 코드는 `1;36;33`).
 - 색: 조각마다 `\x1b[<번호들>m<글>\x1b[0m`. SGR 이 없는 조각은 글 그대로. 색이 켜져 있어도 SGR 을 지운 글은 색이 꺼진 결과와 같다.
+- 문단 줄의 앞 공백은 줄 머리(첫 줄과 접은 줄 모두)다(Codex 계획 리뷰 r2).
 - 접기의 낱말은 공백(`' '`) 하나 이상으로 나눈 조각이다. 공백만 있는 조각이 줄 앞에 오면 버리고, 넘치면 줄을 바꾸고 버린다. 줄 끝의 공백은 지운다.
 
 - [ ] **Step 1: 시험 쓰기**
@@ -131,6 +132,7 @@ class BlockTest(unittest.TestCase):
         self.assertEqual(lines("```toml\na = \"**x**\"\n\n````\n뒤"), ['  a = "**x**"', "", "뒤"])
         self.assertEqual(lines("~~~\n코드\n```\n~~~~\n뒤"), ["  코드", "  ```", "뒤"])
         self.assertEqual(lines("```\n닫지 않음\n# 제목 아님"), ["  닫지 않음", "  # 제목 아님"])
+        self.assertEqual(lines("```\n\ta\tb\n```"), ["  \ta\tb"])  # 펜스 안의 탭은 그대로(Codex 계획 리뷰 r2)
 
     def test_code_lines_are_not_folded(self):
         long = "x" * 80
@@ -139,6 +141,7 @@ class BlockTest(unittest.TestCase):
     def test_paragraph_lines_are_kept_and_folded(self):
         self.assertEqual(lines("첫 줄\n둘째 줄"), ["첫 줄", "둘째 줄"])
         self.assertEqual(lines("가나다 라마바 사아자", width=13), ["가나다 라마바", "사아자"])
+        self.assertEqual(lines("- 항목\n  이어지는 설명 글", width=10), ["• 항목", "  이어지는", "  설명 글"])
 
     def test_long_word_is_cut_at_characters(self):
         self.assertEqual(lines("abcdefghij", width=4), ["abcd", "efgh", "ij"])
@@ -342,13 +345,21 @@ from hteam.paths import Project
 **Edit** `herdr-team/tests/test_questions.py`(pager 를 띄울 때 폭을 정한다)
 
 ```python
+    def pager_bg(self, oid):
+        """pager 를 띄우고 출력을 파일로 받는다(끝 줄이 나온 것을 보고 상태를 바꾼다, Codex 계획 리뷰 r1)."""
+        out = self.tmp / f"pager-{oid}.txt"
+        fh = open(out, "w", encoding="utf-8")
         proc = subprocess.Popen([sys.executable, str(BIN), "question-pager", oid], stdin=subprocess.DEVNULL, stdout=fh,
                                 stderr=subprocess.STDOUT, env=self._env("main", None, None), cwd=str(self.proj))
 ```
 
 ```python
+    def pager_bg(self, oid, columns="40"):
+        """pager 를 띄우고 출력을 파일로 받는다(끝 줄이 나온 것을 보고 상태를 바꾼다, Codex 계획 리뷰 r1)."""
+        out = self.tmp / f"pager-{oid}.txt"
+        fh = open(out, "w", encoding="utf-8")
         proc = subprocess.Popen([sys.executable, str(BIN), "question-pager", oid], stdin=subprocess.DEVNULL, stdout=fh,
-                                stderr=subprocess.STDOUT, env=self._env("main", None, {"COLUMNS": "40"}),
+                                stderr=subprocess.STDOUT, env=self._env("main", None, {"COLUMNS": columns}),
                                 cwd=str(self.proj))
 ```
 
@@ -370,9 +381,9 @@ from hteam.paths import Project
 
 ```python
     def test_draws_the_markdown_and_ends_when_answered(self):
-        # 설계 7.4a 9단계: 표준 출력이 터미널이 아니면 COLUMNS 폭, 색 없음
-        oid = self.question(ctx="## 표\n| 가 | 1 |\n|---|---|\n| 나 | 2 |\n```\n**코드**\n```")
-        proc, out = self.pager_bg(oid)
+        # 설계 7.4a 9단계: 표준 출력이 터미널이 아니면 COLUMNS 폭(30 에서만 접히는 목록 줄로 본다), 색 없음
+        oid = self.question(ctx="## 표\n| 가 | 1 |\n|---|---|\n| 나 | 2 |\n- 가나다 라마바 사아자 차카타 파하\n```\n**코드**\n```")
+        proc, out = self.pager_bg(oid, columns="30")
         self.wait_ready(out)
         self.assertIsNone(proc.poll())
         self.write_answer(oid)
@@ -380,6 +391,7 @@ from hteam.paths import Project
         self.assertEqual(out.read_text(encoding="utf-8").split("\n"), [
             f"질문 보기 {oid}: 시험", "", "표",
             "┌────┬───┐", "│ 가 │ 1 │", "├────┼───┤", "│ 나 │ 2 │", "└────┴───┘",
+            "• 가나다 라마바 사아자 차카타", "  파하",
             "  **코드**", "", "(답하면 이 pane 은 닫힌다)", ""])  # JSON 봉투도 색도 없다
 ```
 
@@ -433,13 +445,17 @@ class PagerLoopTest(QuestionCase):
         self.assertEqual(second, f"# 질문 보기 {oid}: 시험\n\n| 가 | 1 |\n|---|---|\n\n{questions.PAGER_END}\n")
 
     def test_ends_when_closed_after_a_redraw(self):
-        oid = self.question(ctx="## 표")
+        oid = self.question(ctx="가나다 라마바 사아자 차카타")
         opened = iter([[{"id": oid}], []])
         with mock.patch.object(questions.outbox, "open_questions", side_effect=lambda p: next(opened)) as seen:
-            text, sleeps = self.run_pager(oid, iter([60, 40, 40]), lambda n: None)
+            text, sleeps = self.run_pager(oid, iter([60, 20, 20]), lambda n: None)
         self.assertEqual((sleeps, seen.call_count), (2, 2))  # 다시 그린 뒤 둘째 조회에서 닫힘을 보고 끝났다
-        self.assertEqual(text.count(questions.CLEAR), 1)
-        self.assertTrue(text.endswith(questions.PAGER_END + "\n"), text)
+        body = (self.qdir / f"{oid}.md").read_text(encoding="utf-8").rstrip("\n")
+        self.assertNotEqual(mdrender.render(body, 60), mdrender.render(body, 20))  # 두 폭에서 접기가 다르다
+        first, cleared, second = text.partition(questions.CLEAR)
+        self.assertEqual(cleared, questions.CLEAR)
+        self.assertEqual(first, mdrender.render(body, 60) + "\n\n" + questions.PAGER_END + "\n")
+        self.assertEqual(second, mdrender.render(body, 20) + "\n\n" + questions.PAGER_END + "\n")
 
 
 class PagerWidthTest(unittest.TestCase):
