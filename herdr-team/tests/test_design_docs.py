@@ -72,6 +72,8 @@ class DirectorDocTest(unittest.TestCase):
         for needle in ("--pending", "--history", '`"answer": null`'):
             self.assertIn(needle, resume)
         self.assertIn("열 수 있으면 같은 아티팩트를 고친다. 열 수 없을 때만 새로 올리고 URL 을 바꾼다", section(self.text, "보강 태스크"))
+        # 실환경(10단계): 보강 디렉터가 다른 줄의 시스템 URL 을 고치고 design_system_url 은 그대로 뒀다
+        self.assertIn("이 줄이 기준이다", section(self.text, "보강 태스크"))
         self.assertNotIn("`design_system_url` 은 바꾸지 않는다", self.text)  # 10단계(설계 11.1)
         self.assertIn("래스터 에셋을 만들지 않는다", section(self.text, "도구"))
         self.assertIn("승인 직무가 아니다", section(self.text, "승인"))
@@ -177,6 +179,11 @@ class DesignerArtifactDocTest(unittest.TestCase):
                        "디자인 피드백으로만 쓴다"):
             self.assertIn(needle, comments)
         self.assertIn("아래 \"수정 라운드의 댓글\"", section(self.text, "승인"))
+        # 실환경(10단계): 리뷰 뒤 수정 라운드가 앞 아티팩트를 열어 보지 않아 열 수 없는 링크가 일괄 승인에 남았고 댓글도 읽지 않았다
+        orig = section(self.text, "아티팩트 원본")
+        self.assertIn("수정 라운드(사용자 요청, 리뷰 뒤 수정, 보강 라운드 모두)는 시작할 때 앞 라운드 아티팩트를 열어 본다", orig)
+        self.assertIn("이번 라운드에 `artifact/` 가 바뀌지 않았어도 올린다", orig)
+        self.assertIn("수정 라운드(사용자 요청, 리뷰 뒤 수정, 보강 라운드 모두)를 시작할 때", comments)
 
 
 class DeveloperDocTest(unittest.TestCase):
