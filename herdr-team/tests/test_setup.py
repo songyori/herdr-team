@@ -143,7 +143,7 @@ class ScaffoldTest(TeamCase):
         shim = str(self.proj / ".herdr-team/bin/hteam")
         env = dict(self.env, HERDR_TEAM_PLUGIN_ROOT=str(ROOT))
         out = subprocess.run([sys.executable, shim, "version"], capture_output=True, text=True, env=env)
-        self.assertEqual(json.loads(out.stdout)["version"], "0.6.1")
+        self.assertEqual(json.loads(out.stdout)["version"], "0.7.0")
         registry = self.tmp / "installed.json"
         registry.write_text(json.dumps({"plugins": {"herdr-team@herdr-team": [{"installPath": str(ROOT)}]}}))
         env = dict(self.env, HTEAM_PLUGINS_JSON=str(registry))
@@ -379,7 +379,20 @@ class TemplateContractTest(unittest.TestCase):
         self.assertIn("메인 세션을 새로 연다", patch)
         self.assertIn("관제 다시 띄우기는 필요 없다", patch)
         self.assertIn("이미 떠 있는 질문 보기 pane 은 0.6.0 그대로다", patch)
-        self.assertIn("pane 폭이 바뀌면 다시 그린다", readme)
+        # 10단계(0.7.0): upgrade·CLAUDE.md·관제 다시 띄우기가 모두 필요하다(설계 9.6)
+        self.assertLess(readme.index("#### 0.6.1 → 0.7.0"), readme.index("#### 0.6.0 → 0.6.1"))
+        p10 = readme[readme.index("#### 0.6.1 → 0.7.0"):readme.index("#### 0.6.0 → 0.6.1")]
+        for needle in ("`.herdr-team/bin/hteam upgrade`", "`CLAUDE.md`", "관제를 끈다", "메인 세션을 새로 열고",
+                       "`docs/design/screens/<화면>/artifact/`", "`…/herdr-team/0.7.0/bin/hteam`", "질문 보기 pane 은 그 질문에 답하면 닫힌다"):
+            self.assertIn(needle, p10)
+        team = readme[readme.index("## herdr-team\n"):readme.index("### 이미 세팅한 프로젝트 업그레이드")]
+        self.assertNotIn("질문 보기", team)
+        self.assertIn("메인이 질문 전에 답변 글로 그린다", team)
+        start = readme.index("### 디자인 아티팩트와 댓글")
+        design = readme[start:readme.index("\n### ", start + 1)]
+        for needle in ("댓글 확인해서 고쳐", "새 피드백은 새 댓글로", "계정을 바꾸라고 하지 않는다",
+                       "`docs/design/screens/<화면>/index.html`", "`artifact/`", "직접 고치지 않는다"):
+            self.assertIn(needle, design)
         self.assertIn("init 이 끝나면 메인 세션을 새로 연다", readme)
         self.assertIn("--base-merge", readme)
 
