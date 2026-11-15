@@ -88,7 +88,13 @@ class DirectorDocTest(unittest.TestCase):
                        "계정을 바꾸라고 하지 않는다", "디자인 피드백으로만 쓴다"):
             self.assertIn(needle, comments)
         self.assertIn("글꼴 같은 에셋까지", section(self.text, "단계 ③ 디자인 시스템"))
-        self.assertIn("아티팩트 댓글을 읽는다", section(self.text, "사용자에게 묻기"))
+        # Codex 커밋 리뷰(3e6e487): ack 한 질문은 --pending 에 다시 나오지 않으므로 댓글을 읽고 기록한 뒤 ack 한다
+        ask = section(self.text, "사용자에게 묻기")
+        self.assertLess(ask.index("아티팩트 댓글을 읽는다"), ask.index("--ack <id>"))
+        self.assertIn("댓글 처리를 적기 전에 ack 하지 않는다", ask)
+        resume = section(self.text, "수정 라운드에서 이어 가기")
+        self.assertLess(resume.index("그 답의 댓글을 읽어"), resume.index("`--ack` 한다"))
+        self.assertIn("답만 있고 댓글 처리가 없는 질문", resume)
         self.assertIn("`previous_design_system_url: <옛 URL>`", section(self.text, "산출물"))
         self.assertIn("보드·시안·시스템 URL(각각 `<URL> (버전 N)`", section(self.text, "산출물"))
 

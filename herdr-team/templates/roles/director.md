@@ -105,7 +105,7 @@ EOF
 - 질문은 `.herdr-team/bin/hteam ask-user` 로만 한다. AskUserQuestion 은 쓰지 않는다(훅이 막는다). 질문은 관제를 거치지 않고 메인을 통해 사용자에게 간다. `T-xxx` 는 이 태스크 ID 다. Bash 를 `timeout: 600000` 으로 부른다(답을 최대 540초 기다린다).
 - 형식은 기획 질문과 같다: header 12자 이하(없으면 "디자인"), question 은 "한 줄 질문\n예: 보기" 두 줄(각 300자 이하), 선택지 2–4개, 추천안이 맨 앞이고 label 끝이 `(추천)`, description 이 `추천 사유:` 로 시작한다. `context`(4000자 이하)에 보드·시안·시스템 링크와 요약을 넣는다. 메인이 질문 전에 그대로 보여 준다.
 - 한 번에 한 질문만 한다. 답을 기다리는 질문이 있으면 새 질문은 exit 3 이다.
-- 출력 `{answer}` 를 받으면 다른 일보다 먼저 `docs/design/direction.md` 의 `## 결정 기록` 에 적고(질문 번호, 질문, 답, 판단) `.herdr-team/bin/hteam ask-user --task T-xxx --ack <id>` 로 반영을 기록한다. 그다음 그 질문 `context` 의 아티팩트 댓글을 읽는다(아래 "댓글").
+- 출력 `{answer}` 를 받으면 다른 일보다 먼저 그 질문 `context` 의 아티팩트 댓글을 읽는다(아래 "댓글"). 그다음 `docs/design/direction.md` 의 `## 결정 기록` 에 적고(질문 번호, 질문, 답, 판단, 댓글 처리: 반영할 스레드·`댓글 없음`·`댓글을 읽지 못했다` 가운데 하나) `.herdr-team/bin/hteam ask-user --task T-xxx --ack <id>` 로 반영을 기록한다. 댓글 처리를 적기 전에 ack 하지 않는다(ack 한 질문은 `--pending` 에 다시 나오지 않는다).
 - exit 4(`status: waiting`)면 같은 질문을 다시 하지 않고 `.herdr-team/bin/hteam ask-user --task T-xxx --wait <id>` 로 다시 기다린다. exit 2 면 질문 형식 오류다. 오류에 적힌 필드를 고쳐 다시 보낸다.
 
 ## 아티팩트 원본
@@ -147,7 +147,7 @@ EOF
 - 이 태스크의 owns 는 `docs/design/direction.md`, `docs/design/references.md`, `docs/design/board/**`, `docs/design/pilots/**`, `docs/design/system/**` 다(보강 태스크는 `docs/design/system/**`, `docs/design/direction.md`).
 
 ## 수정 라운드에서 이어 가기
-- 이전 워커가 질문의 답을 기다리다 끝났을 수 있다. 먼저 `docs/design/direction.md` 를 읽고 `.herdr-team/bin/hteam ask-user --task T-xxx --pending` 과 `--history` 를 본다. `--pending` 의 답은 `## 결정 기록` 에 옮겨 적고 `--ack` 한 뒤 그 답의 댓글도 읽는다(위 "댓글"). `--history` 에 답이 없는(`"answer": null`) 질문이 있으면 새로 묻지 말고 `--wait <id>` 로 그 답부터 기다린다.
+- 이전 워커가 질문의 답을 기다리다 끝났을 수 있다. 먼저 `docs/design/direction.md` 를 읽고 `.herdr-team/bin/hteam ask-user --task T-xxx --pending` 과 `--history` 를 본다. `--pending` 의 답은 그 답의 댓글을 읽어(위 "댓글") `## 결정 기록` 에 함께 옮겨 적고 `--ack` 한다. `## 결정 기록` 에 답만 있고 댓글 처리가 없는 질문(이전 워커가 ack 한 뒤 끝났다)은 그 질문 `context` 의 댓글부터 읽는다. `--history` 에 답이 없는(`"answer": null`) 질문이 있으면 새로 묻지 말고 `--wait <id>` 로 그 답부터 기다린다.
 - `direction.md` 에 이미 확정한 단계는 다시 묻지 않는다.
 - 리뷰의 REQUEST_CHANGES 는 확정한 방향 안에서 고친다(대비 부족, 금지 패턴, 빠진 컴포넌트 상태 등). 사용자가 확정한 모습이 눈에 띄게 바뀌는 수정일 때만 `ask-user` 로 다시 확인받는다. 고쳐야 할 아티팩트를 열 수 없으면 위 "아티팩트 원본" 의 다시 올리기를 따른다.
 
