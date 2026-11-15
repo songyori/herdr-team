@@ -3,7 +3,6 @@ import importlib.util
 import json
 import os
 import shutil
-import signal
 import subprocess
 import sys
 import time
@@ -906,7 +905,8 @@ class PlainQuestionWatchTest(HookCase):
 
 class QuestionPreviewTest(HookCase):
     """8단계(설계 7.4a, 9.4, 실환경 뒤 사용자 결정): 메인의 AskUserQuestion 은 어떤 경우에도 거부하지 않는다. 맞는 열린
-    질문의 render.context 를 선택지마다 preview 로 넣어 updatedInput 으로 돌려준다(permissionDecision 없음)."""
+    질문의 render.context 가 짧은 표면 선택지마다 preview 로 넣어 updatedInput 으로 돌려준다(permissionDecision 없음).
+    10단계: 긴 표는 질문을 바꾸지 않는다(메인이 답변 글로 그린다. 질문 보기 pane 은 뺐다)."""
 
     LABELS = ("확정 (추천)", "수정")
 
@@ -924,12 +924,11 @@ class QuestionPreviewTest(HookCase):
             options[0]["preview"] = preview
         return {"question": text, "header": header, "multiSelect": False, "options": options}
 
-    def guard(self, *questions, transcript=None, herdr=False):
+    def guard(self, *questions, transcript=None):
         payload = {"tool_name": "AskUserQuestion", "tool_input": {"questions": list(questions)}}
         if transcript is not None:
             payload["transcript_path"] = str(transcript)
-        env = None if herdr else {"HC_TERMINAL_ID": ""}  # Herdr 밖이면 보기 명령을 띄우지 않는다
-        return self.hook("guard", payload, terminal=MAIN, env=env)
+        return self.hook("guard", payload, terminal=MAIN)  # Herdr 안의 메인이다(예전에는 여기서 보기 pane 을 띄웠다)
 
     @staticmethod
     def updated(out):
@@ -940,31 +939,6 @@ class QuestionPreviewTest(HookCase):
     @staticmethod
     def long_ctx(rows=40):
         return "## 긴 표\n\n| 이슈 | 개수 |\n|---|---|\n" + "\n".join(f"| #{i} 항목 | {i} |" for i in range(rows))
-
-    def wait_view(self, oid):
-        path = self.state_dir / "questions" / f"{oid}.view.json"
-        deadline = time.monotonic() + 20
-        while not path.exists():
-            self.assertLess(time.monotonic(), deadline, "보기 명령이 기록을 쓰지 않았다")
-            time.sleep(0.1)
-        rec = json.loads(path.read_text(encoding="utf-8"))
-        self.addCleanup(self._stop_view, rec)
-        return rec
-
-    def _stop_view_of(self, oid):
-        path = self.state_dir / "questions" / f"{oid}.view.json"
-        try:
-            rec = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return
-        self._stop_view(rec)
-
-    @staticmethod
-    def _stop_view(rec):
-        try:
-            os.kill(rec["pid"], signal.SIGTERM)
-        except (ProcessLookupError, KeyError):
-            pass
 
     def test_short_context_goes_into_every_preview_and_nothing_is_denied(self):
         ctx = "## 표\n\n| 항목 | 값 |\n|---|---|\n| 가 | 1 |"
@@ -1016,11 +990,22 @@ class QuestionPreviewTest(HookCase):
         outbox_file.mkdir()  # 읽을 수 없다
         self.assertIsNone(self.guard(self.call(text)))  # 거부하지 않고 그대로 통과한다
 
-    def test_file_write_failure_still_returns_the_preview(self):
+    def test_long_context_leaves_the_question_untouched(self):
+        # 10단계(설계 7.4a): 긴 표는 메인이 답변 글로 그린다. 훅은 그 질문을 바꾸지 않고 파일·pane 을 만들지 않는다
         text = self.ask(self.long_ctx())
-        (self.state_dir / "questions").write_text("폴더 자리에 파일", encoding="utf-8")
-        [q] = self.updated(self.guard(self.call(text)))
-        self.assertIn("표가 길어 앞부분만 보인다", q["options"][0]["preview"])
+        self.assertIsNone(self.guard({**self.call(text), "multiSelect": True}))
+        self.assertFalse((self.state_dir / "questions").exists())
+        self.assertEqual([c for c in self.herdr_calls() if c[:2] == ["do", "pane.split"]], [])
+        self.assertFalse((self.state_dir / "hook-errors.log").exists())
+
+    def test_long_and_short_questions_together(self):
+        short, long = self.ask("짧은 표", n=1), self.ask(self.long_ctx(), n=2)
+        long_q = {**self.call(long), "multiSelect": True}
+        q1, q2 = self.updated(self.guard(self.call(short), long_q))
+        self.assertEqual([o["preview"] for o in q1["options"]], ["짧은 표", "짧은 표"])
+        self.assertEqual(q2, long_q)  # 긴 질문은 multiSelect 까지 그대로다
+        self.assertFalse((self.state_dir / "questions").exists())
+        self.assertEqual([c for c in self.herdr_calls() if c[:2] == ["do", "pane.split"]], [])
 
     def test_two_matching_open_questions_use_the_earlier_one(self):
         text = self.ask("앞 질문의 표")
@@ -1035,39 +1020,17 @@ class QuestionPreviewTest(HookCase):
             json.dumps({"id": "out-0001", "answer": "확정 (추천)", "at": "2026-11-13T00:00:00Z"}))
         self.assertIsNone(self.guard(self.call(text)))
 
-    def test_screen_rows_and_preview_split_are_pure(self):
+    def test_screen_rows_and_preview_are_pure(self):
         hook = load_hook()
-        self.assertEqual((hook.PREVIEW_WIDTH, hook.PREVIEW_MAX_ROWS, hook.PREVIEW_HEAD_ROWS), (56, 15, 10))
+        self.assertEqual((hook.PREVIEW_WIDTH, hook.PREVIEW_MAX_ROWS), (56, 15))
+        for gone in ("PREVIEW_HEAD_ROWS", "LONG_NOTE", "_open_view", "subprocess"):  # 자식 프로세스를 띄울 수단도 없다
+            self.assertFalse(hasattr(hook, gone), gone)
         self.assertEqual([hook.screen_rows(s) for s in ("", "a" * 56, "a" * 57, "가" * 28, "가" * 29, "a\nb")],
                          [1, 1, 2, 1, 2, 2])
         short = "\n".join(f"줄 {i}" for i in range(15))
-        self.assertEqual(hook.preview_for("out-0007", short), (short, False))
-        wide = "\n".join("가" * 40 for _ in range(8))  # 8줄이지만 화면 줄은 16
-        preview, long = hook.preview_for("out-0007", wide)
-        self.assertTrue(long)
-        self.assertTrue(preview.startswith("\n".join(["가" * 40] * 5) + "\n\n…(표가 길어 앞부분만 보인다. 전체 8줄은"), preview)
-        self.assertTrue(preview.endswith("pane 이 없으면 .herdr-team/state/questions/out-0007.md)"), preview)
-
-    def test_long_context_writes_file_and_opens_the_view(self):
-        self.addCleanup(self._stop_view_of, "out-0001")  # 앞 단언이 실패해도 보기 명령이 남지 않게
-        ctx = self.long_ctx()
-        text = self.ask(ctx)
-        [q] = self.updated(self.guard(self.call(text), herdr=True))
-        lines = ctx.splitlines()
-        preview = q["options"][0]["preview"]
-        self.assertEqual(preview, "\n".join(lines[:10]) + f"\n\n…(표가 길어 앞부분만 보인다. 전체 {len(lines)}줄은 옆 "
-                         "\"질문 보기\" pane 에 있다. pane 이 없으면 .herdr-team/state/questions/out-0001.md)")
-        self.assertEqual(q["options"][1]["preview"], preview)
-        body = (self.state_dir / "questions" / "out-0001.md").read_text(encoding="utf-8")
-        self.assertEqual(body, f"# 질문 보기 out-0001: 시험\n\n{ctx}\n")
-        rec = self.wait_view("out-0001")
-        self.assertEqual(rec["main"], MAIN)
-        [split] = [json.loads(c[2]) for c in self.herdr_calls() if c[:2] == ["do", "pane.split"]]
-        self.assertEqual((split["direction"], split["pane"]), ("right", f"p{MAIN}"))
-        self.assertEqual(split["argv"][2:], ["--root", str(self.p.root), "question-pager", "out-0001"])
-        self.assertTrue(split["argv"][1].endswith("/bin/hteam"), split["argv"])
-        self.assertTrue((self.state_dir / "questions" / "out-0001.log").exists())  # 보기 명령의 출력
-        self.assertNotEqual(os.getsid(rec["pid"]), os.getsid(0))  # 새 세션으로 분리해 띄웠다
+        self.assertEqual(hook.preview_for(short), short)
+        self.assertIsNone(hook.preview_for(short + "\n줄 15"))
+        self.assertIsNone(hook.preview_for("\n".join("가" * 40 for _ in range(8))))  # 8줄이지만 화면 줄은 16
 
     def test_multiselect_is_forced_off_for_matched_questions(self):
         text = self.ask("## 표\n\n| 항목 | 값 |\n|---|---|\n| 가 | 1 |")
@@ -1078,12 +1041,3 @@ class QuestionPreviewTest(HookCase):
         self.assertTrue(all("preview" in o for o in got[0]["options"]))
         self.assertIs(got[1]["multiSelect"], True)
         self.assertNotIn("preview", got[1]["options"][0])
-
-    def test_long_context_outside_herdr_writes_the_file_only(self):
-        text = self.ask(self.long_ctx())
-        self.updated(self.guard(self.call(text)))
-        self.assertTrue((self.state_dir / "questions" / "out-0001.md").exists())
-        self.assertFalse((self.state_dir / "questions" / "out-0001.log").exists())  # 보기 명령을 띄우지 않았다
-        time.sleep(1.5)  # 띄웠다면 보기가 기록을 썼을 시간
-        self.assertFalse((self.state_dir / "questions" / "out-0001.view.json").exists())
-        self.assertEqual([c for c in self.herdr_calls() if c[:2] == ["do", "pane.split"]], [])

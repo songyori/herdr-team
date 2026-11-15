@@ -28,6 +28,17 @@ class CliTest(TeamCase):
         self.assertEqual(code, 2)
         self.assertEqual(out["error"]["code"], "usage")
 
+    def test_question_view_is_gone(self):
+        # 10단계(설계 7.4a): 질문 보기 pane 의 명령·모듈·질문 폴더 경로를 뺐다
+        import importlib.util
+        from hteam.paths import Project
+        for cmd in ("question-view", "question-pager"):
+            code, out = self.hteam(cmd, "out-0001", as_=None)
+            self.assertEqual((code, out["error"]["code"]), (2, "usage"), cmd)
+        for name in ("hteam.questions", "hteam.mdrender"):
+            self.assertIsNone(importlib.util.find_spec(name), name)
+        self.assertFalse(hasattr(Project(self.proj), "questions"))
+
     def test_stdout_is_single_json_line(self):
         proc = subprocess.run([sys.executable, str(BIN), "version"], capture_output=True, text=True, env=self.env)
         self.assertEqual(len(proc.stdout.strip().splitlines()), 1)

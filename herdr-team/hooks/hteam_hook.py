@@ -11,7 +11,6 @@ import json
 import os
 import re
 import shlex
-import subprocess
 import sys
 import time
 import traceback
@@ -30,12 +29,11 @@ STATE_DIR = ".herdr-team/state"
 SESSION_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 # 캐시하는 역할. 관제는 Claude 세션이 아니다(관제 환경의 세션은 캐시하지 않고 늘 환경 변수와 run.json 으로 본다)
 CACHED_RE = re.compile(r"^(main|reviewer|worker(:[a-z][a-z0-9-]*)?)$")
-# 질문 보기(설계 7.4a 8단계): 메인의 AskUserQuestion 선택지 preview 에 render.context 를 넣는다. 미리보기 상자는 화면에 다
-# 들어가지 않으면 아무것도 보이지 않는다(실험). 상자 크기는 사용자 터미널에 달려 넉넉한 기준을 쓴다
+# 질문 미리보기(설계 7.4a): 메인의 AskUserQuestion 선택지 preview 에 짧은 render.context 를 넣는다. 미리보기 상자는 화면에
+# 다 들어가지 않으면 아무것도 보이지 않는다(실험). 상자 크기는 사용자 터미널에 달려 넉넉한 기준을 쓴다. 긴 표는 넣지 않는다
+# (메인이 답변 글로 그린다. 8·9단계의 질문 보기 pane 은 10단계에서 뺐다)
 PREVIEW_WIDTH = 56  # 화면 줄을 셀 때 접는 칸 수(동아시아 넓은 글자는 2칸)
 PREVIEW_MAX_ROWS = 15  # 화면 줄이 이 이하면 짧은 표다(그대로 넣는다)
-PREVIEW_HEAD_ROWS = 10  # 긴 표는 앞에서부터 이 화면 줄까지의 줄만 넣는다
-LONG_NOTE = '…(표가 길어 앞부분만 보인다. 전체 {n}줄은 옆 "질문 보기" pane 에 있다. pane 이 없으면 {path})'
 
 # 메인 Bash 의 horch 거부(horch_denied). brief 의 낱말 규칙 그대로다
 HORCH_RE = re.compile(r"(^|[\s;&|(`'\"/<>])horch(?=$|[\s;&|)`'\"<>])")
@@ -240,22 +238,10 @@ def screen_rows(text: str, width: int = PREVIEW_WIDTH) -> int:
     return rows
 
 
-def preview_for(oid: str, context: str) -> tuple[str, bool]:
-    """선택지 preview 에 넣을 글과 긴 표인가(설계 7.4a). 화면 줄이 PREVIEW_MAX_ROWS 이하면 그대로. 아니면 앞에서부터 화면 줄
-    합이 PREVIEW_HEAD_ROWS 를 넘기 전까지의 줄 뒤에 빈 줄과 LONG_NOTE(전체 줄 수, 전문 파일의 프로젝트 기준 경로)를 붙인다.
-    첫 줄부터 넘으면 LONG_NOTE 만 넣는다. 순수 함수다."""
-    if screen_rows(context) <= PREVIEW_MAX_ROWS:
-        return context, False
-    lines = context.splitlines()
-    head, used = [], 0
-    for line in lines:
-        rows = screen_rows(line)
-        if used + rows > PREVIEW_HEAD_ROWS:
-            break
-        head.append(line)
-        used += rows
-    note = LONG_NOTE.format(n=len(lines), path=f".herdr-team/state/questions/{oid}.md")
-    return ("\n".join(head) + "\n\n" if head else "") + note, True
+def preview_for(context: str) -> str | None:
+    """선택지 preview 에 넣을 글(설계 7.4a 10단계). 화면 줄이 PREVIEW_MAX_ROWS 이하면 context 그대로, 아니면 None(긴 표는
+    넣지 않는다). 순수 함수다."""
+    return context if screen_rows(context) <= PREVIEW_MAX_ROWS else None
 
 
 def _key(question, header, options) -> tuple | None:
@@ -285,29 +271,12 @@ def _match(items: list, q: dict) -> dict | None:
     return None
 
 
-def _open_view(p, oid: str, render: dict) -> None:
-    """긴 표(설계 7.4a): 전문을 state/questions/<out-id>.md 에 원자적으로 쓰고, 메인이 Herdr 터미널이면 질문 보기 명령을
-    새 세션의 분리된 자식으로 띄운다(기다리지 않는다. 출력은 <out-id>.log 이고 훅의 표준 출력을 물려주지 않는다). 플러그인
-    경로는 훅이 자기 위치로 안다(새 터미널은 부른 쪽 환경을 물려받지 않아 shim 에 기대지 않는다). 실패는 오류 기록만 남긴다:
-    미리보기를 넣은 updatedInput 은 그대로 돌려준다."""
-    try:
-        write_atomic(p.questions / f"{oid}.md", f"# 질문 보기 {oid}: {render.get('header')}\n\n{render['context']}\n")
-        if not os.environ.get("HC_TERMINAL_ID", "").strip():
-            return  # Herdr 밖이면 띄우지 않는다(미리보기의 안내 줄에 파일 경로가 있다)
-        with open(p.questions / f"{oid}.log", "a", encoding="utf-8") as log:
-            subprocess.Popen([sys.executable, str(PLUGIN_ROOT / "bin" / "hteam"), "--root", str(p.root), "question-view",
-                              oid], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                             start_new_session=True)
-    except Exception:  # noqa: BLE001  질문 보기는 질문을 막지 않는다
-        log_error(p.root, f"질문 보기 {oid}\n" + traceback.format_exc())
-
-
 def context_guard(p, payload: dict, tool_input: dict):
-    """메인의 AskUserQuestion(설계 9.4, 7.4a 8단계). 거부하지 않는다. 질문마다 맞는 열린 질문이 있으면 그 render.context 를
-    그 질문의 모든 선택지 preview 로 넣는다(모델이 넣은 preview 는 덮는다). 긴 표면 전문 파일을 쓰고 질문 보기를 띄운다.
-    바꾼 질문이 하나라도 있으면 tool_input 전체를 updatedInput 으로 돌려준다. permissionDecision 은 넣지 않는다(allow 를
-    주면 Claude Code 가 선택 창 없이 "답하지 않음" 으로 넘긴다, 실험). 맞는 질문이 없으면 None(그대로 통과). payload 는
-    보지 않는다(transcript 로 확인하지 않는다)."""
+    """메인의 AskUserQuestion(설계 9.4, 7.4a). 거부하지 않는다. 질문마다 맞는 열린 질문이 있고 그 render.context 가 짧은
+    표면(preview_for) 그 질문의 모든 선택지 preview 로 넣는다(모델이 넣은 preview 는 덮는다). 긴 표면 그 질문을 바꾸지 않는다
+    (10단계: 메인이 답변 글로 그린다. 파일을 쓰거나 pane 을 띄우지 않는다). 바꾼 질문이 하나라도 있으면 tool_input 전체를
+    updatedInput 으로 돌려준다. permissionDecision 은 넣지 않는다(allow 를 주면 Claude Code 가 선택 창 없이 "답하지 않음"
+    으로 넘긴다, 실험). 바꾼 질문이 없으면 None(그대로 통과). payload 는 보지 않는다(transcript 로 확인하지 않는다)."""
     questions = tool_input.get("questions")
     if not isinstance(questions, list) or not questions:
         return None
@@ -315,15 +284,13 @@ def context_guard(p, payload: dict, tool_input: dict):
     asked, changed = [], False
     for q in questions:
         item = _match(items, q) if isinstance(q, dict) else None
-        if item is None:
-            asked.append(q)  # 바꾸지 않은 질문은 그대로 둔다
+        preview = preview_for(item["render"]["context"]) if item is not None else None
+        if preview is None:
+            asked.append(q)  # 맞는 질문이 없거나 긴 표면 그대로 둔다
             continue
-        preview, long = preview_for(item["id"], item["render"]["context"])
-        # 질문 보기 render 는 늘 단일 선택이다. preview 는 단일 선택에서만 보이므로 multiSelect 를 끈다
+        # render 는 늘 단일 선택이다. preview 는 단일 선택에서만 보이므로 multiSelect 를 끈다
         asked.append({**q, "multiSelect": False, "options": [{**o, "preview": preview} for o in q["options"]]})
         changed = True
-        if long:
-            _open_view(p, item["id"], item["render"])
     if not changed:
         return None
     return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": {**tool_input, "questions": asked}}}
