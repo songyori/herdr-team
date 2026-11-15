@@ -161,7 +161,8 @@ def hteam_changes(p, cfg, st: dict) -> dict | None:
 
 
 def approved(p, cfg, st: dict) -> dict | None:
-    """리뷰 APPROVE: 보고서(작업 루트의 것. 작업 공간 태스크는 병합 전이다)에 claude.ai 아티팩트 URL 이 있으면 마지막 것."""
+    """리뷰 APPROVE: 보고서(작업 루트의 것. 작업 공간 태스크는 병합 전이다)의 일괄 승인 링크(approval.link: 마지막 라운드 절의
+    아티팩트 줄)가 claude.ai URL 이면 노트에 붙인다."""
     from . import approval, workspace
 
     def note() -> str:

@@ -18,7 +18,9 @@ from .paths import find_project
 
 DESIGN_ROLES = ("director", "designer", "developer")  # 리뷰 프롬프트에 디자인 절을 넣는 직무(설계 6.2)
 SUFFIXES = frozenset({".html", ".css", ".scss", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte", ".md", ".json"})
-EXCLUDE = ("docs/design/references.md", "docs/planning/**", "docs/tasks/**", "docs/reviews/**")
+# 화면 아티팩트 파일(docs/design/screens/<화면>/artifact/)은 index.html 을 아티팩트 꼴로 바꾼 것이다(설계 11.6·11.8 10단계)
+EXCLUDE = ("docs/design/references.md", "docs/planning/**", "docs/tasks/**", "docs/reviews/**",
+           "docs/design/screens/*/artifact/**")
 MAX_BYTES = 1 << 20  # 이보다 큰 파일(번들·데이터)은 보지 않는다
 MAX_FINDINGS = 50  # 리뷰 프롬프트가 커지지 않게 이만큼만 싣는다
 SNIPPET = 60

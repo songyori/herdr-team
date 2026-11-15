@@ -145,7 +145,9 @@ class GlossaryTest(unittest.TestCase):
         no = [put(rel, "저장\n") for rel in (
             "docs/planning/spec.md", "docs/tasks/T-001/report.md", "docs/reviews/T-001/r1.md", "docs/qa/plan.md",
             "docs/design/direction.md", "docs/design/board/a.html", "docs/design/pilots/a.html",
-            "docs/design/system/README.md", "docs/design/screens/home/notes.md", "tests/a.md", ".herdr-team/x.md",
+            "docs/design/system/README.md", "docs/design/screens/home/notes.md",
+            "docs/design/screens/home/artifact/project/Home.dc.html",  # 10단계: 화면 아티팩트 파일(설계 11.7)
+            "docs/design/screens/home/artifact/project/canvas.json", "tests/a.md", ".herdr-team/x.md",
             "src/a.test.ts", "src/a.spec.ts", "src/__tests__/a.ts", "e2e/a.ts", "src/app.py")]
         no += [put("src/comment.js", "// 한글 주석만 있다\nconst a = 1;\n"), put("src/none.tsx", "const a = 1;\n"),
                "src/deleted.tsx", "../outside.md"]

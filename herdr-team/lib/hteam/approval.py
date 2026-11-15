@@ -378,16 +378,29 @@ def _system_urls(p) -> set[str]:
     return {u for line in text.splitlines() if "design_system_url" in line for u in _urls(line)}
 
 
+ROUND_HEAD = re.compile(r"## r\d+(?!\d)", re.I)  # 보고서 라운드 절 머리(match 로 줄 머리만 본다)
+ARTIFACT_LINE = re.compile(r"\s*[-*]\s*아티팩트\s*:")
+
+
 def link(p, tid: str, root=None) -> str:
-    """태스크 보고서의 마지막 claude.ai URL. `design_system_url` 줄과 디자인 시스템 URL 은 뺀다. 없으면 보고서 경로.
-    보고서는 root(없으면 프로젝트 루트)에서 읽는다(작업 공간 태스크의 병합 전 보고서, 설계 8.12)."""
+    """일괄 승인 링크(설계 11.4 10단계): 보고서 마지막 `## rN` 절(다음 `## ` 줄 앞까지)의 첫 `- 아티팩트:` 줄에서 디자인
+    시스템 URL(`_system_urls`, `previous_design_system_url:` 줄 포함)이 아닌 첫 claude.ai URL. 라운드 절·그 줄·그런 URL 이
+    없으면 보고서 경로. 보고서는 root(없으면 프로젝트 루트)에서 읽는다(작업 공간 태스크의 병합 전 보고서, 설계 8.12)."""
+    rel = report_rel(tid)
     try:
-        text = ((root or p.root) / report_rel(tid)).read_text(encoding="utf-8")
+        lines = ((root or p.root) / rel).read_text(encoding="utf-8").splitlines()
     except (OSError, ValueError):
-        return report_rel(tid)
+        return rel
+    starts = [i for i, line in enumerate(lines) if ROUND_HEAD.match(line)]
+    if not starts:
+        return rel
     skip = _system_urls(p)
-    found = [u for line in text.splitlines() if "design_system_url" not in line for u in _urls(line) if u not in skip]
-    return found[-1] if found else report_rel(tid)
+    for line in lines[starts[-1] + 1:]:
+        if line.startswith("## "):
+            break
+        if ARTIFACT_LINE.match(line):
+            return next((u for u in _urls(line) if u not in skip), rel)
+    return rel
 
 
 def _line(p, cfg, st: dict) -> str:

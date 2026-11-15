@@ -108,6 +108,15 @@ class DesignDiffTest(TeamCase):
         with mock.patch.object(designdiff.gitio, "diff_lines", return_value=None):
             self.assertEqual(self.lint(files, [sha]), [])
 
+    def test_screen_artifact_files_are_skipped(self):
+        # 10단계(설계 11.6·11.8): 화면 아티팩트 파일은 index.html 을 바꾼 것이라 같은 지적이 두 번 나온다
+        art = "docs/design/screens/home/artifact/project/Home.dc.html"
+        screen = "docs/design/screens/home/index.html"
+        self.change({art: '<button aria-label="x"></button>\n', screen: '<button aria-label="x"></button>\n'}, "기존")
+        sha = self.change({art: "<button></button>\n", screen: "<button></button>\n"})
+        self.assertEqual(self.lint([art, screen], [sha]),
+                         [f"{screen}: 지운 줄에서 aria-label 1개가 줄었다(대체가 있는지 확인)"])
+
     def test_deleted_file_has_only_removed_line_findings(self):
         self.change({"src/Old.tsx": '<button aria-label="x" />\n'}, "기존")
         sha = self.change({}, delete=["src/Old.tsx"])

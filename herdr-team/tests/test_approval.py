@@ -381,13 +381,42 @@ class DesignReviewTest(ApprovalCase):
 
 
 class LinkTest(ApprovalCase):
-    def test_last_claude_url_without_design_system(self):
-        report = ("## r1\n- 아티팩트: https://claude.ai/artifact/old\n## r2\n- 아티팩트: https://claude.ai/artifact/new).\n"
-                  "- design_system_url: https://claude.ai/artifact/sys\n- 시스템 URL: https://claude.ai/artifact/sys2\n")
-        self.commit("docs/tasks/T-001/report.md", report, "[T-001] r2")
-        self.commit("docs/design/direction.md", "design_system_url: https://claude.ai/artifact/sys2\n", "dir")
-        self.assertEqual(approval.link(self.p, "T-001"), "https://claude.ai/artifact/new")
+    """10단계(설계 11.4·11.8): 링크는 보고서 마지막 `## rN` 절의 첫 `- 아티팩트:` 줄에서 디자인 시스템 URL 이 아닌 첫
+    claude.ai URL 이다. 그 줄이 없거나 URL 이 없으면 보고서 경로(0.6.x 는 보고서 전체의 마지막 URL 이었다)."""
+
+    def link(self, report, direction=None):
+        self.commit("docs/tasks/T-001/report.md", report, "[T-001] 보고서")
+        if direction is not None:
+            self.commit("docs/design/direction.md", direction, "dir")
+        return approval.link(self.p, "T-001")
+
+    def test_artifact_line_of_the_last_round(self):
+        report = ("## r1\n- 아티팩트: https://claude.ai/artifact/old (버전 1)\n"
+                  "## r2\n- 화면: 홈 — docs/design/screens/home/index.html\n"
+                  "- 아티팩트: https://claude.ai/artifact/new (버전 2).\n"
+                  "- 디자인 시스템: https://claude.ai/artifact/sys\n"
+                  "### 반영한 댓글\n- c1: T-002 https://claude.ai/artifact/other 처럼 → 고쳤다\n"
+                  "- 아티팩트: https://claude.ai/artifact/second\n")
+        self.assertEqual(self.link(report), "https://claude.ai/artifact/new")
         self.assertEqual(approval.link(self.p, "T-009"), "docs/tasks/T-009/report.md")
+
+    def test_no_artifact_url_in_the_last_round_is_the_report_path(self):
+        reports = ("## r1\n- 아티팩트: https://claude.ai/artifact/old\n## r2\n- 아티팩트: 없음\n",
+                   "## r1\n- 아티팩트: https://claude.ai/artifact/old\n## r2\n- 화면: 홈\n"
+                   "## 후속\n- 아티팩트: https://claude.ai/artifact/later\n",
+                   "## r1\n- 아티팩트: docs/design/screens/home/index.html\n",
+                   "- 아티팩트: https://claude.ai/artifact/no-round\n")
+        for report in reports:
+            with self.subTest(report=report[-30:]):
+                self.assertEqual(self.link(report), "docs/tasks/T-001/report.md")
+
+    def test_design_system_urls_are_not_links(self):
+        direction = ("design_system_url: https://claude.ai/artifact/sys2\n"
+                     "previous_design_system_url: https://claude.ai/artifact/sys1\n")
+        self.assertEqual(self.link("## r1\n- 아티팩트: https://claude.ai/artifact/sys1\n", direction),
+                         "docs/tasks/T-001/report.md")
+        self.assertEqual(self.link("## r1\n- 아티팩트: https://claude.ai/artifact/sys2 https://claude.ai/artifact/screen\n"),
+                         "https://claude.ai/artifact/screen")
 
     def test_context_stays_within_limit(self):
         ids = [f"T-{i:03d}" for i in range(1, 81)]

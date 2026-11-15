@@ -159,6 +159,14 @@ class ScanTest(unittest.TestCase):
         (self.root / "src/bad.css").write_bytes(b"\xff\xfe border-left: 4px solid red;\n")
         self.assertEqual(design_lint(self.root, [*rels, "src/big.css", "src/bad.css"]), [])
 
+    def test_screen_artifact_files_are_skipped(self):
+        # 10단계(설계 11.6·11.8): 화면 아티팩트 파일은 index.html 을 바꾼 것이라 같은 지적이 두 번 나온다
+        skipped = [self.put("docs/design/screens/home/artifact/project/Home.dc.html", "<p>🚀</p>\n"),
+                   self.put("docs/design/screens/home/artifact/project/canvas.json", '{"a": "🚀"}\n')]
+        self.assertEqual(design_lint(self.root, skipped), [])
+        screen = self.put("docs/design/screens/home/index.html", "<p>🚀</p>\n")
+        self.assertEqual([f.split(":")[0] for f in design_lint(self.root, [screen, *skipped])], [screen])
+
     def test_caps_findings(self):
         rel = self.put("docs/design/screens/home/notes.md", "".join(f"{n} 🚀\n" for n in range(MAX_FINDINGS + 10)))
         found = design_lint(self.root, [rel])

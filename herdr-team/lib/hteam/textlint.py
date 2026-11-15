@@ -20,9 +20,10 @@ CODE = frozenset({".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte", ".yaml", ".ym
 MARKUP = frozenset({".html", ".htm", ".xml"})
 MARKDOWN = frozenset({".md", ".mdx"})
 # 기획·보고서·리뷰·QA·디자인 설계 문서(디렉터 산출물, designer 의 notes.md)·테스트·hteam 파일은 대상이 아니다.
-# 화면 원본(docs/design/screens/<화면>/index.html)은 대상이다
+# 화면 원본(docs/design/screens/<화면>/index.html)은 대상이다. 그 화면의 아티팩트 파일(artifact/)은 같은 문구라 뺀다(11.7 10단계)
 EXCLUDE = ("docs/planning/**", "docs/tasks/**", "docs/reviews/**", "docs/qa/**", "docs/design/*.md",
            "docs/design/board/**", "docs/design/pilots/**", "docs/design/system/**", "docs/design/screens/*/notes.md",
+           "docs/design/screens/*/artifact/**",
            "tests/**", ".herdr-team/**", "**/*.test.*", "**/*.spec.*", "**/__tests__/**", "e2e/**")
 VOICE = "docs/planning/voice.md"
 SNIPPET = 60
