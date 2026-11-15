@@ -379,7 +379,7 @@ def _system_urls(p) -> set[str]:
 
 
 ROUND_HEAD = re.compile(r"## r\d+(?!\d)", re.I)  # 보고서 라운드 절 머리(match 로 줄 머리만 본다)
-ARTIFACT_LINE = re.compile(r"\s*[-*]\s*아티팩트\s*:")
+ARTIFACT_LINE = re.compile(r"\s*[-*]\s*\**아티팩트\**\s*:")  # 굵게 쓴 라벨(`- **아티팩트**:`)도 받는다
 
 
 def link(p, tid: str, root=None) -> str:

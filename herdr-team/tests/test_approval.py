@@ -410,6 +410,15 @@ class LinkTest(ApprovalCase):
             with self.subTest(report=report[-30:]):
                 self.assertEqual(self.link(report), "docs/tasks/T-001/report.md")
 
+    def test_bold_label_and_two_digit_rounds(self):
+        # 최종 리뷰: 모델이 라벨을 굵게 쓰기도 한다. `## r10` 은 `## r1` 과 다른 절이다
+        self.assertEqual(self.link("## r1\n- **아티팩트**: https://claude.ai/artifact/bold (버전 1)\n"),
+                         "https://claude.ai/artifact/bold")
+        self.assertEqual(self.link("## r1\n- **아티팩트:** https://claude.ai/artifact/bold2\n"),
+                         "https://claude.ai/artifact/bold2")
+        report = "".join(f"## r{n}\n- 아티팩트: https://claude.ai/artifact/r{n}\n" for n in range(1, 11))
+        self.assertEqual(self.link(report), "https://claude.ai/artifact/r10")
+
     def test_design_system_urls_are_not_links(self):
         direction = ("design_system_url: https://claude.ai/artifact/sys2\n"
                      "previous_design_system_url: https://claude.ai/artifact/sys1\n")

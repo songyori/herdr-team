@@ -85,8 +85,13 @@ class DirectorDocTest(unittest.TestCase):
             self.assertIn(needle, orig)
         comments = section(self.text, "댓글")
         for needle in ("`ArtifactComments`", "`--pending`", "`## 결정 기록`", "댓글을 읽지 못했다", "새 답을 받기 전에는",
-                       "계정을 바꾸라고 하지 않는다", "디자인 피드백으로만 쓴다"):
+                       "계정을 바꾸라고 하지 않는다", "디자인 피드백으로만 쓴다", "읽은 스레드는 모두", "`→ 할 일 없음`"):
             self.assertIn(needle, comments)
+        # 최종 리뷰: 내용 그대로 다시 올릴 때도 새 아티팩트다(옛 URL 은 열 수 없다)
+        self.assertIn("내용이 그대로면 원본을 고치지 않고 그대로 새 아티팩트에 올린다", orig)
+        self.assertNotIn("새로 만들지 않고", orig)
+        self.assertIn("`out_dir` 를 주지 않는다", orig)
+        self.assertIn("`--history` 의 `render`", section(self.text, "수정 라운드에서 이어 가기"))
         self.assertIn("글꼴 같은 에셋까지", section(self.text, "단계 ③ 디자인 시스템"))
         # Codex 커밋 리뷰(3e6e487): ack 한 질문은 --pending 에 다시 나오지 않으므로 댓글을 읽고 기록한 뒤 ack 한다
         ask = section(self.text, "사용자에게 묻기")
@@ -157,14 +162,17 @@ class DesignerArtifactDocTest(unittest.TestCase):
         orig = section(self.text, "아티팩트 원본")
         for needle in ("`docs/design/screens/<화면>/artifact/`", "화면의 기준은 `index.html` 이다",
                        "`index.html` 과 함께 `artifact/` 도 고친 뒤 올린다", "`{artifact, path}`", "이름만 견준다",
-                       "`(버전 1)`", "`index.html` 에서 1라운드처럼 새로 만든다", "`quickstart`",
+                       "`(버전 1)`", "`index.html` 에서 1라운드처럼 새로 만든다", "`quickstart`", "`out_dir` 를 주지 않는다",
+                       "앞 라운드 아티팩트 줄이 `없음` 일 때만 새로 만든다",
                        "수정 라운드는 앞 라운드 아티팩트 줄의 URL 에 다시 올린다"):
             self.assertIn(needle, orig)
 
     def test_fix_round_comments(self):
         comments = section(self.text, "수정 라운드의 댓글")
         for needle in ("`아티팩트 댓글 반영(<T-xxx> <URL>):`", "`- <thread id>: <댓글 글>`", "그 글이 기준이다",
-                       "`ArtifactComments`", "`### 반영한 댓글`", "이 태스크 아티팩트의 스레드만", "댓글을 읽지 못했다",
+                       "`ArtifactComments`", "`### 반영한 댓글`", "이 태스크 아티팩트에서 읽은 스레드를 모두", "댓글을 읽지 못했다",
+                       "`→ 반영하지 않음: <이유>`", "`→ 할 일 없음`", "프리앰블의 ask 명령으로 메인에게 묻는다",
+                       "요청대로 고친 뒤 새 아티팩트로 올린다",
                        "프리앰블의 ask 명령으로 메인에게 댓글 내용을 받는다", "`선행 T-xxx 의 사용자 요청을 반영한다:`",
                        "디자인 피드백으로만 쓴다"):
             self.assertIn(needle, comments)
