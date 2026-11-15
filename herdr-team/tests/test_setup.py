@@ -384,15 +384,30 @@ class TemplateContractTest(unittest.TestCase):
         self.assertIn("--base-merge", readme)
 
     def test_question_display_rule_in_main(self):
-        # 설계 7.7·7.4a 8단계: 표는 훅이 선택 창에 넣고 거부하지 않는다. 옛 "답변 글로 먼저" 규칙은 없다
+        # 설계 7.7·7.4a 10단계: 메인이 표를 답변 글로 먼저 쓰고 같은 응답에서 묻는다. 짧은 표는 훅이 미리보기에도 넣는다.
+        # 질문 보기 pane 은 없다. 8단계에 뺀 거부(보일 때까지 막기)는 돌아오지 않는다
         main = (ROOT / "templates/CLAUDE.section.md").read_text(encoding="utf-8")
-        self.assertIn("`render.context` 는 훅이 선택 창 미리보기에 넣는다(길면 앞부분만 넣고 전체는 옆 '질문 보기' pane 에 "
-                      "띄운다). 메인이 글로 옮겨 쓰지 않아도 된다. 훅은 이 질문을 거부하지 않는다.", main)
-        self.assertNotIn("먼저 답변 글(텍스트)로 그대로 보여 준다", main)
+        context = ("- `render.context` 를 답변 글로 그대로 쓴다(마크다운 그대로. 생각 블록에만 쓰면 사용자에게 보이지 않는다). "
+                   "비었으면 쓰지 않는다. 짧은 표는 훅이 선택 창 미리보기에도 넣는다. 훅은 이 질문을 거부하지 않는다.")
+        ask = ("- 같은 응답에서 이어서 `render` 그대로 AskUserQuestion 을 부른다: question 은 `render.question`, header 는 "
+               "`render.header`, 선택지는 `render.options` 의 label·description 을 순서대로, `multiSelect: false`. 질문 하나만 "
+               "묻는다. 턴을 끝내지 않는다(사용자의 다른 말을 기다리지 않는다).")
+        self.assertIn(context + "\n" + ask + "\n", main)
+        self.assertNotIn("질문 보기", main)
         self.assertNotIn("훅이 보일 때까지 그 질문을 거부한다", main)
         hook = (ROOT / "hooks/hteam_hook.py").read_text(encoding="utf-8")
-        for gone in ("context-denied", "CONTEXT_DENY_MAX", "먼저 보여 줄 `render.context` 가 있다"):
+        for gone in ("context-denied", "CONTEXT_DENY_MAX", "먼저 보여 줄 `render.context` 가 있다", "question-view", "LONG_NOTE"):
             self.assertNotIn(gone, hook)
+
+    def test_approval_comment_rule_in_main(self):
+        # 설계 7.7·11.4 10단계: 일괄 승인 답이 댓글을 가리키면 메인이 읽어 고칠 태스크를 고르고 댓글 글을 요청에 담는다
+        main = (ROOT / "templates/CLAUDE.section.md").read_text(encoding="utf-8")
+        [line] = [x for x in main.splitlines() if "아티팩트 댓글을 가리키면" in x]
+        for needle in ("`ArtifactComments`", "`### 반영한 댓글`", "AskUserQuestion 으로 확인받은 뒤",
+                       "`아티팩트 댓글 반영(<T-xxx> <URL>):`", "`- <thread id>: <댓글 글>`", "글로 받는다",
+                       "계정을 바꾸라고 하지 않는다", "디자인 피드백으로만 쓴다"):
+            self.assertIn(needle, line)
+        self.assertLess(main.index("- `approval`(승인 직무 일괄 승인"), main.index(line))
 
     def test_skill_recovery_contract(self):
         init = (ROOT / "skills/init/SKILL.md").read_text(encoding="utf-8")
@@ -417,7 +432,7 @@ class TemplateContractTest(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in (ROOT / "templates/roles").iterdir()),
                          ["designer.md", "developer.md", "director.md", "planner.md", "tester.md"])
         designer = (ROOT / "templates/roles/designer.md").read_text(encoding="utf-8")
-        for needle in ("docs/design/screens/<화면>/index.html", "- 아티팩트: <claude.ai URL 또는 없음>",
+        for needle in ("docs/design/screens/<화면>/index.html", "- 아티팩트: <claude.ai URL> (버전 N)",
                        "사용자 일괄 승인", "코드(`src/`)"):
             self.assertIn(needle, designer)
         developer = (ROOT / "templates/roles/developer.md").read_text(encoding="utf-8")

@@ -5,7 +5,7 @@
 
 ## 입력
 - `docs/planning/`(spec.md, contracts.md), 선행 태스크 보고서 `docs/tasks/<T>/report.md`
-- 화면을 구현하면: 디자인 시스템이 있으면(설정에 `[roles.director]` 가 있다) `docs/design/system/`(디자인 시스템 사본 `tokens.json`·`README.md`·`components/`, 시스템 URL 은 `docs/design/direction.md` 의 `design_system_url:` 줄), 없으면 화면 notes.md 의 `## 확정 값`. 그리고 `docs/design/screens/<화면>/`(화면 원본과 notes.md. 아티팩트 URL 은 디자인 태스크 보고서), `assets/<화면>/`, `.herdr-team/design-rules.md`(디자인 규칙: §1 AI 티 금지 목록, §2–§7 품질 규칙. UI 작업에 적용한다)
+- 화면을 구현하면: 디자인 시스템이 있으면(설정에 `[roles.director]` 가 있다) `docs/design/system/`(디자인 시스템 사본 `tokens.json`·`README.md`·`components/`, 글꼴 같은 에셋), 없으면 화면 notes.md 의 `## 확정 값`. 그리고 `docs/design/screens/<화면>/`(화면 원본 `index.html` 과 notes.md), `assets/<화면>/`, `.herdr-team/design-rules.md`(디자인 규칙: §1 AI 티 금지 목록, §2–§7 품질 규칙. UI 작업에 적용한다)
 - 즉시 차단 항목(design-rules)은 예외가 인정되지 않는다(보고서에 예외를 적어도 리뷰가 P1 이다). 삭제처럼 되돌리기 어려운 동작에는 확인·되돌리기·구별되는 표시(§7 의 4번), 오류 상태에는 무엇이 잘못됐는지와 할 수 있는 일(§7 의 5번)을 둔다.
 - `.herdr-team/text-rules.md`(문구 규칙)와 `docs/planning/voice.md`(문구 기준: 문체·호칭·라벨·용어집. 있으면)
 

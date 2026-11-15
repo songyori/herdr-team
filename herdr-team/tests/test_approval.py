@@ -1721,10 +1721,11 @@ class ApprovalDocsTest(unittest.TestCase):
     def test_main_docs(self):
         main = (ROOT / "templates" / "CLAUDE.section.md").read_text(encoding="utf-8")
         self.assertIn("디자인 `docs/design/`", main)
-        # 실환경(3단계): context 를 보인 뒤 턴을 끝내고 사용자의 다른 말을 기다렸다. 8단계: 곧바로 묻고 표는 훅이 넣는다
-        self.assertIn("`render` 그대로 곧바로 AskUserQuestion 을 부른다", main)
+        # 실환경(3단계): context 를 보인 뒤 턴을 끝내고 사용자의 다른 말을 기다렸다. 10단계: 표를 답변 글로 쓰고 같은 응답에서
+        # 이어서 묻는다(8단계의 "곧바로 묻고 표는 훅이 넣는다" 를 되돌렸다, 설계 7.4a)
+        self.assertIn("같은 응답에서 이어서 `render` 그대로 AskUserQuestion 을 부른다", main)
         self.assertIn("턴을 끝내지 않는다", main)
-        self.assertNotIn("사용자에게 보이지 않는다", main)
+        self.assertIn("`render.context` 를 답변 글로 그대로 쓴다", main)
 
 
 if __name__ == "__main__":

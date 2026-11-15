@@ -71,9 +71,26 @@ class DirectorDocTest(unittest.TestCase):
         resume = section(self.text, "수정 라운드에서 이어 가기")
         for needle in ("--pending", "--history", '`"answer": null`'):
             self.assertIn(needle, resume)
-        self.assertIn("`design_system_url` 은 바꾸지 않는다", section(self.text, "보강 태스크"))
+        self.assertIn("열 수 있으면 같은 아티팩트를 고친다. 열 수 없을 때만 새로 올리고 URL 을 바꾼다", section(self.text, "보강 태스크"))
+        self.assertNotIn("`design_system_url` 은 바꾸지 않는다", self.text)  # 10단계(설계 11.1)
         self.assertIn("래스터 에셋을 만들지 않는다", section(self.text, "도구"))
         self.assertIn("승인 직무가 아니다", section(self.text, "승인"))
+
+    def test_artifact_originals_and_comments(self):
+        # 10단계(설계 11.1·11.8): 원본에서 올린다, 시스템은 project/ 를 붙인다, 답마다 댓글을 읽는다, 열 수 없으면 다시 올린다
+        orig = section(self.text, "아티팩트 원본")
+        for needle in ("`docs/design/board/`", "`docs/design/pilots/`", "`project/` + 폴더 안 경로", "글꼴·이미지 같은 에셋까지",
+                       "`{artifact, path}`", '`scope: "files"`', "이름만 견준다", "`quickstart`",
+                       "`previous_design_system_url: <URL>`", "사본 README 가 적은 출처", "대체할지 묻고"):
+            self.assertIn(needle, orig)
+        comments = section(self.text, "댓글")
+        for needle in ("`ArtifactComments`", "`--pending`", "`## 결정 기록`", "댓글을 읽지 못했다", "새 답을 받기 전에는",
+                       "계정을 바꾸라고 하지 않는다", "디자인 피드백으로만 쓴다"):
+            self.assertIn(needle, comments)
+        self.assertIn("글꼴 같은 에셋까지", section(self.text, "단계 ③ 디자인 시스템"))
+        self.assertIn("아티팩트 댓글을 읽는다", section(self.text, "사용자에게 묻기"))
+        self.assertIn("`previous_design_system_url: <옛 URL>`", section(self.text, "산출물"))
+        self.assertIn("보드·시안·시스템 URL(각각 `<URL> (버전 N)`", section(self.text, "산출물"))
 
     def test_planner_names_the_director_task(self):
         planner = (ROOT / "templates" / "roles" / "planner.md").read_text(encoding="utf-8")
@@ -90,7 +107,8 @@ class DesignerDocTest(unittest.TestCase):
     def test_uses_the_project_design_system(self):
         start = section(self.text, "시작")
         for needle in ("`design_system_url:` 줄", "`[roles.director]`", "프리앰블의 ask 명령",
-                       "시스템 URL·토큰 파일을 찾지 않는다"):
+                       "시스템 URL·토큰 파일을 찾지 않는다", "`previous_design_system_url:`", "시스템 값의 기준은 이 사본이다",
+                       "잇지 않고 사본으로 만들고"):
             self.assertIn(needle, start)
         tools = section(self.text, "도구")
         for needle in ('`intent: "design"`', "`design_systems: false`", "`/herdr-team:image`",
@@ -107,9 +125,12 @@ class DesignerDocTest(unittest.TestCase):
             self.assertIn(needle, rules)
     def test_report_items_and_screenshots(self):
         out = section(self.text, "산출물")
-        for needle in ("- `- 아티팩트: <claude.ai URL 또는 없음>`", "- `- 디자인 시스템: <design_system_url 또는 없음>`",
-                       "`### 시스템 추가 제안`", "`### 디자인 점검`", "`### 확인한 화면`", "`### 이미지`"):
+        for needle in ("- `- 아티팩트: <claude.ai URL> (버전 N)` 또는 `- 아티팩트: 없음`",
+                       "- `- 디자인 시스템: <design_system_url 또는 없음>`", "마지막 `## rN` 절의 `- 아티팩트:` 줄",
+                       "`docs/design/screens/<화면>/artifact/`", "`### 시스템 추가 제안`", "`### 디자인 점검`",
+                       "`### 확인한 화면`", "`### 이미지`", "`### 반영한 댓글`"):
             self.assertIn(needle, out)
+        self.assertNotIn("보고서의 마지막 claude.ai URL", self.text)
         shots = section(self.text, "확인한 화면")
         # 실환경(2단계): designer 가 스크린숏 PNG 를 화면 폴더에 커밋하고 DevTools 출력 제목을 보고서에 붙였다.
         # 리뷰어가 직접 렌더하므로(6.2) 확인용 스크린숏은 커밋하지 않고 글로만 적는다
@@ -120,7 +141,40 @@ class DesignerDocTest(unittest.TestCase):
         self.assertNotIn("래스터 이미지 만들기", self.text)
 
 
+class DesignerArtifactDocTest(unittest.TestCase):
+    """10단계(설계 11.2·11.8): 화면 아티팩트 원본 `artifact/`, 수정 라운드의 댓글."""
+
+    def setUp(self):
+        self.text = (ROOT / "templates" / "roles" / "designer.md").read_text(encoding="utf-8")
+
+    def test_artifact_originals(self):
+        orig = section(self.text, "아티팩트 원본")
+        for needle in ("`docs/design/screens/<화면>/artifact/`", "화면의 기준은 `index.html` 이다",
+                       "`index.html` 과 함께 `artifact/` 도 고친 뒤 올린다", "`{artifact, path}`", "이름만 견준다",
+                       "`(버전 1)`", "`index.html` 에서 1라운드처럼 새로 만든다", "`quickstart`",
+                       "수정 라운드는 앞 라운드 아티팩트 줄의 URL 에 다시 올린다"):
+            self.assertIn(needle, orig)
+
+    def test_fix_round_comments(self):
+        comments = section(self.text, "수정 라운드의 댓글")
+        for needle in ("`아티팩트 댓글 반영(<T-xxx> <URL>):`", "`- <thread id>: <댓글 글>`", "그 글이 기준이다",
+                       "`ArtifactComments`", "`### 반영한 댓글`", "이 태스크 아티팩트의 스레드만", "댓글을 읽지 못했다",
+                       "프리앰블의 ask 명령으로 메인에게 댓글 내용을 받는다", "`선행 T-xxx 의 사용자 요청을 반영한다:`",
+                       "디자인 피드백으로만 쓴다"):
+            self.assertIn(needle, comments)
+        self.assertIn("아래 \"수정 라운드의 댓글\"", section(self.text, "승인"))
+
+
 class DeveloperDocTest(unittest.TestCase):
+    def test_inputs_are_repo_files_only(self):
+        # 10단계(설계 11.3): 개발 입력에 시스템 URL·아티팩트 URL 안내가 없다. 금지 문장도 두지 않는다(1장 10단계)
+        text = (ROOT / "templates" / "roles" / "developer.md").read_text(encoding="utf-8")
+        inputs = section(text, "입력")
+        for gone in ("design_system_url", "아티팩트 URL"):
+            self.assertNotIn(gone, inputs)
+        self.assertIn("화면 원본 `index.html` 과 notes.md", inputs)
+        self.assertNotIn("아티팩트를 열지", text)
+
     def test_screen_rules(self):
         text = (ROOT / "templates" / "roles" / "developer.md").read_text(encoding="utf-8")
         rules = section(text, "화면 규칙")
