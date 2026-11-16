@@ -1062,7 +1062,8 @@ class Drive:
     def _view(self, name: str) -> None:
         """에이전트 하나(6.5 의 2–4·6·7). 연 보기가 끝나지 않았으면 그대로 둔다(한 탭에 하나. 떼거나 보기 pane 이 죽어도 그
         리뷰 동안은 다시 열지 않는다). 끝났으면 닫고, 닫았으면 같은 단계에서 이 에이전트의 남은 리뷰(가장 먼저 시작한 것)로
-        연다. 열지 못하면 pane·terminal null 과 error 를 view 에 남겨 그 시도 동안 다시 열지 않는다."""
+        연다. 열지 못하면 pane·terminal null 과 error 를 view 에 남겨 그 시도 동안 다시 열지 않는다. 11단계: 앱의 pane.split
+        대신 hc run 으로 띄워 열기 직전의 main_terminal 아래에 묶는다. pane 은 herdr-app ls 에서 찾고 못 찾으면 null 이다."""
         from . import crew
         entry = crew.load(self.p).get(name) or {}
         view = entry.get("view")
@@ -1080,8 +1081,20 @@ class Drive:
         try:
             if not entry.get("work_pane"):
                 raise HteamError("no_work_pane", "작업 pane 을 모른다", FAIL)
-            # 일반 attach(--observe 는 크기를 맞추지 않아 좁은 pane 에서 TUI 가 깨진다, X5). terminal.show 는 쓰지 않는다
-            record.update(herdr.split_right(entry["work_pane"], [herdr.hc_path(), "attach", att["terminal"]]))
+            if not entry.get("space") or not entry.get("tab"):
+                raise HteamError("no_agent_tab", "에이전트 탭을 모른다", FAIL)
+            # 11단계(6.5): 앱의 pane.split 이 아니라 hc run 으로 띄워 메인 아래에 묶는다(앱 메서드는 parent 를 정할 수 없다).
+            # herdr 라벨이 있는 터미널은 앱이 그 탭 오른쪽 끝 pane 으로 붙이고 초점을 바꾸지 않는다(X4). 일반 attach
+            # (--observe 는 크기를 맞추지 않아 좁은 pane 에서 TUI 가 깨진다, X5). terminal.show 는 쓰지 않는다
+            parent = outbox.main_parent(self.p)
+            res = herdr.run_bg({"herdr.space": entry["space"], "herdr.tab": entry["tab"]},
+                               [herdr.hc_path(), "attach", att["terminal"]], parent=parent, timeout=10)
+            if not res.get("address"):
+                raise HteamError("hc_failed", "hc run 결과에 터미널 주소가 없다", FAIL)
+            record["terminal"] = res["address"]
+            record["pane"] = herdr.pane_of(res["address"])  # 앱이 아직 붙이지 않았으면 null(쓸 때 다시 찾는다, crew.layout)
+            if res.get("parent_fallback"):
+                self.log(f"{name} 리뷰 보기: 메인 터미널 {parent} 이 hc 에 없어 parent 없이 열었다")
         except HteamError as exc:
             if exc.exit_code == MISSING:
                 raise
@@ -1117,8 +1130,10 @@ class Drive:
         실패하면 로그 한 줄을 남기고 view 를 그대로 둔 채 False(다음 틱에 다시 한다)."""
         from . import crew
         try:
-            if view.get("pane") and view.get("terminal") and herdr.pane_of(view["terminal"]):
-                herdr.close_pane(view["pane"])
+            # 11단계(6.5): 기록한 pane 이 없어도(열 때 앱이 아직 붙이지 않았다) 지금 찾은 그 터미널의 pane 을 닫는다
+            pane = herdr.pane_of(view["terminal"]) if view.get("terminal") else None
+            if pane:
+                herdr.close_pane(pane)
             if view.get("terminal"):
                 herdr.rm(view["terminal"])
         except HteamError as exc:

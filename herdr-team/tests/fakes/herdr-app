@@ -15,7 +15,7 @@
   layout 에서 그 pane 바로 오른쪽에 둔다. {"pane", "terminal"}.
 - do pane.swap '<JSON {pane, target}>': layout 에서 두 pane 의 자리를 바꾼다. {"ok": true}.
 - do pane.close '<JSON {pane}>': 그 터미널을 finished 로 두고 layout 에서 뺀다. {"ok": true}.
-- 상태 "fail" 의 "herdr-app <명령>"(예 "herdr-app pane.split") 이 있으면 {"error": "<kind>"} 와 exit 1.
+- 상태 "fail" 의 "herdr-app <명령>"(예 "herdr-app pane.split", ls 는 "herdr-app ls") 이 있으면 {"error": "<kind>"} 와 exit 1.
 - 모르는 pane 이면 {"error": "no pane \"<id>\""} 와 exit 1(실제 꼴, 2026-11-11). 그 밖의 명령은 exit 2.
 - 실제와 다른 점(2026-11-11 실환경): 실제는 프로그램이 끝난 split pane 이 저절로 닫히고(터미널은 finished 로 남는다)
   결과 JSON 을 여러 줄로 쓴다. 가짜는 pane.close 를 받을 때까지 layout 에 남기고 한 줄로 쓴다(해석은 같다).
@@ -78,6 +78,9 @@ def handle(st, argv):
                           "errors": []}, indent=2))
         return 0
     if argv[:1] == ["ls"]:
+        fail = (st.get("fail") or {}).get("herdr-app ls")
+        if fail:  # 11단계 시험: hc run 직후 pane 을 찾지 못한 길(pane_of 가 None)
+            return out({"error": fail.get("kind", "failed")}, 1)
         spaces = {}
         for (space, tab), addrs in placed(st).items():
             tabs = spaces.setdefault(space, [])

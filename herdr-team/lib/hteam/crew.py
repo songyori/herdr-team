@@ -282,18 +282,34 @@ def after_launch(p, plc: dict, tid: str, rd: dict, res: dict) -> None:
     layout(p, c.name)
 
 
+def view_pane_of(p, name: str, view: dict) -> str | None:
+    """기록에 pane 이 없는 보기(설계 6.5 의 11단계: hc run 직후 앱이 아직 pane 을 붙이지 않았다)의 pane 을 herdr-app ls 에서
+    찾는다. 찾으면 그 보기가 그대로일 때 crew.json 의 view.pane 을 채운다. 보기 터미널이 없거나 못 찾으면 None."""
+    if not view.get("terminal"):
+        return None
+    pane = herdr.pane_of(view["terminal"])
+    if pane:
+        with edit(p) as data:
+            cur = entry_of(data, name)
+            if cur.get("view") == view:
+                cur["view"] = {**view, "pane": pane}
+    return pane
+
+
 def layout(p, name: str) -> None:
     """배치(5.9.2 의 5·6): 작업 pane 을 찾고, 보기 pane 이 있으면 pane.swap 으로 작업 pane 을 왼쪽에 둔 뒤 doc.get 의 줄 순서로
-    확인한다(읽지 못하면 확인을 건너뛴다). work_pane·layout_error 를 쓴다. 실패는 태스크를 막지 않고 로그 한 줄."""
+    확인한다(읽지 못하면 확인을 건너뛴다). work_pane·layout_error 를 쓴다. 실패는 태스크를 막지 않고 로그 한 줄.
+    11단계: 보기의 pane 이 기록에 없으면 view_pane_of 로 찾는다(리뷰 중 새로 뜬 작업 pane 이 보기 pane 오른쪽에 남지 않게)."""
     e = entry(p, name)
     terminal, view = e["terminal"], e["view"] or {}
     error = None
     pane = herdr.pane_of(terminal)
+    view_pane = (view.get("pane") or view_pane_of(p, name, view)) if pane is not None else None
     if pane is None:
         error = "작업 pane 을 찾지 못했다"
-    elif view.get("pane"):
+    elif view_pane:
         try:
-            herdr.swap(pane, view["pane"])
+            herdr.swap(pane, view_pane)
         except HteamError as exc:
             error = exc.message
         else:

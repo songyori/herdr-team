@@ -215,6 +215,19 @@ class FirstLaunchTest(CrewCase):
         e = self.entry()
         self.assertEqual((e["view"], e["work_pane"], e["layout_error"]), (view, f"p{t}", None))
 
+    def test_view_without_pane_is_found_before_layout(self):
+        # 11단계(설계 6.5): hc run 직후 앱이 pane 을 아직 붙이지 않아 view.pane 이 null 이었다. 리뷰 중 새로 뜬 작업 pane 을
+        # 배치하기 전에 pane_of(view.terminal) 로 찾아 기록을 채우고 작업 pane 을 왼쪽에 둔다(Codex 설계 리뷰 r1)
+        view = {"pane": None, "terminal": "t150", "reviewer": "t140", "task": "T-000", "round": 1, "attempt": 1}
+        self.add_terminal("t150", argv=["hc", "attach", "t140"], labels={"herdr.space": "spA", "herdr.tab": self.tab()})
+        self.set_entry(view=view)
+        out = self.started("T-001")
+        t = out["terminal"]
+        self.assertEqual([json.loads(s[2]) for s in self.calls("pane.swap")], [{"pane": f"p{t}", "target": "pt150"}])
+        self.assertEqual(self.hc_state()["layout"][self.tab()], [t, "t150"])  # 작업 pane 이 왼쪽, 보기 pane 이 오른쪽
+        e = self.entry()
+        self.assertEqual((e["view"], e["work_pane"], e["layout_error"]), ({**view, "pane": "pt150"}, f"p{t}", None))
+
     def view_terminal(self):
         view = {"pane": "pt150", "terminal": "t150", "reviewer": "t140", "task": "T-000", "round": 1, "attempt": 1}
         self.add_terminal("t150", argv=["hc", "attach", "t140"], labels={"herdr.space": "spA", "herdr.tab": self.tab()})

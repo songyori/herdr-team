@@ -1,5 +1,5 @@
 """hc·herdr-app 직접 호출(설계 3.3). 관제 실행·생존 확인, 탭 이름 붙이기, 고정 에이전트 작업 터미널 상태와 pane 배치(5.9.2),
-리뷰 보기 pane(6.5: pane.split 의 hc attach, pane.close, 보기 터미널 hc rm)뿐이다. 워커 실행은 늘 horch 를 거친다."""
+리뷰 보기 pane(6.5: hc run 의 hc attach(11단계), pane.close, 보기 터미널 hc rm)뿐이다. 워커 실행은 늘 horch 를 거친다."""
 from __future__ import annotations
 
 import json
@@ -198,15 +198,6 @@ def _do(name: str, args: dict, timeout: float) -> dict:
 def swap(pane: str, target: str, timeout: float = 10) -> None:
     """`herdr-app do pane.swap '{"pane", "target"}'`(설계 5.9.2 의 5). 실패는 _do 와 같다."""
     _do("pane.swap", {"pane": pane, "target": target}, timeout)
-
-
-def split_right(pane: str, argv: list[str], timeout: float = 10) -> dict:
-    """`herdr-app do pane.split '{"direction": "right", "pane", "argv"}'`(설계 6.5 의 2). 사용자 초점은 바뀌지 않는다.
-    {"pane", "terminal"}. 결과에 둘이 없으면 herdr_app_failed."""
-    data = _do("pane.split", {"direction": "right", "pane": pane, "argv": list(argv)}, timeout)
-    if not data.get("pane") or not data.get("terminal"):
-        raise HteamError("herdr_app_failed", "herdr-app pane.split 결과에 pane·terminal 이 없다", FAIL)
-    return {"pane": data["pane"], "terminal": data["terminal"]}
 
 
 def close_pane(pane: str, timeout: float = 10) -> None:

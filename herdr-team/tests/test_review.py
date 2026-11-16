@@ -1948,6 +1948,10 @@ class CrewReviewCase(TeamCase):
     def labels(self, terminal: str) -> dict:
         return self.hc_state()["terminals"][terminal]["labels"]
 
+    def views_opened(self) -> list[list[str]]:
+        """관제가 보기 터미널을 연 hc run 호출(11단계, 설계 6.5: -- 뒤가 [hc, attach, 리뷰어]). 실패한 호출도 남는다."""
+        return [c for c in self.hc_calls() if c[:1] == ["run"] and c[c.index("--") + 1:][1:2] == ["attach"]]
+
 
 class CrewReviewerTest(CrewReviewCase):
     def test_crew_task_reviewer_is_hidden(self):
@@ -1975,7 +1979,7 @@ class CrewReviewerTest(CrewReviewCase):
         rev = self.dispatch_row(self.attempt("T-002")["dispatch"])["terminal"]
         self.assertEqual(self.labels(rev).get("herdr.tab"), "tbTeam")
         self.view_step()
-        self.assertEqual(self.calls("pane.split"), [])  # 임시 워커 태스크에는 보기 pane 이 없다
+        self.assertEqual(self.views_opened(), [])  # 임시 워커 태스크에는 보기 pane 이 없다
         self.assertIsNone(self.crew()["production"].get("view"))
 
     def test_temp_reviewer_under_main_and_hidden_reviewer_not(self):
@@ -2009,17 +2013,20 @@ class ReviewViewTest(CrewReviewCase):
         work_pane = self.crew()["production"]["work_pane"]
         self.assertTrue(work_pane)
         self.view_step()
-        (split,) = self.calls("pane.split")
-        # 일반 attach(--observe 아님), hc 는 PATH 에서 찾은 절대 경로(설계 6.5 의 2)
-        self.assertEqual(split, {"direction": "right", "pane": work_pane,
-                                 "argv": [str(HORCH_FAKES / "hc"), "attach", rev]})
+        self.assertEqual(self.calls("pane.split"), [])  # 11단계: 앱 메서드가 아니라 hc run 으로 연다(설계 6.5)
+        (run,) = self.views_opened()
+        tab = self.crew()["production"]["tab"]
+        # 일반 attach(--observe 아님), hc 는 PATH 에서 찾은 절대 경로(설계 6.5 의 2). 메인 주소가 없으면 --no-parent(3.2)
+        self.assertEqual(run, ["run", "--bg", "--no-parent", "--no-notify", "--label", "herdr.space=spA",
+                               "--label", f"herdr.tab={tab}", "--json", "--", str(HORCH_FAKES / "hc"), "attach", rev])
         view = self.crew()["production"]["view"]
         self.assertEqual({k: view[k] for k in ("reviewer", "task", "round", "attempt")},
                          {"reviewer": rev, "task": "T-001", "round": 1, "attempt": 1})
-        self.assertEqual(self.hc_state()["terminals"][view["terminal"]]["argv"], split["argv"])
-        self.assertTrue(view["pane"])
+        term = self.hc_state()["terminals"][view["terminal"]]
+        self.assertEqual((term["argv"], term["labels"]), (run[-3:], {"herdr.space": "spA", "herdr.tab": tab}))
+        self.assertEqual(view["pane"], f"p{view['terminal']}")  # herdr-app ls 에서 찾은 pane
         self.view_step()  # 리뷰가 도는 동안 다시 열지 않는다(한 탭에 하나)
-        self.assertEqual(len(self.calls("pane.split")), 1)
+        self.assertEqual(len(self.views_opened()), 1)
         code, out = self.act_review("T-001", "APPROVE")
         self.assertEqual(code, 0, out)
         code, out = self.hteam("review-finish", "T-001")
@@ -2030,7 +2037,7 @@ class ReviewViewTest(CrewReviewCase):
         self.assertNotIn(view["terminal"], self.hc_state()["terminals"])
         self.assertIsNone(self.crew()["production"]["view"])
         self.view_step()  # 멱등
-        self.assertEqual((len(self.calls("pane.close")), len(self.calls("pane.split"))), (1, 1))
+        self.assertEqual((len(self.calls("pane.close")), len(self.views_opened())), (1, 1))
         self.assertEqual(self.calls("terminal.show"), [])  # 사용자 화면을 옮기는 terminal.show 는 쓰지 않는다
 
     def test_close_when_attempt_canceled(self):
@@ -2086,7 +2093,7 @@ class ReviewViewTest(CrewReviewCase):
         self.assertEqual(self.calls("pane.close"), [{"pane": old["pane"]}])
         view = self.crew()["production"]["view"]
         self.assertEqual((view["reviewer"], view["attempt"]), (second, 2))
-        self.assertEqual([s["argv"][-1] for s in self.calls("pane.split")], [first, second])
+        self.assertEqual([c[-1] for c in self.views_opened()], [first, second])
 
     def test_one_view_per_tab_then_next_review(self):
         first = self.crew_reviewing("T-001", "src/a/**")
@@ -2104,7 +2111,7 @@ class ReviewViewTest(CrewReviewCase):
         second = self.dispatch_row(self.attempt("T-002")["dispatch"])["terminal"]
         self.view_step()
         self.view_step()
-        self.assertEqual([s["argv"][-1] for s in self.calls("pane.split")], [first])  # 가장 먼저 시작한 리뷰 하나만
+        self.assertEqual([c[-1] for c in self.views_opened()], [first])  # 가장 먼저 시작한 리뷰 하나만
         old = self.crew()["production"]["view"]
         code, out = self.act_review("T-001", "APPROVE")
         self.assertEqual(code, 0, out)
@@ -2112,7 +2119,7 @@ class ReviewViewTest(CrewReviewCase):
         self.assertEqual((code, out.get("status")), (0, "approved"), out)
         self.view_step()  # 닫고 같은 단계에서 남은 리뷰어로 다시 연다
         self.assertEqual(self.calls("pane.close"), [{"pane": old["pane"]}])
-        self.assertEqual([s["argv"][-1] for s in self.calls("pane.split")], [first, second])
+        self.assertEqual([c[-1] for c in self.views_opened()], [first, second])
         view = self.crew()["production"]["view"]
         self.assertEqual((view["task"], view["reviewer"]), ("T-002", second))
 
@@ -2122,7 +2129,7 @@ class ReviewViewTest(CrewReviewCase):
         view = self.crew()["production"]["view"]
         self.update_terminal(view["terminal"], state="finished", exit_code=0)  # 떼기(ctrl+\): 보기 프로그램만 끝났다
         self.view_step()
-        self.assertEqual(len(self.calls("pane.split")), 1)
+        self.assertEqual(len(self.views_opened()), 1)
         self.assertEqual(self.crew()["production"]["view"], view)  # 그 리뷰 동안은 그대로 둔다(설계 6.5 의 7)
         code, out = self.act_review("T-001", "APPROVE")
         self.assertEqual(code, 0, out)
@@ -2135,10 +2142,10 @@ class ReviewViewTest(CrewReviewCase):
 
     def test_open_failure_logs_once_and_review_goes_on(self):
         self.crew_reviewing()
-        self.fail_hc("herdr-app pane.split", "split_failed")
+        self.fail_hc("run", "spawn_failed")  # 11단계: 보기 터미널은 hc run 으로 연다
         self.view_step()
         self.view_step()  # 같은 리뷰에는 다시 열지 않는다(로그도 한 줄)
-        self.assertEqual(len(self.calls("pane.split")), 1)
+        self.assertEqual(len(self.views_opened()), 1)
         self.assertEqual(len([ln for ln in self.log_lines() if "production 리뷰 보기 열기 실패" in ln]), 1)
         code, out = self.act_review("T-001", "APPROVE")
         self.assertEqual(code, 0, out)
@@ -2153,7 +2160,7 @@ class ReviewViewTest(CrewReviewCase):
         self.edit_crew("production", work_pane=None)  # 배치 실패로 작업 pane 을 모른다(설계 5.9.2 의 6)
         self.view_step()
         self.view_step()
-        self.assertEqual(self.calls("pane.split"), [])
+        self.assertEqual(self.views_opened(), [])
         self.assertEqual(len([ln for ln in self.log_lines() if "production 리뷰 보기 열기 실패" in ln]), 1)
 
     def test_close_failure_is_retried_next_tick(self):
@@ -2173,6 +2180,62 @@ class ReviewViewTest(CrewReviewCase):
         self.view_step()
         self.assertIsNone(self.crew()["production"]["view"])
         self.assertIn(view["terminal"], self.removed())
+
+    # --- 11단계: 메인 아래에 묶기와 pane 다시 찾기(설계 3.2·6.5) ---
+    def test_view_under_main_terminal(self):
+        self.set_run(main_terminal=MAIN)
+        self.crew_reviewing()
+        self.view_step()
+        (run,) = self.views_opened()
+        self.assertEqual(run[:6], ["run", "--bg", "--parent", MAIN, "--outlive-parent", "--no-notify"])
+        self.assertNotIn("--no-parent", run)
+        view = self.crew()["production"]["view"]
+        self.assertEqual(self.hc_state()["terminals"][view["terminal"]]["parent"], MAIN)
+
+    def test_missing_main_opens_once_more_without_parent(self):
+        self.set_run(main_terminal="t404")  # 지워진 메인 주소
+        self.crew_reviewing()
+        self.view_step()
+        first, second = self.views_opened()
+        self.assertEqual((first[2:4], second[2]), (["--parent", "t404"], "--no-parent"))
+        view = self.crew()["production"]["view"]
+        self.assertEqual((self.hc_state()["terminals"][view["terminal"]]["parent"], view["pane"]),
+                         (None, f"p{view['terminal']}"))
+        self.assertEqual(len([ln for ln in self.log_lines()
+                              if "production 리뷰 보기: 메인 터미널 t404 이 hc 에 없어 parent 없이 열었다" in ln]), 1)
+
+    def test_other_open_failure_is_not_retried(self):
+        self.set_run(main_terminal=MAIN)
+        self.crew_reviewing()
+        self.fail_hc("run", "not_found", 3)  # 다른 문구의 not_found(가짜 hc 의 실패 문구는 kind 그대로다)
+        self.view_step()
+        self.view_step()
+        self.assertEqual(len(self.views_opened()), 1)
+        view = self.crew()["production"]["view"]
+        self.assertEqual((view["terminal"], view["pane"]), (None, None))
+        self.assertTrue(view["error"])
+
+    def test_pane_not_found_at_open_is_found_at_close(self):
+        # 열 때 앱이 pane 을 아직 붙이지 않았다(herdr-app ls 가 못 찾는다): 보기 터미널은 남기고 pane null·error 없이 기록해
+        # 그 리뷰 동안 다시 열지 않는다. 닫을 때 pane_of(view.terminal) 로 찾아 닫는다(Codex 계획 리뷰 r1)
+        self.crew_reviewing()  # 작업 pane 은 배치(crew.layout)가 ls 로 이미 찾았다
+        self.fail_hc("herdr-app ls", "ls_failed")
+        self.view_step()
+        view = self.crew()["production"]["view"]
+        self.assertEqual((len(self.views_opened()), view["pane"], "error" in view), (1, None, False), view)
+        self.assertEqual(self.hc_state()["terminals"][view["terminal"]]["state"], "live")
+        with self._hc_locked() as st:
+            st["fail"].pop("herdr-app ls", None)
+        self.view_step()  # pane 이 null 이어도 연 보기다(한 탭에 하나)
+        self.assertEqual((len(self.views_opened()), self.crew()["production"]["view"]), (1, view))
+        code, out = self.act_review("T-001", "APPROVE")
+        self.assertEqual(code, 0, out)
+        code, out = self.hteam("review-finish", "T-001")
+        self.assertEqual(code, 0, out)
+        self.view_step()
+        self.assertEqual(self.calls("pane.close"), [{"pane": f"p{view['terminal']}"}])
+        self.assertIn(view["terminal"], self.removed())
+        self.assertIsNone(self.crew()["production"]["view"])
 
 
 class HandoffTamperTest(ReviewCase):
