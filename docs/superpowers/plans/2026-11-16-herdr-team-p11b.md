@@ -4,7 +4,7 @@
 
 **Goal:** 설계 15.3 의 11 의 6(1장 "사용자 결정 (2026-11-16, 11단계 보강)")을 만든다. 메인이 다른 터미널로 바뀌면(`run.json` 의 `main_terminal` 이 바뀜) 앞 메인 아래 남은 관제와 고정 에이전트 작업 터미널을 새 메인 아래로 다시 띄운다. 관제는 한가할 때 스스로 끝나 지금의 다시 띄우기 길(watch `orphaned` → `/herdr-team:up`, 자동 부활)로 새 메인 아래 다시 뜬다(8.13). 고정 에이전트는 리셋의 clear 단계에서 같은 터미널을 비우는 대신 닫아, 다음 태스크가 새 메인 아래 새 세션으로 띄운다(5.9.7 의 4). 버전은 그대로 0.7.1 이고 herdr-orch 는 바꾸지 않는다.
 
-**Architecture:** (1) `outbox.moved_main(p, parent, space)` 하나가 확인 규칙(설계 8.13 확인의 2–4)을 갖는다: `main_parent` 가 주소 M, M ≠ parent, `hc get M`(3초)이 live·`address` ≠ parent·라벨 `herdr.space` == space 면 M. 관제와 리셋이 함께 쓴다. (2) 관제: Run 연결(8.2 의 4)의 `hc get` 에서 자기 parent 를 기억하고, 틱 10 `rehome_step` 이 60초마다 확인해 같은 M 이 두 번 연달아 후보면 정한다. 정한 뒤 틱 끝마다 `main_parent` 가 아직 M 이고 한가하고 메인 watch 가 돌면 `rehome.json` → progress → 로그 뒤 True 를 내고 `main` 이 exit 0 으로 끝난다. 새 관제는 Run 연결 뒤 시작 재확인 전에 `rehome.json` 의 앞 관제 터미널을 정리한다. (3) 고정 에이전트: `crew._clear` 의 첫 시도에서 `_parent_changed` 면 `clear_error = "parent_changed"` 로 지금의 닫기 갈래에 간다. 그 닫기가 실패하면 `rehome = "failed"` 를 두고 다음 틱에 parent 를 보지 않고 `terminal-reset` 한다. (4) `up`·watch·훅·메인 규칙·`hteam status` 는 바꾸지 않는다.
+**Architecture:** (1) `outbox.moved_main(p, parent, space)` 하나가 확인 규칙(설계 8.13 확인의 2–4)을 갖는다: `main_parent` 가 주소 M, M ≠ parent, `hc get M`(3초)이 live·`address` ≠ parent·라벨 `herdr.space` == space 면 M. 관제와 리셋이 함께 쓴다. (2) 관제: Run 연결(8.2 의 4)의 `hc get` 에서 자기 parent 를 기억하고, 틱 10 `rehome_step` 이 60초마다 확인해 같은 M 이 두 번 연달아 후보면 정한다. 정한 뒤 틱 끝마다 `main_parent` 가 아직 M 이고 한가하고 메인 watch 가 돌면 `rehome.json` → progress → 로그 뒤 True 를 내고 `main` 이 exit 0 으로 끝난다. 새 관제는 Run 연결 뒤 시작 재확인 전에 `rehome.json` 의 앞 관제 터미널을 정리한다. (3) 고정 에이전트: `crew._clear` 의 첫 시도에서 `_parent_changed` 면 `clear_error = "parent_changed"` 로 지금의 닫기 갈래에 간다. 그 닫기가 실패하면 `rehome = "failed"` 를 두고, 그 뒤의 리셋 단계(같은 틱의 틱 7 이나 다음 틱)가 parent 를 보지 않고 `terminal-reset` 한다. (4) `up`·watch·훅·메인 규칙·`hteam status` 는 바꾸지 않는다.
 
 **Tech Stack:** Python 3.11+ 표준 라이브러리(json, os, time, unittest). 가짜 hc(`herdr-orch/tests/fakes/hc`: `get` 이 `parent`·`state`·`address`·`labels` 를 돌려준다)와 가짜 herdr-app(`herdr-team/tests/fakes/herdr-app`). 둘 다 바꾸지 않는다.
 
@@ -20,12 +20,12 @@
 - 시험용 환경 변수 `HTEAM_REHOME_CHECK_S`·`HTEAM_REHOME_MIN_UP_S` 를 둔다(없으면 설계 상수 60·600초). `HTEAM_BIND_RETRY_S`·`HTEAM_DRIVE_WAIT_MS` 처럼 관제 프로세스 시험(exit 0, drive.pid 지우기)이 600초를 기다리지 않게 한다. 시험 helpers 의 `DROP_ENV` 에 넣어 사용자 환경이 새지 않게 한다.
 - 확인 2–4 를 `outbox.moved_main` 하나에 두고 관제(8.13)와 리셋(5.9.7 의 4)이 함께 쓴다. 설계가 리셋 쪽을 "8.13 의 확인 4 와 같은 규칙" 이라 적은 것을 코드 하나로 한다. 리셋은 space 로 entry 의 `space`, 관제는 run.json 의 `team_space` 를 준다.
 - 한가함 (2) "결과 없는 요청 파일" 은 새 함수 `queue.waiting(p)` 로 본다.
-- 다시 묶기 닫기 실패 규칙(`rehome = "failed"` → 다음 틱 `terminal-reset`)은 첫 시도뿐 아니라, 관제가 다시 떠서 남은 `clear_error = "parent_changed"` 로 닫기를 잇다가 실패한 때도 같다. 설계 5.9.7 은 다시 뜬 관제가 "닫기부터 한다(지금 규칙 그대로)" 까지만 적었다. 그 닫기 실패를 닫기 세 번 규칙으로 보내면 보기 위한 묶음 때문에 decide 가 오른다.
+- 다시 묶기 닫기 실패 규칙(`rehome = "failed"` → 같은 틱의 리셋 단계나 다음 틱에 `terminal-reset`)은 첫 시도뿐 아니라, 관제가 다시 떠서 남은 `clear_error = "parent_changed"` 로 닫기를 잇다가 실패한 때도 같다. 설계 5.9.7 은 다시 뜬 관제가 "닫기부터 한다(지금 규칙 그대로)" 까지만 적었다. 그 닫기 실패를 닫기 세 번 규칙으로 보내면 보기 위한 묶음 때문에 decide 가 오른다.
 - 다시 묶기 확인은 `hteam drive` 가 Run 에 묶인 관제 객체에서만 돈다(`bound_at`). 다른 곳에서 만든 `Drive` 객체(crew·tasks 의 로그용 등)는 틱을 돌아도 아무것도 하지 않는다.
 - `rehome.json` 정리 로그의 `left(<까닭>)` 까닭: 끝나지 않은 hc 상태 낱말(`live` 등), `관제 라벨 없음`, hc·herdr-app 오류 문구(`hc get 실패: timeout` 등).
 - watch 의 "새 줄이 없으면 첫 확인에서 바로 관제 생존을 본다(그 뒤 10초마다)"(설계 7.3) 는 지금 코드(`last = 0.0`)가 이미 그렇다. 코드는 그대로 두고 시험만 더한다.
 - README 는 9.6 이 적은 업그레이드 절의 (4)·(5) 에 더해, 구조 절 "Herdr 묶음" 줄과 자동 부활의 한계 줄에 다시 묶기 한 문장씩을 더한다(같은 사실을 쓰는 곳이 바뀌지 않은 채 남지 않게).
-- 끝내기 직전 접수된 큐 요청 시험은 `test_drive.py` 에 둔다(설계 15.1 이 시험 위치를 적지 않았다. 다시 묶기 끝내기 뒤의 일이다).
+- 끝내기 직전 접수된 큐 요청 시험은 `test_drive.py` 에 둔다(설계 15.1 이 시험 위치를 적지 않았다. 다시 묶기 끝내기 뒤의 일이다). 그 시험은 큐에 남은 요청(`.abandoned` 포함)과 새 관제의 처리만 본다. 메인 쪽 `queued` 응답은 기존 `test_queue.py` 의 `test_wait_timeout_is_queued_and_result_goes_to_outbox`(생존 확인을 지나 요청을 쓴 뒤 처리할 관제가 없어 시간이 다 됐다)가 본다. 메인은 관제가 왜 처리하지 않았는지 모르고 같은 대기 시간 초과 길을 타므로, 생존 확인 직후에 끝내기를 끼워 넣는 동기화 시험(제출 코드에 멈춤 지점이 필요하다)은 두지 않는다(Codex 계획 리뷰 r1).
 
 ## Global Constraints
 
@@ -391,7 +391,7 @@ class RehomeTest(DriveCase):
         def resetting():
             crew_file.write_text(json.dumps({"production": {"resetting": {"step": "handoff", "dispatch": "dsp-x"}}}))
 
-        busy = (("이번 틱의 메시지·미룬 메시지", lambda: None, lambda: None, False),
+        busy = (("이번 틱의 메시지(미룬 메시지는 test_held_mail_keeps_the_drive_busy)", lambda: None, lambda: None, False),
                 ("결과 없는 큐 요청", put_request, request.unlink, True),
                 ("도는 자식", lambda: d.jobs.update({"review:T-001": {}}), d.jobs.clear, True),
                 ("미룬 리뷰", lambda: d.retry_reviews.add("T-001"), d.retry_reviews.clear, True),
@@ -435,6 +435,32 @@ class RehomeTest(DriveCase):
         with mock.patch.dict(os.environ, {"HC_TERMINAL_ID": "t999"}), self.assertRaises(Exception):
             d.check_mail()  # 확인 실패(Run 소유자가 아니다)
         self.assertFalse(d.mail_quiet)
+
+    def test_held_mail_keeps_the_drive_busy(self):
+        # 미룬 메시지(8.6: 상태에 아직 없는 진행 중 Dispatch)가 있으면 check_mail 이 그 묶음을 ack 하지 않고 horch 가 다음
+        # 확인에서 같은 묶음을 다시 준다. 그동안 한가하지 않아 끝내지 않는다(mail_quiet 는 check_mail 이 정한다)
+        d = self.d
+        self.decided(d)
+        code, sent = self.horch("send", "--to", f"run:{self.run_id}", "--subject", "s", "--body=x", terminal=MAIN)
+        self.assertEqual(code, 0, sent)
+
+        def tick_end() -> bool:
+            d.last_rehome = time.monotonic()  # 확인 간격 안: 끝낼지만 본다
+            return d.rehome_step()
+
+        with mock.patch.object(d, "handle", return_value=True) as handle:  # 처리기가 미룬다(ack 하지 않는다)
+            for _ in range(2):
+                d.check_mail()
+                self.assertFalse(d.mail_quiet)
+                self.assertFalse(tick_end())
+        self.assertEqual([c.args[0]["id"] for c in handle.call_args_list], [sent["message"]] * 2)  # 같은 묶음이 다시 왔다
+        self.assertEqual(d.rehome_to, MAIN)  # 정한 것은 그대로 두고 기다린다
+        self.assertFalse((self.drive_dir / "rehome.json").exists())
+        with mock.patch.object(d, "handle", return_value=None):
+            d.check_mail()  # 이번에는 처리한다(이 틱에는 메시지가 있었다)
+        self.assertFalse(tick_end())
+        d.check_mail()  # 앞 묶음을 --ack 로 확인했고 새 메시지가 없다
+        self.assertTrue(tick_end())
 
     def test_request_racing_the_end_is_run_by_the_next_drive(self):
         # 메인 명령이 관제 생존 확인을 지난 뒤 요청 파일을 쓰기 전에 관제가 빈 큐를 보고 끝났다(설계 8.13 의 끊긴 시간). 요청은
@@ -976,7 +1002,7 @@ def _remove_drive_terminal(terminal: str) -> str:
     if labels.get("hteam.role") != "drive":
         return "left(관제 라벨 없음)"
     try:
-        pane = herdr.pane_of(terminal)
+        pane = herdr.pane_of(terminal)  # 앱 조회 실패도 None: pane 이 없다고 보고 hc rm 한다(6.5 의 보기 닫기와 같다, 13장)
         if pane:
             herdr.close_pane(pane)
         herdr.rm(terminal)
@@ -1078,7 +1104,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam
 **Rules:**
 - 다시 묶기 확인은 clear 단계의 첫 시도에서만 한다: `close_failures == 0`, `clear_error` 없음, `rehome` 없음. 차례는 `main_parent`(None 이면 hc 를 부르지 않는다) → `hc get <작업 터미널>`(3초) → `moved_main(p, 그 parent, entry 의 space)`.
 - 맞으면 `clear_error = "parent_changed"` 를 먼저 쓰고 지금의 닫기(`horch terminal-close --terminal <t>`, `--abandon` 없음)로 간다. 성공하면 `_reset_done(new_terminal(parent_changed), terminal·terminal_argv·work_pane = null)`.
-- `parent_changed` 닫기가 실패하면(첫 시도든, 다시 뜬 관제가 남은 `clear_error` 로 잇든) `clear_error` 를 지우고 `rehome = "failed"` 를 쓴다. `close_failures` 는 세지 않는다. 다음 틱은 parent 를 보지 않고 `terminal-reset` 이다. 그 비우기가 실패하면 지금의 닫기 세 번 규칙이다.
+- `parent_changed` 닫기가 실패하면(첫 시도든, 다시 뜬 관제가 남은 `clear_error` 로 잇든) `clear_error` 를 지우고 `rehome = "failed"` 를 쓴다. `close_failures` 는 세지 않는다. 그 뒤의 리셋 단계는 parent 를 보지 않고 `terminal-reset` 이다. 인수인계 worker_done 을 틱 2 의 메일 확인이 처리해 닫기가 실패했으면 같은 틱의 리셋 단계(틱 7)가 곧바로 하고, 리셋 단계나 재확인(`handoff_check`)에서 실패했으면 다음 틱이다. 실패한 틱을 건너뛰지 않는다: 닫지 못한 터미널을 비우는 것은 지금의 제자리 비우기와 같아 기다릴 까닭이 없다(Codex 계획 리뷰 r1). 그 비우기가 실패하면 지금의 닫기 세 번 규칙이다.
 - hc 실패·M 이 live 아님·다른 space·같은 parent 면 지금처럼 `terminal-reset` 이다(묶음은 리셋을 막지 않는다). 다음 태스크의 새 세션·탭 이름·배치·인수인계 줄은 지금 코드(5.9.2, 5.5 의 7)가 한다.
 
 - [ ] **Step 1: 시험 쓰기**
@@ -1095,6 +1121,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam
 
 import contextlib  # noqa: E402  (11단계 보강의 시험 도구)
 import re  # noqa: E402
+import time  # noqa: E402
 
 from tests.test_crew import HANDOFF_LINE  # noqa: E402
 from hteam import herdr  # noqa: E402
@@ -1201,26 +1228,42 @@ class RehomeResetTest(ResetCase):
                 self.assertEqual((e["terminal"], e["resetting"], e["reset_pending"]), (self.t, None, False))
         self.assertFalse(any("parent_changed" in x for x in self.log_lines()), self.log_lines())
 
-    def test_close_failure_clears_the_same_terminal_next_tick(self):
+    def test_close_failure_clears_the_same_terminal_in_the_same_tick(self):
+        # 인수인계 worker_done 을 틱 2 의 메일 확인이 처리한다. 닫기가 실패해 rehome = failed 를 두면 같은 틱의 리셋 단계
+        # (틱 7)가 parent 를 다시 보지 않고 같은 터미널을 비운다(실패한 틱을 건너뛰지 않는다. 리셋 단계나 재확인에서 실패했으면
+        # 다음 틱이다). 틱 하나로 terminal-close 실패 → 같은 터미널 terminal-reset 순서를 본다
+        self.env["HTEAM_DRIVE_WAIT_MS"] = "50"  # 빈 메일 확인을 짧게
+        self.mark()
+        self.step()
         self.fail_hc("kill", "timeout")  # terminal-close 가 실패한다
-        self.finish_handoff()
+        gets, real = [], herdr.get
+
+        def spy_get(terminal, timeout=10):
+            gets.append(terminal)
+            return real(terminal, timeout=timeout)
+
+        def one_tick(d):
+            with mock.patch.object(d, "handle"):  # 앞 단계의 메시지(T-001 의 worker_done 등)는 처리하지 않고 확인한다
+                d.check_mail()
+                d.check_mail()
+            self.write_handoff()  # 인수인계 워커가 커밋하고 done 한다(Run 메일함에 worker_done)
+            d.last_reconcile = time.monotonic()  # 이 틱에는 재확인이 돌지 않는다(worker_done 은 메일 확인이 처리한다)
+            with mock.patch.object(herdr, "get", side_effect=spy_get):
+                self.assertFalse(d.tick())
+
+        args = self.horch_args(one_tick)
+        self.assertEqual([a[:3] for a in args if a[:1] in (["terminal-close"], ["terminal-reset"])],
+                         [["terminal-close", "--terminal", self.t], ["terminal-reset", "--terminal", self.t]])
+        self.assertEqual(gets.count(self.t), 1)  # 작업 터미널 parent 는 첫 시도에서 한 번만 봤다
         e = self.entry()
-        res = e["resetting"]
-        self.assertEqual((e["terminal"], res["step"], res.get("rehome"), e["close_failures"]), (self.t, "clear", "failed", 0))
-        self.assertNotIn("clear_error", res)
-        self.assertEqual(self.keys(), [])
-        self.assertTrue(any(re.search(r"production 리셋: 다시 묶기 닫기 실패\(.+\), 같은 터미널을 비운다$", x)
-                            for x in self.log_lines()), self.log_lines())
+        self.assertEqual((e["terminal"], e["resetting"], e["reset_pending"], e["close_failures"]),
+                         (self.t, None, False, 0))
+        self.assertEqual(self.keys(), [["/", "c", "l", "e", "a", "r", "enter"]])
+        lines = self.log_lines()
+        fail = next(i for i, x in enumerate(lines)
+                    if re.search(r"production 리셋: 다시 묶기 닫기 실패\(.+\), 같은 터미널을 비운다$", x))
+        self.assertTrue(any("production 리셋: reset(turn " in x for x in lines[fail + 1:]), lines)
         self.assertEqual(self.decides(), [])
-        with self._hc_locked() as st:
-            st["fail"].pop("kill", None)
-        with mock.patch.object(herdr, "get", wraps=herdr.get) as get:
-            self.step()  # 다음 틱: parent 를 다시 보지 않고 지금처럼 같은 터미널을 비운다
-        get.assert_not_called()
-        e = self.entry()
-        self.assertEqual((e["terminal"], e["resetting"], e["reset_pending"]), (self.t, None, False))
-        self.assertEqual(self.keys()[-1], ["/", "c", "l", "e", "a", "r", "enter"])
-        self.assertTrue(any("production 리셋: reset(turn " in x for x in self.log_lines()), self.log_lines())
 
     def test_reset_failure_after_the_close_failure_follows_the_close_rule(self):
         self.fail_hc("kill", "timeout")
@@ -1285,7 +1328,8 @@ def _clear(d, name: str) -> None:
     """비우기와 닫기 재시도(clear 단계, 어디서 죽어도 이어 한다). 비우기 신호가 없거나 실패하면 비웠다고 믿지 않고 터미널을
     닫는다(다음 태스크가 새 세션을 띄운다). 닫지 못하면 다음 틱에 닫기만 다시 하고, 세 번째면 decide 뒤 터미널을 잊는다.
     11단계 보강(5.9.7 의 4): 첫 시도에서 메인이 바뀌었으면(_parent_changed) 비우지 않고 닫는다(parent_changed). 그 닫기가
-    실패하면 rehome = failed 로 두고 다음 틱에 parent 를 보지 않고 같은 터미널을 비운다."""
+    실패하면 rehome = failed 로 두고, 그 뒤의 리셋 단계(같은 틱의 틱 7 이나 다음 틱)가 parent 를 보지 않고 같은 터미널을
+    비운다."""
 ```
 
 **Edit** `herdr-team/lib/hteam/crew.py`
@@ -1312,7 +1356,7 @@ def _clear(d, name: str) -> None:
 
 ```python
         return _reset_done(d, name, f"new_terminal({reason})", terminal=None, terminal_argv=None, work_pane=None)
-    if reason == "parent_changed":  # 다시 묶기의 닫기는 되풀이하지 않는다: 다음 틱에 parent 를 보지 않고 같은 터미널을 비운다
+    if reason == "parent_changed":  # 다시 묶기의 닫기는 되풀이하지 않는다: 그 뒤의 리셋 단계가 parent 를 보지 않고 비운다
         err = data.get("error") or {}
         _set(p, name, resetting={**{k: v for k, v in res.items() if k != "clear_error"}, "rehome": "failed"})
         d.log(f"{name} 리셋: 다시 묶기 닫기 실패({err.get('code') or f'exit_{code}'}), 같은 터미널을 비운다")
