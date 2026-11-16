@@ -780,3 +780,177 @@ class SameSessionNoParentTest(ResetCase):
         (argv,) = self.worker_starts(lambda d: d.handle(msg))
         self.assertEqual(argv, ["worker-start", "--terminal", self.t, "--task", horch_task])
         self.assertNotEqual(self.work_dispatch("T-002"), first)  # 다시 넣었다
+
+
+import contextlib  # noqa: E402  (11단계 보강의 시험 도구)
+import re  # noqa: E402
+import time  # noqa: E402
+
+from tests.test_crew import HANDOFF_LINE  # noqa: E402
+from hteam import herdr  # noqa: E402
+
+
+class RehomeResetTest(ResetCase):
+    """11단계 보강(설계 5.9.7 의 4, 15.1): 메인이 바뀌었으면(작업 터미널 parent ≠ main_terminal M, M 은 같은 space 의 산
+    터미널) 리셋의 clear 단계가 같은 터미널을 비우지 않고 닫는다. 다음 태스크가 새 메인 아래 새 세션으로 띄우고 인수인계
+    파일을 읽는다. self.t 는 main_terminal 없이 띄운 세션(parent 없음, 0.7.0 에서 띄운 세션과 같다)이다."""
+
+    def setUp(self):
+        super().setUp()
+        self.set_run(main_terminal=MAIN)
+
+    def horch_args(self, run) -> list[list[str]]:
+        """관제 객체로 run(d) 를 하고 그동안 horch 에 넘긴 인자를 돌려준다."""
+        seen = []
+        with self.in_drive():
+            d = self.make_drive()
+            real = d.horch().call
+
+            def spy(*args, **kw):
+                seen.append(list(args))
+                return real(*args, **kw)
+
+            with mock.patch.object(d.horch(), "call", side_effect=spy):
+                run(d)
+        return seen
+
+    def finish_handoff(self, n=1, get=None) -> list[list[str]]:
+        """리셋 표시 → 인수인계 → 워커가 인수인계 n 을 커밋하고 done → 관제가 worker_done 을 처리한다(clear 단계). get 이
+        있으면 worker_done 처리 동안 hteam 의 hc get(herdr.get)을 그것으로 바꾼다(horch 는 그대로). horch 인자를 돌려준다."""
+        self.mark()
+        self.step()
+        did = self.handoff_did()
+        code, out = self.act(did, {"write": {"docs/handoff/production.md": f"# 결정 {n}\n"},
+                                   "commit": "[handoff] production: 인수인계",
+                                   "done": {"outcome": "succeeded", "summary": "썼다"}})
+        self.assertEqual(code, 0, out)
+        msg = self.message("worker_done", did, self.done_body(did))
+        with mock.patch.object(herdr, "get", side_effect=get) if get else contextlib.nullcontext():
+            return self.horch_args(lambda d: d.handle(msg))
+
+    @staticmethod
+    def calls_of(args, word) -> list[list[str]]:
+        return [a for a in args if a[:1] == [word]]
+
+    def test_parent_changed_closes_and_next_task_opens_under_main(self):
+        args = self.finish_handoff()
+        self.assertEqual(self.calls_of(args, "terminal-close"), [["terminal-close", "--terminal", self.t]])  # --abandon 없이
+        self.assertEqual(self.calls_of(args, "terminal-reset"), [])
+        self.assertEqual(self.keys(), [])  # /clear 를 치지 않았다
+        e = self.entry()
+        self.assertEqual((e["terminal"], e["terminal_argv"], e["work_pane"], e["resetting"], e["reset_pending"],
+                          e["since_reset"], e["reset_tasks"]), (None, None, None, None, False, 0, []))
+        self.assertRegex(e["last_reset_at"], r"[+-]\d\d:\d\d$")
+        self.assertNotIn(self.t, self.terminals())  # terminal-close 가 끄고 지웠다
+        self.assertTrue(any("production 리셋: new_terminal(parent_changed)" in x for x in self.log_lines()),
+                        self.log_lines())
+        out = self.started("T-002")  # 다음 태스크가 5.9.2 로 새 세션을 띄운다
+        new = out["terminal"]
+        self.assertNotEqual(new, self.t)
+        info = self.terminals()[new]
+        self.assertEqual((info["parent"], "--outlive-parent" in info["flags"], info["labels"]["herdr.tab"]),
+                         (MAIN, True, self.tab()))
+        self.assertIn(HANDOFF_LINE, (self.state_dir / "tasks/T-002/r1-work.md").read_text(encoding="utf-8"))  # 5.5 의 7
+        self.assertEqual(self.entry()["terminal"], new)
+        # 메인이 또 옮겼다: parent 가 있는 세션도 다음 리셋이 새 터미널로 띄운다
+        self.work("T-002")
+        self.free("T-002")
+        self.ready(new)
+        self.add_terminal("t5", argv=["claude"], labels={"herdr.space": "spA", "herdr.tab": "tbMain5"}, status="idle")
+        self.set_run(main_terminal="t5")
+        args = self.finish_handoff(2)
+        self.assertEqual(self.calls_of(args, "terminal-close"), [["terminal-close", "--terminal", new]])
+        self.assertIsNone(self.entry()["terminal"])
+        self.assertEqual(len([x for x in self.log_lines() if "production 리셋: new_terminal(parent_changed)" in x]), 2)
+
+    def test_same_parent_or_unverifiable_main_clears_in_place(self):
+        real = herdr.get
+
+        def work_get_fails(terminal, timeout=10):
+            if terminal == self.t:
+                raise HteamError("hc_timeout", "hc get 가 3초 안에 끝나지 않았다", 1)
+            return real(terminal, timeout=timeout)
+
+        self.add_terminal("t50", argv=["claude"], state="finished", labels={"herdr.space": "spA", "herdr.tab": "tbM"})
+        self.add_terminal("t51", argv=["claude"], labels={"herdr.space": "spB", "herdr.tab": "tbM"}, status="idle")
+        self.add_terminal("t52", argv=["claude"], labels={"herdr.tab": "tbM"}, status="idle")
+        self.add_terminal("t53", name="main-b", argv=["claude"], labels={"herdr.space": "spA", "herdr.tab": "tbM"},
+                          status="idle")
+        cases = (("같은 parent", MAIN, MAIN, None), ("작업 터미널 hc get 실패", MAIN, None, work_get_fails),
+                 ("끝난 메인", "t50", None, None), ("지운 메인", "t404", None, None), ("다른 space", "t51", None, None),
+                 ("space 라벨 없음", "t52", None, None), ("같은 터미널의 다른 이름", "main-b", "t53", None))
+        for n, (why, main, parent, get) in enumerate(cases, start=1):
+            with self.subTest(why=why):
+                self.set_run(main_terminal=main)
+                self.update_terminal(self.t, parent=parent)
+                before = len(self.keys())
+                args = self.finish_handoff(n, get)
+                self.assertEqual(len(self.keys()), before + 1)  # /clear 로 같은 터미널을 비웠다(지금 그대로)
+                self.assertEqual(self.calls_of(args, "terminal-close"), [])
+                e = self.entry()
+                self.assertEqual((e["terminal"], e["resetting"], e["reset_pending"]), (self.t, None, False))
+        self.assertFalse(any("parent_changed" in x for x in self.log_lines()), self.log_lines())
+
+    def test_close_failure_clears_the_same_terminal_in_the_same_tick(self):
+        # 인수인계 worker_done 을 틱 2 의 메일 확인이 처리한다. 닫기가 실패해 rehome = failed 를 두면 같은 틱의 리셋 단계
+        # (틱 7)가 parent 를 다시 보지 않고 같은 터미널을 비운다(실패한 틱을 건너뛰지 않는다. 리셋 단계나 재확인에서 실패했으면
+        # 다음 틱이다). 틱 하나로 terminal-close 실패 → 같은 터미널 terminal-reset 순서를 본다
+        self.env["HTEAM_DRIVE_WAIT_MS"] = "50"  # 빈 메일 확인을 짧게
+        self.mark()
+        self.step()
+        self.fail_hc("kill", "timeout")  # terminal-close 가 실패한다
+        gets, real = [], herdr.get
+
+        def spy_get(terminal, timeout=10):
+            gets.append(terminal)
+            return real(terminal, timeout=timeout)
+
+        def one_tick(d):
+            with mock.patch.object(d, "handle"):  # 앞 단계의 메시지(T-001 의 worker_done 등)는 처리하지 않고 확인한다
+                d.check_mail()
+                d.check_mail()
+            self.write_handoff()  # 인수인계 워커가 커밋하고 done 한다(Run 메일함에 worker_done)
+            d.last_reconcile = time.monotonic()  # 이 틱에는 재확인이 돌지 않는다(worker_done 은 메일 확인이 처리한다)
+            with mock.patch.object(herdr, "get", side_effect=spy_get):
+                self.assertFalse(d.tick())
+
+        args = self.horch_args(one_tick)
+        self.assertEqual([a[:3] for a in args if a[:1] in (["terminal-close"], ["terminal-reset"])],
+                         [["terminal-close", "--terminal", self.t], ["terminal-reset", "--terminal", self.t]])
+        self.assertEqual(gets.count(self.t), 1)  # 작업 터미널 parent 는 첫 시도에서 한 번만 봤다
+        e = self.entry()
+        self.assertEqual((e["terminal"], e["resetting"], e["reset_pending"], e["close_failures"]),
+                         (self.t, None, False, 0))
+        self.assertEqual(self.keys(), [["/", "c", "l", "e", "a", "r", "enter"]])
+        lines = self.log_lines()
+        fail = next(i for i, x in enumerate(lines)
+                    if re.search(r"production 리셋: 다시 묶기 닫기 실패\(.+\), 같은 터미널을 비운다$", x))
+        self.assertTrue(any("production 리셋: reset(turn " in x for x in lines[fail + 1:]), lines)
+        self.assertEqual(self.decides(), [])
+
+    def test_reset_failure_after_the_close_failure_follows_the_close_rule(self):
+        self.fail_hc("kill", "timeout")
+        self.finish_handoff()
+        self.on_clear("none")  # 같은 터미널 비우기도 turn 사건이 없다
+        self.step()
+        e = self.entry()
+        self.assertEqual((e["resetting"]["clear_error"], e["resetting"]["rehome"], e["close_failures"], e["terminal"]),
+                         ("reset_timeout", "failed", 1, self.t))  # 지금의 exit 4 갈래(닫기 세 번 뒤 decide)
+
+    def test_resumed_parent_changed_closes_first(self):
+        # clear_error = "parent_changed" 를 쓴 뒤 닫기 전에 관제가 죽었다. 다시 뜬 관제는 parent 를 다시 보지 않고 닫기부터
+        # 한다(지금 규칙 그대로)
+        self.mark()
+        self.step()
+        did = self.handoff_did()
+        self.write_handoff()
+        self.assertEqual(self.horch("worker-release", "--dispatch", did)[0], 0)
+        self.set_entry(resetting={"step": "clear", "dispatch": did, "at": ago(5), "clear_error": "parent_changed"})
+        with mock.patch.object(herdr, "get", wraps=herdr.get) as get:
+            self.step()
+        get.assert_not_called()
+        e = self.entry()
+        self.assertEqual((e["terminal"], e["resetting"], e["reset_pending"]), (None, None, False))
+        self.assertEqual(self.keys(), [])
+        self.assertTrue(any("production 리셋: new_terminal(parent_changed)" in x for x in self.log_lines()),
+                        self.log_lines())

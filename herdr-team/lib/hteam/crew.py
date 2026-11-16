@@ -630,15 +630,38 @@ def _reset_done(d, name: str, text: str, **fields) -> None:
     d.log(f"{name} 리셋: {text}")
 
 
+def _parent_changed(p, e: dict) -> bool:
+    """리셋의 다시 묶기(설계 5.9.7 의 4, 11단계 보강): main_parent 가 주소 M 이고, 작업 터미널의 parent(hc get 3초, 없으면
+    null)가 M 이 아니고, hc get M 이 entry 의 space 에 산 터미널이다(outbox.moved_main, 8.13 의 확인 4 와 같은 규칙). 하나라도
+    아니거나 hc 로 확인하지 못하면 False(지금처럼 같은 터미널을 비운다. 묶음은 보기 위한 것이라 리셋을 막지 않는다)."""
+    if outbox.main_parent(p) is None:
+        return False
+    try:
+        info = herdr.get(e["terminal"], timeout=3)
+    except HteamError as exc:
+        if exc.exit_code == MISSING:
+            raise
+        return False
+    return outbox.moved_main(p, outbox._parent_ref(info.get("parent")), e["space"]) is not None
+
+
 def _clear(d, name: str) -> None:
     """비우기와 닫기 재시도(clear 단계, 어디서 죽어도 이어 한다). 비우기 신호가 없거나 실패하면 비웠다고 믿지 않고 터미널을
-    닫는다(다음 태스크가 새 세션을 띄운다). 닫지 못하면 다음 틱에 닫기만 다시 하고, 세 번째면 decide 뒤 터미널을 잊는다."""
+    닫는다(다음 태스크가 새 세션을 띄운다). 닫지 못하면 다음 틱에 닫기만 다시 하고, 세 번째면 decide 뒤 터미널을 잊는다.
+    11단계 보강(5.9.7 의 4): 첫 시도에서 메인이 바뀌었으면(_parent_changed) 비우지 않고 닫는다(parent_changed). 그 닫기가
+    실패하면 rehome = failed 로 두고, 그 뒤의 리셋 단계(같은 틱의 틱 7 이나 다음 틱)가 parent 를 보지 않고 같은 터미널을
+    비운다."""
     p = d.p
     e = entry(p, name)
     res = e["resetting"] or {}
     reason, terminal = res.get("clear_error"), e["terminal"]
     if not terminal:  # 그 사이 재확인이 끝난 터미널을 잊었다: 비울 세션이 없다
         return _reset_done(d, name, f"new_terminal({reason or 'terminal_gone'})", terminal_argv=None, work_pane=None)
+    if e["close_failures"] == 0 and reason is None and not res.get("rehome") and _parent_changed(p, e):
+        # 메인이 바뀌었다: 비우지 않고 닫아 다음 태스크가 새 메인 아래 새 세션으로 띄운다(인수인계 파일은 그대로 읽는다)
+        reason = "parent_changed"
+        res = {**res, "clear_error": reason}
+        _set(p, name, resetting=res)  # 닫기 전에 죽으면 다시 뜬 관제가 닫기부터 한다
     if e["close_failures"] == 0 and reason is None:  # 아직 비우기를 하지 않았다
         args = ["terminal-reset", "--terminal", terminal]
         if e["agent"] == "codex":
@@ -664,6 +687,11 @@ def _clear(d, name: str) -> None:
     code, data = _call(d, "terminal-close", "--terminal", terminal)  # 진행 중 Dispatch 가 없으니 --abandon 없이
     if code == 0 and data.get("ok"):
         return _reset_done(d, name, f"new_terminal({reason})", terminal=None, terminal_argv=None, work_pane=None)
+    if reason == "parent_changed":  # 다시 묶기의 닫기는 되풀이하지 않는다: 그 뒤의 리셋 단계가 parent 를 보지 않고 비운다
+        err = data.get("error") or {}
+        _set(p, name, resetting={**{k: v for k, v in res.items() if k != "clear_error"}, "rehome": "failed"})
+        d.log(f"{name} 리셋: 다시 묶기 닫기 실패({err.get('code') or f'exit_{code}'}), 같은 터미널을 비운다")
+        return None
     n = e["close_failures"] + 1
     if n < CLOSE_LIMIT:
         return _set(p, name, close_failures=n)  # resetting 을 남겨 다음 틱에 닫기만 다시
