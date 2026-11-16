@@ -1947,19 +1947,19 @@ kind 는 orca 의 `DECIDE_KINDS` 와 같다: `worker_failed`, `worker_question`,
 - 계속 바쁘거나 watch 가 없으면 기다리기만 한다(상한 없음, 13장). 그동안 관제는 그대로 일한다.
 - 차례: `state/drive/rehome.json` 에 `{at, terminal: <자기 터미널>, parent: <자기 parent 또는 null>, main: M}` 를 원자적으로 쓴다(쓰지 못하면 로그를 남기고 그대로 끝낸다. 앞 터미널은 9.3 의 6 대로 남는다) → outbox progress `관제를 새 메인 터미널(<M>) 아래로 다시 띄우려고 끝냈다. watch 가 orphaned 로 끝나면 /herdr-team:up 으로 다시 띄운다. 도는 워커는 그대로다`(쓰지 못해도 끝낸다. watch 는 `orphaned` 로 안다) → 로그 `관제 종료: rehome: <parent 또는 없음> → <M>` → 루프를 나와 exit 0(8.2 의 7, pid 파일을 지운다). 관제 터미널은 끝난(finished) 터미널로 남는다.
 
-다시 띄우기: `up` 은 바뀌지 않는다. Run 에 묶인 뒤 끝난 관제라 `starting` 이 아니고 pid 가 없으므로 띄운다(9.3 의 2). 메인의 `/herdr-team:up` 과 자동 부활이 함께 불러도 `run.lock` 이 하나만 띄운다(`launch_raced`·`starting`, 9.5). 띄우는 `up` 은 `require_main` 주소를 `main_terminal` 로 쓰고 그 아래 띄우므로(9.3 의 1·3) 새 관제의 parent 는 지금 메인이다. 같은 space 라 관제 탭도 같다(9.3 의 3 의 탭 id).
+다시 띄우기: `up` 은 바뀌지 않는다. Run 에 묶인 뒤 끝난 관제라 `starting` 이 아니고 pid 가 없으므로 띄운다(9.3 의 2). 메인의 `/herdr-team:up` 과 자동 부활이 함께 불러도 `run.lock` 이 하나만 띄운다(`launch_raced`·`starting`, 9.5). 띄우는 `up` 은 `require_main` 주소를 `main_terminal` 로 쓰고 그 아래 띄우므로(9.3 의 1·3) 다시 띄우는 동안 메인이 또 바뀌지 않으면 새 관제의 parent 는 지금 메인이다. 그 사이 다른 메인의 watch 가 `main_terminal` 을 바꾸면(`RACE_KEYS` 밖이라 `up` 은 그대로 띄운다, 9.3 의 1) 새 관제는 처음부터 다른 parent 로 뜨고, Run 에 묶인 지 10분 뒤 확인에서 다시 묶인다(13장). 같은 space 라 관제 탭도 같다(9.3 의 3 의 탭 id).
 
 다시 뜬 뒤(새 관제, 8.2 의 6): Run 연결 뒤 시작 재확인 전에 `rehome.json` 을 한 번 본다. run.json 의 `drive_terminal` 은 `up` 이 띄우기 전에 지우고 새 관제 주소로 쓰므로(9.3 의 3) 앞 관제는 이 파일로만 안다. 그 `terminal` 이 자기 터미널이 아니면 `hc get <terminal>`(3초)을 본다. `finished` 이고 라벨 `hteam.role=drive` 가 있으면(관제 터미널이다) 그 pane 이 있으면(`pane_of`) `pane.close`, 그다음 `hc rm` 이다(6.5 의 3 과 같은 순서). 로그 `앞 관제 터미널 <t> 정리: removed`. 이미 없으면(`not_found`) `gone`. `live`(Herdr 재시작 뒤 `--keep` 이 셸로 바꿈 등)·라벨 없음·hc 실패·pane 닫기나 `hc rm` 실패면 지우지 않고 `left(<까닭>)` 이다(9.3 의 6 대로 관제 탭에 남는다). `--keep` 관제가 스스로 끝나면 `finished` 로 남는다고 본다(9.3 의 6). 실제로 그런지는 15.2 의 11단계 7 에서 본다. 어느 쪽이든 `rehome.json` 을 지운다(한 번만 본다. 지우기 전에 관제가 죽으면 다음 관제가 같은 일을 한다. 멱등이다). 죽어서 남은 관제 터미널은 지우지 않는다(원인을 볼 수 있게, 9.3 의 6). 다시 묶기로 끝난 터미널에는 볼 원인이 없고 drive.log 에 같은 줄이 있다.
 
 되풀이 막기:
 
-- 새 관제는 새 메인 아래라 확인의 3 에서 멈춘다.
-- 새 관제는 Run 에 묶인 지 10분 안에는 다시 묶지 않는다(확인의 1). 같은 폴더의 메인 세션 둘이 watch 를 번갈아 잡아 `main_terminal` 이 오가도(7.3, 알려진 동작) 관제가 다시 뜨는 것은 10분에 한 번까지다. 10분은 자동 부활의 FAILED 창(`RETRY_WINDOW_S` 600초, 9.5)과 같다. `spawned_at` 은 Run 연결보다 앞이므로 자동 부활은 다시 묶기로 끝난 관제를 "10분 안에 다시 꺼졌다" 로 보지 않고 REVIVED 로 띄운다.
+- 새 관제는 새 메인 아래라 확인의 3 에서 멈춘다(다시 띄우는 동안 메인이 또 바뀐 경우는 위 "다시 띄우기").
+- 새 관제는 Run 에 묶인 지 10분 안에는 다시 묶지 않는다(확인의 1). 같은 폴더의 메인 세션 둘이 watch 를 번갈아 잡아 `main_terminal` 이 오가도(7.3, 알려진 동작) 관제가 다시 뜨는 것은 10분에 한 번까지다. 10분은 자동 부활의 FAILED 창(`RETRY_WINDOW_S` 600초, 9.5)과 같다. 다시 묶기로 끝나는 것은 Run 연결 600초 뒤 첫 후보, 다시 60초 뒤 두 번째 후보로 정한 다음이고 그 뒤에도 한가함·watch 를 기다리므로, 자동 부활의 `spawned_at`(분리 실행·pid 확인 뒤 기록, Run 연결과 몇 초 차이)에서 600초가 지난 뒤다. 그래서 자동 부활은 다시 묶기로 끝난 관제를 "10분 안에 다시 꺼졌다" 로 보지 않고 REVIVED 로 띄운다.
 - 두 번 연달아 보기(위)는 watch 를 넘겨받는 짧은 사이를 거른다.
 - `main_terminal` 이 끝났거나 지운 터미널이면 후보가 아니다(확인의 4). 메인이 지워진 사이 parent 없이 뜬 관제는 다음 메인 watch 가 산 주소를 쓴 뒤에 묶인다.
 - 같은 터미널에서 `/exit` 뒤 메인을 다시 열면 주소가 같아(1장) 아무것도 하지 않는다.
 
-끊긴 시간: 앞 관제가 끝난 뒤 새 관제가 Run 에 묶일 때까지 관제가 없다. watch 가 progress 를 주면 메인이 그것을 전하고 watch 를 다시 띄우며, 그 watch 는 첫 확인에서 `orphaned` 로 끝난다(7.3). 메인이 `/herdr-team:up`(`--wait-run 180`)을 하면 보통 메인의 다음 응답 안에 다시 뜬다. 메인이 사용자와 긴 턴 중이면 그 턴 뒤다. 그동안 큐 명령은 `drive_down` 이고 메인은 규칙대로 `/herdr-team:up` 뒤 다시 한다(7.1). 워커의 메시지는 horch 메일함에 쌓여 새 관제가 받는다(9.5 의 "요청을 잃지 않는가"). 새 관제를 띄우지 못하면 관제가 죽었을 때와 같다(9.3 의 실패, 9.5 의 안내).
+끊긴 시간: 앞 관제가 끝난 뒤 새 관제가 Run 에 묶일 때까지 관제가 없다. watch 가 progress 를 주면 메인이 그것을 전하고 watch 를 다시 띄우며, 그 watch 는 첫 확인에서 `orphaned` 로 끝난다(7.3). 메인이 `/herdr-team:up`(`--wait-run 180`)을 하면 보통 메인의 다음 응답 안에 다시 뜬다. 메인이 사용자와 긴 턴 중이면 그 턴 뒤다. 그동안 큐 명령은 `drive_down` 이고 메인은 규칙대로 `/herdr-team:up` 뒤 다시 한다(7.1). 메인 명령이 관제 생존 확인을 지난 뒤 요청 파일을 쓰기 전에 관제가 빈 큐를 보고 끝나면(경합) 그 요청은 큐에 남는다. 메인은 결과를 기다리다(90초) `queued` 를 받고, 다시 뜬 관제가 그 요청을 처리한다(7.1 의 결과 없는 요청, 8.7). 요청을 잃지 않으므로 끝내기와 접수를 묶는 잠금은 두지 않는다. 워커의 메시지는 horch 메일함에 쌓여 새 관제가 받는다(9.5 의 "요청을 잃지 않는가"). 새 관제를 띄우지 못하면 관제가 죽었을 때와 같다(9.3 의 실패, 9.5 의 안내).
 
 관제를 다시 띄우는 것과 같은 영향(관제가 죽었을 때와 같다): 새 관제는 그때 메인이 고르는 플러그인 경로로 돈다(9.6). 이 프로세스 안의 기억(올린 격리 실패·절차 실패, 8.5)은 새 관제가 모르므로 계속되는 같은 실패를 decide 로 한 번 더 올릴 수 있다.
 
@@ -2047,7 +2047,7 @@ Codex 워커·리뷰어에는 Claude 훅이 걸리지 않는다. 그쪽은 `AGEN
 5. pid 는 살아 있는데 heartbeat 가 120초 넘게 멈췄다 → (없음, HUNG). 띄우지 않는다.
 6. pid 가 없거나 죽었다 → `auto-up.json` 의 `spawned_at` 이 600초 안이면 (없음, FAILED). 아니면 `[drive] auto_up` 이 true 면 (띄우기, REVIVED), false 면 (없음, DISABLED).
 
-11단계 보강: 다시 묶기로 끝난 관제(8.13)도 pid 가 없으므로 6 으로 간다. 관제는 Run 에 묶인 지 600초가 지나야 다시 묶으므로 `spawned_at` 의 600초 창에 들지 않고 REVIVED 로 띄운다(FAILED 가 아니다). 결정 규칙은 바꾸지 않는다.
+11단계 보강: 다시 묶기로 끝난 관제(8.13)도 pid 가 없으므로 6 으로 간다. 관제는 Run 에 묶인 지 600초 뒤 첫 후보, 60초 뒤 두 번째 후보로 정한 다음에 끝나므로 `spawned_at`(Run 연결과 몇 초 차이) 의 600초 창에 들지 않고 REVIVED 로 띄운다(FAILED 가 아니다). 결정 규칙은 바꾸지 않는다.
 
 0.3.0 의 UNKNOWN(hc 확인 실패, `hc rm` 된 코디네이터)과 NO_HANDLE(터미널 기록 없음)은 없앴다. 관제는 pid 파일로 판정하므로 터미널을 지워도 프로세스가 죽었으면 다시 띄운다. 새 관제가 Run 을 넘겨받을 때의 `--force` 는 관제가 판단한다(8.2 의 4). 띄우기가 실패하면(pid 를 받지 못함) 문구는 FAILED_SPAWN 이다.
 
@@ -2533,7 +2533,7 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
     - 리셋 없이 오래 도는 고정 에이전트 세션은 다음 리셋까지 옛 메인 아래 따로 보인다. 바로 묶으려면 `hteam agent reset <이름>`(5.9.7). 다시 묶기의 닫기가 실패하면 그 리셋은 같은 터미널을 비우고 세션은 옛 메인 아래 남는다(다음 리셋이 다시 본다).
     - 도는 임시 워커·관제 탭 리뷰어·보기 pane 은 옮기지 않는다(사용자 결정). 끝날 때까지 옛 메인 아래다.
     - 관제는 Run 에 묶인 지 10분 안, 바쁜 동안(메일·큐·자식·리셋), 메인 watch 가 없는 동안 다시 묶지 않는다. 계속 바쁘면 다시 묶지 않는다(상한 없음. 묶음은 보기 위한 것이다).
-    - 다시 띄우는 동안(앞 관제 종료 → 새 관제 Run 연결) 관제가 꺼져 있다: 큐 명령은 `drive_down` 이고 메인이 `/herdr-team:up` 뒤 다시 한다. 메인이 긴 턴 중이면 그 턴 뒤에 다시 뜬다. 새 관제를 띄우지 못하면 관제가 죽었을 때와 같다(9.3, 9.5).
+    - 다시 띄우는 동안(앞 관제 종료 → 새 관제 Run 연결) 관제가 꺼져 있다: 큐 명령은 `drive_down` 이고 메인이 `/herdr-team:up` 뒤 다시 한다. 끝나는 순간과 겹친 요청은 `queued` 로 남아 새 관제가 처리한다. 다시 띄우는 동안 메인이 또 바뀌면 새 관제가 다른 parent 로 떠 10분 뒤 다시 묶인다. 메인이 긴 턴 중이면 그 턴 뒤에 다시 뜬다. 새 관제를 띄우지 못하면 관제가 죽었을 때와 같다(9.3, 9.5).
     - 같은 폴더의 두 번째 Claude 세션이 watch 를 띄우면 그 세션이 메인이 되고(7.3, 1장 실환경 1차) 새 자식과 다시 묶기가 그쪽을 따른다. 세션 둘이 watch 를 번갈아 잡으면 `main_terminal` 이 오가고 관제는 10분에 한 번까지 그쪽으로 다시 뜰 수 있다. 이 동작은 바꾸지 않았다(사용자 결정 2026-11-16).
     - 메인을 다른 space 로 옮기면 다시 묶지 않는다(다른 space 의 메인 아래 묶기는 범위 밖, 16장). 끝났거나 지운 `main_terminal`, 이 기계의 hc 가 모르는 주소도 다시 묶지 않는다.
     - 다시 뜬 관제는 관제가 죽었다 다시 뜬 것과 같다: 그때 메인이 고르는 플러그인 경로로 돌고(9.6), 이 프로세스 안의 기억(올린 격리 실패)이 없어 계속되는 같은 실패를 decide 로 한 번 더 올릴 수 있다(8.13).
@@ -2655,7 +2655,7 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
 - 11단계 보강(다시 묶기, 8.13·5.9.7. Herdr 를 부르지 않는다. 가짜 hc 의 `get` 이 parent·state·address·라벨을 돌려준다):
   - 관제 다시 묶기(`tests/test_drive.py`): 자기 parent 가 M 과 다르고, M 이 live·같은 space 이고, 두 번 연달아 후보이고, Run 에 묶인 지 600초가 지났고, 한가하고, watch 가 돌면 `rehome.json`(`terminal`·`parent`·`main`)을 쓰고 progress 를 남기고 로그 `관제 종료: rehome: …` 뒤 exit 0 으로 끝나며 drive.pid 를 지운다. parent 가 null 인 관제도 끝낸다. 끝내지 않는 경우마다 한 시험: `main_terminal` 없음·형식 틀림·run.json 깨짐, M 이 parent 와 같음, `hc get M` 실패·`not_found`·`finished`, address 가 parent 와 같음, 다른 space·라벨 없음, 자기 parent 모름(`hc get` 실패), 한 번만 후보, 두 확인 사이에 M 이 바뀜, 600초 안, 정한 뒤 `main_parent` 가 바뀜(정한 것을 지운다), 한가하지 않음(이번 틱의 메시지·미룬 메시지, 결과 없는 큐 요청, 도는 자식·미룬 리뷰, `resetting` 인 에이전트 하나씩), watch 없음. M 이 parent 와 같으면 hc 를 부르지 않는다. progress 쓰기가 실패해도 끝낸다.
   - 다시 뜬 관제의 정리(`tests/test_drive.py`): `rehome.json` 의 `terminal` 이 `finished` 이고 라벨 `hteam.role=drive` 가 있으면 `pane.close`(pane 이 있을 때) 뒤 `hc rm` 하고 파일을 지운다. `not_found` 는 `gone`, `live`·라벨 없음·hc 실패·`hc rm` 실패는 지우지 않고(`left`) 파일만 지운다. 파일이 없으면 아무것도 하지 않는다(관제가 죽었다 다시 뜬 경우). `up` 이 run.json 의 `drive_terminal` 을 새 주소로 바꿔도 정리한다.
-  - 되풀이 막기와 다시 띄우기(`tests/test_drive.py`·`test_setup.py`·`test_mainlink.py`·`test_autoup.py`): 다시 묶기로 끝난 뒤 watch 가 `orphaned`(starting 아님)를 내고, `up` 이 새 메인 아래(`--parent <메인>`) 관제를 띄우며, 새 관제는 parent 가 `main_terminal` 과 같아 끝나지 않는다. 자동 부활은 `spawned_at` 이 Run 연결보다 앞이면 REVIVED 다(FAILED 가 아니다).
+  - 되풀이 막기와 다시 띄우기(`tests/test_drive.py`·`test_setup.py`·`test_mainlink.py`·`test_autoup.py`): 다시 묶기로 끝난 뒤 watch 가 `orphaned`(starting 아님)를 내고, `up` 이 새 메인 아래(`--parent <메인>`) 관제를 띄우며, 새 관제는 parent 가 `main_terminal` 과 같아 끝나지 않는다(다시 띄우는 동안 메인이 바뀐 경합은 기존 `test_main_terminal_change_does_not_race_the_launch` 를 보강해 새 관제가 10분 뒤 다시 묶기 후보가 되는지 본다). 자동 부활은 다시 묶기로 끝난 관제를 REVIVED 로 띄운다(FAILED 가 아니다). 끝내기 직전 접수된 큐 요청은 `queued` 로 남아 다시 뜬 관제가 처리한다.
   - 고정 에이전트 다시 묶기(`tests/test_crew_reset.py`): clear 단계에서 작업 터미널 parent 가 M 과 다르고(null 포함) M 이 live·같은 space 면 `terminal-reset` 을 부르지 않고 `terminal-close`(`--abandon` 없음) 뒤 `terminal`·`terminal_argv`·`work_pane` 이 비고 로그 `new_terminal(parent_changed)` 이며 다음 태스크가 `--keep-open --tab … --parent <M>` 으로 새 세션을 띄우고 사양에 인수인계 줄이 든다. 같은 parent·`main_terminal` 없음·`hc get` 실패·M 이 live 아님·다른 space 면 지금처럼 `terminal-reset` 이다. 닫기 실패면 `rehome: "failed"`·`clear_error` 없음이고 다음 틱에 parent 를 보지 않고 `terminal-reset` 을 한다(그것도 실패하면 지금의 닫기 세 번 규칙). `clear_error = "parent_changed"` 로 남은 채 관제가 다시 뜨면 닫기부터 한다. 리뷰 보기 pane 이 있으면 새 작업 pane 이 왼쪽에 온다(지금 배치 시험).
 
 ### 15.2 실환경 확인 (단계마다)
