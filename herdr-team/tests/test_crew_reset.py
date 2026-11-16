@@ -6,7 +6,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta
 
-from tests.helpers import CREW_CONFIG, ROOT
+from tests.helpers import CREW_CONFIG, MAIN, ROOT
 from tests.test_crew import CrewCase, ago
 from hteam import crew
 
@@ -740,3 +740,43 @@ class ReviewFix2Test(ResetCase):
         self.assertNotIn("resend", self.rnd("T-002")["work"])
         self.assertEqual(self.work_dispatch("T-002"), first)
         self.assertTrue(any(f"T-002 not_started 지난 관찰 무시: {first}" in x for x in self.log_lines()), self.log_lines())
+
+
+class SameSessionNoParentTest(ResetCase):
+    """11단계 회귀(설계 3.2·15.1): 인수인계와 입력 유실 재투입은 crew.py 가 horch 를 바로 불러 같은 세션에 넣는다(worker-start
+    --terminal, dispatch.launch 를 거치지 않는다). run.json 에 main_terminal 이 있어도 --parent 를 주지 않는다(horch 는
+    --terminal 과 --parent 를 usage 로 거부한다)."""
+
+    def setUp(self):
+        super().setUp()
+        self.set_run(main_terminal=MAIN)
+
+    def worker_starts(self, run) -> list[list[str]]:
+        """관제 객체로 run(d) 를 하고 그동안 horch 에 넘긴 worker-start 인자를 돌려준다."""
+        seen = []
+        with self.in_drive():
+            d = self.make_drive()
+            real = d.horch().call
+
+            def spy(*args, **kw):
+                seen.append(list(args))
+                return real(*args, **kw)
+
+            with mock.patch.object(d.horch(), "call", side_effect=spy):
+                run(d)
+        return [a for a in seen if a[:1] == ["worker-start"]]
+
+    def test_handoff_has_no_parent(self):
+        self.mark()
+        (argv,) = self.worker_starts(lambda d: d.reset_step())
+        self.assertEqual(argv[:3], ["worker-start", "--terminal", self.t])
+        self.assertNotIn("--parent", argv)
+        self.assertEqual(self.entry()["resetting"]["step"], "handoff")  # horch 가 받았다
+
+    def test_resend_has_no_parent(self):
+        first = self.started("T-002")["dispatch"]
+        horch_task = self.dispatch_row(first)["task_id"]
+        msg = NotStartedTest.not_started_msg(self, first)
+        (argv,) = self.worker_starts(lambda d: d.handle(msg))
+        self.assertEqual(argv, ["worker-start", "--terminal", self.t, "--task", horch_task])
+        self.assertNotEqual(self.work_dispatch("T-002"), first)  # 다시 넣었다

@@ -11,7 +11,7 @@ import os
 import subprocess
 from typing import Iterator
 
-from . import browser, procs, state, workspace
+from . import browser, outbox, procs, state, workspace
 from .errors import CONFLICT, FAIL, MISSING, HteamError
 from .horch import agent_args, parse
 from .launch import Barrier
@@ -171,7 +171,9 @@ def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str |
     cwd 는 새로 띄우기·같은 Task 다시 띄우기의 `--cwd`(없으면 프로젝트 루트), env 는 `--env=KEY=VALUE`(이름 순서, 없거나
     비었으면 넣지 않는다)다. 작업 공간 태스크의 작업 워커·리뷰어가 슬롯의 작업 루트와 슬롯 env 를 준다(설계 5.10.3 의 5,
     5.10.4). 같은 터미널에 넣기(--terminal)에는 넣지 않는다(작업 공간 직무는 고정 에이전트가 없다).
-    결과에 horch 의 placement·start_turn·delivery 를 더한다. 실행 기록에는 horch Task·Dispatch 와 함께 그 터미널을 쓴다."""
+    결과에 horch 의 placement·start_turn·delivery 를 더한다. 실행 기록에는 horch Task·Dispatch 와 함께 그 터미널을 쓴다.
+    11단계(설계 3.2·5.4): 새로 띄우기·같은 Task 다시 띄우기에 run.json 의 main_terminal 이 있으면 `--parent` 를 더한다
+    (hidden 이면 넣지 않는다). horch 의 parent_missing 경고는 결과 warnings 에 그대로 남는다."""
     slot = pick(state.require(p, tid))
     mode, row, warnings = existing(h, slot)
     if mode == "adopt":
@@ -207,13 +209,17 @@ def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str |
         opts += ["--effort", effort]
     keep = ["--keep-open", "--tab", keep_open_tab] if keep_open_tab else []
     hide = ["--hidden"] if hidden else []
+    # 새 터미널은 메인 아래에 묶는다. 띄우기 직전마다 run.json 을 다시 읽는다(horch 는 parent 를 저장하지 않아 retry 도 그때
+    # 값을 준다). 숨은 리뷰어는 pane 이 없어 메인 pane·탭을 닫으면 함께 끝나므로 묶지 않는다(설계 3.2)
+    main = None if hidden else outbox.main_parent(p)
+    parent = ["--parent", main] if main else []
     where = ["--cwd", str(cwd or p.root), *workspace.env_args(env or {})]
     if mode == "retry":
         argv = h.argv("worker-start", "--task", row["task"], "--retry", "--agent", agent, *where,
-                      *opts, *agent_args(args), *keep, *hide)
+                      *opts, *agent_args(args), *keep, *hide, *parent)
     else:
         argv = h.argv("worker-start", "--agent", agent, "--title", slot["title"], "--spec-file", str(spec_file),
-                      *where, *opts, *agent_args(args), *keep, *hide)
+                      *where, *opts, *agent_args(args), *keep, *hide, *parent)
     return _start(p, h, tid, pick, argv, mode, expect, on_fresh, warnings)
 
 

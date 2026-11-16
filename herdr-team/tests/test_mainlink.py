@@ -7,7 +7,7 @@ import unittest
 from unittest import mock
 
 from tests.helpers import DRIVE, MAIN, TeamCase
-from hteam import outbox, state, testgate
+from hteam import outbox, roles, state, testgate
 from hteam.errors import HteamError
 from hteam.paths import Project
 
@@ -916,6 +916,20 @@ class ParentTest(LinkCase):
         for term in ("t80", "t82"):
             code, out = self.reask_from(term)
             self.assertEqual((code, out.get("error", {}).get("code")), (1, "main_unverified"), (term, out))
+
+    def test_children_of_main_are_judged_by_their_own_labels(self):
+        # 11단계 회귀(설계 3.2·1장 확인한 것): 워커(horch.dispatch)·관제(hteam.role=drive)가 메인 아래에 들어도 require_main 은
+        # 자기 라벨로 거부하고 _label_role 은 worker·drive 다. 메인(parent null)은 자식이 있어도 메인이다. 지워진(hc rm)
+        # 조상을 가리키는 라벨 없는 터미널은 main_unverified·None 이다(지금 동작 고정)
+        self.child("t55", MAIN, labels={"horch.run": "r", "horch.dispatch": "dsp-x"})
+        self.child("t56", MAIN, labels={"hteam.role": "drive"})
+        self.child("t57", "t1000")
+        for term, want in (("t55", (5, "not_main")), ("t56", (5, "not_main")), ("t57", (1, "main_unverified"))):
+            code, out = self.reask_from(term)
+            self.assertEqual((code, out.get("error", {}).get("code")), want, (term, out))
+        self.assertEqual(self.reask_from(MAIN)[0], 0)
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            self.assertEqual([roles._label_role(t) for t in ("t55", "t56", MAIN, "t57")], ["worker", "drive", "main", None])
 
 
 if __name__ == "__main__":

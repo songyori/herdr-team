@@ -279,6 +279,18 @@ class TeamCase(unittest.TestCase):
             self.write_heartbeat()
         return run_id
 
+    def set_run(self, **fields) -> None:
+        """run.json 의 키를 고친다(값이 None 이면 뺀다). up·watch 가 쓰는 메인 주소 main_terminal(11단계, 설계 3.4) 등을
+        흉내 낸다."""
+        path = self.state_dir / "run.json"
+        run = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        for key, value in fields.items():
+            if value is None:
+                run.pop(key, None)
+            else:
+                run[key] = value
+        path.write_text(json.dumps(run), encoding="utf-8")
+
     def write_spec(self, tid: str, role: str = "developer", title: str = "앱 만들기", *, owns: str | None = None,
                    depends: str | None = None, front: dict | None = None, body: str = VALID_BODY,
                    commit: bool = True) -> None:

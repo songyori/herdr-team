@@ -12,6 +12,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import time
 import unicodedata
 
@@ -26,6 +27,7 @@ RENDER_KEYS = {"header", "question", "context", "options", "multiSelect"}
 OPTION_KEYS = {"label", "description"}
 DESCRIPTION_MAX = 300  # 질문 줄과 같은 상한. 선택지 설명으로 context(4000자) 상한을 돌아가지 못하게 한다
 PARENT_DEPTH = 10  # require_main 이 따라가는 hc parent 단계 상한
+MAIN_PARENT_RE = re.compile(r"[A-Za-z0-9_.:-]{1,64}")  # main_terminal 을 parent 로 줄 수 있는 꼴(horch --parent 와 같다)
 
 
 def _bad_chars(text: str, allow: str = "") -> bool:
@@ -300,6 +302,16 @@ def set_main_terminal(p, main: str) -> bool:
         run["main_terminal"] = main
         write_json(p.run_file, run)
     return True
+
+
+def main_parent(p) -> str | None:
+    """새 터미널을 띄우기 직전에 읽는 parent(설계 3.2 11단계): run.json 의 main_terminal. 키가 없거나 빈 값이거나 horch
+    --parent 꼴([A-Za-z0-9_.:-] 1–64자)이 아니거나 run.json 을 읽지 못하면 None(--no-parent, 0.7.0 그대로)."""
+    try:
+        value = _run(p).get("main_terminal")
+    except HteamError:
+        return None
+    return value if isinstance(value, str) and MAIN_PARENT_RE.fullmatch(value) else None
 
 
 def _terminal() -> str:

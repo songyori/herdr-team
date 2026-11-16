@@ -7,7 +7,7 @@ import re
 import time
 from datetime import datetime, timedelta
 
-from tests.helpers import BASE_CONFIG, CREW_CONFIG, DRIVE, TeamCase
+from tests.helpers import BASE_CONFIG, CREW_CONFIG, DRIVE, MAIN, TeamCase
 from hteam import compose, config, crew, specs, state
 from hteam.paths import Project
 
@@ -253,6 +253,36 @@ class FirstLaunchTest(CrewCase):
     def clear_hc(self, command):
         with self._hc_locked() as st:
             st["fail"].pop(command, None)
+
+
+class CrewParentTest(CrewCase):
+    """11단계(설계 3.2·5.9.2): 고정 에이전트의 새 세션(--keep-open --tab, lost 뒤 새로 띄우기)은 메인 아래에 들고, 같은 세션에
+    넣기(--terminal)에는 parent 를 주지 않는다(horch 가 --terminal 과 --parent 를 usage 로 거부한다)."""
+
+    def parent_of(self, t) -> tuple:
+        info = self.terminals()[t]
+        return info.get("parent"), "--outlive-parent" in info["flags"], "--no-parent" in info["flags"]
+
+    def test_new_sessions_are_under_main(self):
+        self.set_run(main_terminal=MAIN)
+        t = self.first("T-001")
+        self.assertEqual(self.parent_of(t), (MAIN, True, False))
+        self.assertEqual(self.terminals()[t]["labels"]["herdr.tab"], self.tab())
+        self.update_terminal(t, argv=["zsh"])  # lost: 잊고 새 세션으로 띄운다(5.9.3)
+        out = self.started("T-002")
+        self.assertNotEqual(out["terminal"], t)
+        self.assertEqual(self.parent_of(out["terminal"]), (MAIN, True, False))
+
+    def test_insert_into_the_same_session_has_no_parent(self):
+        self.set_run(main_terminal=MAIN)
+        t = self.first("T-001")
+        out = self.started("T-002")
+        self.assertEqual((out["terminal"], out["placement"]), (t, "same_terminal"), out)
+        self.assertEqual(len([c for c in self.hc_calls() if c[:1] == ["run"]]), 1)  # 새 터미널이 없다
+
+    def test_without_main_terminal_is_no_parent(self):
+        t = self.first("T-001")
+        self.assertEqual(self.parent_of(t), (None, False, True))  # 0.7.0 그대로
 
 
 class InsertTest(CrewCase):

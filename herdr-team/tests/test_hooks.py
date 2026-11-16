@@ -151,6 +151,21 @@ class RoleTest(HookCase):
         self.assertIsNone(self.hook("session-start", {"session_id": "c5"}, terminal=DRIVE))
         self.assertIsNone(self.cached("c5"))
 
+    def test_children_of_main_keep_their_own_roles(self):
+        # 11단계 회귀(설계 3.2): 워커·관제가 hc parent 로 메인 아래에 들어도 훅의 역할은 자기 라벨로 정한다. 메인은 자식이
+        # 있어도 메인이고, 지워진 조상을 가리키는 라벨 없는 터미널은 모름이다(캐시하지 않는다)
+        self.add_terminal("t55", labels={"horch.dispatch": "dsp-old"})
+        self.update_terminal("t55", parent=MAIN)
+        self.add_terminal("t56", labels={"hteam.role": "drive"})
+        self.update_terminal("t56", parent=MAIN)
+        self.add_terminal("t57")
+        self.update_terminal("t57", parent="t1000")
+        for sid, term, cached in (("w1", "t55", "worker"), ("c1", "t56", None), ("u1", "t57", None)):
+            self.assertIsNone(self.hook("session-start", {"session_id": sid}, terminal=term), term)
+            self.assertEqual(self.cached(sid), cached, term)
+        self.hook("session-start", {"session_id": "m1"}, terminal=MAIN)
+        self.assertEqual(self.cached("m1"), "main")
+
     def test_hc_failure_is_not_cached(self):
         self.fail_hc("get", "timeout")
         self.assertIsNone(self.hook("session-start", terminal=MAIN))

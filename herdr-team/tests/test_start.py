@@ -7,7 +7,7 @@ import sys
 import unittest
 from unittest import mock
 
-from tests.helpers import BASE_CONFIG, HORCH_FAKES, TeamCase
+from tests.helpers import BASE_CONFIG, HORCH_FAKES, MAIN, TeamCase
 from hteam import browser, compose, config, dispatch, horch, launch, procs, specs, state, tasks
 from hteam.errors import HteamError
 from hteam.paths import Project
@@ -1187,6 +1187,50 @@ class FullIfLineTest(StartCase):
         self.assertIn("실패하면 고쳐서 커밋하고 다시 돌린다.\n" + self.LINE + "\n- 테스트가 소유 경로에 만드는 산출물", text)
         self.assertEqual(text.count("full_if"), 1)
         self.assertNotIn("full_if", self.spec_text("T-002"))
+
+
+class WorkerParentTest(StartCase):
+    """11단계(설계 3.2·5.4): 새로 띄우는 임시 워커(fresh·retry)는 띄우기 직전에 읽은 run.json 의 main_terminal 아래에 든다."""
+
+    def parent_of(self, out) -> tuple:
+        t = self.hc_state()["terminals"][self.dispatch_row(out["dispatch"])["terminal"]]
+        return t.get("parent"), "--outlive-parent" in t["flags"], "--no-parent" in t["flags"]
+
+    def test_temp_worker_and_retry_get_the_current_main(self):
+        self.set_run(main_terminal=MAIN)
+        self.make_task("T-001")
+        code, out = self.hteam("start", "T-001")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.parent_of(out), (MAIN, True, False))
+        self.make_task("T-002", "tester")
+        self.fail_hc("run", "boom")
+        code, out = self.hteam("start", "T-002")
+        self.assertEqual((code, out["error"]["code"]), (1, "launch_failed"), out)
+        with self._hc_locked() as hc:
+            hc["fail"].clear()
+        self.add_terminal("t2", argv=["claude"])
+        self.set_run(main_terminal="t2")  # 관제가 뜬 뒤 메인이 옮겼다(watch 가 고쳤다)
+        code, out = self.hteam("start", "T-002")  # 같은 horch Task 를 다시 띄운다(--task --retry). horch 는 저장하지 않는다
+        self.assertEqual((code, out["mode"]), (0, "retry"), out)
+        self.assertEqual(self.parent_of(out), ("t2", True, False))
+
+    def test_no_or_empty_key_is_no_parent(self):
+        for tid, value in (("T-001", None), ("T-002", "")):  # 하위 호환(0.7.0 그대로)
+            with self.subTest(value=value):
+                self.set_run(main_terminal=value)
+                self.make_task(tid, owns=f"src/{tid.lower()}/**")
+                code, out = self.hteam("start", tid)
+                self.assertEqual(code, 0, out)
+                self.assertEqual(self.parent_of(out), (None, False, True))
+
+    def test_missing_main_terminal_warns_and_keeps_working(self):
+        self.set_run(main_terminal="t404")  # 지워진 메인 주소: horch 가 parent 없이 한 번 더 띄운다(herdr-orch 15.3)
+        self.make_task("T-001")
+        code, out = self.hteam("start", "T-001")
+        self.assertEqual((code, out["status"]), (0, "working"), out)
+        self.assertIn("parent_missing", out["warnings"])
+        self.assertEqual(self.parent_of(out), (None, False, True))
+        self.assertEqual(self.task_state("T-001")["status"], "working")
 
 
 if __name__ == "__main__":

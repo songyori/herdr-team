@@ -1890,7 +1890,7 @@ if __name__ == "__main__":
 import contextlib  # noqa: E402
 import io  # noqa: E402
 
-from tests.helpers import CREW_CONFIG, HORCH_FAKES  # noqa: E402
+from tests.helpers import CREW_CONFIG, HORCH_FAKES, MAIN  # noqa: E402
 
 
 class CrewReviewCase(TeamCase):
@@ -1977,6 +1977,30 @@ class CrewReviewerTest(CrewReviewCase):
         self.view_step()
         self.assertEqual(self.calls("pane.split"), [])  # 임시 워커 태스크에는 보기 pane 이 없다
         self.assertIsNone(self.crew()["production"].get("view"))
+
+    def test_temp_reviewer_under_main_and_hidden_reviewer_not(self):
+        # 11단계(설계 3.2·6.1 의 7): 임시 워커 태스크의 리뷰어(관제 탭 pane)는 메인 아래에 들고, 숨은 리뷰어는 pane 이 없어
+        # 메인 pane·탭을 닫으면 함께 끝나므로 묶지 않는다(--no-parent). 작업 워커는 고정 세션·임시 워커 모두 메인 아래다
+        self.set_run(main_terminal=MAIN)
+        self.write_spec("T-001", "developer", owns="src/a/**")
+        self.assertEqual(self.hteam("start", "T-001")[0], 0)
+        self.write_spec("T-002", "developer", owns="src/b/**")
+        self.assertEqual(self.hteam("start", "T-002")[0], 0)  # 생산 에이전트가 바빠 임시 워커(overflow, 설계 5.9.4)
+        for tid, folder in (("T-001", "src/a"), ("T-002", "src/b")):
+            code, out = self.act_work(tid, {f"{folder}/app.py": "print(1)\n"})
+            self.assertEqual(code, 0, out)
+        self.edit_crew("production", task=None, dispatch=None)
+        for tid in ("T-001", "T-002"):
+            code, out = self.hteam("review", tid)
+            self.assertEqual((code, out.get("status")), (0, "reviewing"), out)
+        terms = self.hc_state()["terminals"]
+        hidden = terms[self.dispatch_row(self.attempt("T-001")["dispatch"])["terminal"]]
+        temp = terms[self.dispatch_row(self.attempt("T-002")["dispatch"])["terminal"]]
+        self.assertEqual((hidden.get("parent"), "--no-parent" in hidden["flags"]), (None, True))
+        self.assertEqual((temp.get("parent"), "--outlive-parent" in temp["flags"], temp["labels"].get("herdr.tab")),
+                         (MAIN, True, "tbTeam"))
+        for tid in ("T-001", "T-002"):
+            self.assertEqual(terms[self.dispatch_row(self.work_dispatch(tid))["terminal"]].get("parent"), MAIN, tid)
 
 
 class ReviewViewTest(CrewReviewCase):
