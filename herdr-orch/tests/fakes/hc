@@ -12,7 +12,12 @@ value 그대로). events 는 실제 hc 꼴이다: 처음 스냅숏 한 줄 {"cha
 "seq", "data"}}(FAKE_HC_EVENTS_MAX 초 뒤 끝). 구독은 "subscribers": {주소: [pid…]} 에 이름을 올린다.
 "noise": {주소: 초} 면 스냅숏 뒤 그 초 동안 heartbeat 알림을 쉬지 않고 낸다(건너뛸 알림이 이어지는 구독 흉내).
 "burst": {주소: 줄 수} 면 on_clear: event 의 늦은 알림 앞에 그만큼의 heartbeat 알림을 붙여 한 번에 쓴다(파이프 한 조각을
-넘는 건너뛸 알림 뒤에 완료 사건이 오는 흉내)."""
+넘는 건너뛸 알림 뒤에 완료 사건이 오는 흉내).
+
+0.4.0(herdr-orch 설계 15.4): run 은 --parent <값> 을 값 있는 옵션으로 읽어 터미널의 "parent" 에 그 터미널 주소를 둔다
+(--no-parent 나 둘 다 없으면 null). 없는 parent 는 not_found·`no terminal "<값>"`(hc 0.1.20 의 문구)로 실패하고 터미널을
+만들지 않는다(끝난 터미널은 parent 로 받는다). --parent 와 --no-parent 를 함께 주면 exit 2 usage. flags 에 --outlive-parent 를
+남긴다. get 은 parent 를 돌려준다."""
 import fcntl
 import json
 import os
@@ -94,6 +99,14 @@ def handle(st, argv, lines=()):
             return fail(f["kind"], f.get("code", 1))
         sep = args.index("--")
         opts, prog = args[:sep], args[sep + 1:]
+        parent = opt(opts, "--parent")
+        if parent is not None:
+            if "--no-parent" in opts:
+                return fail("usage", 2, "--parent 와 --no-parent 는 같이 쓸 수 없다")
+            found = find(st, parent)
+            if found is None:
+                return fail("not_found", 3, f'no terminal "{parent}"')  # 터미널을 만들지 않는다(실험 g4)
+            parent = found["address"]
         labels = {}
         for i, o in enumerate(opts):
             if o == "--label":
@@ -104,7 +117,8 @@ def handle(st, argv, lines=()):
         st["terminals"][addr] = {
             "address": addr, "name": opt(opts, "--name"), "state": "live", "status": None,
             "argv": prog, "labels": labels, "reason": None, "turn": 0, "cwd": opt(opts, "--cwd", "/"),
-            "exit_code": None, "flags": [o for o in opts if o in ("--bg", "--no-parent", "--no-notify", "--keep")],
+            "exit_code": None, "parent": parent,
+            "flags": [o for o in opts if o in ("--bg", "--no-parent", "--outlive-parent", "--no-notify", "--keep")],
         }
         if f:
             return fail(f["kind"], f.get("code", 1))

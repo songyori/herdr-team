@@ -232,9 +232,10 @@ def _check_task_args(task_id, spec, title) -> None:
 
 def start(store, run_id: str, *, spec, title, agent, model, effort, cwd, extra, task_id, retry,
           keep_open: bool = False, tab: str | None = None, hidden: bool = False,
-          env: dict[str, str] | None = None) -> dict:
+          env: dict[str, str] | None = None, parent: str | None = None) -> dict:
     """keep_open 은 고정 터미널로 띄운다(설계 13.4). tab 은 소유 space 의 그 탭에, hidden 은 herdr 라벨 없이 띄운다.
-    env 는 가드가 에이전트 exec 직전에 환경에 더할 값이다(설계 14장)."""
+    env 는 가드가 에이전트 exec 직전에 환경에 더할 값이다(설계 14장). parent 는 새 워커 터미널의 hc parent 다(설계 15장.
+    저장하지 않는다. hidden 과 같이 오지 않는다: cli 가 막는다)."""
     exe = agents.executable(agent)
     _check_task_args(task_id, spec, title)
     cwd_path = Path(cwd).expanduser().resolve()
@@ -252,7 +253,7 @@ def start(store, run_id: str, *, spec, title, agent, model, effort, cwd, extra, 
     progress: dict = {"ran": False, "terminal": None}  # hc run 이 성공했는지(성공 뒤에는 실패로 바꾸지 않는다)
     try:
         return _launch(store, run_id, exe, base, progress, spec=spec, agent=agent, model=model, effort=effort,
-                       extra=extra, cwd_path=cwd_path, keep_open=keep_open, tab=tab, hidden=hidden)
+                       extra=extra, cwd_path=cwd_path, keep_open=keep_open, tab=tab, hidden=hidden, parent=parent)
     except Exception as exc:
         # 생성 뒤 어떤 오류든 호출자가 task·dispatch 를 알 수 있어야 한다(모르면 --task 없이 재시도해 워커가 중복된다)
         data = {**base, **({"terminal": progress["terminal"]} if progress["terminal"] else {})}
@@ -282,7 +283,7 @@ def _best_effort_receipt(path: Path, receipt: dict, warnings: list[str]) -> None
 
 
 def _launch(store, run_id, exe, base, progress, *, spec, agent, model, effort, extra, cwd_path,
-            keep_open=False, tab=None, hidden=False) -> dict:
+            keep_open=False, tab=None, hidden=False, parent=None) -> dict:
     dispatch_id = base["dispatch"]
     ddir = store.dispatch_dir(run_id, dispatch_id)
     spec_path = ddir / "spec.md"
@@ -314,11 +315,22 @@ def _launch(store, run_id, exe, base, progress, *, spec, agent, model, effort, e
         # 고정 터미널의 생존 판정은 terminal_argv 와 견준다(설계 13.3). 첫 Dispatch 는 launch_argv 그대로다
         store.run("UPDATE dispatches SET launch_argv=?, terminal_argv=? WHERE id=?",
                   (json.dumps(launch_argv), json.dumps(launch_argv) if keep_open else None, dispatch_id))
-    receipt = {"dispatch": dispatch_id, "argv": launch_argv, "labels": labels, "cwd": str(cwd_path)}
+    receipt = {"dispatch": dispatch_id, "argv": launch_argv, "labels": labels, "cwd": str(cwd_path), "parent": parent}
     warnings: list[str] = []
     address = None
+    used = parent  # 실제로 쓴 parent(설계 15.1). 15.3 으로 parent 없이 띄우면 None
     try:
-        result = hcio.run_bg(dispatch_id, str(cwd_path), labels, launch_argv)
+        try:
+            result = hcio.run_bg(dispatch_id, str(cwd_path), labels, launch_argv, parent=parent)
+        except hcio.HcFailure as exc:
+            if not (parent and hcio.parent_missing(exc, parent)):
+                raise
+            # 그 parent 가 hc 에 없어 터미널이 생기지 않았다(설계 15.3). 묶음은 보기 위한 것이라 같은 Dispatch·이름으로
+            # parent 없이 한 번 더 띄운다. 이것도 실패하면 그 실패로 launch_failed 다
+            receipt["parent_fallback"] = {"parent": parent, "error": {"kind": exc.kind, "message": exc.message}}
+            warnings.append("parent_missing")
+            used = None
+            result = hcio.run_bg(dispatch_id, str(cwd_path), labels, launch_argv)
         _die_at("after_run")
         address = result.get("address")
         receipt["result"] = result
@@ -344,7 +356,7 @@ def _launch(store, run_id, exe, base, progress, *, spec, agent, model, effort, e
     if address is not None and row["terminal"] != address:
         raise HorchError("terminal_mismatch", f"가드가 등록한 터미널 {row['terminal']} 와 hc 주소 {address} 가 다르다",
                          FAIL, data=base)
-    return {**base, "terminal": row["terminal"], "state": row["state"], "placement": placement,
+    return {**base, "terminal": row["terminal"], "state": row["state"], "placement": placement, "parent": used,
             "warning": "소유자 탭을 몰라 pane 없이 띄웠다(herdr 라벨 없음)" if placement == "none" else None,
             "warnings": warnings}
 

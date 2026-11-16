@@ -58,6 +58,7 @@ def build_parser() -> Parser:
     s.add_argument("--tab")
     s.add_argument("--hidden", action="store_true")
     s.add_argument("--env", action="append", default=[])  # KEY=VALUE, 되풀이(설계 14.1)
+    s.add_argument("--parent")  # 새 워커 터미널의 hc parent(설계 15.1)
     s = sub.add_parser("reply")
     s.add_argument("--id", type=int, required=True)
     s.add_argument("--body", required=True)
@@ -104,18 +105,23 @@ def build_parser() -> Parser:
 
 
 TAB_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+PARENT_RE = re.compile(r"[A-Za-z0-9_.:-]{1,64}")  # --parent: hc 주소나 이름(설계 15.1)
 
 
 def _check_worker_start(args) -> None:
-    """worker-start 의 옵션 충돌·형식(설계 13.4 표, 14.1 의 --env). 아무것도 만들기 전에 exit 2 usage."""
+    """worker-start 의 옵션 충돌·형식(설계 13.4 표, 14.1 의 --env, 15.1 의 --parent). 아무것도 만들기 전에 exit 2 usage."""
     if args.keep_open and args.terminal:
         raise HorchError("usage", "--keep-open 과 --terminal 은 같이 쓸 수 없다", USAGE)
     if args.tab is not None and args.hidden:
         raise HorchError("usage", "--tab 과 --hidden 은 같이 쓸 수 없다", USAGE)
+    if args.parent is not None and args.hidden:
+        # 숨은 터미널은 pane 이 없어 앱에서 부모를 끝내거나 부모의 pane·탭을 닫으면 --outlive-parent 여도 함께 끝난다
+        raise HorchError("usage", "--parent 와 --hidden 은 같이 쓸 수 없다(pane 없는 자식은 부모의 pane·탭을 닫으면 "
+                                  "함께 끝난다)", USAGE)
     if args.terminal:
         given = [name for name, value in (("--agent", args.agent), ("--model", args.model), ("--effort", args.effort),
                                           ("--agent-arg", args.agent_arg), ("--cwd", args.cwd), ("--tab", args.tab),
-                                          ("--hidden", args.hidden), ("--env", args.env))
+                                          ("--hidden", args.hidden), ("--env", args.env), ("--parent", args.parent))
                  if value not in (None, False, [])]
         if given:
             raise HorchError("usage", f"--terminal 과 {', '.join(given)} 은 같이 쓸 수 없다"
@@ -124,6 +130,8 @@ def _check_worker_start(args) -> None:
         raise HorchError("usage", "--terminal 이 없으면 --agent 가 필요하다", USAGE)
     if args.tab is not None and not TAB_RE.fullmatch(args.tab):
         raise HorchError("usage", "--tab 은 영문자·숫자·_·- 로 된 1–64자다", USAGE)
+    if args.parent is not None and not PARENT_RE.fullmatch(args.parent):
+        raise HorchError("usage", "--parent 는 영문자·숫자·_·.·:·- 로 된 1–64자다(hc 주소나 이름)", USAGE)
     args.env_map = workers.parse_env(args.env)
 
 
@@ -168,7 +176,7 @@ def _with_store(args, store: Store) -> dict:
         return workers.start(store, run_id, spec=spec, title=args.title, agent=args.agent, model=args.model,
                              effort=args.effort, cwd=args.cwd or os.getcwd(), extra=args.agent_arg,
                              task_id=args.task, retry=args.retry, keep_open=args.keep_open, tab=args.tab,
-                             hidden=args.hidden, env=args.env_map)
+                             hidden=args.hidden, env=args.env_map, parent=args.parent)
     if args.cmd == "reply":
         return comms.reply(store, args.id, args.body)
     if args.cmd == "ask":

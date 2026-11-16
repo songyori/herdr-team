@@ -4,7 +4,7 @@
 
 | 플러그인 | 버전 | 하는 일 |
 |---|---|---|
-| `herdr-orch` | 0.3.0 | Claude·Codex 워커를 Herdr pane 으로 띄우고 메일함으로 질문·보고를 주고받는 `horch` CLI 와 스킬 |
+| `herdr-orch` | 0.4.0 | Claude·Codex 워커를 Herdr pane 으로 띄우고 메일함으로 질문·보고를 주고받는 `horch` CLI 와 스킬 |
 | `herdr-team` | 0.7.0 | `herdr-orch` 위의 직무 팀. 사용자는 메인 Claude 세션과 대화하고, 기획·디자인·개발·테스트는 직무 에이전트가 맡고, 산출물은 반대쪽 모델(Claude ↔ Codex)이 리뷰한다 |
 
 - 문서, 명령 출력, 에이전트끼리 주고받는 글은 한국어다.
@@ -23,7 +23,7 @@
 | git | 태스크 사양과 산출물 커밋. 작업 공간(worktree 모드)은 2.23 이상 | |
 | Node/npx | Codex 리뷰어 브라우저 `hteam-browser`(첫 실행에 `chrome-devtools-mcp@1.10.1` 을 내려받는다) | |
 
-- herdr-team 을 쓰려면 herdr-orch 0.3.0 이상도 함께 설치한다.
+- herdr-team 을 쓰려면 herdr-orch 0.4.0 이상도 함께 설치한다.
 - 선택 항목이 둘 있다. 없어도 나머지는 돈다.
   - Codex `image_generation` 기능: designer 의 래스터 에셋(`hteam image`)을 만든다. `codex features enable image_generation` 으로 켠다.
   - Chrome DevTools MCP: 디자인 디렉터가 레퍼런스 화면을 캡처한다. 없으면 링크만 남긴다.
@@ -131,7 +131,7 @@ claude plugin marketplace remove herdr-team
 
 ## herdr-orch
 
-Run 소유자가 Claude·Codex 워커를 Herdr pane 으로 띄우고, SQLite 메일함으로 질문·보고를 주고받는 `horch` CLI 와 스킬 `herdr-orchestration`. 0.2.0 부터 고정 터미널(`worker-start --keep-open`·`--terminal`: 같은 세션에 다음 Dispatch 를 넣는다), 세션 비우기(`terminal-reset`), 고정 터미널 닫기(`terminal-close`)가 있다. 0.3.0 부터 워커 환경 변수(`worker-start --env KEY=VALUE`, 되풀이)를 받는다. `launch-guard` 가 에이전트를 실행하기 바로 전에 그 환경에 넣는다(`hc run` 으로 띄운 터미널은 부른 셸의 환경을 물려받지 않는다). 값은 저장소와 `worker-show` 출력에 남으므로 비밀값을 넘기지 않는다. Codex 워커에는 `-c shell_environment_policy.set.<이름>=<값>` 인자로도 넘긴다(사용자 Codex 설정의 `inherit` 가 값을 빼지 않게. `include_only` 를 쓰면 그래도 빠진다).
+Run 소유자가 Claude·Codex 워커를 Herdr pane 으로 띄우고, SQLite 메일함으로 질문·보고를 주고받는 `horch` CLI 와 스킬 `herdr-orchestration`. 0.2.0 부터 고정 터미널(`worker-start --keep-open`·`--terminal`: 같은 세션에 다음 Dispatch 를 넣는다), 세션 비우기(`terminal-reset`), 고정 터미널 닫기(`terminal-close`)가 있다. 0.3.0 부터 워커 환경 변수(`worker-start --env KEY=VALUE`, 되풀이)를 받는다. `launch-guard` 가 에이전트를 실행하기 바로 전에 그 환경에 넣는다(`hc run` 으로 띄운 터미널은 부른 셸의 환경을 물려받지 않는다). 값은 저장소와 `worker-show` 출력에 남으므로 비밀값을 넘기지 않는다. Codex 워커에는 `-c shell_environment_policy.set.<이름>=<값>` 인자로도 넘긴다(사용자 Codex 설정의 `inherit` 가 값을 빼지 않게. `include_only` 를 쓰면 그래도 빠진다). 0.4.0 부터 `worker-start --parent <터미널>` 로 새 워커 터미널의 hc parent 를 고른다(hc 에 `--parent <터미널> --outlive-parent --no-notify` 로 넘긴다. Herdr 앱 Agents 목록에서 그 터미널 아래에 보이고, 부모가 끝나도 워커는 산다). 저장하지 않으므로 `--task --retry` 때 다시 준다. `--hidden`·`--terminal` 과는 같이 쓸 수 없다. 그 터미널이 hc 에 없으면 parent 없이 한 번 더 띄우고 `warnings` 에 `parent_missing` 을 남긴다.
 
 - 요구사항·설치: 위 "요구사항"·"설치". herdr-orch 만 쓰면 herdr-team 은 설치하지 않아도 된다.
 - 쓰는 법: Herdr 터미널에서 연 Claude Code 세션에 Codex·Claude 워커로 일을 맡기고 결과를 받아 오라고 하면, 스킬 `herdr-orchestration` 이 `horch` 사용법을 읽고 워커를 띄운다.

@@ -224,7 +224,7 @@ class ReadmeTest(unittest.TestCase):
     def test_readme_describes_drive_crew_and_upgrade(self):
         text = (REPO / "README.md").read_text(encoding="utf-8")
         for needle in ("### 관제와 고정 에이전트", "### 리뷰 보기 pane", "그 pane 에서 친 키는 리뷰어에 들어간다", "`ctrl+\\`",
-                       "### 관제 복구", "`[drive] auto_up = false`", "herdr-orch 0.3.0 이상", "#### 0.3.0 → 0.4.0",
+                       "### 관제 복구", "`[drive] auto_up = false`", "herdr-orch 0.4.0 이상", "#### 0.3.0 → 0.4.0",
                        "이전하지 않는다", "`config.toml` 을 지운 뒤 `/herdr-team:init`", "`drive_down`", "`drive_hung`"):
             self.assertIn(needle, text)
         head = text[:text.index("### 이미 세팅한 프로젝트 업그레이드")]
@@ -439,7 +439,7 @@ class ReadmeP7Test(unittest.TestCase):
         market = json.loads((REPO / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
         for entry in market["plugins"]:
             self.assertIn(f"| `{entry['name']}` | {entry['version']} |", self.text)
-        self.assertIn("- herdr-team 을 쓰려면 herdr-orch 0.3.0 이상도 함께 설치한다.", self.text)
+        self.assertIn("- herdr-team 을 쓰려면 herdr-orch 0.4.0 이상도 함께 설치한다.", self.text)
 
     def test_sections(self):
         for needle in ("### 작업 공간(선택, 병렬 개발)", "### 리뷰 점검표와 우선순위", "### Redmine 연동(선택)",

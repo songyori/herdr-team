@@ -87,11 +87,21 @@ def read(terminal: str, lines: int) -> str:
     return proc.stdout
 
 
-def run_bg(name: str, cwd: str, labels: dict[str, str], argv: list[str]) -> dict:
-    args = ["run", "--bg", "--no-parent", "--no-notify", "--name", name, "--cwd", cwd]
+def run_bg(name: str, cwd: str, labels: dict[str, str], argv: list[str], parent: str | None = None) -> dict:
+    """parent 가 있으면 --parent <parent> --outlive-parent(Herdr 앱이 그 터미널 아래에 그리고, 부모 프로그램이 끝나거나
+    hc kill 돼도 워커가 산다), 없으면 --no-parent. --no-notify 는 늘 준다(부모 입력란에 알림을 넣지 않는다). hc 는
+    --parent 와 --no-parent 를 함께 받지 않는다(설계 15.2)."""
+    where = ["--parent", parent, "--outlive-parent"] if parent else ["--no-parent"]
+    args = ["run", "--bg", *where, "--no-notify", "--name", name, "--cwd", cwd]
     for key, value in labels.items():
         args += ["--label", f"{key}={value}"]
     return _json(args, ["--", *argv])
+
+
+def parent_missing(exc: HcFailure, parent: str) -> bool:
+    """hc run 이 그 parent 를 찾지 못해 터미널을 만들지 않았다(kind not_found, hc 0.1.20 의 문구 `no terminal "<parent>"`,
+    설계 15.3). 다른 not_found 문구는 아니다(hc 가 문구를 바꾸면 다시 띄우지 않고 launch_failed 다, 15.4 한계)."""
+    return exc.kind == "not_found" and exc.message == f'no terminal "{parent}"'
 
 
 def send(terminal: str, text: str, if_status: str | None = None, untagged: bool = False, timeout: float = 30) -> dict:

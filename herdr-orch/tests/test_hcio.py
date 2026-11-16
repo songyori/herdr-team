@@ -41,12 +41,41 @@ class HcioTest(HorchCase):
         t = self.hc_state()["terminals"]["t1"]
         self.assertEqual(t["labels"], {"a": "b", "c": "d=e"})
         self.assertEqual(t["argv"], ["prog", "--x", "y"])
+        self.assertIsNone(t["parent"])  # parent 를 주지 않으면 0.3.0 그대로 --no-parent(설계 15.2)
 
     def test_run_failure_kind(self):
         self.fail_hc("run", "spawn_failed", 1)
         with self.assertRaises(hcio.HcFailure) as cm:
             hcio.run_bg("dsp-00000001", "/w", {}, ["prog"])
         self.assertEqual(cm.exception.kind, "spawn_failed")
+
+    def test_run_bg_parent_flags(self):
+        # 0.4.0(설계 15.2): parent 가 있으면 --parent <T> --outlive-parent --no-notify 이고 --no-parent 는 없다
+        self.add_terminal("t5")
+        self.add_terminal("t6", state="finished")  # 끝난 부모도 hc 가 받는다(설계 15.3)
+        res = hcio.run_bg("dsp-00000001", "/w", {}, ["prog"], parent="t5")
+        self.assertEqual(self.hc_calls()[-1], [
+            "run", "--bg", "--parent", "t5", "--outlive-parent", "--no-notify", "--name", "dsp-00000001", "--cwd", "/w",
+            "--json", "--", "prog"])
+        t = self.hc_state()["terminals"][res["address"]]
+        self.assertEqual((t["parent"], sorted(t["flags"])), ("t5", ["--bg", "--no-notify", "--outlive-parent"]))
+        self.assertEqual(hcio.get(res["address"])["parent"], "t5")
+        done = hcio.run_bg("dsp-00000002", "/w", {}, ["prog"], parent="t6")
+        self.assertEqual(self.hc_state()["terminals"][done["address"]]["parent"], "t6")
+        with self.assertRaises(hcio.HcFailure) as cm:  # hc 는 --parent 와 --no-parent 를 함께 받지 않는다(실험 q4)
+            hcio._json(["run", "--bg", "--parent", "t5", "--no-parent"], ["--", "prog"])
+        self.assertEqual(cm.exception.kind, "usage")
+
+    def test_run_bg_missing_parent(self):
+        # 없는 parent 는 not_found·no terminal "<parent>" 이고 터미널이 생기지 않는다(설계 15.3, 실험 g4)
+        with self.assertRaises(hcio.HcFailure) as cm:
+            hcio.run_bg("dsp-00000001", "/w", {}, ["prog"], parent="t404")
+        self.assertEqual((cm.exception.kind, cm.exception.message), ("not_found", 'no terminal "t404"'))
+        self.assertEqual(self.hc_state()["terminals"], {})
+        self.assertTrue(hcio.parent_missing(cm.exception, "t404"))
+        self.assertFalse(hcio.parent_missing(cm.exception, "t405"))
+        self.assertFalse(hcio.parent_missing(hcio.HcFailure("not_found", "no such name"), "t404"))
+        self.assertFalse(hcio.parent_missing(hcio.HcFailure("timeout", 'no terminal "t404"'), "t404"))
 
     def test_send_if_idle(self):
         self.add_terminal("t3", status="working")

@@ -52,6 +52,8 @@ class WorkerStartCliTest(HorchCase):
         self.assertEqual(argv[-1], (ddir / "preamble.md").read_text(encoding="utf-8"))
         self.assertIn(str(ddir / "spec.md"), argv[-1])
         self.assertEqual(json.loads((ddir / "receipt.json").read_text())["result"]["address"], term)
+        self.assertIsNone(json.loads((ddir / "receipt.json").read_text())["parent"])  # --parent 가 없으면 0.3.0 그대로
+        self.assertIsNone(out["parent"])
 
     def test_codex_command(self):
         out = self.start_worker(agent="codex", extra=("--model", "gpt-5.5"))
@@ -170,6 +172,85 @@ class WorkerStartCliTest(HorchCase):
         n = db.execute("SELECT COUNT(*) FROM dispatches WHERE task_id=? AND state IN ('launching','active')",
                        (out["task"],)).fetchone()[0]
         self.assertEqual(n, 1)
+
+    # --- 0.4.0: 부모 터미널(설계 15장) ---
+    def receipt(self, did):
+        return json.loads((self.home / "runs" / self.run_id / "dispatches" / did / "receipt.json").read_text())
+
+    def run_calls(self):
+        return [c for c in self.hc_calls() if c[:1] == ["run"]]
+
+    def test_parent_reaches_hc_receipt_and_result(self):
+        out = self.start_worker(extra=("--parent", "t100", "--keep-open", "--tab", "tbW"))  # --keep-open --tab 과 함께 된다
+        t = self.hc_state()["terminals"][out["terminal"]]
+        self.assertEqual((t["parent"], sorted(t["flags"])), ("t100", ["--bg", "--no-notify", "--outlive-parent"]))
+        self.assertEqual((t["labels"]["herdr.tab"], t["labels"]["horch.persistent"]), ("tbW", "1"))
+        self.assertEqual((out["parent"], out["warnings"]), ("t100", []))
+        receipt = self.receipt(out["dispatch"])
+        self.assertEqual(receipt["parent"], "t100")
+        self.assertNotIn("parent_fallback", receipt)
+        plain = self.start_worker(title="T2")
+        self.assertIsNone(plain["parent"])
+        self.assertEqual(sorted(self.hc_state()["terminals"][plain["terminal"]]["flags"]),
+                         ["--bg", "--no-notify", "--no-parent"])
+
+    def test_parent_usage_errors_create_nothing(self):
+        base = ("worker-start", "--agent", "claude", "--title", "t", "--spec", "s", "--cwd", str(self.tmp))
+        code, out = self.horch(*base, "--parent", "t100", "--hidden", terminal="t100")
+        self.assertEqual((code, out["error"]["code"]), (2, "usage"), out)
+        self.assertEqual(out["error"]["message"],
+                         "--parent 와 --hidden 은 같이 쓸 수 없다(pane 없는 자식은 부모의 pane·탭을 닫으면 함께 끝난다)")
+        for bad in ("bad addr", "", "x" * 65, "t1;rm"):
+            with self.subTest(bad=bad):
+                code, out = self.horch(*base, "--parent", bad, terminal="t100")
+                self.assertEqual((code, out["error"]["code"]), (2, "usage"), out)
+        code, out = self.horch("worker-start", "--terminal", "t9", "--title", "t", "--spec", "s", "--parent", "t100",
+                               terminal="t100")
+        self.assertEqual((code, out["error"]["code"]), (2, "usage"), out)
+        self.assertIn("--parent", out["error"]["message"])
+        self.assertEqual(self.db().execute("SELECT COUNT(*) FROM dispatches").fetchone()[0], 0)
+        self.assertEqual(self.db().execute("SELECT COUNT(*) FROM tasks").fetchone()[0], 0)
+        self.assertEqual(self.run_calls(), [])
+
+    def test_missing_parent_launches_once_more_without_parent(self):
+        # 설계 15.3: 그 parent 의 not_found(no terminal "<parent>") 면 같은 Dispatch·이름으로 parent 없이 한 번 더 띄운다
+        out = self.start_worker(extra=("--parent", "t404"))
+        first, second = self.run_calls()
+        self.assertEqual(first[first.index("--parent") + 1], "t404")
+        self.assertEqual(("--no-parent" in second, "--parent" in second), (True, False))
+        self.assertEqual(first[first.index("--name") + 1], second[second.index("--name") + 1])
+        self.assertEqual((out["state"], out["parent"], out["warnings"]), ("active", None, ["parent_missing"]))
+        self.assertIsNone(self.hc_state()["terminals"][out["terminal"]]["parent"])
+        receipt = self.receipt(out["dispatch"])
+        self.assertEqual((receipt["parent"], receipt["parent_fallback"]),
+                         ("t404", {"parent": "t404", "error": {"kind": "not_found", "message": 'no terminal "t404"'}}))
+
+    def test_other_failures_are_not_retried_without_parent(self):
+        base = ("worker-start", "--agent", "claude", "--title", "t", "--spec", "s", "--cwd", str(self.tmp),
+                "--parent", "t100")
+        for kind, hc_code in (("not_found", 3), ("spawn_failed", 1)):  # 가짜 hc 의 실패 문구는 kind 그대로다
+            with self.subTest(kind=kind):
+                before = len(self.run_calls())
+                self.fail_hc("run", kind, hc_code)
+                code, out = self.horch(*base, terminal="t100")
+                self.assertEqual((code, out["error"]["code"]), (1, "launch_failed"), out)
+                self.assertEqual(len(self.run_calls()), before + 1)  # hc run 한 번
+                self.assertNotIn("parent_fallback", self.receipt(out["dispatch"]))
+                self.clear_hc_fail("run")
+
+    def test_retry_takes_parent_only_when_given(self):
+        out = self.start_worker(extra=("--parent", "t100"))
+        db = self.db()
+        args = ("worker-start", "--agent", "claude", "--task", out["task"], "--retry", "--cwd", str(self.tmp))
+        prev = out["dispatch"]
+        for extra, want in (((), None), (("--parent", "t100"), "t100")):  # 저장하지 않는다(설계 15.1)
+            with self.subTest(extra=extra):
+                db.execute("UPDATE dispatches SET state='launch_failed' WHERE id=?", (prev,))
+                db.commit()
+                code, res = self.horch(*args, *extra, terminal="t100")
+                self.assertEqual((code, res["parent"]), (0, want), res)
+                self.assertEqual(self.hc_state()["terminals"][res["terminal"]]["parent"], want)
+                prev = res["dispatch"]
 
 
 class WorkerStartInProcessTest(HorchCase):
