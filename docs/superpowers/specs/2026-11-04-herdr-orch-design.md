@@ -1,7 +1,7 @@
 # herdr-orch 설계
 
 - 날짜: 2026-11-04
-- 상태: 0.1.x(1–12장)는 구현·실환경 확인을 마치고 병합했다(0.1.2). 0.2.0(13장, 고정 터미널)은 herdr-team 6단계와 한 주기로 구현·실환경 확인을 마치고 병합했다(2026-11-11). 0.3.0(14장, 워커 환경 변수)은 herdr-team 7단계와 한 주기로 구현·실환경 확인을 마쳤다(병합 대기, 2026-11-12).
+- 상태: 0.1.x(1–12장)는 구현·실환경 확인을 마치고 병합했다(0.1.2). 0.2.0(13장, 고정 터미널)은 herdr-team 6단계와 한 주기로 구현·실환경 확인을 마치고 병합했다(2026-11-11). 0.3.0(14장, 워커 환경 변수)은 herdr-team 7단계와 한 주기로 구현·실환경 확인을 마쳤다(병합 대기, 2026-11-12). 0.4.0(15장, 부모 터미널)은 herdr-team 11단계와 한 주기로 설계 중이다(2026-11-16).
 - 범위: herdr-team 저장소의 첫 플러그인 `herdr-orch`
 
 ## 1. 목적
@@ -265,6 +265,7 @@ Dispatch:
    ```
 
    - `--no-parent`: 코디네이터가 끝나도 워커가 살아 있고, hc 가 코디네이터 입력란에 알림을 넣지 않는다.
+   - 0.4.0: `--parent <T>` 를 받으면 `--no-parent` 대신 `--parent <T> --outlive-parent` 다(15장). 위 두 까닭은 이제 `--outlive-parent`(부모 프로그램이 끝나거나 `hc kill` 돼도 산다)와 `--no-notify` 가 따로 막는다. 다만 앱에서 부모를 끝내거나 부모의 pane·탭을 닫으면 pane 없는 자식은 `--outlive-parent` 여도 함께 끝난다. 이것은 `--no-parent` 만 막는다(15.1 의 `--hidden`). `--parent` 가 없으면 지금 그대로다.
    - 소유 탭이 NULL 이면(소유자가 Herdr 창 밖 터미널) herdr 라벨 없이 띄우고 `placement: "none"` 과 경고를 돌려준다.
 6. 결과를 `receipt.json` 으로 쓴다.
    - 성공: hc 가 돌려준 주소로 `terminal` 을 채우고 `active` 로 바꾼다(조건부 쓰기: `state = 'launching'` 일 때만). 가드가 먼저 등록했으면 상태를 그대로 두고 주소만 대조한다. 다르면 exit 1.
@@ -714,6 +715,36 @@ herdr-team 7단계의 작업 공간(그 설계 5.10)은 워커·리뷰어마다 
 - 버전 세 곳(`paths.VERSION`, `herdr-orch/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`)을 0.3.0 으로 맞춘다. herdr-team 의 `HORCH_MIN` 은 0.3.0 이 된다.
 - 한계: 값은 저장소(SQLite)와 `worker-show` 출력에 남는다. 비밀값을 넘기지 않는다(herdr-team 은 포트·경로 같은 값만 넘긴다).
 
-## 15. 범위 밖
+## 15. 0.4.0: 부모 터미널 (2026-11-16)
 
-gate, 태스크 의존성(DAG), 그룹 주소(`@all` 등), 중첩 워커, 원격 머신(`--on`), heartbeat, Codex·Claude 외 에이전트, 메시지 종류별 대기 필터, `pane.split` 대체 배치, 소유자 실행(herdr-team 이 관제를 띄운다), 팀 보드 Herdr 모드. 0.2.0 에서 "같은 터미널 재사용" 은 고정 터미널로 범위 안이 됐다(13장). 0.2.0 도 범위 밖: hc core 재시작 뒤 고정 터미널 복구 확인(실험 X7 을 하지 않았다), 입력 유실의 자동 재전송(호출자가 정한다), 비우기의 화면 확인.
+herdr-team 11단계(그 설계 1장 11단계 결정·확인한 것, 3.2)는 Herdr Agents 목록에서 프로젝트 터미널을 메인 세션 아래로 묶는다. Herdr 앱은 hc parent 가 있는 터미널을 부모 아래 sub-agent 로 그린다. horch 는 워커를 늘 `--no-parent` 로 띄워(8장) 모두 맨 위에 나왔다. 호출자가 부모를 고르게 한다. hc parent 는 띄울 때 한 번 정해지고 나중에 바꾸는 명령이 없다(hc schema).
+
+### 15.1 `worker-start --parent`
+
+- `--parent <터미널>`(선택, hc 주소나 이름. `[A-Za-z0-9_.:-]` 1–64자, 아니면 exit 2 `usage`): 새로 띄우는 워커 터미널의 hc parent. `--keep-open`·`--tab`·`--task --retry`·`--env` 와 쓸 수 있다.
+- `--hidden` 이나 `--terminal` 과 함께면 exit 2 `usage` 다(아무것도 만들기 전에, 13.4 의 옵션 검사와 같은 곳). `--terminal` 은 새 터미널을 띄우지 않는다(지금 문구의 목록에 `--parent` 를 더한다). 숨은 터미널은 pane 이 없어 앱에서 부모를 끝내거나(`terminal.kill`) 부모의 pane·탭을 닫으면 `--outlive-parent` 여도 함께 끝난다(그 설계 1장 실험 e1·k1·m1). 문구: `--parent 와 --hidden 은 같이 쓸 수 없다(pane 없는 자식은 부모의 pane·탭을 닫으면 함께 끝난다)`.
+- 저장하지 않는다(배치처럼, 13.4). `--task --retry` 로 다시 띄울 때 호출자가 다시 준다. `worker-list`·`worker-show` 의 재시도 안내 argv 에도 넣지 않는다.
+- 결과에 `parent`(실제로 쓴 parent. 주지 않았거나 15.3 으로 parent 없이 띄웠으면 null)를 더하고, `receipt.json` 에 받은 `parent` 를 쓴다.
+- `--parent` 가 없으면 0.3.0 그대로다(일반 horch 사용자).
+
+### 15.2 hcio
+
+`run_bg(name, cwd, labels, argv, parent=None)`: parent 가 있으면 `hc run --bg --json --parent <T> --outlive-parent --no-notify --name … --cwd …`, 없으면 지금처럼 `--no-parent --no-notify`. `--no-notify` 는 늘 준다(부모를 정해도 부모 입력란에 아무것도 들어가지 않았다, 실험 f1). `--outlive-parent` 면 부모 프로그램이 저절로 끝나도 `hc kill` 로 끝나도 워커가 산다(실험 c1–c3·d1·d2). hc 는 `--parent` 와 `--no-parent` 를 함께 받지 않는다(usage, 실험 q4).
+
+### 15.3 parent 가 없을 때
+
+- 8장 5 의 `hc run` 이 kind `not_found`, message `no terminal "<parent>"`(hc 0.1.20 의 문구)로 실패하면 터미널은 생기지 않았다(실험 g4). `launch_failed` 로 바꾸기 전에 같은 Dispatch·같은 이름으로 parent 없이(`--no-parent`) 한 번 더 띄운다. `receipt.json` 에 `parent_fallback: {parent, error}` 를, 결과 `warnings` 에 `parent_missing` 을 넣는다. 묶음은 보기 위한 것이라 그것 때문에 워커를 못 띄우면 안 된다.
+- 다른 실패(다른 not_found 문구, 시간 초과, 그 밖의 kind)는 다시 띄우지 않고 8장 6 대로 `launch_failed` 다. 다시 띄운 것도 실패하면 그 실패로 `launch_failed` 다.
+- 끝난(finished) 부모는 hc 가 받는다(실험 q1). horch 는 미리 `hc get` 으로 보지 않는다. 화면 묶음만 보이지 않고 워커는 산다. 호출자가 부모 주소를 고친다(herdr-team 은 메인 명령이 고친다).
+
+### 15.4 테스트·버전·한계
+
+- 테스트(`test_hcio`, `test_workers_start`): `run_bg(parent="t5")` 의 인자가 `--parent t5 --outlive-parent --no-notify` 이고 `--no-parent` 가 없다. parent 가 없으면 지금 인자 그대로다. `worker-start --parent` 가 hc 호출·receipt·결과에 실리고 `--keep-open --tab` 과 함께 된다. `--hidden`·`--terminal` 과 함께거나 형식이 틀리면 exit 2 이고 Task·Dispatch 를 만들지 않는다. 가짜 hc 가 그 parent 를 not_found(그 문구)로 거부하면 parent 없이 한 번 더 띄우고 `parent_missing`·`parent_fallback`·결과 `parent: null` 이다. 다른 not_found 문구나 다른 실패는 다시 띄우지 않는다(hc run 호출 한 번). `--task --retry` 는 parent 를 주면 그 값, 안 주면 parent 없이 띄운다(저장하지 않는다).
+- 가짜 hc(`tests/fakes/hc`): `run` 이 `--parent <값>` 을 값 있는 옵션으로 읽어 터미널의 `parent` 에 둔다(`--no-parent` 나 둘 다 없으면 null, 지금 시험이 기대는 동작). `flags` 에 `--outlive-parent` 를 남긴다. 없는 parent 는 kind `not_found`, message `no terminal "<값>"` 으로 실패하고 터미널을 만들지 않는다. `--parent`·`--no-parent` 를 함께 주면 exit 2 usage. `get` 은 `parent` 를 돌려준다.
+- 버전 세 곳(`paths.VERSION`, `herdr-orch/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`)을 0.4.0 으로 맞춘다. 스키마는 그대로다(v4). herdr-team 의 `HORCH_MIN` 은 0.4.0 이 된다.
+- 한계: 이미 떠 있는 워커의 parent 는 바꾸지 못한다. 부모를 `hc rm` 하면 자식의 parent 는 없는 주소를 가리키고(orphan), 앱이 그것을 어떻게 그리는지는 확인하지 못했다. hc core 정지·재시작 뒤 parent 가 남는지 확인하지 않았다(core 를 멈추지 않는다. `--outlive-parent` 라 워커가 함께 끝나지는 않는다). not_found 를 문구로 가르므로 hc 가 문구를 바꾸면 다시 띄우지 않고 `launch_failed` 가 된다. 소유 탭이 없는 Run(`placement: none`)에 `--parent` 를 주면 pane 없는 자식이라 부모의 pane·탭 닫기에 함께 끝난다(herdr-team 관제는 늘 관제 탭에서 Run 을 가진다).
+- 실환경은 herdr-team 11단계 실환경 확인(그 설계 15.2)에서 함께 본다. 사용자 hc core 는 멈추거나 다시 띄우지 않는다.
+
+## 16. 범위 밖
+
+gate, 태스크 의존성(DAG), 그룹 주소(`@all` 등), 중첩 워커, 원격 머신(`--on`), heartbeat, Codex·Claude 외 에이전트, 메시지 종류별 대기 필터, `pane.split` 대체 배치, 소유자 실행(herdr-team 이 관제를 띄운다), 팀 보드 Herdr 모드. 0.2.0 에서 "같은 터미널 재사용" 은 고정 터미널로 범위 안이 됐다(13장). 0.2.0 도 범위 밖: hc core 재시작 뒤 고정 터미널 복구 확인(실험 X7 을 하지 않았다), 입력 유실의 자동 재전송(호출자가 정한다), 비우기의 화면 확인. 0.4.0 도 범위 밖: 떠 있는 터미널의 parent 바꾸기(hc 에 없다), parent 저장과 재시도 안내의 parent, 띄우기 전 부모 생존 확인.
