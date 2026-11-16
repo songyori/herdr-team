@@ -5,7 +5,7 @@
 | 플러그인 | 버전 | 하는 일 |
 |---|---|---|
 | `herdr-orch` | 0.4.0 | Claude·Codex 워커를 Herdr pane 으로 띄우고 메일함으로 질문·보고를 주고받는 `horch` CLI 와 스킬 |
-| `herdr-team` | 0.7.0 | `herdr-orch` 위의 직무 팀. 사용자는 메인 Claude 세션과 대화하고, 기획·디자인·개발·테스트는 직무 에이전트가 맡고, 산출물은 반대쪽 모델(Claude ↔ Codex)이 리뷰한다 |
+| `herdr-team` | 0.7.1 | `herdr-orch` 위의 직무 팀. 사용자는 메인 Claude 세션과 대화하고, 기획·디자인·개발·테스트는 직무 에이전트가 맡고, 산출물은 반대쪽 모델(Claude ↔ Codex)이 리뷰한다 |
 
 - 문서, 명령 출력, 에이전트끼리 주고받는 글은 한국어다.
 - 개인 프로젝트이고 0.x 버전이다. 버전이 바뀌면 설정과 동작이 바뀔 수 있다(아래 "이미 세팅한 프로젝트 업그레이드").
@@ -163,6 +163,7 @@ Run 소유자가 Claude·Codex 워커를 Herdr pane 으로 띄우고, SQLite 메
 - 요청 큐: horch 를 건드리는 메인 명령(`start`, `start-ready`, `fix`, `accept`, `drop`, `review --retry`, `design-decide`, `scope`, `agent reset`, `test-confirm`, `slot reset`)은 파일 큐(`.herdr-team/state/drive/queue/`)로 관제에 넘어간다. 관제가 90초 안에 실행하면 그 결과를, 아니면 `status: queued` 를 돌려주고 결과는 watch 의 `result` 로 온다. 관제가 꺼져 있으면 큐에 넣지 않고 `drive_down` 으로 거부한다.
 - 고정 에이전트: `config.toml` 의 `[crew.<이름>]`(직무 목록, `agent` claude·codex, 모델)마다 하나씩 있는 오래 사는 작업 세션. 같은 세션이 그 직무 태스크와 수정 라운드를 이어 맡는다(에이전트 탭 `herdr-team <제목>` 의 왼쪽 pane). 묶음이 끝나면 인수인계 `docs/handoff/<이름>.md` 를 쓰고 제자리에서 `/clear` 로 비운다(Codex 는 `/clear <이름>`). 비웠다는 신호가 10초 안에 없으면 새 터미널로 띄운다. 상태는 `.herdr-team/state/crew.json`.
 - 임시 워커: 맡을 고정 에이전트가 없거나, 바쁘거나(`[overflow] enabled = true` 일 때), 태스크의 작업 에이전트가 그 고정 에이전트와 다르면 라운드마다 관제 탭 pane 에 새로 띄운다.
+- Herdr 묶음(0.7.1): Herdr 앱 Agents 목록에서 관제, 고정 에이전트 작업 터미널, 임시 워커, 관제 탭 리뷰어(임시 워커 태스크), 리뷰 보기 pane 이 메인 세션 아래 한 단계로 보인다(hc parent). 메인 주소는 `hteam up`·`hteam watch` 가 `.herdr-team/state/run.json` 의 `main_terminal` 에 쓰고, 관제는 터미널을 띄울 때마다 그 값을 읽는다. 메인 세션을 새 터미널로 옮기면 그 세션의 첫 watch 뒤에 띄우는 터미널부터 새 메인 아래에 든다. 묶인 터미널은 모두 pane 이 있어 메인 세션이 끝나거나 메인 pane·탭을 닫아도 산다(`--outlive-parent`). 숨은 리뷰어(고정 에이전트 태스크)는 pane 이 없어 메인 pane·탭을 닫으면 함께 끝나므로 묶지 않는다(리뷰 보기 pane 으로 보인다). 이미 떠 있는 터미널의 parent 는 바꿀 수 없다. 워커 pane 을 앱에서 park 하면 pane 없는 자식이 되어 메인 pane·탭을 닫을 때 함께 끝난다(관제가 lost 로 보고 복구한다).
 - 한계: 고정 에이전트 컨텍스트는 한 묶음 동안 쌓인다. 에이전트마다 모델이 하나라 designer 태스크도 생산 에이전트 모델로 돈다. 넣은 입력이 사라졌는지는 60초가 지나야 안다. hc core 재시작 뒤 이어지는지는 확인하지 않았다.
 
 ### 리뷰 보기 pane
@@ -291,6 +292,22 @@ Run 소유자가 Claude·Codex 워커를 Herdr pane 으로 띄우고, SQLite 메
 ### 이미 세팅한 프로젝트 업그레이드
 
 scaffold 는 있는 파일을 덮어쓰지 않는다. 앞 버전에서 세팅한 프로젝트는 새 기능을 손으로 옮겨야 하고, 옮기지 않으면 조용히 빠진다(예: `[roles.director]` 가 없으면 디자인 디렉터 단계와 시스템 보강이 없다).
+
+#### 0.7.0 → 0.7.1
+
+herdr-orch 도 0.4.0 으로 올린다. Herdr 앱 Agents 목록에서 프로젝트 터미널을 메인 세션 아래 한 단계로 묶었다(위 "관제와 고정 에이전트" 의 Herdr 묶음). parent 는 터미널을 띄울 때만 정해지므로 새 관제가 떠야 관제와 그 뒤 띄우는 워커·리뷰어·리뷰 보기 pane 이 메인 아래에 든다. 순서는 0.5.0 → 0.6.0 과 같다. 3–5 는 프로젝트를 쓰는 사람이 직접 한다(이유는 0.5.0 → 0.6.0 과 같다).
+
+1. 플러그인 둘을 올린다(`claude plugin marketplace update herdr-team`, `claude plugin update herdr-orch@herdr-team`, `claude plugin update herdr-team@herdr-team`). herdr-orch 를 올리지 않으면 hteam 이 0.4.0 아래 horch 를 고르지 않아 exit 12 로 멈춘다.
+2. `hteam upgrade` 와 `CLAUDE.md` 절은 할 일이 없다(복사한 규칙 파일과 메인 규칙이 바뀌지 않았다).
+3. 지금 메인 세션을 끝낸다(`/exit`).
+4. 관제를 끈다(0.5.0 → 0.6.0 의 4). 관제와 그 자식은 관제가 뜰 때의 플러그인 경로로 돌고, 떠 있는 관제의 parent 는 바꿀 수 없다.
+5. 같은 폴더에서 메인 세션을 새로 열고 메시지를 하나 보낸다. 새 세션의 훅이 관제를 0.7.1 로 다시 띄운다. 관제가 뜨지 않으면 `/herdr-team:up` 을 실행한다.
+6. 확인한다: `.herdr-team/bin/hteam version` 이 `0.7.1` 이고, `hc get <관제 터미널>` 의 `argv` 가 `…/herdr-team/0.7.1/bin/hteam`, `parent` 가 메인 터미널이다. `.herdr-team/state/run.json` 의 `main_terminal` 이 메인 터미널 주소다(새 관제를 띄운 `up` 이나 새 세션의 첫 `watch` 가 쓴다).
+
+올린 뒤 달라지는 것:
+
+- Agents 목록: 관제, 고정 에이전트 작업 터미널, 임시 워커, 관제 탭 리뷰어, 리뷰 보기 pane 이 메인 세션 아래 한 단계로 보인다. 숨은 리뷰어(고정 에이전트 태스크)는 parent 가 없어 0.7.0 과 같다(리뷰 보기 pane 으로 보인다).
+- 업그레이드 전에 띄운 터미널은 맨 위에 남는다. 살아 있던 고정 에이전트 작업 터미널은 같은 터미널을 다시 쓰므로 그 터미널이 새로 생길 때까지(lost, 리셋이 새 터미널로 띄우는 길) 맨 위에 남는다.
 
 #### 0.6.1 → 0.7.0
 

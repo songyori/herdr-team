@@ -143,7 +143,7 @@ class ScaffoldTest(TeamCase):
         shim = str(self.proj / ".herdr-team/bin/hteam")
         env = dict(self.env, HERDR_TEAM_PLUGIN_ROOT=str(ROOT))
         out = subprocess.run([sys.executable, shim, "version"], capture_output=True, text=True, env=env)
-        self.assertEqual(json.loads(out.stdout)["version"], "0.7.0")
+        self.assertEqual(json.loads(out.stdout)["version"], "0.7.1")
         registry = self.tmp / "installed.json"
         registry.write_text(json.dumps({"plugins": {"herdr-team@herdr-team": [{"installPath": str(ROOT)}]}}))
         env = dict(self.env, HTEAM_PLUGINS_JSON=str(registry))
@@ -385,8 +385,17 @@ class TemplateContractTest(unittest.TestCase):
         for needle in ("`.herdr-team/bin/hteam upgrade`", "`CLAUDE.md`", "관제를 끈다", "메인 세션을 새로 열고",
                        "`docs/design/screens/<화면>/artifact/`", "`…/herdr-team/0.7.0/bin/hteam`", "질문 보기 pane 은 그 질문에 답하면 닫힌다"):
             self.assertIn(needle, p10)
+        # 11단계(0.7.1): 플러그인 둘, upgrade·CLAUDE.md 는 할 일 없음, 관제 다시 띄우기(설계 9.6)
+        self.assertLess(readme.index("#### 0.7.0 → 0.7.1"), readme.index("#### 0.6.1 → 0.7.0"))
+        p11 = readme[readme.index("#### 0.7.0 → 0.7.1"):readme.index("#### 0.6.1 → 0.7.0")]
+        for needle in ("`claude plugin update herdr-orch@herdr-team`", "exit 12", "할 일이 없다", "관제를 끈다",
+                       "메인 세션을 새로 열고", "`…/herdr-team/0.7.1/bin/hteam`", "`main_terminal`", "숨은 리뷰어",
+                       "맨 위에 남는다"):
+            self.assertIn(needle, p11)
         team = readme[readme.index("## herdr-team\n"):readme.index("### 이미 세팅한 프로젝트 업그레이드")]
         self.assertNotIn("질문 보기", team)
+        for needle in ("메인 세션 아래 한 단계로 보인다", "`main_terminal`", "`--outlive-parent`", "숨은 리뷰어"):
+            self.assertIn(needle, team)
         self.assertIn("메인이 질문 전에 답변 글로 그린다", team)
         start = readme.index("### 디자인 아티팩트와 댓글")
         design = readme[start:readme.index("\n### ", start + 1)]
