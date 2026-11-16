@@ -17,7 +17,7 @@ import time
 import unicodedata
 
 from . import herdr, procs, state, testgate
-from .errors import CONFLICT, DENIED, FAIL, USAGE, HteamError
+from .errors import CONFLICT, DENIED, FAIL, MISSING, USAGE, HteamError
 from .horch import Horch
 from .paths import find_project
 from .util import bad_side_file, die_at, env_float, flock, now, read_json, read_json_strict, write_atomic, write_json
@@ -312,6 +312,27 @@ def main_parent(p) -> str | None:
     except HteamError:
         return None
     return value if isinstance(value, str) and MAIN_PARENT_RE.fullmatch(value) else None
+
+
+def moved_main(p, parent: str | None, space: str | None) -> str | None:
+    """메인이 바뀐 뒤 다시 묶을 주소(설계 8.13 확인의 2–4, 5.9.7 의 4 11단계 보강). main_parent 가 주소 M 이고, M 이 parent(없으면
+    null)와 다르고, hc get M(3초)이 성공해 state 가 live 이고 그 address 가 parent 와 다르고(같은 터미널을 다른 꼴로 적은 경우),
+    라벨 herdr.space 가 space 와 같으면 M. 하나라도 아니거나 hc 로 확인하지 못하면 None(끝났거나 지운 메인, 이 기계의 hc 가
+    모르는 주소, 다른 space 의 메인 아래로는 다시 묶지 않는다). M 이 parent 와 같으면 hc 를 부르지 않는다."""
+    main = main_parent(p)
+    if main is None or main == parent or not space:
+        return None
+    try:
+        info = herdr.get(main, timeout=3)
+    except HteamError as exc:
+        if exc.exit_code == MISSING:
+            raise
+        return None
+    labels = info.get("labels") if isinstance(info.get("labels"), dict) else {}
+    address = info.get("address")
+    if info.get("state") != "live" or not address or address == parent or labels.get("herdr.space") != space:
+        return None
+    return main
 
 
 def _terminal() -> str:

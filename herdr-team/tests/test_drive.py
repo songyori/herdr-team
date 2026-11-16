@@ -14,7 +14,7 @@ from io import StringIO
 from unittest import mock
 
 from tests.helpers import BIN, DRIVE, DRIVE_ARGV, HORCH_BIN, MAIN, NONCE, TeamCase, _parse
-from hteam import drive, state, util
+from hteam import drive, herdr, outbox, procs, state, util
 from hteam.errors import HteamError
 from hteam.paths import Project
 
@@ -79,6 +79,8 @@ class ConstantsTest(unittest.TestCase):
                           drive.RESET_FAIL_LIMIT, drive.RESET_CLEAR_TIMEOUT_MS, drive.UNKNOWN_START_LIMIT,
                           drive.NO_STATUS_GRACE_S, drive.BIND_TRIES, drive.BIND_RETRY_S),
                          (10000, 1.0, 5.0, 60, 120, 180, 90, 0.2, 60, 1800, 1800, 1800, 1800, 3, 10000, 3, 60, 3, 5.0))
+        # 11단계 보강(설계 8.5 의 표, 8.13): 다시 묶기 확인 간격, Run 에 묶인 뒤 다시 묶지 않는 시간
+        self.assertEqual((drive.REHOME_CHECK_S, drive.REHOME_MIN_UP_S), (60, 600))
         self.assertEqual(drive.DECIDE_KINDS, ("worker_failed", "worker_question", "escalation", "max_rounds",
                                               "repeat_test_failure", "test_config", "planning_gaps",
                                               "unknown_regression", "token_update", "workspace_failed",
@@ -271,11 +273,45 @@ class DriveStartTest(DriveCase):
                 self.assertRegex(self.log_lines()[-1], rf"^{LOCAL_ISO} 관제 종료: SystemExit: {code}$")
                 self.assertFalse((self.drive_dir / "drive.pid").exists())
 
+    def test_rehome_ends_with_exit_0_and_releases_pid(self):
+        # 11단계 보강(설계 8.13, 8.2 의 7): 메인이 바뀌었고 한가하고 메인 watch 가 돌면 다시 묶기로 exit 0 이다. 자기 parent 는
+        # Run 연결의 hc get 이 읽는다. 시간 상수는 시험 환경 변수로 줄인다(기본 60·600초)
+        self.update_terminal(DRIVE, parent="t2")  # 앞 메인 아래 띄운 관제
+        self.set_run(main_terminal=MAIN)
+        (self.state_dir / "watch.pid").write_text(json.dumps(procs.me()))
+        code, out, _ = self.drive(env={"HTEAM_DRIVE_TICKS": "5", "HTEAM_REHOME_CHECK_S": "0", "HTEAM_REHOME_MIN_UP_S": "0"})
+        self.assertEqual((code, out.get("rehome"), out.get("ticks")), (0, MAIN, 2), out)
+        self.assertFalse((self.drive_dir / "drive.pid").exists())
+        rec = json.loads((self.drive_dir / "rehome.json").read_text())
+        self.assertEqual((rec["terminal"], rec["parent"], rec["main"]), (DRIVE, "t2", MAIN))
+        self.assertRegex(self.log_lines()[-1], rf"^{LOCAL_ISO} 관제 종료: rehome: t2 → {MAIN}$")
+        # 같은 터미널에서 다시 뜬 관제(이 시험): rehome.json 의 터미널이 자기 것이라 지우지 않고 파일만 지운다
+        code, out, _ = self.drive()
+        self.assertEqual((code, out.get("rehome")), (0, None), out)
+        self.assertFalse((self.drive_dir / "rehome.json").exists())
+        self.assertIn(DRIVE, self.hc_state()["terminals"])
+
+    def test_new_drive_tidies_the_rehomed_terminal_before_reconcile(self):
+        # 11단계 보강(설계 8.13 의 "다시 뜬 뒤", 8.2 의 6): up 이 run.json 의 drive_terminal 을 새 주소로 바꿨어도 rehome.json
+        # 으로 앞 관제를 안다. 끝난 관제 터미널을 지우고 파일을 지운다
+        self.add_terminal("t300", argv=DRIVE_ARGV, state="finished",
+                          labels={"herdr.space": "spA", "herdr.tab": "tbTeam", "hteam.role": "drive"})
+        (self.drive_dir / "rehome.json").write_text(json.dumps({"at": util.now(), "terminal": "t300", "parent": "t2",
+                                                               "main": MAIN}))
+        code, out, _ = self.drive()
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("t300", self.hc_state()["terminals"])
+        self.assertFalse((self.drive_dir / "rehome.json").exists())
+        lines = self.log_lines()
+        start = next(i for i, line in enumerate(lines) if "관제 시작(t100)" in line)
+        self.assertRegex(lines[start + 1], rf"^{LOCAL_ISO} 앞 관제 터미널 t300 정리: removed$")  # 시작 재확인 전
+
 
 class TickTest(DriveCase):
     """틱 순서와 격리(설계 8.5). 단계 몸통은 뒤 태스크가 채운다. 여기서는 순서·heartbeat·격리·check 를 본다."""
 
-    STEPS = ("heartbeat", "check_mail", "run_queue", "start_ready", "reap_jobs", "reset_step", "view_step", "reconcile")
+    STEPS = ("heartbeat", "check_mail", "run_queue", "start_ready", "reap_jobs", "reset_step", "view_step", "reconcile",
+             "rehome_step")
 
     def setUp(self):
         super().setUp()
@@ -297,17 +333,27 @@ class TickTest(DriveCase):
 
     def test_tick_order_and_reconcile_interval(self):
         calls = self.stub(*self.STEPS)
-        self.d.tick()
+        self.assertFalse(self.d.tick())
         self.assertEqual(calls, ["heartbeat", "check_mail", "run_queue", "reap_jobs", "heartbeat", "reset_step",
-                                 "view_step", "reconcile"])
+                                 "view_step", "reconcile", "rehome_step"])  # 11단계 보강: 틱 10 은 다시 묶기(8.13)
         calls.clear()
         self.d.tick()  # 마지막 재확인 뒤 60초 안: 재확인하지 않는다
         self.assertEqual(calls, ["heartbeat", "check_mail", "run_queue", "reap_jobs", "heartbeat", "reset_step",
-                                 "view_step"])
+                                 "view_step", "rehome_step"])
         calls.clear()
         self.d.last_reconcile -= 61
         self.d.tick()
-        self.assertEqual(calls[-1], "reconcile")
+        self.assertEqual(calls[-2:], ["reconcile", "rehome_step"])
+
+    def test_tick_reports_the_rehome_end_and_isolates_it(self):
+        # 다시 묶기로 끝낼 때만 True(관제 루프가 exit 0 으로 나간다, 8.2 의 7). 실패는 격리되어 끝내지 않는다
+        self.stub(*self.STEPS[:-1])
+        with mock.patch.object(self.d, "rehome_step", return_value=True):
+            self.assertTrue(self.d.tick())
+        with mock.patch.object(self.d, "rehome_step", side_effect=RuntimeError("x")):
+            self.assertFalse(self.d.tick())
+        self.assertTrue(any(re.search(rf"^{LOCAL_ISO} rehome 실패: RuntimeError: x$", line) for line in self.log_lines()),
+                        self.log_lines())
 
     def test_start_ready_only_after_executed_requests(self):
         calls = self.stub(*self.STEPS, queue=[{"id": "q-000001"}])
@@ -498,6 +544,320 @@ class DriveRoleTest(DriveCase):
         self.assertEqual((code, out["error"]["code"]), (2, "usage"), out)
         code, out = self.hteam("up", "--force", as_="main")
         self.assertEqual((code, out["error"]["code"]), (2, "usage"), out)
+
+
+class RehomeTest(DriveCase):
+    """관제 다시 묶기(11단계 보강, 설계 8.13·8.5 의 10): 메인이 바뀌면(main_terminal) 같은 새 메인이 확인 두 번(60초 간격)
+    연달아 후보일 때 정하고, 한가하고 메인 watch 가 돌 때 rehome.json·progress·로그를 남기고 끝낸다(관제 루프는 exit 0)."""
+
+    def setUp(self):
+        super().setUp()
+        self.env.update({"HTEAM_DRIVE_WAIT_MS": "50"})
+        patcher = self.in_drive()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # 앞 메인 t2(탭을 닫아 끝났다) 아래 띄운 관제. 새 메인 MAIN 의 watch 가 main_terminal 을 썼다
+        self.add_terminal("t2", argv=["claude"], state="finished", labels={"herdr.space": "spA", "herdr.tab": "tbMain2"})
+        self.update_terminal(DRIVE, parent="t2")
+        self.set_run(main_terminal=MAIN)
+        self.watching()
+        self.d = self.fresh()
+
+    def watching(self) -> None:
+        """메인 watch 가 돈다(watch.pid 는 살아 있는 이 시험 프로세스. Stop 훅과 같은 기록, 9.4)."""
+        (self.state_dir / "watch.pid").write_text(json.dumps(procs.me()))
+
+    def fresh(self, parent="t2", up=None):
+        """Run 에 묶인 지 up 초(기본 REHOME_MIN_UP_S + 1) 된 관제 객체. Run 연결의 hc get 이 parent 를 읽었다."""
+        d = self.make_drive()
+        d.bound_at = time.monotonic() - (drive.REHOME_MIN_UP_S + 1 if up is None else up)
+        d.parent, d.parent_known = parent, True
+        return d
+
+    @staticmethod
+    def step(d, quiet=True) -> bool:
+        """틱 끝의 다시 묶기 단계 한 번. 확인 간격(60초)이 지난 것으로 둔다. quiet 는 이번 틱의 메일 확인이 비었는가."""
+        d.last_rehome, d.mail_quiet = None, quiet
+        return d.rehome_step()
+
+    @staticmethod
+    def end(d, quiet=True) -> bool:
+        """정한 뒤의 틱 끝(확인 간격 안: 확인은 하지 않고 끝낼지만 본다)."""
+        d.last_rehome, d.mail_quiet = time.monotonic(), quiet
+        return d.rehome_step()
+
+    def decided(self, d) -> None:
+        self.assertFalse(self.step(d, quiet=False))
+        self.assertFalse(self.step(d, quiet=False))  # 정했지만 바빠서 끝내지 않았다
+        self.assertEqual(d.rehome_to, MAIN)
+
+    def never(self, d) -> None:
+        """두 번 확인해도 정하지 않고 끝내지 않는다."""
+        start = len(self.log_lines())
+        self.assertFalse(self.step(d))
+        self.assertFalse(self.step(d))
+        self.assertIsNone(d.rehome_to)
+        self.assertFalse((self.drive_dir / "rehome.json").exists())
+        self.assertEqual([x for x in self.log_lines()[start:] if "다시 묶기" in x or "rehome" in x], [])
+
+    def test_two_checks_then_ends_when_quiet_and_watched(self):
+        for parent in ("t2", None):  # parent 가 없는 관제(메인이 지워져 --no-parent 로 뜬 관제, 9.3 의 3)도 다르다
+            with self.subTest(parent=parent):
+                (self.drive_dir / "rehome.json").unlink(missing_ok=True)
+                d = self.fresh(parent)
+                start = len(self.log_lines())
+                self.assertFalse(self.step(d))  # 한 번만 후보: 아직 정하지 않는다
+                self.assertFalse((self.drive_dir / "rehome.json").exists())
+                self.assertTrue(self.step(d))
+                was = parent or "없음"
+                lines = self.log_lines()[start:]
+                self.assertEqual(len(lines), 2, lines)
+                self.assertRegex(lines[0], rf"^{LOCAL_ISO} 관제 다시 묶기: 메인이 {MAIN} 로 바뀌었다\(관제 parent {was}\)\. "
+                                           r"한가하고 watch 가 돌 때 끝낸다$")
+                self.assertRegex(lines[1], rf"^{LOCAL_ISO} 관제 종료: rehome: {was} → {MAIN}$")
+                rec = json.loads((self.drive_dir / "rehome.json").read_text())
+                self.assertEqual((rec["terminal"], rec["parent"], rec["main"]), (DRIVE, parent, MAIN))
+                self.assertRegex(rec["at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+                last = self.outbox_items()[-1]
+                self.assertEqual((last["type"], last["body"]),
+                                 ("progress", f"관제를 새 메인 터미널({MAIN}) 아래로 다시 띄우려고 끝냈다. watch 가 orphaned "
+                                              "로 끝나면 /herdr-team:up 으로 다시 띄운다. 도는 워커는 그대로다"))
+
+    def test_checks_only_every_60_seconds(self):
+        self.d.mail_quiet = True
+        self.assertFalse(self.d.rehome_step())
+        self.assertFalse(self.d.rehome_step())  # 60초 안: 확인하지 않아 두 번째 후보가 아니다
+        self.assertIsNone(self.d.rehome_to)
+        self.d.last_rehome -= drive.REHOME_CHECK_S + 1
+        self.assertTrue(self.d.rehome_step())
+
+    def test_unknown_parent_is_read_once_with_hc(self):
+        # Run 연결의 hc get 이 실패했다: 확인 때 hc get(3초)으로 한 번 읽는다(parent 는 띄울 때만 정해진다)
+        self.d.parent, self.d.parent_known = None, False
+        before = len([c for c in self.hc_calls() if c[:2] == ["get", DRIVE]])
+        self.assertFalse(self.step(self.d))
+        self.assertTrue(self.step(self.d))
+        self.assertEqual(self.d.parent, "t2")
+        self.assertEqual(len([c for c in self.hc_calls() if c[:2] == ["get", DRIVE]]), before + 1)
+
+    def test_no_candidate_does_nothing(self):
+        self.add_terminal("t3", argv=["claude"], state="finished", labels={"herdr.space": "spA", "herdr.tab": "tbMain3"})
+        self.add_terminal("t4", name="main-b", argv=["claude"], labels={"herdr.space": "spA", "herdr.tab": "tbMain4"},
+                          status="idle")
+        self.add_terminal("t5", argv=["claude"], labels={"herdr.space": "spB", "herdr.tab": "tbMain5"}, status="idle")
+        self.add_terminal("t6", argv=["claude"], labels={"herdr.tab": "tbMain6"}, status="idle")
+        cases = (("main_terminal 없음", None, "t2"), ("형식이 틀림", "t1;rm", "t2"), ("끝난 메인", "t3", "t2"),
+                 ("지운 메인(이 기계의 hc 가 모르는 주소)", "t404", "t2"), ("같은 터미널의 다른 이름", "main-b", "t4"),
+                 ("다른 space", "t5", "t2"), ("space 라벨 없음", "t6", "t2"))
+        for why, main, parent in cases:
+            with self.subTest(why=why):
+                self.set_run(main_terminal=main)
+                self.never(self.fresh(parent))
+        self.set_run(main_terminal="t2")
+        before = len(self.hc_calls())
+        self.never(self.fresh("t2"))  # 메인이 parent 와 같다: run.json 만 읽고 hc 를 부르지 않는다
+        self.assertEqual(len(self.hc_calls()), before)
+        self.set_run(main_terminal=MAIN)
+        self.never(self.fresh(up=drive.REHOME_MIN_UP_S - 5))  # Run 에 묶인 지 10분 안
+        text = (self.state_dir / "run.json").read_text()
+        (self.state_dir / "run.json").write_text("{broken")  # run.json 을 읽지 못한다
+        self.never(self.fresh())
+        (self.state_dir / "run.json").write_text(text)
+        self.fail_hc("get", "timeout")
+        self.never(self.fresh())  # hc get M 실패
+        d = self.fresh(None)
+        d.parent_known = False
+        self.never(d)  # 자기 parent 를 모르고 hc get 도 실패한다
+
+    def test_count_restarts_when_main_moves(self):
+        self.add_terminal("t7", argv=["claude"], labels={"herdr.space": "spA", "herdr.tab": "tbMain7"}, status="idle")
+        self.assertFalse(self.step(self.d))  # MAIN 이 처음 후보
+        self.set_run(main_terminal="t7")  # 메인을 넘겨받는 중이다
+        self.assertFalse(self.step(self.d))  # 후보가 바뀌었다: 다시 센다
+        self.assertIsNone(self.d.rehome_to)
+        self.assertTrue(self.step(self.d))
+        self.assertRegex(self.log_lines()[-1], rf"^{LOCAL_ISO} 관제 종료: rehome: t2 → t7$")
+
+    def test_main_change_after_the_decision_clears_it(self):
+        self.add_terminal("t7", argv=["claude"], labels={"herdr.space": "spA", "herdr.tab": "tbMain7"}, status="idle")
+        self.decided(self.d)
+        self.set_run(main_terminal="t7")
+        self.assertFalse(self.end(self.d))  # 파일만 읽고 정한 것을 지운다
+        self.assertIsNone(self.d.rehome_to)
+        self.assertFalse((self.drive_dir / "rehome.json").exists())
+        self.assertFalse(self.step(self.d))  # 확인부터 다시 한다
+        self.assertTrue(self.step(self.d))
+        self.assertEqual(json.loads((self.drive_dir / "rehome.json").read_text())["main"], "t7")
+
+    def test_waits_while_busy_or_unwatched(self):
+        d = self.d
+        self.decided(d)
+        queue = self.drive_dir / "queue"
+        request = queue / "000001.json"
+        crew_file = self.state_dir / "crew.json"
+
+        def put_request():
+            queue.mkdir(parents=True, exist_ok=True)
+            request.write_text(json.dumps({"id": "q-000001", "command": "start-ready", "args": {}, "at": util.now()}))
+
+        def resetting():
+            crew_file.write_text(json.dumps({"production": {"resetting": {"step": "handoff", "dispatch": "dsp-x"}}}))
+
+        busy = (("이번 틱의 메시지(미룬 메시지는 test_held_mail_keeps_the_drive_busy)", lambda: None, lambda: None, False),
+                ("결과 없는 큐 요청", put_request, request.unlink, True),
+                ("도는 자식", lambda: d.jobs.update({"review:T-001": {}}), d.jobs.clear, True),
+                ("미룬 리뷰", lambda: d.retry_reviews.add("T-001"), d.retry_reviews.clear, True),
+                ("리셋 중인 고정 에이전트", resetting, crew_file.unlink, True),
+                ("메인 watch 없음", (self.state_dir / "watch.pid").unlink, self.watching, True))
+        for why, make, undo, quiet in busy:
+            with self.subTest(why=why):
+                make()
+                self.assertFalse(self.end(d, quiet=quiet))
+                self.assertEqual(d.rehome_to, MAIN)  # 정한 것은 그대로 두고 기다린다(상한 없음)
+                self.assertFalse((self.drive_dir / "rehome.json").exists())
+                undo()
+        self.assertTrue(self.end(d))
+
+    def test_ends_even_if_the_record_or_progress_fails(self):
+        cases = ((mock.patch.object(drive, "write_json", side_effect=OSError("디스크가 찼다")),
+                  "rehome.json 을 쓰지 못했다: 디스크가 찼다. 앞 관제 터미널은 관제 탭에 남는다"),
+                 (mock.patch.object(outbox, "append", side_effect=OSError("디스크가 찼다")),
+                  "다시 묶기 progress 를 쓰지 못했다: OSError: 디스크가 찼다"))
+        for patch, line in cases:
+            with self.subTest(line=line):
+                d = self.fresh()
+                with patch:
+                    self.assertFalse(self.step(d))
+                    self.assertTrue(self.step(d))  # 쓰지 못해도 끝낸다(watch 는 orphaned 로 안다)
+                lines = self.log_lines()
+                self.assertTrue(any(x.endswith(line) for x in lines), lines)
+                self.assertRegex(lines[-1], rf"^{LOCAL_ISO} 관제 종료: rehome: t2 → {MAIN}$")
+
+    def test_mail_check_sets_quiet(self):
+        d = self.d
+        d.check_mail()
+        self.assertTrue(d.mail_quiet)
+        code, sent = self.horch("send", "--to", f"run:{self.run_id}", "--subject", "s", "--body=x", terminal=MAIN)
+        self.assertEqual(code, 0, sent)
+        with mock.patch.object(d, "handle"):
+            d.check_mail()
+        self.assertFalse(d.mail_quiet)
+        d.check_mail()  # 앞 묶음을 --ack 로 확인했고 새 메시지가 없다
+        self.assertTrue(d.mail_quiet)
+        with mock.patch.dict(os.environ, {"HC_TERMINAL_ID": "t999"}), self.assertRaises(Exception):
+            d.check_mail()  # 확인 실패(Run 소유자가 아니다)
+        self.assertFalse(d.mail_quiet)
+
+    def test_held_mail_keeps_the_drive_busy(self):
+        # 미룬 메시지(8.6: 상태에 아직 없는 진행 중 Dispatch)가 있으면 check_mail 이 그 묶음을 ack 하지 않고 horch 가 다음
+        # 확인에서 같은 묶음을 다시 준다. 그동안 한가하지 않아 끝내지 않는다(mail_quiet 는 check_mail 이 정한다)
+        d = self.d
+        self.decided(d)
+        code, sent = self.horch("send", "--to", f"run:{self.run_id}", "--subject", "s", "--body=x", terminal=MAIN)
+        self.assertEqual(code, 0, sent)
+
+        def tick_end() -> bool:
+            d.last_rehome = time.monotonic()  # 확인 간격 안: 끝낼지만 본다
+            return d.rehome_step()
+
+        with mock.patch.object(d, "handle", return_value=True) as handle:  # 처리기가 미룬다(ack 하지 않는다)
+            for _ in range(2):
+                d.check_mail()
+                self.assertFalse(d.mail_quiet)
+                self.assertFalse(tick_end())
+        self.assertEqual([c.args[0]["id"] for c in handle.call_args_list], [sent["message"]] * 2)  # 같은 묶음이 다시 왔다
+        self.assertEqual(d.rehome_to, MAIN)  # 정한 것은 그대로 두고 기다린다
+        self.assertFalse((self.drive_dir / "rehome.json").exists())
+        with mock.patch.object(d, "handle", return_value=None):
+            d.check_mail()  # 이번에는 처리한다(이 틱에는 메시지가 있었다)
+        self.assertFalse(tick_end())
+        d.check_mail()  # 앞 묶음을 --ack 로 확인했고 새 메시지가 없다
+        self.assertTrue(tick_end())
+
+    def test_request_racing_the_end_is_run_by_the_next_drive(self):
+        # 메인 명령이 관제 생존 확인을 지난 뒤 요청 파일을 쓰기 전에 관제가 빈 큐를 보고 끝났다(설계 8.13 의 끊긴 시간). 요청은
+        # 큐에 남고 메인은 기다리다 queued 로 그만둔다(.abandoned). 다시 뜬 관제가 처리해 outbox result 로 알린다(7.1)
+        self.assertFalse(self.step(self.d))
+        self.assertTrue(self.step(self.d))
+        queue = self.drive_dir / "queue"
+        queue.mkdir(parents=True, exist_ok=True)
+        (queue / "000001.json").write_text(json.dumps({"id": "q-000001", "command": "start-ready", "args": {},
+                                                       "at": util.now()}))
+        (queue / "000001.abandoned").touch()
+        self.assertEqual(self.make_drive().run_queue(), ["q-000001"])
+        self.assertEqual([e["request"] for e in self.outbox_items() if e["type"] == "result"], ["q-000001"])
+        self.assertEqual(sorted(f.name for f in queue.iterdir()), [])
+
+
+class RehomeTidyTest(DriveCase):
+    """다시 뜬 관제의 앞 관제 터미널 정리(11단계 보강, 설계 8.13 의 "다시 뜬 뒤", 8.2 의 6)."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = self.in_drive()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.d = self.make_drive()
+        self.old()
+
+    def old(self) -> None:
+        """다시 묶기로 끝난 앞 관제 터미널(끝났고 관제 라벨이 있다)."""
+        self.add_terminal("t300", argv=DRIVE_ARGV, state="finished",
+                          labels={"herdr.space": "spA", "herdr.tab": "tbTeam", "hteam.role": "drive"})
+
+    def tidy(self, terminal="t300") -> list[str]:
+        """rehome.json 을 두고 정리한 뒤 새 로그 줄. 어느 쪽이든 파일을 지운다(한 번만 본다)."""
+        (self.drive_dir / "rehome.json").write_text(json.dumps({"at": util.now(), "terminal": terminal, "parent": "t2",
+                                                               "main": MAIN}))
+        start = len(self.log_lines())
+        drive._tidy_rehome(self.p, self.d, DRIVE)
+        self.assertFalse((self.drive_dir / "rehome.json").exists())
+        return self.log_lines()[start:]
+
+    def test_finished_drive_terminal_pane_is_closed_then_removed(self):
+        seen = []
+        real_rm = herdr.rm
+        with mock.patch.object(herdr, "pane_of", return_value="pt300"), \
+                mock.patch.object(herdr, "close_pane", side_effect=lambda pane, timeout=10: seen.append(("close", pane))), \
+                mock.patch.object(herdr, "rm", side_effect=lambda t, timeout=10: seen.append(("rm", t)) or real_rm(t)):
+            lines = self.tidy()
+        self.assertEqual(seen, [("close", "pt300"), ("rm", "t300")])  # 6.5 의 3 과 같은 순서
+        self.assertNotIn("t300", self.hc_state()["terminals"])
+        self.assertEqual(len(lines), 1, lines)
+        self.assertRegex(lines[0], rf"^{LOCAL_ISO} 앞 관제 터미널 t300 정리: removed$")
+
+    def test_without_pane_is_removed_then_gone(self):
+        lines = self.tidy()  # 가짜 herdr-app ls 는 끝난 터미널을 내지 않는다(pane 이 없다)
+        self.assertRegex(lines[0], rf"^{LOCAL_ISO} 앞 관제 터미널 t300 정리: removed$")
+        self.assertNotIn("t300", self.hc_state()["terminals"])
+        self.assertEqual([c for c in self.herdr_calls() if c[:2] == ["do", "pane.close"]], [])
+        lines = self.tidy()  # 이미 없다(not_found)
+        self.assertRegex(lines[0], rf"^{LOCAL_ISO} 앞 관제 터미널 t300 정리: gone$")
+
+    def test_other_states_are_left(self):
+        cases = (("live", {"state": "live"}, None), ("관제 라벨 없음", {"labels": {"herdr.space": "spA"}}, None),
+                 ("hc get 실패: timeout", {}, ("get", "timeout")), ("hc rm 실패: busy", {}, ("rm", "busy")))
+        for why, fields, failing in cases:
+            with self.subTest(why=why):
+                self.old()
+                if fields:
+                    self.update_terminal("t300", **fields)
+                if failing:
+                    self.fail_hc(*failing)
+                lines = self.tidy()
+                with self._hc_locked() as st:
+                    st["fail"].clear()
+                self.assertIn("t300", self.hc_state()["terminals"])  # 지우지 않는다(9.3 의 6 대로 관제 탭에 남는다)
+                self.assertEqual(len(lines), 1, lines)
+                self.assertRegex(lines[0], rf"^{LOCAL_ISO} 앞 관제 터미널 t300 정리: left\({re.escape(why)}\)$")
+
+    def test_no_file_or_own_terminal_does_nothing(self):
+        before = len(self.hc_calls())
+        drive._tidy_rehome(self.p, self.d, DRIVE)  # 파일이 없다: 관제가 죽었다 다시 떴다
+        self.assertEqual(self.log_lines(), [])
+        self.assertEqual(self.tidy(DRIVE), [])  # 자기 터미널(같은 터미널에서 다시 떴다): 지우지 않고 파일만 지운다
+        self.assertEqual(len(self.hc_calls()), before)
+        self.assertIn(DRIVE, self.hc_state()["terminals"])
 
 
 if __name__ == "__main__":

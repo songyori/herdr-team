@@ -990,6 +990,39 @@ class UpDriveTest(SetupCase):
         self.assertEqual((code, out["status"]), (0, "launched"), out)
         self.assertEqual(self.hc_state()["terminals"][out["terminal"]]["parent"], MAIN)
         self.assertEqual(self.run_json()["main_terminal"], "t2")
+        # 11단계 보강(설계 8.13 의 다시 띄우기): 새 관제는 처음부터 앞 메인 아래로 떴다. Run 에 묶인 지 10분이 지난 확인에서
+        # t2 가 다시 묶기 후보다(10분 안에는 아니다). 자기 parent 는 hc get 으로 한 번 읽는다
+        from hteam import drive
+        with self.in_drive():
+            d = self.make_drive()
+            d.terminal, d.bound_at = out["terminal"], time.monotonic() - drive.REHOME_MIN_UP_S + 5
+            self.assertIsNone(d._rehome_candidate())
+            d.bound_at = time.monotonic() - drive.REHOME_MIN_UP_S - 1
+            self.assertEqual((d._rehome_candidate(), d.parent, d.parent_known), ("t2", MAIN, True))
+
+    # --- 11단계 보강: 다시 묶기로 끝난 관제를 새 메인 아래 다시 띄운다(설계 8.13 의 다시 띄우기, 9.3 의 7) ---
+    def test_rehomed_drive_is_relaunched_under_the_new_main(self):
+        from hteam import drive
+        self.add_terminal("t2", argv=["claude"], labels={"herdr.space": "spA", "herdr.tab": "tbMain2"}, status="idle")
+        self.set_run(main_terminal="t2")  # 새 메인의 watch 가 썼다
+        self.update_terminal(DRIVE, state="finished")  # 다시 묶기로 끝난 앞 관제(Run 에 묶인 뒤 꺼졌다)
+        rehome = json.dumps({"at": "2026-11-16T00:00:00Z", "terminal": DRIVE, "parent": MAIN, "main": "t2"})
+        (self.drive_dir / "rehome.json").write_text(rehome)
+        self.kill_drive()
+        code, out = self.hteam("up", as_=None, terminal="t2")
+        self.assertEqual((code, out["status"], out["launched"]), (0, "launched", True), out)  # starting 이 아니다
+        term = self.hc_state()["terminals"][out["terminal"]]
+        call = self.run_calls()[-1]
+        self.assertEqual((call[call.index("--parent") + 1], term["parent"], self.run_json()["main_terminal"]),
+                         ("t2", "t2", "t2"))
+        self.assertEqual((self.drive_dir / "rehome.json").read_text(), rehome)  # up 은 그대로다(새 관제가 정리한다)
+        with self.in_drive():
+            d = self.make_drive()
+            d.terminal, d.bound_at = out["terminal"], time.monotonic() - drive.REHOME_MIN_UP_S - 1
+            d.parent, d.parent_known = term["parent"], True
+            before = len(self.hc_calls())
+            self.assertIsNone(d._rehome_candidate())  # 새 관제는 parent 가 main_terminal 과 같다: 되풀이하지 않는다
+            self.assertEqual(len(self.hc_calls()), before)  # run.json 만 읽는다
 
     def test_main_removed_before_hc_run_launches_once_without_parent(self):
         # 메인 확인과 hc run 사이에 메인이 지워졌다(9.3 의 3, Codex 설계 리뷰 r1): parent 때문인 not_found 일 때만 한 번

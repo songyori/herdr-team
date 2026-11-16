@@ -8,6 +8,7 @@
 리셋 단계·인수인계 Dispatch 메시지·끝나지 않은 인수인계 정리(5.9.7), 입력 유실 재투입(5.9.8)은 crew 모듈에 맡긴다
 (5.9.3·5.9.5·8.7 의 2·3). 관제 자동화: 묶음 처리·마무리·`[test]` 확정 질문(8.4), 기획 적용·디자인 단계·보강·관제가
 만드는 태스크와 중복 방지(8.9), 끝나지 않은 일괄 승인 결정 이어 하기와 답 파일에만 있는 결정 실행(7.4·11.4, 8.7 의 7).
+11단계 보강(8.13): 메인이 바뀐 뒤 다시 묶기(자기 parent 기억, 틱 10 의 확인과 한가할 때 끝내기, 다시 뜬 뒤 앞 관제 터미널 정리).
 """
 from __future__ import annotations
 
@@ -46,12 +47,19 @@ UNKNOWN_START_LIMIT = 3
 NO_STATUS_GRACE_S = 60
 BIND_TRIES = 3  # Run 연결 재시도
 BIND_RETRY_S = 5.0
+REHOME_CHECK_S = 60  # 다시 묶기 확인 간격(11단계 보강, 설계 8.13)
+REHOME_MIN_UP_S = 600  # Run 에 묶인 뒤 다시 묶지 않는 시간(되풀이 막기. 자동 부활의 RETRY_WINDOW_S 와 같다, 8.13)
 PID_TRIES = 3  # drive.pid 를 만들다 다른 관제와 경합하면 이만큼 다시 한다
 
 # decide 종류(설계 8.10, orca 의 DECIDE_KINDS 와 같은 순서)
 DECIDE_KINDS = ("worker_failed", "worker_question", "escalation", "max_rounds", "repeat_test_failure", "test_config",
                 "planning_gaps", "unknown_regression", "token_update", "workspace_failed", "merge_conflict")
 TITLE = "herdr-team 관제"  # 관제 탭 이름과 관제 pane 제목(8.2 의 5)
+
+# 다시 묶기(11단계 보강, 설계 8.13·8.11 원문)
+REHOME_DECIDED = "관제 다시 묶기: 메인이 {main} 로 바뀌었다(관제 parent {parent}). 한가하고 watch 가 돌 때 끝낸다"
+REHOME_PROGRESS = ("관제를 새 메인 터미널({main}) 아래로 다시 띄우려고 끝냈다. watch 가 orphaned 로 끝나면 /herdr-team:up 으로 "
+                   "다시 띄운다. 도는 워커는 그대로다")
 
 # 정해진 글(설계 8.6 원문)
 IDLE_SUBJECT = "done 요청"
@@ -200,6 +208,16 @@ class Drive:
         self._retry_args: dict[str, list[str]] = {}  # 미룬 리뷰의 원래 자식 인자(큐 review --retry 의 --retry·--round·--request)
         self._job_args: dict[str, list[str]] = {}  # 결과를 처리 중인 리뷰 자식의 인자
         self.pending_marks: dict[str, tuple[str, int]] = {}  # 리뷰 자식이 도는 태스크의 미룬 decide 표시(out id, 라운드)
+        # 다시 묶기(11단계 보강, 설계 8.13). terminal 은 자기 터미널($HC_TERMINAL_ID), parent 는 Run 연결의 hc get 이 읽은 자기
+        # parent(parent_known 이 False 면 모름), bound_at 은 Run 에 묶인 monotonic 시각(None 이면 Run 에 묶이지 않은 관제 객체)
+        self.terminal: str | None = os.environ.get("HC_TERMINAL_ID", "").strip() or None
+        self.parent: str | None = None
+        self.parent_known = False
+        self.bound_at: float | None = None
+        self.last_rehome: float | None = None  # 마지막 확인(monotonic). 처음은 None(첫 틱이 확인한다)
+        self.rehome_seen: str | None = None  # 지난 확인의 후보
+        self.rehome_to: str | None = None  # 정한 새 메인(같은 후보를 두 번 연달아 봤다)
+        self.mail_quiet = False  # 이번 틱의 메일 확인이 성공했고 메시지가 없었다(한가함 (1))
 
     def horch(self) -> Horch:
         if self._horch is None:
@@ -295,6 +313,7 @@ class Drive:
 
         handle 이 미룬 메시지(아직 상태에 기록되지 않은 진행 중 Dispatch, 8.6)가 있으면 그 묶음을 ack 하지 않는다. horch 는
         ack 안 된 묶음을 다시 주므로 다음 틱에 그 메시지만 다시 처리한다(이미 처리한 메시지는 건너뛴다)."""
+        self.mail_quiet = False  # 다시 묶기의 한가함(8.13): 확인이 성공했고 메시지가 없을 때만 참
         ms = int(env_float("HTEAM_DRIVE_WAIT_MS", WAIT_MS))
         args = ["check", "--wait", "--timeout-ms", str(ms)]
         if self._ack is not None:
@@ -318,6 +337,7 @@ class Drive:
                 continue
             self._done.add(m.get("id"))
         self._ack = None if held else delivery
+        self.mail_quiet = not data.get("messages")  # ack 할 묶음도 미룬 메시지도 없다(앞 묶음은 이번 --ack 로 확인됐다)
 
     @staticmethod
     def _message_failure(m: dict, exc: Exception):
@@ -1845,9 +1865,9 @@ class Drive:
                     continue
                 raise
 
-    def tick(self) -> None:
+    def tick(self) -> bool:
         """설계 8.5 의 틱 순서. 단계마다 격리한다(reap_jobs·reset_step·view_step 은 그 안에서 항목마다). 거둔 뒤 Redmine 전송
-        자식을 띄운다(설계 8.8·8.12)."""
+        자식을 띄운다(설계 8.8·8.12). 끝의 틱 10 은 다시 묶기(8.13)이고, 다시 묶기로 끝낼 때만 True 다(관제 루프가 끝난다)."""
         self.heartbeat()
         self.isolated("check", self.check_mail)
         done = self.isolated("queue", self.run_queue)
@@ -1861,6 +1881,86 @@ class Drive:
         if self.last_reconcile is None or time.monotonic() - self.last_reconcile >= RECONCILE_S:
             self.last_reconcile = time.monotonic()
             self.isolated("reconcile", self.reconcile)
+        return self.isolated("rehome", self.rehome_step) is True
+
+    # --- 다시 묶기(11단계 보강, 8.13) ---
+    def rehome_step(self) -> bool:
+        """틱 10(설계 8.13): REHOME_CHECK_S 마다 후보를 보고, 같은 M 이 두 번 연달아 후보면 다시 묶기로 정한다(로그 한 줄).
+        정했으면 틱 끝마다 main_parent 가 아직 M 이고 한가하고 메인 watch 가 돌 때 끝낸다(rehome.json·progress·로그 뒤 True:
+        관제가 exit 0 으로 끝난다). 계속 바쁘거나 watch 가 없으면 기다리기만 한다(상한 없음). Run 에 묶이지 않은 관제 객체
+        (bound_at 없음)는 아무것도 하지 않는다."""
+        if self.bound_at is None:
+            return False
+        every = env_float("HTEAM_REHOME_CHECK_S", REHOME_CHECK_S)
+        if self.last_rehome is None or time.monotonic() - self.last_rehome >= every:
+            self.last_rehome = time.monotonic()
+            found = self._rehome_candidate()
+            if found is None:
+                self.rehome_seen = self.rehome_to = None
+            elif found != self.rehome_seen:  # 처음 보거나 바뀌었다(메인을 넘겨받는 중): 다시 센다
+                self.rehome_seen, self.rehome_to = found, None
+            elif self.rehome_to is None:
+                self.rehome_to = found
+                self.log(REHOME_DECIDED.format(main=found, parent=self.parent or "없음"))
+        if self.rehome_to is None:
+            return False
+        if outbox.main_parent(self.p) != self.rehome_to:  # 정한 뒤 메인이 또 바뀌었다: 확인부터 다시 한다
+            self.rehome_seen = self.rehome_to = None
+            return False
+        if not self._quiet() or not outbox.watch_alive(self.p):
+            return False
+        return self._rehome_exit(self.rehome_to)
+
+    def _rehome_candidate(self) -> str | None:
+        """다시 묶기 확인(8.13 의 1–4): Run 에 묶인 지 REHOME_MIN_UP_S 가 지났고, main_parent 가 주소 M 이고, 자기 parent 를
+        알고 M 이 그것과 다르고, hc get M 이 같은 space 의 산 터미널이면 M(outbox.moved_main). 아니면 None. M 이 parent 와
+        같으면 hc 를 부르지 않는다(run.json 만 읽는다). 자기 parent 를 모르면 hc get(3초)으로 한 번 읽는다."""
+        up = time.monotonic() - self.bound_at if self.bound_at is not None else None
+        if up is None or up < env_float("HTEAM_REHOME_MIN_UP_S", REHOME_MIN_UP_S):
+            return None
+        main = outbox.main_parent(self.p)
+        if main is None or (self.parent_known and main == self.parent):
+            return None
+        if not self.parent_known and not self._read_parent():
+            return None
+        return outbox.moved_main(self.p, self.parent, outbox._run(self.p).get("team_space"))
+
+    def _read_parent(self) -> bool:
+        """자기 parent 를 hc get(3초)으로 읽는다(Run 연결의 hc get 이 실패했다). parent 는 띄울 때만 정해지므로 읽으면 다시
+        읽지 않는다. 읽었으면 True."""
+        if not self.terminal:
+            return False
+        try:
+            info = herdr.get(self.terminal, timeout=3)
+        except HteamError as exc:
+            if exc.exit_code == MISSING:
+                raise
+            return False
+        self.parent, self.parent_known = outbox._parent_ref(info.get("parent")), True
+        return True
+
+    def _quiet(self) -> bool:
+        """한가함(8.13 끝내기의 (1)–(4)): 이번 틱의 메일 확인이 성공했고 메시지가 없었다, 결과 없는 요청 파일이 없다, 도는
+        자식(8.8)과 미룬 리뷰(8.7 의 4)가 없다, 리셋 중인(resetting) 고정 에이전트가 없다. 도는 워커·리뷰어·보기 pane 은 보지
+        않는다(옮기지 않는다. 그 메시지는 Run 메일함에 남아 새 관제가 받는다)."""
+        from . import crew, queue  # 둘 다 이 모듈을 쓴다
+        if not self.mail_quiet or self.jobs or self.retry_reviews or queue.waiting(self.p):
+            return False
+        return not any(isinstance(e, dict) and e.get("resetting") for e in crew.load(self.p).values())
+
+    def _rehome_exit(self, main: str) -> bool:
+        """끝내기 차례(8.13): rehome.json(새 관제가 앞 관제 터미널을 정리한다) → progress → 로그. 기록이나 progress 를 쓰지
+        못해도 끝낸다(watch 는 orphaned 로 안다. rehome.json 이 없으면 앞 터미널은 9.3 의 6 대로 관제 탭에 남는다)."""
+        try:
+            write_json(self.p.rehome_file, {"at": now(), "terminal": self.terminal, "parent": self.parent, "main": main})
+        except OSError as exc:
+            self.log(f"rehome.json 을 쓰지 못했다: {exc}. 앞 관제 터미널은 관제 탭에 남는다")
+        try:
+            self.progress(REHOME_PROGRESS.format(main=main))
+        except Exception as exc:  # noqa: BLE001  watch 는 orphaned 로 안다
+            self.log(f"다시 묶기 progress 를 쓰지 못했다: {type(exc).__name__}: {exc}")
+        self.log(f"관제 종료: rehome: {self.parent or '없음'} → {main}")
+        return True
 
 
 def _read(path) -> str:
@@ -1982,9 +2082,12 @@ def _connect(p, d: Drive, term: str, nonce: str) -> tuple[str, str]:
                 raise HteamError(f"horch_{err}", f"run-create 실패: {(data.get('error') or {}).get('message')}",
                                  code or FAIL, (data.get("error") or {}).get("hint") or "", data={"horch": data})
         try:
-            argv = herdr.get(term).get("argv")
+            info = herdr.get(term)
         except HteamError:
-            argv = None
+            info = None
+        argv = info.get("argv") if info is not None else None
+        if info is not None:  # 11단계 보강(8.13): 같은 hc get 의 parent 를 자기 parent 로 기억한다(읽지 못하면 모름)
+            d.parent, d.parent_known = outbox._parent_ref(info.get("parent")), True
         run.update(run_id=data["run"]["id"], drive_terminal=term, bound_nonce=nonce, bound_at=now())
         if argv is not None:
             run["drive_argv"] = argv
@@ -2005,12 +2108,54 @@ def _connect(p, d: Drive, term: str, nonce: str) -> tuple[str, str]:
     raise AssertionError("도달하지 않는다")
 
 
+def _tidy_rehome(p, d: Drive, term: str) -> None:
+    """다시 뜬 관제(설계 8.13 의 "다시 뜬 뒤", 8.2 의 6): rehome.json 의 앞 관제 터미널이 자기 터미널이 아니면 정리하고 로그
+    `앞 관제 터미널 <t> 정리: removed|gone|left(<까닭>)` 한 줄. run.json 의 drive_terminal 은 up 이 새 주소로 바꿨으므로 앞
+    관제는 이 파일로만 안다. 어느 쪽이든 파일을 지운다(한 번만 본다. 지우기 전에 죽으면 다음 관제가 같은 일을 한다, 멱등).
+    파일이 없으면(관제가 죽었다 다시 떴다) 아무것도 하지 않는다. 죽어서 남은 관제 터미널은 지우지 않는다(9.3 의 6)."""
+    if not p.rehome_file.exists():
+        return
+    rec = read_json(p.rehome_file, None)
+    old = rec.get("terminal") if isinstance(rec, dict) else None
+    if isinstance(old, str) and old.strip() and old != term:
+        d.log(f"앞 관제 터미널 {old} 정리: {_remove_drive_terminal(old)}")
+    p.rehome_file.unlink(missing_ok=True)
+
+
+def _remove_drive_terminal(terminal: str) -> str:
+    """다시 묶기로 끝난 관제 터미널 지우기: hc get(3초)이 finished 이고 라벨 hteam.role=drive 면 pane 이 있으면(pane_of)
+    pane.close, 그다음 hc rm(6.5 의 3 과 같은 순서). removed, 이미 없으면(not_found) gone. live(Herdr 재시작 뒤 --keep 이 셸로
+    바꿈 등)·라벨 없음·hc 실패·닫기나 rm 실패는 지우지 않고 left(<까닭>)."""
+    try:
+        info = herdr.get(terminal, timeout=3)
+    except HteamError as exc:
+        if exc.exit_code == MISSING:
+            raise
+        return "gone" if exc.data.get("kind") == "not_found" else f"left({exc.message})"
+    if info.get("state") != "finished":
+        return f"left({info.get('state') or '상태 모름'})"
+    labels = info.get("labels") if isinstance(info.get("labels"), dict) else {}
+    if labels.get("hteam.role") != "drive":
+        return "left(관제 라벨 없음)"
+    try:
+        pane = herdr.pane_of(terminal)  # 앱 조회 실패도 None: pane 이 없다고 보고 hc rm 한다(6.5 의 보기 닫기와 같다, 13장)
+        if pane:
+            herdr.close_pane(pane)
+        herdr.rm(terminal)
+    except HteamError as exc:
+        if exc.exit_code == MISSING:
+            raise
+        return f"left({exc.message})"
+    return "removed"
+
+
 def _hangup(*_) -> None:
     raise SystemExit(129)
 
 
 def main(p) -> dict:
-    """설계 8.2 의 시작 순서. HTEAM_DRIVE_TICKS(시험)가 있으면 그만큼 틱을 돈 뒤 끝낸다."""
+    """설계 8.2 의 시작 순서. HTEAM_DRIVE_TICKS(시험)가 있으면 그만큼 틱을 돈 뒤 끝낸다. 다시 묶기(8.13)로 끝내면 결과에
+    rehome(새 메인 주소)을 담고 exit 0 이다(로그는 rehome_step 이 남겼다)."""
     if os.environ.get("CLAUDECODE"):
         raise HteamError("drive_in_claude", "hteam drive 는 관제 탭에서만 돈다. Claude 세션 안에서는 띄우지 않는다"
                          "(메인은 /herdr-team:up)", USAGE)
@@ -2029,6 +2174,7 @@ def main(p) -> dict:
         d = Drive(p)
         d.heartbeat()  # Run 연결 동안 hung 으로 보이지 않게(8.2 의 "Run 연결 앞과 재시도 앞뒤")
         mode, run_id = _connect(p, d, term, nonce)
+        d.bound_at = time.monotonic()  # 다시 묶기 확인의 1(Run 에 묶인 지 REHOME_MIN_UP_S, 8.13)
         tab = outbox._run(p).get("team_tab")
         if tab:
             herdr.rename_tab(tab, TITLE)
@@ -2038,6 +2184,7 @@ def main(p) -> dict:
         except (OSError, ValueError):
             pass
         d.log(f"관제 시작({term}): {mode}")
+        d.isolated("rehome", lambda: _tidy_rehome(p, d, term))  # 다시 묶기로 끝난 앞 관제 터미널(8.13, 시작 재확인 전)
         d.last_reconcile = time.monotonic()
         d.isolated("reconcile", d.reconcile)  # 시작 재확인
         try:
@@ -2046,8 +2193,10 @@ def main(p) -> dict:
             limit = 0
         ticks = 0
         while True:
-            d.tick()
+            ended = d.tick()
             ticks += 1
+            if ended:  # 11단계 보강(8.13): 다시 묶기로 끝낸다. finally 가 drive.pid 를 지운다(8.2 의 7)
+                return {"run_id": run_id, "mode": mode, "ticks": ticks, "rehome": d.rehome_to}
             if limit and ticks >= limit:
                 d.log(f"관제 종료: ticks: {ticks}")
                 return {"run_id": run_id, "mode": mode, "ticks": ticks}

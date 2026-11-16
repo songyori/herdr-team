@@ -45,6 +45,7 @@ class Project:
         self.test_confirm_file = self.drive_dir / "test-confirm.json"
         self.workers_file = self.drive_dir / "workers.json"
         self.jobs_dir = self.drive_dir / "jobs"
+        self.rehome_file = self.drive_dir / "rehome.json"  # 다시 묶기로 끝난 관제 터미널(11단계 보강, 설계 8.13)
         # 고정 에이전트(설계 5.9.1): crew.json 과 그 잠금, 인수인계 사양(5.9.7). 관제와 그 자식만 쓴다
         self.crew_file = self.state / "crew.json"
         self.crew_lock = self.state / "crew.json.lock"

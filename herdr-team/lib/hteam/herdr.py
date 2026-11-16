@@ -1,5 +1,6 @@
 """hc·herdr-app 직접 호출(설계 3.3). 관제 실행·생존 확인, 탭 이름 붙이기, 고정 에이전트 작업 터미널 상태와 pane 배치(5.9.2),
-리뷰 보기 pane(6.5: hc run 의 hc attach(11단계), pane.close, 보기 터미널 hc rm)뿐이다. 워커 실행은 늘 horch 를 거친다."""
+리뷰 보기 pane(6.5: hc run 의 hc attach(11단계), pane.close, 보기 터미널 hc rm), 11단계 보강의 다시 묶기(8.13·5.9.7: parent·메인
+확인의 get, 다시 묶기로 끝난 관제 터미널의 pane.close·hc rm)뿐이다. 워커 실행은 늘 horch 를 거친다."""
 from __future__ import annotations
 
 import json

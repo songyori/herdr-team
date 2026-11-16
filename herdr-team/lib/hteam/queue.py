@@ -189,6 +189,11 @@ def _request_files(p) -> list:
     return sorted((f for f in p.queue_dir.iterdir() if REQUEST_RE.match(f.name)), key=lambda f: f.name)
 
 
+def waiting(p) -> bool:
+    """결과 없는 요청 파일이 있다(관제가 아직 실행하지 않았거나 review_busy 로 미뤘다). 관제 다시 묶기의 한가함(설계 8.13)."""
+    return any(not _result_path(f).exists() for f in _request_files(p))
+
+
 def recorded(p, req: dict) -> dict | None:
     """started_at 은 있는데 결과가 없는 요청(실행 중 관제가 죽었다)의 기록. 있으면 복구 결과, 없으면 None(다시 실행한다).
 

@@ -815,6 +815,33 @@ class WatchMainTerminalTest(LinkCase):
         self.assertEqual(self.run_json(), {"main_terminal": MAIN})  # run_id 가 없어 자동 부활·Stop 훅의 자격은 그대로다
 
 
+class RehomeWatchTest(LinkCase):
+    """11단계 보강(설계 8.13·7.3): 다시 묶기로 끝난 관제의 progress 를 메인 watch 가 먼저 주고, 메인이 다시 띄운 watch 는 첫
+    확인에서 바로 orphaned 로 끝난다(Run 에 묶인 뒤 꺼진 관제라 starting 이 아니다). 메인은 규칙대로 /herdr-team:up 을 한다."""
+
+    def test_progress_first_then_orphaned_at_the_first_check(self):
+        from hteam import drive
+        self.add_terminal("t2", argv=["claude"], labels={"herdr.space": "spA", "herdr.tab": "tbMain2"}, status="idle")
+        proc = self.hteam_bg("watch", as_=None, terminal="t2")  # 새 메인(t2)의 watch 가 main_terminal 을 쓴다
+
+        def main_terminal():
+            return json.loads((self.state_dir / "run.json").read_text()).get("main_terminal")
+        self.wait_until(lambda: main_terminal() == "t2", "새 메인의 watch 가 main_terminal 을 쓰지 않았다")
+        with self.in_drive():
+            d = self.make_drive()  # 앞 메인(MAIN) 아래 띄워 Run 에 묶인 지 10분이 지난 관제
+            d.bound_at, d.parent, d.parent_known = time.monotonic() - drive.REHOME_MIN_UP_S - 1, MAIN, True
+            d.mail_quiet = True
+            self.assertFalse(d.rehome_step())
+            d.last_rehome = None
+            self.assertTrue(d.rehome_step())  # 메인 watch 가 돈다(watch.pid)
+        code, out = self.finish(proc, timeout=10)
+        self.assertEqual((code, out["count"]), (0, 1), out)
+        self.assertIn("/herdr-team:up", out["messages"][0]["body"])
+        (self.drive_dir / "drive.pid").unlink()  # 관제 프로세스가 끝나며 지운다(8.2 의 7)
+        code, out = self.hteam("watch", as_=None, terminal="t2", env={"HTEAM_ORPHAN_CHECK": "30"}, timeout=10)
+        self.assertEqual((code, out.get("status")), (0, "orphaned"), out)
+
+
 class RenderGuardTest(unittest.TestCase):
     def errors(self, obj):
         with self.assertRaises(HteamError) as ctx:

@@ -155,6 +155,16 @@ class DecideTest(AutoUpCase):
         self.set_record(spawned_at=ago(700))
         self.assertEqual(decide(self.p, time.monotonic() + 12), ("spawn", REVIVED))
 
+    def test_rehomed_drive_is_revived_not_failed(self):
+        # 11단계 보강(설계 9.5·8.13): 다시 묶기는 Run 에 묶인 지 REHOME_MIN_UP_S 뒤 첫 후보, REHOME_CHECK_S 뒤 두 번째 후보에서야
+        # 끝나므로 자동 부활이 띄운 시각(spawned_at, Run 연결과 몇 초 차이)의 RETRY_WINDOW_S 창 밖이다. 결정 규칙은 그대로다
+        self.assertGreaterEqual(drive.REHOME_MIN_UP_S, autoup.RETRY_WINDOW_S)
+        self.dead()
+        (self.drive_dir / "rehome.json").write_text(json.dumps({"at": now(), "terminal": DRIVE, "parent": MAIN,
+                                                               "main": "t2"}))
+        self.set_record(spawned_at=ago(drive.REHOME_MIN_UP_S + drive.REHOME_CHECK_S))
+        self.assertEqual(decide(self.p, time.monotonic() + 12), ("spawn", REVIVED))
+
 
 class CheckTest(AutoUpCase):
     def liveness_calls(self):
