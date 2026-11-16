@@ -390,11 +390,14 @@ class TemplateContractTest(unittest.TestCase):
         p11 = readme[readme.index("#### 0.7.0 → 0.7.1"):readme.index("#### 0.6.1 → 0.7.0")]
         for needle in ("`claude plugin update herdr-orch@herdr-team`", "exit 12", "할 일이 없다", "관제를 끈다",
                        "메인 세션을 새로 열고", "`…/herdr-team/0.7.1/bin/hteam`", "`main_terminal`", "숨은 리뷰어",
-                       "맨 위에 남는다"):
+                       "맨 위에 남는다", "`hteam agent reset <이름>`", "10분", "`/herdr-team:up`",
+                       "다음 리셋 때 새 터미널로 뜬다", "나중에 watch 를 띄운 세션이 메인이 된다"):  # (4)·(5): 11단계 보강
             self.assertIn(needle, p11)
         team = readme[readme.index("## herdr-team\n"):readme.index("### 이미 세팅한 프로젝트 업그레이드")]
         self.assertNotIn("질문 보기", team)
-        for needle in ("메인 세션 아래 한 단계로 보인다", "`main_terminal`", "`--outlive-parent`", "숨은 리뷰어"):
+        for needle in ("메인 세션 아래 한 단계로 보인다", "`main_terminal`", "`--outlive-parent`", "숨은 리뷰어",
+                       "스스로 끝나 새 메인 아래 다시 뜬다", "다음 리셋 때 비우지 않고 새 터미널로 뜬다",
+                       "다시 묶기로 끝난 것은 새 관제가 지운다"):  # 11단계 보강(설계 8.13·5.9.7)
             self.assertIn(needle, team)
         self.assertIn("메인이 질문 전에 답변 글로 그린다", team)
         start = readme.index("### 디자인 아티팩트와 댓글")
