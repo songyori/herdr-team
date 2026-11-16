@@ -286,6 +286,22 @@ def _run(p) -> dict:
     return run
 
 
+def set_main_terminal(p, main: str) -> bool:
+    """run.json 의 main_terminal(메인 터미널 주소, 설계 3.4 11단계)을 main 으로 쓴다. 썼으면 True.
+
+    run.lock 안에서 다시 읽고 값이 같으면 쓰지 않는다. run.json 이 없으면 그 키 하나로 만든다(run_id 가 없으니 자동 부활·
+    Stop 훅의 자격은 그대로다). 읽지 못하면 bad_run_file(쓰지 않는다). 부르는 곳: up(require_main 뒤, 판정 전, 9.3),
+    watch(watch 잠금 안, 7.3. 잠금 순서는 watch 잠금 → run.lock)."""
+    p.ensure_state()
+    with flock(p.run_lock):
+        run = _run(p)
+        if run.get("main_terminal") == main:
+            return False
+        run["main_terminal"] = main
+        write_json(p.run_file, run)
+    return True
+
+
 def _terminal() -> str:
     term = os.environ.get("HC_TERMINAL_ID", "").strip()
     if not term:
@@ -377,15 +393,20 @@ def _unlock_watch(p, fh) -> None:
         fh.close()  # 닫으면 flock 이 풀린다
 
 
-def watch(p) -> dict:
+def watch(p, main: str | None = None) -> dict:
     """2초마다 outbox 를 본다. 새 줄이 있으면 출력하고 끝난다. 관제가 꺼졌으면 orphaned(멈춤이면 끝내지 않는다).
 
     커서는 출력한 뒤(_after)에 옮긴다(적어도 한 번 전달). 단일 실행 잠금은 커서를 옮길 때까지 쥔다: 그 사이에 다른 watch 가
-    떠서 같은 항목을 다시 주지 않게 한다. watch.pid 는 생사 확인(watch_alive)용 기록일 뿐이다."""
+    떠서 같은 항목을 다시 주지 않게 한다. watch.pid 는 생사 확인(watch_alive)용 기록일 뿐이다.
+
+    main(require_main 이 확인한 메인 주소)을 주면 잠금을 잡은 뒤 run.json 의 main_terminal 로 쓴다(설계 7.3 11단계: 메인을
+    넘겨받는 것은 실제로 감시하는 watch 뿐이다. watch_running 으로 끝나는 호출은 쓰지 않는다)."""
     p.ensure_state()
     fh = _lock_watch(p)
     handed = False
     try:
+        if main:
+            set_main_terminal(p, main)  # 잠금 순서: watch 잠금 → run.lock
         write_json(p.watch_pid, procs.me())
         poll, every = env_float("HTEAM_POLL", 2.0), env_float("HTEAM_ORPHAN_CHECK", 10.0)
         last = 0.0
@@ -557,8 +578,8 @@ def reask(p) -> dict:
 
 def _cmd_watch(args) -> dict:
     p = find_project(args.root)
-    require_main(p)  # 관제·워커가 부르면 잠금·커서를 건드리기 전에 거부한다
-    return watch(p)
+    main = require_main(p)  # 관제·워커가 부르면 잠금·커서를 건드리기 전에 거부한다
+    return watch(p, main)
 
 
 def _cmd_answer(args) -> dict:

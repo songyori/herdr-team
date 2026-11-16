@@ -24,16 +24,17 @@ def _hc(args: list[str], tail: list[str] | None = None, timeout: float = 30) -> 
     except UnicodeDecodeError:  # 출력이 UTF-8 이 아니다(ValueError). 읽을 수 없는 출력과 같이 다룬다
         raise HteamError("hc_failed", f"hc {args[0]} 출력이 UTF-8 이 아니다", FAIL, data={"kind": "bad_output"}) from None
     if proc.returncode != 0:
-        kind = f"exit_{proc.returncode}"
+        data = {"kind": f"exit_{proc.returncode}"}
         for line in reversed((proc.stderr or proc.stdout or "").strip().split("\n")):
             try:
                 err = json.loads(line).get("error")
             except (ValueError, AttributeError):
                 continue
             if isinstance(err, dict):
-                kind = str(err.get("kind") or kind)
+                # message 는 parent 없는 주소(not_found `no terminal "<주소>"`)를 가리는 데 쓴다(설계 6.5·9.3 11단계)
+                data = {"kind": str(err.get("kind") or data["kind"]), "message": str(err.get("message") or "")}
                 break
-        raise HteamError("hc_failed", f"hc {args[0]} 실패: {kind}", FAIL, data={"kind": kind})
+        raise HteamError("hc_failed", f"hc {args[0]} 실패: {data['kind']}", FAIL, data=data)
     for line in reversed(proc.stdout.strip().split("\n")):  # LF 로만 나눈다(값의 U+2028 등은 경계가 아니다)
         try:
             value = json.loads(line)
@@ -100,13 +101,40 @@ def probe(terminal: str | None, argv: list[str] | None, timeout: float = 10) -> 
     return verdict(info, argv)
 
 
-def run_bg(name: str, cwd: str, labels: dict[str, str], argv: list[str]) -> dict:
-    """관제를 띄운다. --keep: Herdr 재시작 등으로 잃은 프로그램을 원래 명령으로 다시 실행하지 않고 셸로 바꾼다
-    (같은 nonce 의 관제가 저절로 되살아나지 않게. 터미널은 남아 원인을 볼 수 있다)."""
-    args = ["run", "--bg", "--no-parent", "--no-notify", "--keep", "--name", name, "--cwd", cwd]
-    for key, value in labels.items():
-        args += ["--label", f"{key}={value}"]
-    return _hc(args, ["--", *argv])
+def run_bg(labels: dict[str, str], argv: list[str], *, parent: str | None = None, name: str | None = None,
+           cwd: str | None = None, keep: bool = False, timeout: float = 30) -> dict:
+    """`hc run --bg --no-notify`(관제 9.3, 리뷰 보기 6.5). hc 의 결과 JSON 을 돌려준다.
+
+    parent 가 있으면 `--parent <parent> --outlive-parent`(Herdr Agents 목록에서 메인 아래에 들고, 메인 Claude·셸이 끝나거나
+    hc kill 돼도 산다), 없으면 `--no-parent`(설계 3.2 11단계). `--no-notify` 는 늘 준다(메인 입력란에 알림을 넣지 않는다).
+    그 parent 를 hc 가 찾지 못해 실패하면(parent_missing: 터미널이 생기지 않았다) `--no-parent` 로 한 번 더 띄우고 결과에
+    parent_fallback {parent, message} 를 더한다. 다른 실패는 그대로 올린다(다시 띄우지 않는다).
+    keep 은 `--keep`(관제: Herdr 재시작 등으로 잃은 프로그램을 원래 명령으로 다시 실행하지 않고 셸로 바꾼다. 같은 nonce 의
+    관제가 저절로 되살아나지 않게. 터미널은 남아 원인을 볼 수 있다). name·cwd 는 줄 때만 넣는다(보기 터미널은 주지 않는다)."""
+
+    def args_for(par: str | None) -> list[str]:
+        args = ["run", "--bg", *(["--parent", par, "--outlive-parent"] if par else ["--no-parent"]), "--no-notify"]
+        args += ["--keep"] if keep else []
+        args += ["--name", name] if name else []
+        args += ["--cwd", cwd] if cwd else []
+        for key, value in labels.items():
+            args += ["--label", f"{key}={value}"]
+        return args
+
+    try:
+        return _hc(args_for(parent), ["--", *argv], timeout)
+    except HteamError as exc:
+        if not (parent and parent_missing(exc, parent)):
+            raise
+        out = _hc(args_for(None), ["--", *argv], timeout)
+        return {**out, "parent_fallback": {"parent": parent, "message": exc.data.get("message")}}
+
+
+def parent_missing(exc: HteamError, parent: str) -> bool:
+    """hc run 이 그 parent 를 찾지 못해 터미널을 만들지 않았다(not_found, hc 0.1.20 의 문구 `no terminal "<parent>"`).
+    herdr-orch 설계 15.3 과 같은 규칙이다. 다른 not_found 문구는 아니다."""
+    return (exc.code == "hc_failed" and exc.data.get("kind") == "not_found"
+            and exc.data.get("message") == f'no terminal "{parent}"')
 
 
 def _app(args: list[str], timeout: float) -> subprocess.CompletedProcess | None:

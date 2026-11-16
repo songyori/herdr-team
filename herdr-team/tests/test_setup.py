@@ -801,7 +801,12 @@ class UpDriveTest(SetupCase):
         tab = "tb" + hashlib.sha1(f"herdr-team\n{root}\nspA".encode("utf-8")).hexdigest()[:32]
         self.assertEqual(term["argv"], ["env", "HTEAM_ROLE=drive", f"HTEAM_LAUNCH={nonce}", sys.executable,
                                         str(ROOT / "bin" / "hteam"), "--root", root, "drive"])
-        self.assertEqual(set(term["flags"]), {"--bg", "--no-parent", "--no-notify", "--keep"})
+        # 11단계(설계 9.3): 메인 아래에 묶고(--parent <메인>) 메인이 끝나도 산다(--outlive-parent). --no-parent 는 없다
+        self.assertEqual(set(term["flags"]), {"--bg", "--outlive-parent", "--no-notify", "--keep"})
+        (call,) = self.run_calls()
+        self.assertEqual((call[call.index("--parent") + 1], "--no-parent" in call), (MAIN, False))
+        self.assertEqual((term["parent"], run["main_terminal"]), (MAIN, MAIN))
+        self.assertNotIn("warnings", out)
         self.assertEqual(term["labels"], {"herdr.space": "spA", "herdr.tab": tab, "hteam.role": "drive"})
         self.assertRegex(term["name"], r"^hteam-drive-[0-9a-f]{6}$")
         self.assertEqual((run["drive_terminal"], run["drive_argv"], run["team_tab"], run["team_space"]),
@@ -861,7 +866,7 @@ class UpDriveTest(SetupCase):
         self.fail_hc("run", "server_down")
         code, out = self.hteam("up", as_="main")
         self.assertEqual((code, out["error"]["code"]), (1, "hc_failed"), out)
-        self.assertEqual(self.run_json(), before)
+        self.assertEqual(self.run_json(), {**before, "main_terminal": MAIN})  # 되돌리기는 main_terminal 을 지우지 않는다(9.3)
         with self._hc_locked() as hc:
             hc["fail"].clear()
         code, out = self.hteam("up", as_="main")
@@ -935,6 +940,106 @@ class UpDriveTest(SetupCase):
         self.assertEqual((code, raced["error"]["code"]), (3, "launch_raced"), raced)
         self.assertEqual(len(self.run_calls()), 1)
         self.assertEqual(self.run_json()["drive_terminal"], out["terminal"])
+
+    # --- 11단계: 메인 주소(main_terminal)와 관제 parent(설계 3.4·9.3) ---
+    def test_up_records_main_terminal_on_every_path(self):
+        # require_main 을 통과하면 판정 전에 쓴다(9.3 의 1). 띄우지 않는 길도 쓰므로 메인을 새 터미널로 옮기면 따라간다.
+        # 다른 키는 그대로이고, 값이 같으면 다시 쓰지 않는다
+        self.add_terminal("t2", argv=["claude"], labels={"herdr.space": "spA", "herdr.tab": "tbMain2"}, status="idle")
+        before = self.run_json()
+        code, out = self.hteam("up", as_="main")
+        self.assertEqual((code, out["status"]), (0, "running"), out)
+        self.assertEqual(self.run_json(), {**before, "main_terminal": MAIN})
+        inode = (self.state_dir / "run.json").stat().st_ino
+        self.assertEqual(self.hteam("up", as_="main")[1]["status"], "running")
+        self.assertEqual((self.state_dir / "run.json").stat().st_ino, inode)  # 값이 같으면 쓰지 않는다
+        self.write_heartbeat(age_s=200)
+        code, out = self.hteam("up", as_=None, terminal="t2")  # 메인 세션을 새 터미널로 옮겼다
+        self.assertEqual((code, out["status"], self.run_json()["main_terminal"]), (0, "hung", "t2"), out)
+        self.kill_drive()
+        code, out = self.hteam("up", as_="main")
+        self.assertEqual((code, out["status"], self.run_json()["main_terminal"]), (0, "launched", MAIN), out)
+        self.assertEqual(self.hc_state()["terminals"][out["terminal"]]["parent"], MAIN)
+        code, out = self.hteam("up", as_=None, terminal="t2")
+        self.assertEqual((code, out["status"], self.run_json()["main_terminal"]), (0, "starting", "t2"), out)
+        self.assertEqual(len(self.run_calls()), 1)
+
+    def test_main_terminal_change_does_not_race_the_launch(self):
+        # main_terminal 은 RACE_KEYS 가 아니다(9.3 의 1): up 의 판정과 띄우기 사이에 다른 메인의 watch 가 주소를 바꿔도
+        # launch_raced 가 아니다. 관제 parent 는 run.json 이 아니라 그 up 의 require_main 주소다
+        self.kill_drive()
+        self.add_terminal("t2", argv=["claude"], labels={"herdr.space": "spA", "herdr.tab": "tbMain2"}, status="idle")
+        gate, env = self.pause_env("up_before_pending", "main")
+        proc = self.hteam_bg("up", as_="main", env=env)
+        self.wait_reached(gate, proc)
+        self.assertEqual(self.run_json()["main_terminal"], MAIN)
+        code, out = self.hteam("watch", as_=None, terminal="t2", timeout=20)  # 관제가 꺼져 있어 곧 orphaned 로 끝난다
+        self.assertEqual((code, out.get("status")), (0, "orphaned"), out)
+        self.assertEqual(self.run_json()["main_terminal"], "t2")
+        gate.touch()
+        code, out = self.finish(proc)
+        self.assertEqual((code, out["status"]), (0, "launched"), out)
+        self.assertEqual(self.hc_state()["terminals"][out["terminal"]]["parent"], MAIN)
+        self.assertEqual(self.run_json()["main_terminal"], "t2")
+
+    def test_main_removed_before_hc_run_launches_once_without_parent(self):
+        # 메인 확인과 hc run 사이에 메인이 지워졌다(9.3 의 3, Codex 설계 리뷰 r1): parent 때문인 not_found 일 때만 한 번
+        # --no-parent 로 다시 띄우고 경고를 남긴다
+        self.kill_drive()
+        gate, env = self.pause_env("up_before_hc_run", "rm")
+        proc = self.hteam_bg("up", as_="main", env=env)
+        self.wait_reached(gate, proc)
+        with self._hc_locked() as hc:
+            del hc["terminals"][MAIN]
+        gate.touch()
+        code, out = self.finish(proc)
+        self.assertEqual((code, out["status"]), (0, "launched"), out)
+        first, second = self.run_calls()
+        self.assertEqual((first[first.index("--parent") + 1], "--no-parent" in first), (MAIN, False))
+        self.assertEqual(("--no-parent" in second, "--parent" in second), (True, False))
+        self.assertEqual(first[first.index("--name") + 1], second[second.index("--name") + 1])
+        self.assertIsNone(self.hc_state()["terminals"][out["terminal"]]["parent"])
+        self.assertEqual(out["warnings"], [f"메인 터미널 {MAIN} 이 hc 에 없어 관제를 parent 없이 띄웠다(parent_missing)"])
+        self.assertEqual(self.run_json()["drive_terminal"], out["terminal"])
+
+    def test_other_not_found_is_not_relaunched(self):
+        self.kill_drive()
+        before = self.run_json()
+        self.fail_hc("run", "not_found", 3)  # 가짜 hc 의 실패 문구는 kind 그대로다(no terminal "<메인>" 이 아니다)
+        code, out = self.hteam("up", as_="main")
+        self.assertEqual((code, out["error"]["code"]), (1, "hc_failed"), out)
+        self.assertEqual(len(self.run_calls()), 1)
+        self.assertEqual(self.run_json(), {**before, "main_terminal": MAIN})
+
+
+class HerdrRunTest(TeamCase):
+    """11단계(설계 3.2·6.5·9.3): herdr.run_bg 의 parent 와 없는 parent 의 다시 띄우기, _hc 오류의 message."""
+
+    def test_parent_flags_and_missing_parent_fallback(self):
+        from hteam import herdr
+        self.add_terminal(MAIN, argv=["claude"])
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            out = herdr.run_bg({"herdr.space": "spA"}, ["prog"], parent=MAIN, name="n1", cwd="/w", keep=True)
+            back = herdr.run_bg({}, ["prog"], parent="t404")
+        calls = [c for c in self.hc_calls() if c[:1] == ["run"]]
+        self.assertEqual(calls, [
+            ["run", "--bg", "--parent", MAIN, "--outlive-parent", "--no-notify", "--keep", "--name", "n1", "--cwd", "/w",
+             "--label", "herdr.space=spA", "--json", "--", "prog"],
+            ["run", "--bg", "--parent", "t404", "--outlive-parent", "--no-notify", "--json", "--", "prog"],
+            ["run", "--bg", "--no-parent", "--no-notify", "--json", "--", "prog"]])
+        self.assertNotIn("parent_fallback", out)
+        self.assertEqual(back["parent_fallback"], {"parent": "t404", "message": 'no terminal "t404"'})
+        terms = self.hc_state()["terminals"]
+        self.assertEqual((terms[out["address"]]["parent"], terms[back["address"]]["parent"]), (MAIN, None))
+
+    def test_other_failures_keep_message_and_are_not_retried(self):
+        from hteam import herdr
+        self.fail_hc("run", "not_found", 3)
+        with mock.patch.dict(os.environ, self.env, clear=True), self.assertRaises(HteamError) as ctx:
+            herdr.run_bg({}, ["prog"], parent=MAIN)
+        self.assertEqual((ctx.exception.code, ctx.exception.data), ("hc_failed", {"kind": "not_found", "message": "not_found"}))
+        self.assertFalse(herdr.parent_missing(ctx.exception, MAIN))
+        self.assertEqual(len([c for c in self.hc_calls() if c[:1] == ["run"]]), 1)
 
 
 from tests.helpers import WS_CONFIG  # noqa: E402  (Append 블록, 7단계)

@@ -40,7 +40,7 @@ UPGRADE_NEXT = ("바뀐 파일을 확인하고(git diff -- .herdr-team) 커밋�
                 "워커 사양에 라운드마다 들어가므로 커밋하면 다음 라운드부터 적용된다. 테스트 관문을 쓰려면 "
                 "docs/planning/tasks.toml 에 [test] 를 넣고 커밋한다(README \"묶음 검증\"). "
                 "CLAUDE.md 절을 고쳤으면 메인 세션을 새로 연다(메인 규칙은 세션을 시작할 때 읽힌다).")
-# up 이 띄울 때 바꾸는 run.json 키. 띄우기가 확실히 실패하면 이것만 되돌린다(main_terminals 등 다른 키는 그대로 둔다).
+# up 이 띄울 때 바꾸는 run.json 키. 띄우기가 확실히 실패하면 이것만 되돌린다(main_terminal 등 다른 키는 그대로 둔다, 9.3).
 LAUNCH_KEYS = ("pending_launch", "team_space", "team_tab", "launched_at", "drive_terminal", "drive_argv")
 # up 이 판정한 뒤 이 키가 바뀌었으면 판정이 낡았다(다른 up 이 띄웠거나 관제가 Run 에 묶였다): launch_raced.
 RACE_KEYS = ("pending_launch", "run_id", "bound_nonce", "bound_at", "drive_terminal", "drive_argv")
@@ -405,8 +405,9 @@ def _read_run(p) -> dict:
 def _run_update(p, fn) -> dict:
     """run.json 을 잠금(state/run.lock) 안에서 읽고 fn 으로 바꿔 쓴다. fn 이 예외를 내면 쓰지 않는다.
 
-    run.lock 은 다른 hteam 잠금 안에서 잡지 않는다(잡는 곳: setup 의 up, drive 의 Run 연결. 둘 다 안에서
-    다른 hteam 잠금을 잡지 않는다)."""
+    run.lock 은 watch 잠금 말고는 다른 hteam 잠금 안에서 잡지 않는다(잡는 곳: setup 의 up, drive 의 Run 연결,
+    outbox.set_main_terminal. watch 는 watch 잠금 안에서 set_main_terminal 을 부른다. run.lock 안에서는 다른 hteam 잠금을
+    잡지 않는다)."""
     p.ensure_state()
     with flock(p.run_lock):
         run = _read_run(p)
@@ -466,9 +467,15 @@ def up(p, wait_run: float | None) -> dict:
 
     hc run 이 실패하면: 터미널이 생기지 않았다고 확인되면 이번에 바꾼 키만 되돌린다. 무엇을 했는지 모르면(시간 초과,
     응답 유실) 이름으로 찾아 있으면 기록하고, 없거나 찾지 못하면 nonce 와 pending_launch 를 남기고 exit 1
-    launch_uncertain(떴다면 관제가 스스로 Run 에 묶인다. 아니면 180초 뒤 다음 up 이 새로 띄운다)."""
+    launch_uncertain(떴다면 관제가 스스로 Run 에 묶인다. 아니면 180초 뒤 다음 up 이 새로 띄운다).
+
+    11단계(설계 9.3): 판정 전에 run.json 의 main_terminal 을 메인 주소로 쓰고(outbox.set_main_terminal), 관제를 그 메인
+    아래에 띄운다(--parent <메인> --outlive-parent). 그 사이 메인이 지워졌으면 parent 없이 한 번 더 띄우고 warnings 에 남긴다."""
     config.load(p)
     main = outbox.require_main(p)
+    # 판정 전에 쓴다(값이 같으면 쓰지 않는다). running·starting·hung 으로 돌아가는 길도 쓰므로 메인을 새 터미널로 옮기면
+    # 따라간다. RACE_KEYS·LAUNCH_KEYS 가 아니다(띄우기 판정·되돌리기와 상관없다)
+    outbox.set_main_terminal(p, main)
     seen = _read_run(p)
     view = drive.view(p, seen)
     if view["hung"]:
@@ -508,9 +515,14 @@ def up(p, wait_run: float | None) -> dict:
                 "--root", str(p.root), "drive"]
         die_at("up_before_hc_run")
         recovered = bound_seen = False
+        warnings: list[str] = []
         try:
-            address = herdr.run_bg(name, str(p.root),
-                                   {"herdr.space": space, "herdr.tab": tab, "hteam.role": "drive"}, argv).get("address")
+            # 메인 아래에 묶는다. 메인은 require_main 주소다(hc 기본값 HC_TERMINAL_ID·run.json 에 기대지 않는다, 9.3 의 3)
+            res = herdr.run_bg({"herdr.space": space, "herdr.tab": tab, "hteam.role": "drive"}, argv, parent=main,
+                               name=name, cwd=str(p.root), keep=True)
+            address = res.get("address")
+            if res.get("parent_fallback"):  # 메인 확인과 hc run 사이에 메인이 지워졌다(Codex 설계 리뷰 r1)
+                warnings.append(f"메인 터미널 {main} 이 hc 에 없어 관제를 parent 없이 띄웠다(parent_missing)")
             if not address:
                 raise HteamError("hc_failed", "hc run 출력에 터미널 주소가 없다", FAIL, data={"kind": "bad_output"})
         except HteamError as exc:
@@ -540,6 +552,8 @@ def up(p, wait_run: float | None) -> dict:
             _run_update(p, record)
         # 탭 이름은 관제가 시작하며 붙인다(설계 8.2 의 5)
         result = {"status": "launched", "terminal": address, "team_tab": tab, "launched": True}
+        if warnings:
+            result["warnings"] = warnings
         if recovered:
             result["recovered"] = True  # hc 가 실패를 알렸지만 이름으로 찾았거나 그 nonce 로 관제가 묶였다
     if wait_run:

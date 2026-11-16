@@ -6,7 +6,7 @@ import time
 import unittest
 from unittest import mock
 
-from tests.helpers import DRIVE, TeamCase
+from tests.helpers import DRIVE, MAIN, TeamCase
 from hteam import outbox, state, testgate
 from hteam.errors import HteamError
 from hteam.paths import Project
@@ -759,6 +759,48 @@ class WatchLockTest(LinkCase):
         self.assertEqual((code, out["messages"][0]["body"]), (0, "하나"))
         self.assertEqual((self.state_dir / "outbox.cursor").read_text().strip(), "1")
         self.assertFalse((self.state_dir / "watch.pid").exists())
+
+
+class WatchMainTerminalTest(LinkCase):
+    """11단계(설계 7.3): watch 잠금을 잡은(실제로 감시하는) watch 만 run.json 의 main_terminal 을 그 메인 주소로 쓴다."""
+
+    def run_json(self) -> dict:
+        return json.loads((self.state_dir / "run.json").read_text())
+
+    def test_watch_writes_main_terminal_once(self):
+        before = self.run_json()
+        self.progress("하나")
+        self.assertEqual(self.hteam("watch", as_="main")[0], 0)
+        self.assertEqual(self.run_json(), {**before, "main_terminal": MAIN})  # 다른 키는 그대로
+        inode = (self.state_dir / "run.json").stat().st_ino
+        self.progress("둘")
+        self.assertEqual(self.hteam("watch", as_="main")[0], 0)
+        self.assertEqual((self.state_dir / "run.json").stat().st_ino, inode)  # 값이 같으면 다시 쓰지 않는다
+        self.add_terminal("t2", argv=["claude"])  # 메인 세션을 새 터미널로 옮겼다
+        self.progress("셋")
+        self.assertEqual(self.hteam("watch", as_=None, terminal="t2")[0], 0)
+        self.assertEqual(self.run_json()["main_terminal"], "t2")
+
+    def test_refused_or_losing_watch_does_not_write(self):
+        before = (self.state_dir / "run.json").read_text()
+        code, out = self.hteam("watch", timeout=10)  # 관제 환경
+        self.assertEqual((code, out["error"]["code"]), (5, "not_main"), out)
+        self.assertEqual((self.state_dir / "run.json").read_text(), before)
+        proc = self.hteam_bg("watch", as_="main")
+        self.wait_until(lambda: self.run_json().get("main_terminal") == MAIN, "이긴 watch 가 main_terminal 을 쓴다")
+        self.add_terminal("t2", argv=["claude"])
+        code, out = self.hteam("watch", as_=None, terminal="t2", timeout=10)  # 이미 다른 watch 가 돈다
+        self.assertEqual((code, out["error"]["code"]), (3, "watch_running"), out)
+        self.assertEqual(self.run_json()["main_terminal"], MAIN)
+        self.progress("하나")
+        self.assertEqual(self.finish(proc, timeout=10)[0], 0)
+
+    def test_missing_run_json_gets_only_that_key(self):
+        (self.state_dir / "run.json").unlink()
+        (self.drive_dir / "drive.pid").unlink()  # Run 이 없으니 관제도 없다
+        code, out = self.hteam("watch", as_="main", timeout=20)
+        self.assertEqual((code, out.get("status")), (0, "orphaned"), out)
+        self.assertEqual(self.run_json(), {"main_terminal": MAIN})  # run_id 가 없어 자동 부활·Stop 훅의 자격은 그대로다
 
 
 class RenderGuardTest(unittest.TestCase):
