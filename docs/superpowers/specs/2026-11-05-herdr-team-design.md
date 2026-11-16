@@ -1,6 +1,6 @@
 # herdr-team 설계
 
-작성 2026-11-05, 4단계 추가 2026-11-08, 5단계 추가 2026-11-08, 5단계 병합 2026-11-09, 6단계 추가 2026-11-10, 6단계 병합 2026-11-11, 7단계 추가 2026-11-11, 7단계 병합 2026-11-12, 8단계 추가 2026-11-13, 11단계 추가 2026-11-16. 상태: 1–3단계는 구현·실환경 확인을 마치고 0.1.0 으로 병합했다. 4단계(15.3 의 4)는 구현·실환경 확인을 마치고 herdr-team 0.2.0 으로 병합했다. 5단계(15.3 의 5)는 구현·실환경 확인을 마치고 herdr-team 0.3.0 으로 병합했다. 6단계(15.3 의 6)는 구현·실환경 확인을 마치고 herdr-team 0.4.0·herdr-orch 0.2.0 으로 병합했다. 7단계(15.3 의 7)는 구현·실환경 확인을 마치고 herdr-team 0.5.0·herdr-orch 0.3.0 으로 병합했다. 8단계(15.3 의 8)는 구현·실환경 확인을 마치고 herdr-team 0.6.0 으로 병합했다. 9단계(15.3 의 9)는 herdr-team 0.6.1 로 병합했다. 10단계(15.3 의 10)는 구현·실환경 확인을 마쳤다(herdr-team 0.7.0, herdr-orch 그대로, 병합 대기). 11단계(15.3 의 11, Herdr Agents 계층)는 설계 중이다(herdr-team 0.7.1, herdr-orch 0.4.0).
+작성 2026-11-05, 4단계 추가 2026-11-08, 5단계 추가 2026-11-08, 5단계 병합 2026-11-09, 6단계 추가 2026-11-10, 6단계 병합 2026-11-11, 7단계 추가 2026-11-11, 7단계 병합 2026-11-12, 8단계 추가 2026-11-13, 11단계 추가 2026-11-16, 11단계 보강 2026-11-16. 상태: 1–3단계는 구현·실환경 확인을 마치고 0.1.0 으로 병합했다. 4단계(15.3 의 4)는 구현·실환경 확인을 마치고 herdr-team 0.2.0 으로 병합했다. 5단계(15.3 의 5)는 구현·실환경 확인을 마치고 herdr-team 0.3.0 으로 병합했다. 6단계(15.3 의 6)는 구현·실환경 확인을 마치고 herdr-team 0.4.0·herdr-orch 0.2.0 으로 병합했다. 7단계(15.3 의 7)는 구현·실환경 확인을 마치고 herdr-team 0.5.0·herdr-orch 0.3.0 으로 병합했다. 8단계(15.3 의 8)는 구현·실환경 확인을 마치고 herdr-team 0.6.0 으로 병합했다. 9단계(15.3 의 9)는 herdr-team 0.6.1 로 병합했다. 10단계(15.3 의 10)는 구현·실환경 확인을 마쳤다(herdr-team 0.7.0, herdr-orch 그대로, 병합 대기). 11단계(15.3 의 11, Herdr Agents 계층)는 구현·브랜치 리뷰·실환경 1차를 마쳤고, 보강(메인이 바뀐 뒤 다시 묶기, 1장 11단계 보강)을 설계 중이다(herdr-team 0.7.1, herdr-orch 0.4.0).
 
 ## 1. 목적과 범위
 
@@ -166,20 +166,35 @@ Herdr 앱의 Agents 목록에 herdr-team 터미널(관제, 고정 에이전트, 
 
 ### 확인한 것 (11단계)
 
-hc 0.1.20·herdr-app(2026-11-11 빌드)의 도움말·`hc schema`·앱 문서와, 버리는 space 하나에서 한 실험(2026-11-16)이다. 실험의 `hc run` 에는 모두 `--no-notify` 를 줬고 사용자 터미널 아래에는 아무것도 두지 않았다. 근거 칸의 g1·e1 같은 이름은 그 실험 터미널이다.
+hc 0.1.20·herdr-app(2026-11-11 빌드)의 도움말·`hc schema`·앱 문서와, 버리는 space 하나에서 한 실험(2026-11-16)이다. 실험의 `hc run` 에는 모두 `--no-notify` 를 줬고 사용자 터미널 아래에는 아무것도 두지 않았다. 근거 칸의 g1·e1 같은 이름은 그 실험 터미널이다. 근거가 "실환경 1차" 인 줄은 구현 뒤 15.2 의 11단계 실환경 1차(2026-11-16, 시험 space 하나, 시험 프로젝트 하나)에서 본 것이다.
 
 | 확인한 것 | 근거 | 처리 |
 |---|---|---|
-| parent 는 띄울 때 한 번 정한다. 나중에 바꾸는 명령이 없다(`hc label` 은 라벨만 바꾼다) | schema `Terminal.parent`("set once at start"), API 메서드 목록 | 이미 떠 있는 터미널은 다시 띄울 때까지 맨 위에 남는다(13장 한계, 9.6) |
+| parent 는 띄울 때 한 번 정한다. 나중에 바꾸는 명령이 없다(`hc label` 은 라벨만 바꾼다) | schema `Terminal.parent`("set once at start"), API 메서드 목록, 실환경 1차 | 이미 떠 있는 터미널은 다시 띄울 때까지 맨 위에 남는다(13장 한계, 9.6). 메인이 바뀐 뒤는 다시 띄워 묶는다(11단계 보강, 8.13·5.9.7) |
 | 기본 parent 는 부른 쪽 `HC_TERMINAL_ID` 다. `--parent <주소·이름>` 으로 고른다. `--parent` 와 `--no-parent` 를 함께 주면 usage 오류다 | 도움말, 실험 g1·q4 | 둘 가운데 하나만 준다(3.2, herdr-orch 설계 15장) |
-| 없는 parent 는 `not_found`(`no terminal "<parent>"`)이고 터미널이 생기지 않는다 | 실험 g4 | horch 와 보기 pane 은 `--no-parent` 로 한 번 다시 띄운다(6.5, herdr-orch 15.3) |
-| 기본 자식은 부모 프로그램과 함께 끝난다. `--outlive-parent` 자식은 부모 프로그램이 저절로 끝나도, `hc kill` 로 끝나도 산다 | 도움말, 실험 c1–c3·d1·d2·g3 | parent 를 주면 늘 `--outlive-parent` 를 준다 |
+| 없는 parent 는 `not_found`(`no terminal "<parent>"`)이고 터미널이 생기지 않는다 | 실험 g4, 실환경 1차(지운 메인 주소로 띄운 리뷰어·보기·워커가 parent 없이 다시 떴다) | horch 와 보기 pane 은 `--no-parent` 로 한 번 다시 띄운다(6.5, herdr-orch 15.3) |
+| 기본 자식은 부모 프로그램과 함께 끝난다. `--outlive-parent` 자식은 부모 프로그램이 저절로 끝나도, `hc kill` 로 끝나도 산다 | 도움말, 실험 c1–c3·d1·d2·g3, 실환경 1차(메인 탭을 닫아도 관제·고정 에이전트·보기 pane 이 살았다) | parent 를 주면 늘 `--outlive-parent` 를 준다 |
 | 앱의 `terminal.kill`·`pane.close`·`tab.close` 는 부모와 함께 pane 없는 자식을 `--outlive-parent` 여도 끝낸다. pane 있는 자식(다른 탭의 pane 포함)은 산다 | 앱 문서("End a terminal and its sub-agents"), 실험 e1·e2·k1·k2·m1 | 숨은 리뷰어에는 parent 를 주지 않는다. 사용자가 park 한 워커는 한계(13장) |
 | `--no-notify` 면 부모를 정해도 부모 입력란에 아무것도 들어가지 않는다 | 도움말, 실험 f1 | 늘 `--no-notify` 를 준다(메인 입력란, 3.2) |
-| 부모를 `hc rm` 하면 자식의 parent 는 지운 주소를 그대로 가리키고(`hc get` 은 not_found) pane 없는 자식은 `herdr-app ls` 에서 사라진다. 끝난(finished) 부모도 parent 로 받는다 | 실험 p1·c2·q1–q3 | 메인 주소는 다음 `up`·`watch` 가 고친다(9.3, 7.3). 앱 화면은 한계(13장) |
+| 부모를 `hc rm` 하면 자식의 parent 는 지운 주소를 그대로 가리키고(`hc get` 은 not_found) pane 없는 자식은 `herdr-app ls` 에서 사라진다. 끝난(finished) 부모도 parent 로 받는다 | 실험 p1·c2·q1–q3 | 메인 주소는 다음 `up`·`watch` 가 고친다(9.3, 7.3). 앱 화면은 아래 실환경 1차 줄 |
 | 부모가 다른 탭에 있어도 자식은 부모의 sub-agent 로 든다(`herdr-app ls` 의 `sub_agents`) | 실험 c3·k2 | 관제 탭·에이전트 탭의 pane 도 메인 아래로 묶인다 |
 | 앱이 만든 터미널(`pane.split`, `space.new`)은 parent 가 null 이고 그 메서드에 parent 인자가 없다 | 실험, 실제 리뷰 보기 터미널, 앱 문서 | 리뷰 보기 pane 을 `hc run` 으로 띄운다(6.5) |
 | `require_main`(`outbox.py`)·`_label_role`(`roles.py`)은 조상 쪽으로만 따라가고, 워커(`horch.dispatch`)·관제(`hteam.role=drive`)는 자기 라벨로 깊이 0 에서 정한다. 메인(parent null)은 자식이 생겨도 판정이 그대로다 | 코드 | 판별 코드는 바꾸지 않는다(회귀 시험, 15.1) |
+| 메인이 다른 터미널로 바뀌면(`main_terminal` 이 바뀜) 그 전에 뜬 관제·고정 에이전트 세션은 옛 메인을 parent 로 가리킨 채 남는다. 옛 메인이 끝나거나 지워지면 `herdr-app ls` 에서 누구의 `sub_agents` 에도 없고 자기 탭에만 나오며, Agents 목록에서 따로 보인다 | 실환경 1차(관제와 고정 에이전트 새 세션 하나, 사용자 확인) | 11단계 보강: 다시 묶는다(아래 결정, 8.13·5.9.7) |
+| 메인이 바뀌는 경우는 둘이다: 메인 탭을 닫고 다른 터미널에서 메인을 다시 열 때, 같은 프로젝트 폴더의 다른 Claude 세션이 watch 를 띄워 메인을 넘겨받을 때(그 세션도 parent·라벨 없는 터미널이라 `require_main` 을 통과한다. 7.3 대로 실제로 감시하는 watch 가 메인이 된다) | 실환경 1차(메인 탭 닫기와 다시 열기, 시험 운영자의 상태 실험 세션이 Stop 훅 안내로 watch 를 띄웠다) | 둘째 경우의 동작은 바꾸지 않는다(아래 결정, 13장) |
+| 같은 터미널에서 `/exit` 뒤 메인을 다시 띄우면 주소가 그대로다 | 실환경 1차 | 다시 묶을 일이 없다 |
+
+### 사용자 결정 (2026-11-16, 11단계 보강)
+
+실환경 1차에서 메인이 바뀐 뒤 앞 메인 아래 남은 관제·고정 에이전트가 살아 있고 계속 쓰이는데 Agents 목록에서 따로 보였다(위 확인한 것). hc 에 parent 를 바꾸는 명령이 없으므로 묶음을 고치는 길은 새로 띄우기뿐이다.
+
+| 주제 | 결정 |
+|---|---|
+| 범위 | 메인이 바뀐 뒤 앞 메인 아래 남는 관제·고정 에이전트를 이번 0.7.1 에서 다시 묶는다 |
+| 관제 | 새 메인 아래로 다시 띄운다(8.13) |
+| 고정 에이전트 | 리셋 때 같은 터미널을 비우는 대신 새 터미널로 띄운다. 인수인계 파일로 넘기는 것은 그대로다(5.9.7) |
+| 옮기지 않는 것 | 도는 임시 워커·리뷰어·보기 pane. 곧 끝나 관제가 정리한다 |
+| 두 번째 세션 | 같은 폴더의 두 번째 Claude 세션이 메인을 가져가는 동작은 이번에 바꾸지 않는다. 알려진 동작으로 적는다(7.3, 13장) |
 
 ## 2. 용어
 
@@ -241,7 +256,7 @@ herdr-team/          (새로)
 
 메인이 Run 에 묶이지 않는 이유: horch 는 Run 소유자를 깨울 때 그 입력창에 글을 넣는다(`hc send`). 사용자가 치던 글이나 AskUserQuestion 선택과 섞이면 안 된다. 메인은 Run 에 쓰지도 않는다. 요청은 파일 큐로 관제에 넘긴다(7.1). 0.3.0 의 `hteam tell`(외부 발신자로 `horch send --to run:R`)은 없앴다(6단계). 관제를 Claude 가 아닌 셸 프로그램으로 두는 까닭은 8.1 이다.
 
-11단계(1장 11단계 결정): Herdr Agents 목록에서 프로젝트 터미널을 메인 아래 한 단계로 묶는다. 앱은 hc parent 가 있는 터미널을 부모 아래 sub-agent 로 그린다. parent 는 띄울 때만 정해진다(1장 확인한 것).
+11단계(1장 11단계 결정): Herdr Agents 목록에서 프로젝트 터미널을 메인 아래 한 단계로 묶는다. 앱은 hc parent 가 있는 터미널을 부모 아래 sub-agent 로 그린다. parent 는 띄울 때만 정해진다(1장 확인한 것). 그래서 메인이 바뀐 뒤 묶음을 고치는 길은 새로 띄우기뿐이다(11단계 보강: 관제 8.13, 고정 에이전트 5.9.7). 아래 표의 "띄우는 곳" 은 다시 띄울 때도 같다.
 
 | 터미널 | 띄우는 곳 | parent | hc 플래그 |
 |---|---|---|---|
@@ -257,6 +272,7 @@ herdr-team/          (새로)
 - 숨은 리뷰어는 pane 이 없다. 앱에서 메인 pane·탭을 닫거나 메인을 끝내면 pane 없는 자식은 `--outlive-parent` 여도 함께 끝난다(1장 확인한 것). 그래서 parent 를 주지 않는다. 화면에서는 메인 아래로 묶인 리뷰 보기 pane 으로 보인다. parent 를 준 나머지는 모두 pane 이 있어(관제 탭·에이전트 탭) 메인 pane·탭을 닫아도 산다.
 - parent 는 Herdr 화면 묶음만 바꾼다. 생존 판정(관제 pid·heartbeat, horch 의 argv·상태), 역할 판별(`require_main`, 훅의 `_label_role`, 9.4), 요청 큐·outbox 는 그대로다. 판별은 조상 쪽으로만 따라가고 워커·관제는 자기 라벨로 정해진다(1장 확인한 것).
 - 이미 떠 있는 터미널은 parent 를 바꿀 수 없다(13장 한계, 9.6).
+- 11단계 보강(1장 11단계 보강 결정): 메인이 다른 터미널로 바뀌면(`main_terminal` 이 바뀜, 7.3·9.3) 관제는 한가할 때 스스로 끝나고 지금의 다시 띄우기 길(watch `orphaned` → `/herdr-team:up`, 자동 부활)로 새 메인 아래 다시 뜬다(8.13). 고정 에이전트 작업 터미널은 다음 리셋 때 비우지 않고 닫아 다음 태스크가 새 메인 아래 새 세션으로 띄운다(5.9.7). 도는 임시 워커·관제 탭 리뷰어·보기 pane 은 옮기지 않는다(한 라운드·한 리뷰 동안만 살고 관제가 정리한다). 다음에 띄우는 것부터 새 메인 아래다(위 "직전마다 다시 읽는다").
 
 ### 3.3 hteam 과 horch 의 분담
 
@@ -267,7 +283,7 @@ herdr-team/          (새로)
 
 herdr-orch 에 하나를 더한다(1단계에 포함, 하위 호환): 워커 터미널에서 부른 `horch status` 의 `dispatch` 에 `task`(horch Task ID)와 `title` 을 더한다. 워커 역할 판별(9.4)이 쓴다.
 
-hteam 이 hc·herdr-app 을 직접 부르는 곳은 `lib/hteam/herdr.py` 한 모듈이다(6단계): 관제 실행(`hc run`), 고정 에이전트 작업 터미널 상태 읽기(`hc get`), 탭 이름(`herdr-app do tab.rename`), pane 배치(`herdr-app ls`, `herdr-app do pane.split`·`pane.swap`·`pane.close`, core 문서 `doc.get herdr-app` 읽기), 리뷰 보기 pane 의 `hc attach`·`hc rm`. 워커 실행·같은 터미널에 넣기·세션 비우기·고정 터미널 닫기는 언제나 horch 를 거친다. 0.3.0 까지는 코디네이터 실행·생존 확인과 팀 탭 이름 붙이기뿐이었다.
+hteam 이 hc·herdr-app 을 직접 부르는 곳은 `lib/hteam/herdr.py` 한 모듈이다(6단계): 관제 실행(`hc run`), 고정 에이전트 작업 터미널 상태 읽기(`hc get`), 탭 이름(`herdr-app do tab.rename`), pane 배치(`herdr-app ls`, `herdr-app do pane.split`·`pane.swap`·`pane.close`, core 문서 `doc.get herdr-app` 읽기), 리뷰 보기 pane 의 `hc attach`·`hc rm`. 11단계 보강: 다시 묶기의 parent·메인 확인(`hc get`)과 다시 묶기로 끝난 앞 관제 터미널 정리(`pane.close`·`hc rm`, 8.13). 워커 실행·같은 터미널에 넣기·세션 비우기·고정 터미널 닫기는 언제나 horch 를 거친다. 0.3.0 까지는 코디네이터 실행·생존 확인과 팀 탭 이름 붙이기뿐이었다.
 
 5단계는 horch 를 바꾸지 않는다. 새 동작이 쓰는 horch 기능은 이미 있다: 리뷰 동안 작업 pane 을 남기는 `worker-retain`(이미 retained 면 그대로 돌려준다. 관문이 exit 2 로 멈춘 뒤 `review` 를 다시 불러도 된다), 수정 라운드의 `worker-release`·`worker-abandon --kill`(`hteam fix`), 프리앰블의 ask 명령(관문 반려 파일이 "프리앰블의 ask 명령으로 코디네이터에게 묻는다" 고 적는다. 6단계에 "묻는다(메인이 답한다)" 로 바꾼다. 그 파일은 다음 라운드의 새 워커가 자기 프리앰블로 읽는다). 테스트 실행(`/bin/sh`)은 hteam 프로세스가 직접 한다(horch·hc 를 거치지 않는다).
 
@@ -299,7 +315,8 @@ hteam 이 hc·herdr-app 을 직접 부르는 곳은 `lib/hteam/herdr.py` 한 모
     setup-mode, plugin-root, hook-errors.log
     auto-up.json, auto-up.pid, auto-up.log   관제 자동 부활(9.5)
     drive/             관제(6단계, 8장): drive.pid, heartbeat, drive.log, queue/·queue.lock·queue.seq(7.1),
-                       finish.json·supplement.json·test-confirm.json(8.4, 8.9), workers.json(8.7), jobs/(8.8)
+                       finish.json·supplement.json·test-confirm.json(8.4, 8.9), workers.json(8.7), jobs/(8.8),
+                       rehome.json(11단계 보강, 8.13)
     crew.json          고정 에이전트 상태(6단계, 5.9.1). crew/ 에 인수인계 사양(5.9.7)
     tests/T-xxx.json, tests/final.json       테스트 기록(5단계, 5.7)
     tests/.lock, tests/logs/                 exclusive 잠금, 테스트 실행 로그(5.7)
@@ -810,7 +827,7 @@ orca-team 0.7.0 의 고정 에이전트(`lib/orch/agents.py`)를 Herdr 위에서
 | `queue` | 이 에이전트를 기다리는 수정 라운드 태스크 목록(5.9.5) |
 | `since_reset`, `reset_tasks` | 마지막 리셋(또는 처음 띄움) 뒤 처리한 태스크 수와 그 목록. 같은 태스크의 수정 라운드는 다시 세지 않는다(orca §17 P3-11). 리셋 뒤 같은 태스크의 수정 라운드는 새 세션의 일이라 다시 센다 |
 | `reset_pending` | 다음 태스크 전에 리셋한다 |
-| `resetting` | `{dispatch, title, at, step}` 또는 null. `step` 은 `starting`(인수인계를 넣는 중), `handoff`(인수인계 중), `clear`(비우는 중) |
+| `resetting` | `{dispatch, title, at, step}` 또는 null. `step` 은 `starting`(인수인계를 넣는 중), `handoff`(인수인계 중), `clear`(비우는 중). clear 단계는 `clear_error`(비우지 않고 닫는 까닭 코드, 5.9.7 의 4)와 11단계 보강의 `rehome`(`"failed"`: 다시 묶기의 닫기가 실패해 같은 터미널을 비운다)을 더 담는다 |
 | `reset_failures`, `reset_busy_since`, `reset_unknown_since`, `close_failures` | 리셋 재시도와 상한(5.9.7) |
 | `terminal_unknown_since`, `terminal_unknown_asked` | 작업 터미널 상태를 확인하지 못한 첫 시각과 그것을 decide 로 올린 표시(5.9.3, 8.7) |
 | `launched_at`, `last_reset_at` | 시각(로컬 오프셋 ISO 8601, 초) |
@@ -826,7 +843,7 @@ orca-team 0.7.0 의 고정 에이전트(`lib/orch/agents.py`)를 Herdr 위에서
 2. 띄우기: `horch worker-start --keep-open --tab <에이전트 탭> --agent <agent> --model <model> --effort <effort> --title "T-xxx rN 작업" --spec-file <사양> --cwd <루트> --agent-arg=…`(`[agents.<agent>].args`). 시작 장벽과 실행 키 복구는 5.4 와 같다.
    - Claude 면 `--agent-arg=--name=<제목> (Claude)` 를 더한다(예 `생산 (Claude)`). 제목이 턴과 `/clear` 뒤에도 그대로이고 7501 상태 보고도 그대로다(X6). `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` 은 상태 보고까지 끄므로 쓰지 않는다(X6).
    - Codex 는 첫 세션 동안 Codex 가 정한 제목(스피너·대화 주제·폴더, X3)을 받아들인다. 첫 리셋부터 `/clear <이름>` 이 대화 이름을 붙여 제목이 `<이름> | <폴더>` 로 고정된다(X3b C1). 탭 이름이 에이전트를 가린다(4).
-   - 11단계: `main_terminal` 이 있으면 `--parent <main_terminal>` 을 더한다(5.4 의 11단계 문단, 3.2). 리셋 대체 길(5.9.7)·lost 뒤(5.9.3)의 새 터미널도 이 길로 띄우므로 같다.
+   - 11단계: `main_terminal` 이 있으면 `--parent <main_terminal>` 을 더한다(5.4 의 11단계 문단, 3.2). 리셋 대체 길(5.9.7)·lost 뒤(5.9.3)·리셋의 다시 묶기(5.9.7 의 4, 11단계 보강) 뒤의 새 터미널도 이 길로 띄우므로 같다.
 3. 상태 저장을 배치보다 먼저 한다(orca 4d6597d: 배치 도중 관제가 죽어도 에이전트를 잃지 않는다): 태스크 `working`·라운드 기록 → crew entry(`terminal`, `agent`, `model`, `effort`, `space`, `tab`, `task`, `dispatch`, `launched_at`, `since_reset = 0`, `reset_tasks = []`). `view` 는 그대로 둔다(앞 세션 태스크의 리뷰를 보고 있을 수 있다. `view` 는 6.5 의 보기 정리만 지운다). 그다음 `hc get` 으로 `terminal_argv` 를 읽어 쓴다(읽지 못하면 다음 터미널 확인 때 채운다. 그동안 argv 비교는 하지 않는다).
 4. 탭 이름: `herdr-app do tab.rename --id <탭> --name "herdr-team <제목>"`(최선 노력). Herdr 는 디스패치가 탭 이름을 바꾸지 않으므로 한 번이면 된다. orca 는 디스패치마다 Orca 가 탭 이름을 바꿔 되돌려야 했다(§17 P2-7).
 5. pane: `herdr-app ls` 에서 작업 터미널의 pane id 를 찾아 `work_pane` 에 둔다. 그 탭에 리뷰 보기 pane(`view`)이 이미 있으면(앞 세션 태스크의 리뷰가 아직 돈다) 새 작업 pane 은 오른쪽 끝에 붙었다(X4). `herdr-app do pane.swap '{"pane":"<작업 pane>","target":"<보기 pane>"}'` 로 왼쪽에 둔다(초점은 바뀌지 않는다, X4). 배치 확인은 core 문서 `doc.get herdr-app` 의 그 탭 `row` 순서로 한다(`herdr-app ls` 로는 방향을 알 수 없다, X4).
@@ -913,6 +930,11 @@ worker_done 이 오면 관제가 `task = null` 로 비우고(entry 의 `task` �
    - 실패(outcome `failed`, done 없이 끝남): `horch worker-release`(터미널은 남는다. 아직 `active` 면 먼저 `worker-abandon --keep-terminal`, release 는 `settled`·`retained`·`abandoned` 만 받는다). `resetting = null`, `reset_pending = false`. 세션은 비우지 않는다(`since_reset` 그대로). decide escalation `<이름> 에이전트가 인수인계를 쓰지 못했다: <요약 200자>`(commands `hteam agent reset <이름>`).
    - 30분 넘게 끝나지 않음(`RESET_STUCK_S`): `horch worker-abandon --dispatch D --keep-terminal` 뒤 위 실패와 같이 한다. decide 문구는 `<이름> 에이전트 인수인계가 끝나지 않았다`.
    - 성공: `horch worker-release`(터미널은 남는다). `resetting.step = "clear"` 를 먼저 쓰고 `horch terminal-reset --terminal <t> [--name <이름>] --timeout-ms 10000`(herdr-orch 13.8. `--name` 은 Codex 만). Claude·Codex 모두 `hc keys` 로 `/clear` 를 치고 그 뒤 첫 turn 사건(`idle`, turn+1)을 기다린다(X2: Claude 0.1–0.3초, X3b: Codex 1.5–1.8초). Codex `/new` 는 쓰지 않는다(X3: git 저장소에서 작업 트리 메뉴가 뜨고 그동안 넣은 입력이 사라졌다).
+     - 11단계 보강(다시 묶기, 1장 11단계 보강 결정): clear 단계의 첫 시도(`clear_error`·`close_failures`·`rehome` 이 없을 때)는 `terminal-reset` 전에 작업 터미널의 parent 를 본다. 다음 셋이 모두 맞으면 비우지 않는다: `outbox.main_parent` 가 주소 M 이다(3.2 의 parent 규칙), `hc get <작업 터미널>`(3초)의 parent 가 M 이 아니다(parent 가 없어도 다르다. 0.7.0 에서 띄운 세션과 parent 없이 다시 뜬 세션이 여기에 든다), `hc get M`(3초)이 `live` 이고 그 `address` 가 그 parent 와 다르고 라벨 `herdr.space` 가 entry 의 `space` 와 같다(8.13 의 확인 4 와 같은 규칙). 그러면 `resetting.clear_error = "parent_changed"` 를 쓰고 아래 exit 4 갈래의 닫기로 간다: `horch terminal-close --terminal <t>` → `terminal`·`terminal_argv`·`work_pane` 을 비우고 리셋을 마친다(`since_reset = 0`, `reset_tasks = []`, `last_reset_at`). 로그 `<이름> 리셋: new_terminal(parent_changed)`. 다음 태스크가 5.9.2 로 새 세션을 그때의 `main_terminal` 아래에 띄우고 인수인계 파일을 읽는다(5.5 의 7). 탭 이름·배치도 5.9.2 의 4–6 이 다시 한다. 리뷰 보기 pane 이 남아 있으면(앞 태스크의 리뷰가 돈다) 새 작업 pane 을 그 왼쪽에 둔다(5.9.2 의 5).
+       - 셋 가운데 하나라도 아니거나 hc 로 확인하지 못하면(`hc get` 실패, M 이 `finished`·`not_found`. 끝나거나 지운 메인 아래로 새로 띄워도 따로 보인다. M 이 다른 space 다. 범위 밖, 16장) 지금처럼 `terminal-reset` 을 한다. 묶음은 보기 위한 것이라 리셋을 막지 않는다.
+       - 닫지 못하면(`terminal-close` 실패) 아래 exit 4 갈래처럼 닫기를 되풀이하지 않는다: `clear_error` 를 지우고 `resetting.rehome = "failed"` 를 쓴다. 다음 틱에는 parent 를 다시 보지 않고 지금처럼 `terminal-reset` 으로 같은 터미널을 비운다(그 세션은 옛 메인 아래 남는다, 13장). 그 `terminal-reset` 이 실패하면 아래 exit 4 갈래(닫기 세 번, decide)다. 로그 `<이름> 리셋: 다시 묶기 닫기 실패(<code>), 같은 터미널을 비운다`.
+       - 닫기 전에 관제가 죽으면 다시 뜬 관제가 clear 단계를 잇는다(1): `clear_error` 가 있으므로 닫기부터 한다(지금 규칙 그대로).
+       - 리셋 없이 오래 도는 세션은 다음 리셋까지 옛 메인 아래 따로 보인다(13장). 바로 묶으려면 사용자 요청 리셋(`hteam agent reset <이름>`)을 한다.
      - exit 0: `resetting = null`, `reset_pending = false`, `since_reset = 0`, `reset_tasks = []`, `last_reset_at`. 로그 `<이름> 리셋: reset(turn <n>, <초>초)`.
      - exit 3 `terminal_not_ready` 이고 오류 data 의 `status` 가 `working`·`blocked` 면 아무것도 치지 않았다(에이전트는 done 명령을 턴 안에서 부르므로 worker_done 이 올 때 세션은 대개 아직 `working` 이다. 6단계 실환경). 세션을 닫지 않고 2 의 바쁨처럼 미룬다: `resetting.step = "clear"` 를 그대로 두고(`clear_error` 를 쓰지 않는다) 다음 틱에 `terminal-reset` 을 다시 한다. `reset_busy_since` 를 처음 적을 때만 로그 `<이름> 리셋 미룸: 작업 세션이 일하는 중(<상태>)` 한 줄. `RESET_BUSY_S`(30분)가 지나면 아래 실패 갈래(닫기)로 간다. 끝나면(비우기·닫기) `reset_busy_since` 를 지운다. 그 밖의 상태·오류 코드는 아래 갈래다. clear 단계에서 그 인수인계 Dispatch 의 메시지(늦은 `observed`·되풀이 worker_done)가 오면 로그 `<이름> 인수인계 Dispatch 의 <type> 무시(clear 단계): <D>` 만 남긴다(관제 재시작 뒤 재확인이 메일보다 먼저 clear 로 넘기면 지난 두 번째 `idle` 이 남아 있다. 이것을 8.6 의 인수인계 두 번째 idle 로 보면 리셋이 취소되고 다음 태스크가 이전 대화를 잇는다).
      - exit 4 `reset_timeout`(약 10초 안에 turn 사건이 없음) 또는 그 밖의 실패: 비웠다고 믿지 않고 새 터미널로 간다(1장 6단계 결정의 대체 길). `horch terminal-close --terminal <t>` → `terminal = null`, `work_pane = null` → `resetting = null`, `reset_pending = false`, `since_reset = 0`, `reset_tasks = []`, `last_reset_at`. 다음 태스크가 5.9.2 로 새 세션을 띄우고 인수인계 파일을 읽는다(5.5). 로그 `<이름> 리셋: new_terminal(<code>)`. 닫지 못하면 `resetting` 을 남기고 다음 틱에 닫기를 다시 한다(`close_failures`). 세 번 실패하면 decide escalation `<이름> 에이전트 세션을 비우지도 닫지도 못했다: <오류>. 사용자에게 그 에이전트 탭의 작업 pane 을 닫아 달라고 한다` 를 올리고 `resetting` 을 지운 뒤 터미널을 잊는다.
@@ -961,7 +983,7 @@ worker_done 이 오면 관제가 `task = null` 로 비우고(entry 의 `task` �
 | 확인 창에서 멈췄다 | `observed blocked`, `no_status` 1분 | decide escalation(8.6). 키를 누르지 않는다 |
 | 사용자가 작업 pane 을 닫았다 | 재확인의 터미널 확인 | 로그 `<이름> 작업 터미널이 닫혀 잊음`(한 번). 맡은 태스크는 위 "done 없이 끝났다" |
 | 리뷰 보기 pane 이 죽었다 | 리뷰 시작·끝 때 확인 | 리뷰에는 영향이 없다. 다음 리뷰 때 다시 연다(6.5) |
-| 관제가 죽었다 | 메인 훅(9.5) | 새 관제가 시작 재확인에서 `crew.json` 의 터미널을 하나씩 확인해 죽은 것을 잊고 이어 간다(8.7) |
+| 관제가 죽었다 | 메인 훅(9.5) | 새 관제가 시작 재확인에서 `crew.json` 의 터미널을 하나씩 확인해 죽은 것을 잊고 이어 간다(8.7). 다시 묶기로 끝난 관제(8.13)도 같다 |
 | hc core 재시작 | 확인하지 않았다(X7) | 복구 셸로 바뀐 터미널은 lost 로 보고 잊는다(herdr-orch 10장 판정). 실제 동작은 한계(13장) |
 
 재투입 이어 붙이기(Codex 계획 리뷰 r1): 재투입은 앞 Dispatch 를 abandon 하기 전에 라운드 작업 기록에 `resend = {from: <앞 Dispatch>, n}` 를 쓰고, 새 Dispatch 를 띄운 뒤 같은 상태 쓰기에서 `dispatch`·`start_turn`·`delivery`·`unknown_starts = n` 을 쓰고 `resend` 를 지운다. 띄운 뒤 기록 전에 관제가 죽으면 처리하던 not_started 는 ack 전이라 다시 온다. 그때 `resend` 가 남아 있으면 먼저 그 horch Task 의 최신 시도를 본다: `from` 과 다르고 `launch_failed` 가 아니면 그것을 작업 Dispatch 로 이어 붙이고(crew entry `dispatch` 도, 로그 `<T> not_started: resent(<n>)`) 다시 넣지 않는다. 그러지 않으면 새 Dispatch 의 메시지가 기록된 Dispatch 와 달라 지난 것으로 버려진다(8.6). `resend` 는 새 Dispatch 를 기록하거나 실패 decide 를 남길 때까지 지우지 않는다(Codex 계획 리뷰 r2): 최신이 `from` 이면(abandon 전이나 뒤, 띄우기 전에 죽었다) `resend` 를 둔 채 그 `n` 으로 재투입을 다시 하고(앞 Dispatch 가 이미 abandoned 면 abandon 을 건너뛴다), 작업 터미널이 `idle`·`done` 이 아니거나 확인할 수 없으면 아무것도 하지 않고 `resend` 를 남긴다. `launch_failed` 거나 넣기가 거부되면 관제 절차 실패 decide(8.5)를 올린 뒤 지운다. 남은 `resend` 는 재확인(8.7 의 `working`)도 잇는다. 그 not_started 메시지가 그새 ack 됐으면 horch 는 active 가 아닌 앞 Dispatch 에 새 관찰을 만들지 않으므로, 재확인이 잇지 않으면 태스크가 `working` 과 abandoned Dispatch 로 멈춘다.
@@ -1359,6 +1381,7 @@ orca-team 0.7.0 `queue.py` 를 옮긴다(`lib/hteam/queue.py`). 메인은 horch 
 - 관제가 꺼져 있으면(8.2 의 판정이 꺼짐) `{status: "orphaned"}` 로 끝난다. 멈춤(hung)이면 끝내지 않는다. 0.3.0 은 코디네이터 터미널이 끝났는지로 봤다.
 - 메인은 처리한 뒤 다시 띄운다. 관제가 꺼지지 않았거나 미전달 항목이 있으면 Stop 훅이 이를 강제한다(9.4).
 - 11단계: `require_main` 을 통과하고 watch 잠금을 잡은 뒤에(이미 다른 watch 가 돌아 `watch_running` 으로 끝나는 호출은 쓰지 않는다. 메인을 넘겨받는 것은 실제로 감시하는 watch 뿐이다, Codex 설계 리뷰 r1) `run.json` 의 `main_terminal` 을 그 주소로 쓴다(watch 잠금 다음에 `run.lock` 을 잡고 다시 읽어 고친다. 값이 같으면 쓰지 않는다. 잠금 순서는 watch 잠금 → `run.lock` 하나다). 메인은 watch 를 늘 다시 띄우므로, 사용자가 메인 세션을 새 터미널로 옮기면 그 세션의 첫 watch 부터 새로 띄우는 워커·리뷰어·보기 pane 이 새 메인 아래에 든다(3.2). run.json 이 없으면 그 키 하나로 만든다(`run_id` 가 없으니 자동 부활·Stop 훅의 자격은 그대로다). 읽지 못하면 지금처럼 `bad_run_file` 로 끝난다. 다른 메인 명령(answer·reask·큐 명령)은 run.json 을 쓰지 않는다.
+- 11단계 보강: 관제는 이 `main_terminal` 과 자기 parent 를 견줘 다르면 한가할 때 끝나 새 메인 아래로 다시 뜬다(8.13). 끝날 때 progress 한 줄을 쓰므로 watch 는 그것을 먼저 주고, 메인이 다시 띄운 watch 가 곧바로 `orphaned` 로 끝나 메인이 `/herdr-team:up` 을 한다(위 줄과 메인 규칙 그대로). watch 는 새 줄이 없으면 첫 확인에서 바로 관제 생존을 본다(그 뒤 10초마다). 같은 폴더의 두 번째 Claude 세션이 watch 를 띄우면 그 세션이 메인이 되는 동작은 바꾸지 않는다(1장 11단계 보강 결정, 13장).
 
 ### 7.4 질문 형식 (`render`)과 답
 
@@ -1480,7 +1503,7 @@ orca-team 0.7.0 `queue.py` 를 옮긴다(`lib/hteam/queue.py`). 메인은 horch 
 
 메인 컨텍스트는 decide 처리만큼 는다(13장 한계).
 
-11단계: 메인 규칙 줄을 더하지 않는다. 관제·워커·리뷰어·보기 pane 이 hc parent 로 메인 아래에 들지만, hc 의 부모 동작(`hc wait --children`, 자식 정리)은 메인이 hc 를 부를 때만 생긴다. 메인 규칙·스킬·템플릿은 메인에게 `hc kill`·`hc wait`·`hc rm` 을 시키지 않고, herdr-team 은 hc skill(`hc --skill`, "Terminals you start are your children")을 메인 세션에 넣지 않는다. 15.2 의 11단계 실환경에서 메인이 자식을 끝내거나 기다리지 않는지 본다. 그런 일이 있으면 그때 "Herdr 에서 메인 아래에 보이는 hteam 터미널은 관제가 띄우고 닫는다. 메인은 hc 로 끝내거나 지우거나 기다리지 않는다." 한 줄을 더한다(그러면 0.7.1 업그레이드에 `CLAUDE.md` 절 고치기가 든다, 9.6).
+11단계: 메인 규칙 줄을 더하지 않는다. 관제·워커·리뷰어·보기 pane 이 hc parent 로 메인 아래에 들지만, hc 의 부모 동작(`hc wait --children`, 자식 정리)은 메인이 hc 를 부를 때만 생긴다. 메인 규칙·스킬·템플릿은 메인에게 `hc kill`·`hc wait`·`hc rm` 을 시키지 않고, herdr-team 은 hc skill(`hc --skill`, "Terminals you start are your children")을 메인 세션에 넣지 않는다. 15.2 의 11단계 실환경에서 메인이 자식을 끝내거나 기다리지 않는지 본다. 그런 일이 있으면 그때 "Herdr 에서 메인 아래에 보이는 hteam 터미널은 관제가 띄우고 닫는다. 메인은 hc 로 끝내거나 지우거나 기다리지 않는다." 한 줄을 더한다(그러면 0.7.1 업그레이드에 `CLAUDE.md` 절 고치기가 든다, 9.6). 실환경 1차에서 그런 호출은 없었다(15.2 의 11단계 5). 11단계 보강도 메인 규칙을 바꾸지 않는다: 다시 묶기로 끝난 관제는 progress 한 줄과 지금의 "`status: orphaned` 면 `/herdr-team:up`" 규칙으로 다시 뜬다(8.13).
 
 ## 8. 관제 (`hteam drive`, 6단계)
 
@@ -1516,9 +1539,10 @@ orca-team 0.7.0 `queue.py` 를 옮긴다(`lib/hteam/queue.py`). 메인은 horch 
    - `owner_alive` 면 exit 3(관제 기록과 다른 소유자가 살아 있다. 사용자가 확인한다).
    - 일시 실패는 5초 간격 3번까지 다시 한다(로그 `Run 연결 실패(<n>/3): <오류>. 5초 뒤 다시 한다`, 기다리는 앞뒤로 heartbeat). 그래도 실패하면 관제가 끝난다.
    - `run.json` 에 `run_id`, `drive_terminal`(자기 `$HC_TERMINAL_ID`), `drive_argv`(hc get), `bound_nonce`, `bound_at` 을 쓰고 `launched_at` 을 지운다.
+   - 11단계 보강(8.13): 같은 `hc get` 의 `parent` 를 자기 parent 로 기억한다(읽지 못하면 모름).
 5. 관제 탭 이름 `herdr-app do tab.rename --id <관제 탭> --name "herdr-team 관제"`(최선 노력, 0.3.0 의 "팀"). 관제 pane 제목은 관제가 OSC 2 로 `herdr-team 관제` 를 쓴다. 관제는 자기 터미널에서 Codex 를 돌리지 않으므로 orca §17 P2-7(관제 제목이 "Codex" 로 바뀜)이 생기지 않는다.
-6. 로그 `관제 시작(<터미널>): created|rebound` → 시작 재확인(8.7) → 루프(8.5).
-7. 무엇이든 관제를 끝내면 로그 `관제 종료: <타입>: <메시지>` 를 남기고 pid 파일을 지운다. SIGTERM·SIGHUP(탭 닫힘)은 exit 143·129 다. 의존 프로그램 없음(horch·hc, exit 12)은 그대로 올라가 관제가 끝난다.
+6. 로그 `관제 시작(<터미널>): created|rebound` → 시작 재확인(8.7) → 루프(8.5). 11단계 보강: 시작 재확인 전에 다시 묶기로 끝난 앞 관제 터미널을 정리한다(8.13 의 "다시 뜬 뒤").
+7. 무엇이든 관제를 끝내면 로그 `관제 종료: <타입>: <메시지>` 를 남기고 pid 파일을 지운다. 11단계 보강의 다시 묶기(8.13)는 오류가 아니라 exit 0 으로 끝나고 로그는 `관제 종료: rehome: <앞 parent 또는 없음> → <새 메인>` 이다. SIGTERM·SIGHUP(탭 닫힘)은 exit 143·129 다. 의존 프로그램 없음(horch·hc, exit 12)은 그대로 올라가 관제가 끝난다.
 
 heartbeat: `state/drive/heartbeat` 에 지금 시각(로컬 오프셋 ISO 8601, 초 단위)을 원자적으로 쓴다. 쓰는 때: 틱 시작, 자식 처리 뒤, 큐 요청마다, 재확인의 태스크마다, Run 연결 앞과 재시도 앞뒤. `start-ready` 의 띄우기 사이, 결정 적용의 단계 사이, 리셋 단계 사이에는 쓰지 않는다(13장 한계). 고정 간격은 없다. 한 틱은 보통 메일 대기 10초와 처리 시간이다.
 
@@ -1658,6 +1682,7 @@ orca-team 0.6.0 의 `orch followups`(`lib/orch/followups.py`)를 `lib/hteam/foll
 | 7 | 고정 에이전트마다 리셋 단계(5.9.7) | `reset:<이름>` |
 | 8 | 리뷰 보기 pane 닫기·열기(6.5) | `view:<이름>` |
 | 9 | 마지막 재확인 뒤 60초가 지났거나 처음이면 재확인(8.7) | `reconcile` |
+| 10 | 11단계 보강: 다시 묶기 확인(60초마다)과, 정했으면 한가할 때 끝내기(8.13) | `rehome` |
 
 - horch `check` 는 종류로 거르지 않는다. horch 는 기다리는 동안 5초마다 Sweep 으로 observed 를 만든다(herdr-orch 9장). 그래서 관제가 따로 생존을 폴링하지 않아도 끝난 워커·멈춘 워커가 메일로 온다. orca 는 `--types worker_done,escalation,question,status` 로 걸렀고 `_keepalive` 줄을 건너뛰었다. horch 는 끝에 JSON 한 줄만 낸다.
 - `check` 시간 제한은 10초 + 30초다. 실패하면(시간 초과 포함) 같은 ack 를 다음에 다시 주고, 같은 문구의 실패는 decide escalation 을 한 번만 올린다.
@@ -1685,6 +1710,8 @@ orca-team 0.6.0 의 `orch followups`(`lib/orch/followups.py`)를 `lib/hteam/foll
 | `UNKNOWN_START_LIMIT` | 3 | 같은 태스크 입력 유실 재투입 상한 |
 | `NO_STATUS_GRACE_S` | 60 | 상태 보고 없는 워커를 알리기 전(0.3.0 `HTEAM_NO_STATUS_GRACE`) |
 | `BIND_TRIES` / `BIND_RETRY_S` | 3 / 5.0 | Run 연결 재시도 |
+| `REHOME_CHECK_S` | 60 | 다시 묶기 확인 간격(11단계 보강, 8.13) |
+| `REHOME_MIN_UP_S` | 600 | Run 에 묶인 뒤 다시 묶지 않는 시간(되풀이 막기, 자동 부활의 `RETRY_WINDOW_S` 와 같다, 8.13) |
 
 Herdr 신호로 바꾼 곳: orca 의 `ACTIVE_OUTPUT_SECONDS`(마지막 출력 30초)와 tui-idle·`RESET_SETTLE_SECONDS`(5초)는 Herdr 에 없다(hc 에는 `lastOutputAt` 이 없다). 바쁨은 7501 상태(`working`·`blocked`), 준비는 turn 사건(`hc events`)과 `hc get` 의 turn·상태로 본다(5.9.7, herdr-orch 13.6·13.8). orca 의 `start_unknown` 은 Orca 가 판정했다. Herdr 는 horch 의 `not_started` 관찰(60초)이 한다.
 
@@ -1868,6 +1895,8 @@ kind 는 orca 의 `DECIDE_KINDS` 와 같다: `worker_failed`, `worker_question`,
 
 7단계에 남기는 줄: 슬롯 잡기·setup 결과·놓기(`slot-<N> <T> <단계> <결과>`), 병합(`<T> 병합 <sha 7자>`·거부·충돌), Redmine 전송 실패(`redmine #<N> <사건> 실패 <HTTP 상태>`, 키는 남기지 않는다).
 
+11단계 보강에 남기는 줄(8.13, 5.9.7): 다시 묶기로 정함(`관제 다시 묶기: …`, 정할 때 한 번), 다시 묶기 종료(`관제 종료: rehome: …`), 앞 관제 터미널 정리(`앞 관제 터미널 <t> 정리: removed|gone|left(<까닭>)`), 고정 에이전트의 다시 묶기(`<이름> 리셋: new_terminal(parent_changed)`, `<이름> 리셋: 다시 묶기 닫기 실패(<code>), 같은 터미널을 비운다`).
+
 ### 8.12 Redmine 연동 (7단계)
 
 선택 기능이다. `config.toml` 에 `[redmine]`(4.1)이 있을 때만 켜진다. 태스크의 `issue`(5.1)가 가리키는 이슈의 상태와 노트를 관제가 바꾼다. 워커·리뷰어는 Redmine 을 바꾸지 않는다. 그래서 API 키가 LLM 프롬프트에 들어가지 않고, 리뷰 프롬프트와 프로젝트 문서의 갱신 규칙이 부딪치지 않는다.
@@ -1890,6 +1919,53 @@ kind 는 orca 의 `DECIDE_KINDS` 와 같다: `worker_failed`, `worker_question`,
 - 이슈 줄(워커 사양 5.5, 리뷰 프롬프트 6.2): `[redmine]` 이 있으면 "이 태스크는 Redmine 이슈 #N 이다. 이슈 상태와 노트는 관제가 바꾼다. 워커·리뷰어는 Redmine 을 바꾸지 않는다(프로젝트 문서에 다른 규칙이 있어도)." 없으면 "이 태스크는 이슈 #N 이다." 만.
 - `hteam status` 에 `redmine: {enabled, pending, failed, last_error}`(키는 없다). 일괄 승인 줄(11.4)과 progress 의 태스크 줄에 `#N` 을 붙인다.
 - 한계: Redmine 워크플로가 막는 전이(닫은 이슈를 진행중으로)는 실패 기록만 남는다. 이슈 하나를 여러 태스크가 나누면 노트가 섞인다. 묶음 tester 가 drop 되면 그 묶음의 이슈를 닫지 않는다(사람이 닫는다). 이슈를 만들거나 Redmine 에서 일을 가져오지 않는다(16장). (Codex 설계 리뷰 r1, 가장자리 경우라 기록만) 관제가 상태 전이를 쓴 뒤 큐 항목을 쓰기 전에 죽으면 그 사건(종료 포함)이 빠지고, 전송이 성공한 뒤 항목을 지우기 전에 죽으면 같은 노트가 두 번 간다. 빠진 종료는 사람이 닫는다. (7단계 브랜치 최종 리뷰 M5, 기록만) 큐 파일 쓰기가 실패하면(디스크·권한) 그 뒤 기록이 빠진다: 작업 시작이면 워커는 떴는데 start 가 실패로 보고되고 고정 에이전트 기록(`crew.after_launch`)이 빠진다. accept 면 `done` 을 쓴 뒤 예외로 끝나 그 뒤의 놓기·이슈 닫기·start-ready 가 돌지 않는다(놓기는 재확인이 잇고, 닫기는 사람이 한다).
+
+### 8.13 메인이 바뀐 뒤 다시 묶기 (11단계 보강)
+
+관제의 parent 는 그 관제를 띄운 `up` 의 메인이다(9.3). 메인이 다른 터미널로 바뀌면(`main_terminal` 이 바뀜, 7.3·9.3) 관제는 옛 메인 아래 남고, 옛 메인이 끝나면 Agents 목록에서 따로 보인다(1장 11단계 확인한 것). parent 를 바꾸는 명령이 없으므로 관제를 새 메인 아래 다시 띄운다(1장 11단계 보강 결정).
+
+방식: 관제가 한가할 때 스스로 깨끗이 끝나고, 지금 있는 다시 띄우기 길이 새 메인 아래 띄운다. 메인 watch 가 `orphaned` 로 끝나 메인이 `/herdr-team:up` 을 하거나(7.3, 메인 규칙), 메인 훅의 자동 부활이 `hteam up` 을 분리 실행한다(9.5). `up` 은 `require_main` 이 확인한 메인 아래 관제를 띄우고(9.3), 새 관제는 `run-use` 로 Run 을 넘겨받아(8.2 의 4. 앞 관제 터미널은 끝났으므로 `owner_alive` 가 아니다) 시작 재확인으로 이어 간다(8.7). 관제가 죽었을 때의 복구와 같은 길이다. 새로 넣는 것은 끝낼지 판단하기와 앞 관제 터미널 정리뿐이고 `up`·watch·훅·메인 규칙은 바꾸지 않는다.
+
+고르지 않은 안: 관제가 후계 관제를 띄우고 끝난다. (1) `up` 의 띄우기(nonce·`RACE_KEYS`·`launch_uncertain`·`same_terminal`, 9.3 의 3)를 관제 안에 하나 더 둔다. (2) 후계는 앞 관제가 drive.pid 를 놓고 끝나기를 기다려야 한다(그 전에는 `drive_running`, Run 은 `owner_alive`). 기다리는 규칙과, 둘 다 없는 채로 끝나는 새 실패 길이 생긴다. (3) 띄우는 순간 메인 확인(`require_main`) 없이 run.json 의 주소만 믿는다. 얻는 것은 메인을 거치지 않아 끊긴 시간이 짧은 것뿐인데, 아래 "watch 가 돌 때만" 조건으로 그 시간을 줄인다.
+
+자기 parent: Run 연결(8.2 의 4)에서 이미 부르는 `hc get <자기 터미널>` 의 `parent` 를 `require_main` 과 같이 읽어(주소 문자열이나 `{address}`, 없으면 null) 기억한다. parent 는 띄울 때만 정해지므로 다시 읽지 않는다. 그 `hc get` 이 실패했으면 모름으로 두고 확인 때 `hc get`(3초)으로 다시 읽는다. 또 실패하면 그 확인은 아무것도 하지 않는다.
+
+확인(틱의 10, `REHOME_CHECK_S` 60초마다): 다음이 모두 맞으면 주소 M 이 후보다. 하나라도 아니면 후보와 정한 것을 지우고 아무것도 하지 않는다.
+
+1. 이 관제가 Run 에 묶인 지 `REHOME_MIN_UP_S`(600초)가 지났다.
+2. `outbox.main_parent(p)` 가 주소 M 이다. 키 없음·빈 값·형식이 틀림·run.json 을 읽지 못함이면 None 이라 아무것도 하지 않는다(3.2 의 parent 규칙과 같다).
+3. 자기 parent 를 안다(위). M 이 그 parent 와 다르다. parent 가 null 인 관제(메인이 지워져 `--no-parent` 로 다시 뜬 관제, 9.3 의 3)도 다르다.
+4. `hc get M`(3초)이 성공하고, `state` 가 `live` 이고, 결과의 `address` 가 자기 parent 와 다르고(같은 터미널을 다른 꼴로 적은 경우를 거른다), 라벨 `herdr.space` 가 run.json 의 `team_space` 와 같다. hc 실패·`not_found`(지운 주소, 이 기계의 hc 가 모르는 주소)·`finished` 면 아무것도 하지 않는다: 끝난 메인 아래로 다시 띄워도 따로 보이고, 지운 메인이면 `up` 이 어차피 parent 없이 띄운다(9.3 의 3). 메인이 다른 space 에 있으면(라벨이 다르거나 없다) 아무것도 하지 않는다. 다시 띄우면 관제 탭이 그 space 로 옮겨 가고, 다른 space 의 메인 아래 묶기는 범위 밖이다(16장).
+
+같은 M 이 두 번 연달아(60초 간격) 후보면 다시 묶기로 정한다. 로그 `관제 다시 묶기: 메인이 <M> 로 바뀌었다(관제 parent <parent 또는 없음>). 한가하고 watch 가 돌 때 끝낸다` 한 줄. 한 번만 보이고 바뀌면(메인을 넘겨받는 중) 다음 확인부터 다시 센다. M 이 parent 와 같으면 hc 를 부르지 않는다(run.json 만 읽는다). 다를 때 hc 호출은 확인마다 많아야 두 번(자기 parent 를 모를 때와 M)이다.
+
+끝내기(정한 뒤 틱 끝마다):
+
+- `main_parent` 가 아직 M 인지 본다(파일만 읽는다). 바뀌었으면 정한 것을 지우고 확인부터 다시 한다.
+- 한가할 때만 끝낸다. 한가함은 넷이 모두 맞을 때다. (1) 이번 틱의 메일 확인(8.5 의 2)이 성공했고 메시지가 없었다: ack 할 묶음도 미룬 메시지(8.6)도 없다(앞 묶음은 이번 확인의 `--ack` 로 확인됐다). (2) 요청 큐에 결과 없는 요청 파일이 없다(7.1). (3) 도는 자식(8.8: 리뷰·마지막 full·슬롯·Redmine 전송)과 미룬 리뷰(8.7 의 4)가 없다. (4) 리셋 중인(`resetting` 이 있는) 고정 에이전트가 없다(5.9.7). 도는 워커·리뷰어·보기 pane 은 보지 않는다(옮기지 않는다. 그 메시지는 horch Run 메일함에 남아 새 관제가 받고, 보기 pane 은 `crew.json` 의 `view` 대로 새 관제가 정리한다).
+- 메인 watch 가 돌 때만 끝낸다(`outbox.watch_alive`, Stop 훅과 같은 `watch.pid` 기록, 9.4). watch 가 없으면 끝난 관제를 알아챌 곳이 다음 프롬프트의 자동 부활뿐이라(9.5) 그동안 태스크가 멈춘다. 그래서 끝내지 않고 지금 parent 아래에서 계속 일한다.
+- 계속 바쁘거나 watch 가 없으면 기다리기만 한다(상한 없음, 13장). 그동안 관제는 그대로 일한다.
+- 차례: `state/drive/rehome.json` 에 `{at, terminal: <자기 터미널>, parent: <자기 parent 또는 null>, main: M}` 를 원자적으로 쓴다(쓰지 못하면 로그를 남기고 그대로 끝낸다. 앞 터미널은 9.3 의 6 대로 남는다) → outbox progress `관제를 새 메인 터미널(<M>) 아래로 다시 띄우려고 끝냈다. watch 가 orphaned 로 끝나면 /herdr-team:up 으로 다시 띄운다. 도는 워커는 그대로다`(쓰지 못해도 끝낸다. watch 는 `orphaned` 로 안다) → 로그 `관제 종료: rehome: <parent 또는 없음> → <M>` → 루프를 나와 exit 0(8.2 의 7, pid 파일을 지운다). 관제 터미널은 끝난(finished) 터미널로 남는다.
+
+다시 띄우기: `up` 은 바뀌지 않는다. Run 에 묶인 뒤 끝난 관제라 `starting` 이 아니고 pid 가 없으므로 띄운다(9.3 의 2). 메인의 `/herdr-team:up` 과 자동 부활이 함께 불러도 `run.lock` 이 하나만 띄운다(`launch_raced`·`starting`, 9.5). 띄우는 `up` 은 `require_main` 주소를 `main_terminal` 로 쓰고 그 아래 띄우므로(9.3 의 1·3) 새 관제의 parent 는 지금 메인이다. 같은 space 라 관제 탭도 같다(9.3 의 3 의 탭 id).
+
+다시 뜬 뒤(새 관제, 8.2 의 6): Run 연결 뒤 시작 재확인 전에 `rehome.json` 을 한 번 본다. run.json 의 `drive_terminal` 은 `up` 이 띄우기 전에 지우고 새 관제 주소로 쓰므로(9.3 의 3) 앞 관제는 이 파일로만 안다. 그 `terminal` 이 자기 터미널이 아니면 `hc get <terminal>`(3초)을 본다. `finished` 이고 라벨 `hteam.role=drive` 가 있으면(관제 터미널이다) 그 pane 이 있으면(`pane_of`) `pane.close`, 그다음 `hc rm` 이다(6.5 의 3 과 같은 순서). 로그 `앞 관제 터미널 <t> 정리: removed`. 이미 없으면(`not_found`) `gone`. `live`(Herdr 재시작 뒤 `--keep` 이 셸로 바꿈 등)·라벨 없음·hc 실패·pane 닫기나 `hc rm` 실패면 지우지 않고 `left(<까닭>)` 이다(9.3 의 6 대로 관제 탭에 남는다). `--keep` 관제가 스스로 끝나면 `finished` 로 남는다고 본다(9.3 의 6). 실제로 그런지는 15.2 의 11단계 7 에서 본다. 어느 쪽이든 `rehome.json` 을 지운다(한 번만 본다. 지우기 전에 관제가 죽으면 다음 관제가 같은 일을 한다. 멱등이다). 죽어서 남은 관제 터미널은 지우지 않는다(원인을 볼 수 있게, 9.3 의 6). 다시 묶기로 끝난 터미널에는 볼 원인이 없고 drive.log 에 같은 줄이 있다.
+
+되풀이 막기:
+
+- 새 관제는 새 메인 아래라 확인의 3 에서 멈춘다.
+- 새 관제는 Run 에 묶인 지 10분 안에는 다시 묶지 않는다(확인의 1). 같은 폴더의 메인 세션 둘이 watch 를 번갈아 잡아 `main_terminal` 이 오가도(7.3, 알려진 동작) 관제가 다시 뜨는 것은 10분에 한 번까지다. 10분은 자동 부활의 FAILED 창(`RETRY_WINDOW_S` 600초, 9.5)과 같다. `spawned_at` 은 Run 연결보다 앞이므로 자동 부활은 다시 묶기로 끝난 관제를 "10분 안에 다시 꺼졌다" 로 보지 않고 REVIVED 로 띄운다.
+- 두 번 연달아 보기(위)는 watch 를 넘겨받는 짧은 사이를 거른다.
+- `main_terminal` 이 끝났거나 지운 터미널이면 후보가 아니다(확인의 4). 메인이 지워진 사이 parent 없이 뜬 관제는 다음 메인 watch 가 산 주소를 쓴 뒤에 묶인다.
+- 같은 터미널에서 `/exit` 뒤 메인을 다시 열면 주소가 같아(1장) 아무것도 하지 않는다.
+
+끊긴 시간: 앞 관제가 끝난 뒤 새 관제가 Run 에 묶일 때까지 관제가 없다. watch 가 progress 를 주면 메인이 그것을 전하고 watch 를 다시 띄우며, 그 watch 는 첫 확인에서 `orphaned` 로 끝난다(7.3). 메인이 `/herdr-team:up`(`--wait-run 180`)을 하면 보통 메인의 다음 응답 안에 다시 뜬다. 메인이 사용자와 긴 턴 중이면 그 턴 뒤다. 그동안 큐 명령은 `drive_down` 이고 메인은 규칙대로 `/herdr-team:up` 뒤 다시 한다(7.1). 워커의 메시지는 horch 메일함에 쌓여 새 관제가 받는다(9.5 의 "요청을 잃지 않는가"). 새 관제를 띄우지 못하면 관제가 죽었을 때와 같다(9.3 의 실패, 9.5 의 안내).
+
+관제를 다시 띄우는 것과 같은 영향(관제가 죽었을 때와 같다): 새 관제는 그때 메인이 고르는 플러그인 경로로 돈다(9.6). 이 프로세스 안의 기억(올린 격리 실패·절차 실패, 8.5)은 새 관제가 모르므로 계속되는 같은 실패를 decide 로 한 번 더 올릴 수 있다.
+
+원격 기기: 확인은 이 기계의 hc 로만 한다. hc 가 M 을 찾지 못하면 아무것도 하지 않는다(확인의 4, 다른 머신의 Herdr 는 범위 밖, 16장).
+
+`hteam status`·`up`·watch·훅·`CLAUDE.section.md` 는 바뀌지 않는다. 끊긴 동안 `status` 의 관제는 꺼짐이다.
 
 ## 9. 시작, 점검, 훅
 
@@ -1923,7 +1999,8 @@ Python 3.11 이상, git(없으면 `git init` 과 빈 커밋을 권함), `horch` 
    `hc run` 이 실패하면: hc 를 실행하지 못했거나 hc 가 거부했고 이름으로 찾아도 터미널이 없으면 이번에 바꾼 키(`LAUNCH_KEYS`)만 되돌린다. 결과를 알 수 없으면(시간 초과·응답 유실) 이름으로 찾아 있으면 기록하고, 없으면 `--wait-run` 동안 그 nonce 의 관제 시작을 기다린다. 그래도 없으면 `pending_launch` 를 남기고 exit 1 `launch_uncertain` 이다. 다음 `up` 은 띄운 지 180초 안이면 `starting`, 지나면 새로 띄운다.
 4. `--wait-run S`: `run.json` 의 `bound_nonce` 가 그 nonce 가 될 때까지 기다린다(관제가 Run 에 묶였다). 넘으면 exit 4(`관제가 <S>초 안에 Run 을 만들지 않았다. 관제 탭(herdr-team 관제)을 확인한다`).
 5. 0.3.0 의 `--force`(확인 불가 코디네이터의 인계 승인)는 없앴다. 관제 생존은 hc 가 아니라 pid 로 보므로 확인 불가가 없고, 관제는 Run 을 넘겨받을 때 스스로 `--force` 를 판단한다(8.2 의 4).
-6. 죽은 관제 터미널(끝난 터미널, `--keep` 이 셸로 바꾼 터미널)은 관제 탭에 남는다(0.3.0 의 코디네이터와 같다).
+6. 죽은 관제 터미널(끝난 터미널, `--keep` 이 셸로 바꾼 터미널)은 관제 탭에 남는다(0.3.0 의 코디네이터와 같다). 11단계 보강: 다시 묶기로 끝난 관제 터미널(끝난 터미널)은 새 관제가 지운다(8.13 의 "다시 뜬 뒤").
+7. 11단계 보강: 다시 묶기(8.13)로 끝난 관제도 꺼진 관제와 같이 2 의 판정으로 띄운다(Run 에 묶인 뒤라 `starting` 이 아니다). `up` 은 바뀌지 않는다.
 
 `/herdr-team:up`(메인을 다시 열 때): `hteam status` → 관제가 꺼져 있으면 `hteam up --wait-run 180`(Bash `timeout: 240000`) → watch 가 없으면 띄움 → `hteam reask` 로 열린 질문을 하나씩 묻기(decide 는 판단 기준대로 처리) → 요약 표(관제, 고정 에이전트, 태스크). 스킬 description: "수동 복구. 관제는 보통 메인 세션 훅이 자동으로 살린다(config.toml `[drive] auto_up`). 자동 부활이 꺼져 있거나 훅이 안내했을 때, 메인을 다시 열어 열린 질문을 다시 물을 때 쓴다." `hung` 이면 다시 띄우지 않고 사용자에게 관제 탭을 보라고 한다. init 스킬 5 단계의 제목 "코디네이터" 는 "관제" 로 바꾸고 같은 `up` 을 쓴다.
 
@@ -1970,6 +2047,8 @@ Codex 워커·리뷰어에는 Claude 훅이 걸리지 않는다. 그쪽은 `AGEN
 5. pid 는 살아 있는데 heartbeat 가 120초 넘게 멈췄다 → (없음, HUNG). 띄우지 않는다.
 6. pid 가 없거나 죽었다 → `auto-up.json` 의 `spawned_at` 이 600초 안이면 (없음, FAILED). 아니면 `[drive] auto_up` 이 true 면 (띄우기, REVIVED), false 면 (없음, DISABLED).
 
+11단계 보강: 다시 묶기로 끝난 관제(8.13)도 pid 가 없으므로 6 으로 간다. 관제는 Run 에 묶인 지 600초가 지나야 다시 묶으므로 `spawned_at` 의 600초 창에 들지 않고 REVIVED 로 띄운다(FAILED 가 아니다). 결정 규칙은 바꾸지 않는다.
+
 0.3.0 의 UNKNOWN(hc 확인 실패, `hc rm` 된 코디네이터)과 NO_HANDLE(터미널 기록 없음)은 없앴다. 관제는 pid 파일로 판정하므로 터미널을 지워도 프로세스가 죽었으면 다시 띄운다. 새 관제가 Run 을 넘겨받을 때의 `--force` 는 관제가 판단한다(8.2 의 4). 띄우기가 실패하면(pid 를 받지 못함) 문구는 FAILED_SPAWN 이다.
 
 확인 `autoup.check(p, force)` 와 `spawn_up` 은 4단계 그대로다: 자격 없음·4초·60초 간격이면 아무것도 쓰지 않는다, `auto-up.json`(`checked_at`, 띄우면 `spawned_at`, `notice`)을 끝에 한 번 쓴다, 같은 문구는 줄인다(띄운 REVIVED 와 세션 시작은 늘 넘긴다), `spawn_up` 은 `/bin/sh -c '"$0" "$@" </dev/null >>"$HTEAM_AUTO_UP_LOG" 2>&1 & echo $!' <python> <플러그인 루트>/bin/hteam --root <루트> up` 을 `start_new_session` 으로 돌리고 pid 를 `{pid, started}` 로 `auto-up.pid` 에 쓴다.
@@ -1995,7 +2074,7 @@ SessionStart 의 메인 안내: 문구가 있으면 `- <문구>`, 없으면 기�
 
 - 살아 있지만 멈춘 관제(heartbeat 만 끊김)는 HUNG 만 알린다. 아무도 다시 띄우지 않는다(orca 와 같다. 긴 horch·git 호출 중일 수 있다).
 - 메인 세션 밖에서 죽으면 다음 메인 프롬프트(최대 60초 간격)나 세션 시작까지 모른다.
-- 죽은 관제 터미널은 관제 탭에 남는다(9.3).
+- 죽은 관제 터미널은 관제 탭에 남는다(9.3). 다시 묶기로 끝난 것은 새 관제가 지운다(8.13).
 - 메인 세션이 둘이고 두 훅이 동시에 `auto-up.json` 을 읽고 쓰면 한쪽이 쓴 `spawned_at` 을 다른 쪽이 덮어 지울 수 있다(4단계와 같다).
 - 띄운 `up` 이 바로 실패한 것과 띄운 관제가 다시 죽은 것을 가르지 않는다(둘 다 FAILED).
 - 자동 실행한 `hteam up` 과 관제는 메인 세션과 같은 권한·환경으로 돈다(14장).
@@ -2028,7 +2107,7 @@ orca-team 0.6.0 의 `orch upgrade`(`setup.upgrade`)를 옮긴다. scaffold 는 �
 
 - 8단계: 출력 `next` 끝에 "CLAUDE.md 절을 고쳤으면 메인 세션을 새로 연다(메인 규칙은 세션을 시작할 때 읽힌다)." 를 더한다(`next` 의 다른 문장처럼 백틱 없이). README 업그레이드 절에 "0.5.0 → 0.6.0" 을 더한다: (1) 플러그인을 0.6.0 으로 올린다(질문 표시: 훅이 거부하지 않고 표를 선택 창 미리보기·질문 보기 pane 에 넣는다, 평문 질문 검사, `fix --base-merge`, 병합 지시문·리뷰 안내 줄은 이것만으로 적용된다). (2) `hteam upgrade` 의 `manual` 에 나온 `CLAUDE.md` 절을 템플릿과 견줘 바꾼다(새 메인 규칙 두 줄, 업그레이드 줄, 질문 표시 규칙의 바뀐 두 줄). (3) 메인 세션을 새로 연다. 배포 뒤 보탬(2026-11-13): 관제와 그 자식은 관제가 뜰 때의 플러그인 경로(`PLUGIN_ROOT`)로 돌아 새 버전을 스스로 알아채지 못한다(`setup.py` 의 관제 argv, `drive.py` 의 자식 argv). 그래서 README 는 순서를 정한다: 플러그인 올리기 → upgrade 와 `CLAUDE.md` 절 → 옛 메인 세션 끝내기 → 관제 끄기 → 새 메인 세션(훅이 새 버전으로 관제를 다시 띄운다) → 버전 확인. 옛 메인 세션이 살아 있는 동안 관제를 끄면 그 세션의 옛 훅이 관제를 옛 버전으로 다시 띄운다.
 - 10단계: README 업그레이드 절에 "0.6.1 → 0.7.0" 을 더한다: (1) 플러그인을 올린다. (2) `hteam upgrade` 가 직무 문서(director·designer·developer)를 바꾼다. `manual` 에 나온 `CLAUDE.md` 절을 템플릿과 견줘 고친다(질문 표시 두 줄, 일괄 승인 댓글 줄, 7.7). (3) "0.5.0 → 0.6.0" 과 같은 순서로 옛 메인 세션을 끝내고 관제를 끈 뒤 새 메인 세션을 연다(미리보기 바꿈은 메인 세션 훅에, 자동 검사 제외는 관제가 띄우는 리뷰에 들어간다. 관제와 그 자식은 관제가 뜰 때의 플러그인 경로로 돈다). 떠 있던 질문 보기 pane 은 그 질문에 답하면 닫힌다. 0.6.x 프로젝트의 빠진 원본(화면 `artifact/`, 시스템 글꼴)은 그 아티팩트를 처음 고치는 디자인 라운드가 채운다(11.8). 디자인 절에는 댓글 피드백 쓰는 법(댓글을 남기고 답에 "댓글 확인해서 고쳐", 새 피드백은 새 댓글로)과 계정이 다를 때의 동작(11.8)을 적는다.
-- 11단계: README 업그레이드 절에 "0.7.0 → 0.7.1" 을 더한다: (1) 플러그인 둘을 올린다(herdr-orch 0.4.0 과 herdr-team 0.7.1. herdr-orch 를 올리지 않으면 hteam 이 0.4.0 아래 horch 를 고르지 않아 exit 12 다, 3.1). (2) `hteam upgrade` 와 `CLAUDE.md` 절은 할 일이 없다(복사한 규칙 파일과 메인 규칙이 바뀌지 않는다, 7.7. 15.2 의 확인으로 메인 규칙 줄을 더하게 되면 이 줄을 바꾼다). (3) "0.5.0 → 0.6.0" 과 같은 순서로 옛 메인 세션을 끝내고 관제를 끈 뒤 새 메인 세션을 연다. parent 는 띄울 때만 정해지므로 새 관제가 떠야 관제와 그 뒤 띄우는 워커·리뷰어·보기 pane 이 메인 아래에 든다. 메인 주소(`main_terminal`)는 새 관제를 띄우는 `up` 이나 새 세션의 첫 `watch` 가 쓴다. 그 전에 띄운 터미널은 맨 위에 남는다. (4) 달라지는 것: Agents 목록에서 프로젝트 터미널이 메인 아래 한 단계로 보인다. 숨은 리뷰어는 parent 가 없어 0.7.0 과 같다(앱 문서로는 herdr 라벨도 parent 도 없으면 Herdr 화면 밖이다). 살아 있던 고정 에이전트 작업 터미널은 그 터미널이 새로 생길 때까지(lost, 리셋 대체 길) 맨 위에 남는다(13장 한계).
+- 11단계: README 업그레이드 절에 "0.7.0 → 0.7.1" 을 더한다: (1) 플러그인 둘을 올린다(herdr-orch 0.4.0 과 herdr-team 0.7.1. herdr-orch 를 올리지 않으면 hteam 이 0.4.0 아래 horch 를 고르지 않아 exit 12 다, 3.1). (2) `hteam upgrade` 와 `CLAUDE.md` 절은 할 일이 없다(복사한 규칙 파일과 메인 규칙이 바뀌지 않는다, 7.7. 15.2 의 확인으로 메인 규칙 줄을 더하게 되면 이 줄을 바꾼다). (3) "0.5.0 → 0.6.0" 과 같은 순서로 옛 메인 세션을 끝내고 관제를 끈 뒤 새 메인 세션을 연다. parent 는 띄울 때만 정해지므로 새 관제가 떠야 관제와 그 뒤 띄우는 워커·리뷰어·보기 pane 이 메인 아래에 든다. 메인 주소(`main_terminal`)는 새 관제를 띄우는 `up` 이나 새 세션의 첫 `watch` 가 쓴다. 그 전에 띄운 터미널은 맨 위에 남는다. (4) 달라지는 것: Agents 목록에서 프로젝트 터미널이 메인 아래 한 단계로 보인다. 숨은 리뷰어는 parent 가 없어 0.7.0 과 같다(앱 문서로는 herdr 라벨도 parent 도 없으면 Herdr 화면 밖이다). 살아 있던 고정 에이전트 작업 터미널은 parent 가 없어 다음 리셋이 새 터미널로 띄울 때까지(5.9.7 의 11단계 보강. lost 도 같다) 맨 위에 남는다. 바로 묶으려면 메인에게 `hteam agent reset <이름>` 을 부탁한다(13장 한계). (5) 11단계 보강: 메인을 다른 터미널로 옮기면(메인 탭을 닫고 다른 탭에서 다시 열기) 관제는 Run 에 묶인 지 10분이 지났고 한가하고 새 메인의 watch 가 돌 때 스스로 끝나고, 메인이 `/herdr-team:up` 으로 새 메인 아래 다시 띄운다(8.13. 그사이 잠깐 "관제가 꺼져 있다" 가 보일 수 있다). 고정 에이전트는 다음 리셋 때 새 터미널로 뜬다. 같은 터미널에서 `/exit` 뒤 다시 열면 그대로다. 같은 폴더에서 Claude 세션을 둘 열면 나중에 watch 를 띄운 세션이 메인이 된다(알려진 동작. 메인 세션은 하나만 연다).
 - 6단계: `FILES`·대상에서 `coordinator.md` 를 뺀다(남아 있는 옛 파일은 건드리지 않는다). 0.3.0 → 0.4.0 이전 로직(설정의 `[coordinator]` 를 `[drive]`·`[crew.*]` 로 바꾸기, `CLAUDE.md` 절 바꾸기)은 더하지 않는다(1장 6단계 결정). README 의 업그레이드 절에 "0.3.0 → 0.4.0" 을 더한다: 이전하지 않는다. 플러그인을 올리면 `[coordinator]` 가 설정 오류가 되므로(4.2) `config.toml` 을 지운 뒤 다시 세팅하거나(scaffold 는 있는 파일을 덮어쓰지 않으므로 그 파일만 새로 생긴다) 템플릿의 `[drive]`·`[overflow]`·`[crew.*]` 로 손으로 바꾼다. 그다음 `hteam upgrade` 로 직무 문서를 바꾸고 `CLAUDE.md` 절은 `manual` 대로 템플릿과 견줘 고친다.
 
 ## 10. 기획 인터뷰 (planner)
@@ -2448,10 +2527,18 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
 - `[crew.temp]` 처럼 고정 에이전트 이름을 `temp` 로 지으면 설정 검사는 받지만 라운드 기록의 `crew: "temp"`(임시 워커 표시)와 겹친다. 첫 실행은 고정 터미널이고 첫 fix 부터 임시 워커로 돈다. init 은 이 이름을 만들지 않는다(4.2, 5.9.4, Codex 브랜치 리뷰 p6r2, 기록만).
 - 7단계: 작업 공간의 실패와 복구는 5.10(5.10.3·5.10.6·5.10.8), 한계는 5.10.9 다. Redmine 은 8.12 다.
 - 11단계(Herdr 묶음, 3.2):
-  - parent 는 띄울 때만 정한다. 업그레이드 전에 띄운 관제·고정 에이전트 작업 터미널은 다시 띄울 때까지 맨 위에 남는다. 업그레이드 순서가 관제를 다시 띄운다(9.6). 고정 에이전트 작업 터미널은 `--terminal` 로 다시 쓰므로 그 터미널을 잊고 새로 띄울 때까지(lost, 리셋 대체 길) 그대로다.
-  - 메인을 새 터미널로 옮기면 `main_terminal` 은 다음 `up`·`watch` 가 고친다. 그 전에 띄운 자식은 옛 메인 아래에 남는다. 옛 메인이 끝났거나 지워졌으면(hc 는 끝난 parent 도 받는다) 그 자식이 앱 목록 어디에 그려지는지는 확인하지 못했다(pane 있는 자식은 자기 탭에는 보인다). 지워진 주소면 horch 와 보기 pane 은 parent 없이 다시 띄운다(6.5, herdr-orch 15.3).
+  - parent 는 띄울 때만 정한다. 업그레이드 전에 띄운 관제·고정 에이전트 작업 터미널은 다시 띄울 때까지 맨 위에 남는다. 업그레이드 순서가 관제를 다시 띄운다(9.6). 고정 에이전트 작업 터미널은 `--terminal` 로 다시 쓰므로 다음 리셋이 새 터미널로 띄우거나(5.9.7 의 11단계 보강: parent 가 없어 메인과 다르다) 그 터미널을 잊고 새로 띄울 때까지(lost) 그대로다.
+  - 메인을 새 터미널로 옮기면 `main_terminal` 은 다음 `up`·`watch` 가 고친다. 그 전에 띄운 자식은 옛 메인을 parent 로 가리킨다. 옛 메인이 끝나거나 지워지면 그 자식은 `herdr-app ls` 에서 누구의 `sub_agents` 에도 없고 자기 탭에만 나오며 Agents 목록에서 따로 보인다(실환경 1차, 1장). 지워진 주소면 horch 와 보기 pane 은 parent 없이 다시 띄운다(6.5, herdr-orch 15.3).
+  - 11단계 보강(메인이 바뀐 뒤 다시 묶기, 8.13·5.9.7)이 관제와 고정 에이전트를 새 메인 아래로 다시 띄운다. 남는 한계:
+    - 리셋 없이 오래 도는 고정 에이전트 세션은 다음 리셋까지 옛 메인 아래 따로 보인다. 바로 묶으려면 `hteam agent reset <이름>`(5.9.7). 다시 묶기의 닫기가 실패하면 그 리셋은 같은 터미널을 비우고 세션은 옛 메인 아래 남는다(다음 리셋이 다시 본다).
+    - 도는 임시 워커·관제 탭 리뷰어·보기 pane 은 옮기지 않는다(사용자 결정). 끝날 때까지 옛 메인 아래다.
+    - 관제는 Run 에 묶인 지 10분 안, 바쁜 동안(메일·큐·자식·리셋), 메인 watch 가 없는 동안 다시 묶지 않는다. 계속 바쁘면 다시 묶지 않는다(상한 없음. 묶음은 보기 위한 것이다).
+    - 다시 띄우는 동안(앞 관제 종료 → 새 관제 Run 연결) 관제가 꺼져 있다: 큐 명령은 `drive_down` 이고 메인이 `/herdr-team:up` 뒤 다시 한다. 메인이 긴 턴 중이면 그 턴 뒤에 다시 뜬다. 새 관제를 띄우지 못하면 관제가 죽었을 때와 같다(9.3, 9.5).
+    - 같은 폴더의 두 번째 Claude 세션이 watch 를 띄우면 그 세션이 메인이 되고(7.3, 1장 실환경 1차) 새 자식과 다시 묶기가 그쪽을 따른다. 세션 둘이 watch 를 번갈아 잡으면 `main_terminal` 이 오가고 관제는 10분에 한 번까지 그쪽으로 다시 뜰 수 있다. 이 동작은 바꾸지 않았다(사용자 결정 2026-11-16).
+    - 메인을 다른 space 로 옮기면 다시 묶지 않는다(다른 space 의 메인 아래 묶기는 범위 밖, 16장). 끝났거나 지운 `main_terminal`, 이 기계의 hc 가 모르는 주소도 다시 묶지 않는다.
+    - 다시 뜬 관제는 관제가 죽었다 다시 뜬 것과 같다: 그때 메인이 고르는 플러그인 경로로 돌고(9.6), 이 프로세스 안의 기억(올린 격리 실패)이 없어 계속되는 같은 실패를 decide 로 한 번 더 올릴 수 있다(8.13).
   - 사용자가 워커 pane 을 앱에서 park(`terminal.park`)하면 pane 없는 자식이 되어, 그 뒤 메인 pane·탭을 닫거나 앱에서 메인을 끝내면 함께 끝난다. 관제는 그 워커를 exited·lost 로 보고 위 표대로 복구한다.
-  - 확인하지 못한 Herdr 앱 화면: Agents 목록이 여러 단계를 트리로 그리는지(hteam 은 한 단계라 피한다), 상태를 보고하지 않는 터미널(관제)을 sub-agent 로 어떻게 그리는지, 부모가 끝났거나 지워진 자식을 어디에 그리는지, hc core 정지·재시작 뒤 parent 와 원래 프로그램이 남는지(core 를 멈추지 않아 확인하지 않았다. 확인한 것은 부모 프로그램 종료와 `hc kill` 이다. 재시작 뒤 복구 셸은 지금처럼 `lost` 로 다룬다). 15.2 에서 본 것 밖은 한계로 둔다.
+  - 확인하지 못한 Herdr 앱 화면: Agents 목록이 여러 단계를 트리로 그리는지(hteam 은 한 단계라 피한다), 상태를 보고하지 않는 터미널(관제)을 sub-agent 로 어떻게 그리는지, 다시 묶기로 끝나 지운 관제 터미널이 목록에서 사라지는지(15.2 의 11단계 2차에서 본다), hc core 정지·재시작 뒤 parent 와 원래 프로그램이 남는지(core 를 멈추지 않아 확인하지 않았다. 확인한 것은 부모 프로그램 종료와 `hc kill` 이다. 재시작 뒤 복구 셸은 지금처럼 `lost` 로 다룬다). 15.2 에서 본 것 밖은 한계로 둔다. 부모가 끝났거나 지워진 pane 있는 자식은 자기 탭에만 나오고 Agents 목록에서 따로 보였다(실환경 1차, 위 줄).
   - 위 "`pane.split` 성공 뒤 `view` 를 쓰기 전에 관제가 죽으면 보기 pane 이 하나 더 생긴다" 는 `hc run` 성공 뒤에도 같다. `hc run` 이 시간 초과로 끝나 결과를 모를 때도 생겼을 수 있는 보기 터미널은 정리되지 않는다(6.5 의 11단계).
   - 메인이 hc 로 자식을 끝내거나 기다리면(hc skill 의 부모 동작) 워커가 끝나거나 메인이 묶인다. 메인 규칙은 hc 를 쓰라고 하지 않는다(7.7 의 11단계).
 
@@ -2565,6 +2652,11 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
   - 리뷰 보기(`tests/test_review.py` 의 보기 시험을 바꾼다): `pane.split` 호출이 없다. hc `run` 이 `--bg --no-notify --parent <main> --outlive-parent`, 라벨 `herdr.space`·`herdr.tab=<에이전트 탭>`, 프로그램 `[<hc 절대 경로>, attach, <리뷰어>]` 다. 키가 없으면 `--no-parent` 다. parent 가 없는 주소면 `--no-parent` 로 한 번 더 열고 로그를 남긴다. 다른 실패는 다시 열지 않고 `view.error` 다. `view.terminal` 은 hc 주소, `view.pane` 은 `herdr-app ls` 에서 찾은 값이고 못 찾으면 null 이었다가 닫을 때 찾아 `pane.close` 한다. 닫기·`hc rm`·다시 열기·한 탭에 하나 시험은 그대로 통과한다.
   - 판별 회귀(`tests/test_mainlink.py`·`test_hooks.py`): parent 가 메인인 워커(`horch.dispatch`)·관제(`hteam.role=drive`) 터미널은 `require_main` 이 깊이 0 에서 거부하고 `_label_role` 이 `worker`·`drive` 다. 메인(parent null)은 자식이 있어도 메인이다. 지워진 조상을 가리키는 라벨 없는 터미널은 `main_unverified`·None 이다(지금 동작 고정).
   - 버전: herdr-team 세 곳이 0.7.1, `HORCH_MIN` 이 0.4.0, herdr-orch 세 곳이 0.4.0(`tests/test_cli.py`, herdr-orch `tests/test_meta.py`).
+- 11단계 보강(다시 묶기, 8.13·5.9.7. Herdr 를 부르지 않는다. 가짜 hc 의 `get` 이 parent·state·address·라벨을 돌려준다):
+  - 관제 다시 묶기(`tests/test_drive.py`): 자기 parent 가 M 과 다르고, M 이 live·같은 space 이고, 두 번 연달아 후보이고, Run 에 묶인 지 600초가 지났고, 한가하고, watch 가 돌면 `rehome.json`(`terminal`·`parent`·`main`)을 쓰고 progress 를 남기고 로그 `관제 종료: rehome: …` 뒤 exit 0 으로 끝나며 drive.pid 를 지운다. parent 가 null 인 관제도 끝낸다. 끝내지 않는 경우마다 한 시험: `main_terminal` 없음·형식 틀림·run.json 깨짐, M 이 parent 와 같음, `hc get M` 실패·`not_found`·`finished`, address 가 parent 와 같음, 다른 space·라벨 없음, 자기 parent 모름(`hc get` 실패), 한 번만 후보, 두 확인 사이에 M 이 바뀜, 600초 안, 정한 뒤 `main_parent` 가 바뀜(정한 것을 지운다), 한가하지 않음(이번 틱의 메시지·미룬 메시지, 결과 없는 큐 요청, 도는 자식·미룬 리뷰, `resetting` 인 에이전트 하나씩), watch 없음. M 이 parent 와 같으면 hc 를 부르지 않는다. progress 쓰기가 실패해도 끝낸다.
+  - 다시 뜬 관제의 정리(`tests/test_drive.py`): `rehome.json` 의 `terminal` 이 `finished` 이고 라벨 `hteam.role=drive` 가 있으면 `pane.close`(pane 이 있을 때) 뒤 `hc rm` 하고 파일을 지운다. `not_found` 는 `gone`, `live`·라벨 없음·hc 실패·`hc rm` 실패는 지우지 않고(`left`) 파일만 지운다. 파일이 없으면 아무것도 하지 않는다(관제가 죽었다 다시 뜬 경우). `up` 이 run.json 의 `drive_terminal` 을 새 주소로 바꿔도 정리한다.
+  - 되풀이 막기와 다시 띄우기(`tests/test_drive.py`·`test_setup.py`·`test_mainlink.py`·`test_autoup.py`): 다시 묶기로 끝난 뒤 watch 가 `orphaned`(starting 아님)를 내고, `up` 이 새 메인 아래(`--parent <메인>`) 관제를 띄우며, 새 관제는 parent 가 `main_terminal` 과 같아 끝나지 않는다. 자동 부활은 `spawned_at` 이 Run 연결보다 앞이면 REVIVED 다(FAILED 가 아니다).
+  - 고정 에이전트 다시 묶기(`tests/test_crew_reset.py`): clear 단계에서 작업 터미널 parent 가 M 과 다르고(null 포함) M 이 live·같은 space 면 `terminal-reset` 을 부르지 않고 `terminal-close`(`--abandon` 없음) 뒤 `terminal`·`terminal_argv`·`work_pane` 이 비고 로그 `new_terminal(parent_changed)` 이며 다음 태스크가 `--keep-open --tab … --parent <M>` 으로 새 세션을 띄우고 사양에 인수인계 줄이 든다. 같은 parent·`main_terminal` 없음·`hc get` 실패·M 이 live 아님·다른 space 면 지금처럼 `terminal-reset` 이다. 닫기 실패면 `rehome: "failed"`·`clear_error` 없음이고 다음 틱에 parent 를 보지 않고 `terminal-reset` 을 한다(그것도 실패하면 지금의 닫기 세 번 규칙). `clear_error = "parent_changed"` 로 남은 채 관제가 다시 뜨면 닫기부터 한다. 리뷰 보기 pane 이 있으면 새 작업 pane 이 왼쪽에 온다(지금 배치 시험).
 
 ### 15.2 실환경 확인 (단계마다)
 
@@ -2694,6 +2786,13 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
 5. 메인이 자식을 다루지 않는지: 시험 내내 메인 transcript 에 `hc kill`·`hc wait`·`hc rm` 호출이 없는지 본다. 있으면 7.7 의 11단계 줄을 더한다.
 6. 회귀: 단위 테스트 전체.
 
+2차(11단계 보강 뒤, 같은 운영 규칙과 시험 설정. 1–6 은 1차에서 봤다). 시험 메인 세션은 하나만 열고, 같은 시험 폴더에서 다른 Claude 세션(상태 실험 등)을 열지 않는다(1차에서 그 세션이 메인을 넘겨받았다, 1장):
+
+7. 관제 다시 묶기: 시험 메인 A 에서 `/herdr-team:up` 뒤 고정 에이전트 태스크 하나와 임시 워커 태스크 하나를 돌린다. 관제가 Run 에 묶인 지 10분이 지난 뒤 A 의 탭을 앱에서 닫고(시험 탭만) 새 시험 탭에서 시험 메인 B 를 연다. B 의 첫 watch 뒤 `main_terminal` 이 B 이고, 관제가 한가할 때 drive.log 에 `관제 다시 묶기: …` 와 `관제 종료: rehome: <A> → <B>` 를, outbox 에 progress 를 남기고 끝나는지, B 가 progress 를 전한 뒤 `orphaned` 로 `/herdr-team:up` 을 해 새 관제가 뜨는지 본다. 새 관제의 `hc get`(parent B, die_with_parent, notify), `herdr-app ls` 에서 B 의 `sub_agents` 에 새 관제가 드는지, drive.log `앞 관제 터미널 <t> 정리: removed` 와 관제 탭에 끝난 pane 이 남지 않는지, 앞 관제 종료부터 새 관제 Run 연결까지 걸린 시간, 그동안 낸 큐 명령이 `drive_down` 인지와 다시 뜬 뒤 도는 워커의 worker_done 이 처리되는지 적는다. 사용자에게 Agents 목록에서 관제가 B 아래 보이는지 확인을 받는다.
+8. 고정 에이전트 다시 묶기: 7 뒤 그 에이전트의 리셋을 돌린다(묶음 끝, 또는 B 에게 `hteam agent reset <이름>` 을 부탁한다). drive.log 에 인수인계 뒤 `<이름> 리셋: new_terminal(parent_changed)` 가 있고 `terminal-reset` 은 없는지, 다음 태스크의 새 작업 터미널 parent 가 B 인지, 새 세션이 인수인계 파일을 읽었는지(보고서), 에이전트 탭 이름과 배치(작업 pane 왼쪽, 리뷰 중이면 보기 pane 오른쪽)를 본다. 사용자에게 Agents 목록에서 B 아래 보이는지 확인을 받는다.
+9. 되풀이 없음: B 에서 `/exit` 뒤 같은 터미널에서 시험 메인을 다시 열고 10분 넘게 둔다. `main_terminal` 이 그대로이고 관제가 끝나지 않는지(drive.log 에 `rehome` 이 없는지) 본다. 고정 에이전트 리셋을 한 번 더 돌려 이번에는 `reset(turn …)`(같은 터미널 비우기)인지 본다.
+10. 회귀: 단위 테스트 전체.
+
 ### 15.3 구현 단계
 
 설계 문서는 이것 하나다. 구현 계획·서브에이전트 구현·Codex 리뷰·실환경 확인을 세 번 한다. 세 단계를 마치면 herdr-team 0.1.0 으로 main 에 병합한다(병합했다). 4단계는 같은 절차를 한 번 더 하고 herdr-team 0.2.0 으로 병합한다(병합했다). 5단계도 같은 절차를 한 번 하고 herdr-team 0.3.0 으로 병합한다(병합했다). 6단계도 같은 절차를 한 번 하고 herdr-orch 0.2.0·herdr-team 0.4.0 으로 병합한다(병합했다). 7단계도 같은 절차를 한 번 하고 herdr-orch 0.3.0·herdr-team 0.5.0 으로 병합한다(병합했다). 8단계도 같은 절차를 한 번 하고 herdr-team 0.6.0 으로 병합한다(병합했다). 9단계도 같은 절차로 herdr-team 0.6.1 로 병합했다. 10단계도 같은 절차를 한 번 하고 herdr-team 0.7.0 으로 병합한다. 11단계도 같은 절차를 한 번 하고 herdr-orch 0.4.0·herdr-team 0.7.1 으로 병합한다.
@@ -2780,8 +2879,9 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
    3. 워커 parent: `dispatch.launch` 가 새 터미널(fresh·retry)이고 `--hidden`·`--terminal` 이 아니면 `--parent <main_terminal>`(5.4·5.9.2·6.1 의 7), `parent_missing` 경고 남기기, 시험과 `require_main`·`_label_role` 회귀 시험(3.2).
    4. 리뷰 보기 pane: `pane.split` 대신 `hc run`, pane 찾기와 닫기, parent 없는 주소의 다시 열기(6.5 의 11단계), 보기 시험 바꾸기.
    5. 문서·버전: README(구조 절의 묶음 한 줄, "0.7.0 → 0.7.1", 9.6), 버전 0.7.1 세 곳. `CLAUDE.section.md` 는 바꾸지 않는다(7.7 의 11단계. 실환경 5 에서 필요해지면 그때 더한다).
+   6. 보강(다시 묶기, 2026-11-16 사용자 결정, 1장 11단계 보강 표. 1–5·브랜치 리뷰·실환경 1차 뒤에 더했다. 버전은 그대로 0.7.1, herdr-orch 는 바꾸지 않는다): 관제의 자기 parent 기억과 다시 묶기 확인·끝내기(8.13, 8.5 의 10, 상수 둘), `rehome.json` 과 다시 뜬 관제의 앞 터미널 정리(8.2 의 6), 리셋 clear 단계의 parent 비교와 닫기·실패 길(5.9.7 의 4), 시험(15.1 의 11단계 보강), README "0.7.0 → 0.7.1" 의 (4)·(5)(9.6).
 
-   그다음 브랜치 Codex 리뷰, 실환경(15.2 의 11단계), main 병합. 리뷰 지적은 P0·P1, 기본 경로의 P2, 회귀를 고치고 가장자리 경우는 알려진 한계로 적는다.
+   그다음 브랜치 Codex 리뷰, 실환경(15.2 의 11단계. 1–6 은 1차, 6 뒤의 7–10 은 2차), main 병합. 리뷰 지적은 P0·P1, 기본 경로의 P2, 회귀를 고치고 가장자리 경우는 알려진 한계로 적는다.
 
 ### 15.4 실환경 확인 결과
 
@@ -2958,7 +3058,8 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
 - 6단계(orca-team 0.7.0 의 범위 밖과 같다): 생산 에이전트 여러 개, 리뷰어 고정과 컨텍스트 누적, 태스크 직무에 맞춰 `/model` 로 모델 바꾸기. hteam 이 더한다: hc core 재시작 뒤 복구(실험 X7 을 하지 않았다. 사용자 core 를 멈추거나 다시 띄우는 동작을 넣지 않는다), 0.3.0 프로젝트의 0.4.0 이전, 리뷰 보기 pane 의 입력 막기, 고정 에이전트 세션의 화면·대화 기록 검사, 멈춘 관제의 감지·강제 재시작. 4단계 범위 밖의 "상시 감시 프로세스" 와 5단계 범위 밖의 "수정 라운드에서 이전 워커 재사용" 은 6단계의 관제와 고정 에이전트로 범위 안이 됐다.
 - 7단계: 기획·디자인 직무의 worktree, 고정 에이전트의 worktree, 슬롯 없이 태스크마다 새로 만드는 worktree, 리뷰 파일 경로 설정, 공용 등록 파일의 줄 추가 허용(요청 R1), full 실패 파일만 다시 돌리기(R4), 플러그인의 push(R9), Redmine 이슈 만들기·가져오기, Redmine 밖 이슈 트래커와 일반 사건 훅, 남은 포트의 프로세스 경고, Artifact URL 만으로 내는 디자인 산출물.
 - 10단계: 기획 산출물의 아티팩트, 계정 사이 아티팩트 공유·이전 자동화(Artifact 도구에 공유가 없다), 사용자가 아티팩트를 직접 고친 내용 내려받기, 반영한 스레드의 새 답글 추적, `index.html` 과 화면 아티팩트 파일의 자동 비교, 긴 표를 보이는 다른 장치(질문 보기 pane 은 뺐다).
-- 11단계: 이미 떠 있는 터미널의 parent 바꾸기(hc 에 명령이 없다), 여러 단계 묶음(메인 > 관제 > 워커, 에이전트마다), 숨은 리뷰어 묶기, 앱 메서드(`pane.split`·`tab.new`)로 만든 터미널의 parent, 옛 horch 에 맞춰 `--parent` 없이 다시 부르기, 다른 space·기계의 메인 아래 묶기. 0.8.0 으로 잡았던 품질 개선(절차, 디자인, AI 티)은 다음 단계다.
+- 11단계: 이미 떠 있는 터미널의 parent 바꾸기(hc 에 명령이 없다. 11단계 보강은 바꾸지 않고 다시 띄운다), 여러 단계 묶음(메인 > 관제 > 워커, 에이전트마다), 숨은 리뷰어 묶기, 앱 메서드(`pane.split`·`tab.new`)로 만든 터미널의 parent, 옛 horch 에 맞춰 `--parent` 없이 다시 부르기, 다른 space·기계의 메인 아래 묶기. 0.8.0 으로 잡았던 품질 개선(절차, 디자인, AI 티)은 다음 단계다.
+- 11단계 보강: 도는 임시 워커·관제 탭 리뷰어·보기 pane 다시 띄우기, 리셋 없이 고정 에이전트 세션 다시 띄우기(사용자 요청 리셋으로 한다), 같은 폴더의 두 번째 Claude 세션이 메인을 가져가는 동작 바꾸기(메인 고정·잠금), 관제가 후계 관제를 스스로 띄우기(8.13 의 고르지 않은 안), 바쁜 관제를 멈추고 다시 묶기.
 
 ## 부록 A. orca-team 대응
 
