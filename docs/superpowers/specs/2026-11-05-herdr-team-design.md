@@ -1420,6 +1420,8 @@ orca-team 0.7.0 `queue.py` 를 옮긴다(`lib/hteam/queue.py`). 메인은 horch 
   - `dropped` 또는 A 의 상태 파일이 없음 → 실행하지 않고 실패 결과로 닫는다: exit 3 `after_failed`(`<A> 가 병합 없이 끝났다(<상태>). T 의 fix 를 하지 않았다. 다시 판단한다`).
   - 그 밖 → 그대로 두고 다음 요청으로 간다(`review_busy` 의 미룸과 같다, 8.5. 뒤 요청을 막지 않는다). 처음 미룰 때만 로그 `요청 q-NNNNNN fix: <A> 를 기다린다`.
   - 실행한 fix 가 거부되면(그 사이 라운드가 바뀜 `round_changed`, `base_current` 등) 지금처럼 실패 결과다. `expect_round` 는 메인이 넣은 그때 라운드다.
+- 대상 태스크 붙잡기: 미룬 요청이 있는 태스크(그 요청의 T)는 열린 decide 가 있을 때처럼 재확인이 자동으로 다루지 않는다(8.7 의 `reconcile_task`. `changes` 의 자동 fix, 반복 실패 decide 등). 메인이 decide 를 닫아도 관제가 그 사이 라운드를 바꿔 미룬 요청이 `round_changed` 로 실패하지 않게 한다(Codex 설계 리뷰 r1). 요청이 실행·실패·취소로 없어지면 다음 재확인부터 지금처럼 다룬다. 관제가 다시 떠도 요청 파일이 남아 그대로다. 메시지(worker_done 등)는 지금처럼 처리한다.
+- 실행과 취소의 배제: 관제는 미룬 요청을 실행하기 전에 `queue.lock` 안에서 요청 파일을 다시 읽어 있으면 `started_at` 을 쓰고, 없으면(취소됐다) 건너뛴다. `hteam cancel` 은 같은 잠금 안에서 `started_at` 이 없을 때만 지운다. 그래서 `cancelled: true` 를 받은 요청은 실행되지 않는다(Codex 설계 리뷰 r1: 지금 `run_pending` 은 잠금 없이 읽고 `annotate` 로 파일을 다시 쓴다).
 - 미룬 요청(`after` 가 있고 `started_at` 이 없음)은 관제 다시 묶기의 한가함(8.13 의 (2))에서 세지 않는다. 세면 기다리는 동안 다시 묶기가 멈춘다. 관제가 다시 떠도 파일이 남아 이어 간다.
 - `hteam status` 에 `deferred: [{request, command, task, after, at}]` 를 보인다.
 - `hteam cancel <q-NNNNNN>`(12단계, 메인, 큐를 거치지 않는다): `queue.lock` 안에서 그 요청이 미룬 요청이면 요청 파일과 `.abandoned` 를 지우고 `{"request", "cancelled": true}`. 이미 시작했거나(`started_at`) 결과가 있거나 `after` 가 없으면 exit 3 `not_deferred`. 없으면 exit 2 `unknown_request`.
@@ -1793,7 +1795,7 @@ orca-team 0.6.0 의 `orch followups`(`lib/orch/followups.py`)를 `lib/hteam/foll
 | `REHOME_CHECK_S` | 60 | 다시 묶기 확인 간격(11단계 보강, 8.13) |
 | `REHOME_MIN_UP_S` | 600 | Run 에 묶인 뒤 다시 묶지 않는 시간(되풀이 막기, 자동 부활의 `RETRY_WINDOW_S` 와 같다, 8.13) |
 | `REMIND_S` | 1800 | watch 가 열린 decide 로 끝나기까지(12단계, 7.3. watch 쪽 상수) |
-| `RELAY_DECIDE_S` | 5 | Claude 시작 뒤 대리 보고 판정을 미루는 시간(12단계, 8.14. 훅 쪽 상수. Claude 시작 질의의 2초 창 뒤) |
+| `RELAY_DECIDE_S` | 3 | Claude 프로세스 시작 뒤 대리 보고 판정을 미루는 시간(12단계, 8.14. 훅 쪽 상수. Claude 시작 질의의 2초 창 뒤) |
 
 Herdr 신호로 바꾼 곳: orca 의 `ACTIVE_OUTPUT_SECONDS`(마지막 출력 30초)와 tui-idle·`RESET_SETTLE_SECONDS`(5초)는 Herdr 에 없다(hc 에는 `lastOutputAt` 이 없다). 바쁨은 7501 상태(`working`·`blocked`), 준비는 turn 사건(`hc events`)과 `hc get` 의 turn·상태로 본다(5.9.7, herdr-orch 13.6·13.8). orca 의 `start_unknown` 은 Orca 가 판정했다. Herdr 는 horch 의 `not_started` 관찰(60초)이 한다.
 
@@ -1824,7 +1826,7 @@ Herdr 신호로 바꾼 곳: orca 의 `ACTIVE_OUTPUT_SECONDS`(마지막 출력 30
 - 확인 창 표시 풀기(orca `lift_person_prompt`): 그 Dispatch 의 worker_done 이 오면 표시를 지우고, 그 decide 가 아직 답이 없으면 progress 를 한 번 쓴다. 그 decide 의 라운드 표시도 지워 리뷰로 간다. orca 는 Orca escalation 본문의 "needs a person" 으로 알았다(§17 P2-6: 영어 원문을 300자로 자르고 쓸 수 없는 명령을 안내했다). Herdr 는 7501 `blocked`(kind permission·question)를 받는다. 요약은 한국어, 원문은 `detail` 에만 둔다.
 - `no_status`(상태 보고 없는 워커가 1분 넘게)는 메일이 아니라 재확인의 워커 목록 `attention` 으로 안다(8.7). decide escalation `<T> 작업자가 상태를 보고하지 않는다(시작 확인 창일 수 있다). 사용자에게 그 탭을 보고 넘겨 달라고 한다` 를 한 번 올린다. 키를 누르지 않는다.
   - 12단계: Claude 작업자는 스스로 보고하지 않아도 훅이 대신 보고하므로(8.14) 이 escalation 에 걸리지 않는다. 걸리는 것은 대리 보고도 없는 세션이고 문구를 8.14 의 것으로 바꾼다. Codex 작업자는 지금 그대로다.
-- 12단계 백그라운드 인식(Orca 의 "백그라운드 일이 있으면 작업 중" 과 같다, 1장): observed idle(작업·리뷰. 인수인계는 지금 그대로)을 처리하기 전에 그 Dispatch 터미널의 백그라운드 기록 `state/agents/<터미널>.json`(8.14)을 본다. 기록의 `at` 이 그 Dispatch 를 띄우거나 넣은 뒤이고(같은 터미널의 앞 태스크 기록을 쓰지 않는다) `background` 가 비지 않았으면 done 요청 글도 escalation·`--kill` 도 하지 않고 `idle_nudged` 도 쓰지 않는다. 로그 `<T> 백그라운드 일을 기다리는 idle 넘김(<type>: <description>)` 를 그 Dispatch 에 한 번만 남긴다. 기록이 없거나 읽지 못하거나 비었으면 위 표대로 한다. 백그라운드 일이 끝나면 Claude 가 시스템 턴을 시작하고(1장) 다음 Stop 이 기록을 고친다. 그 뒤의 idle 부터 위 표대로 센다. 대리 보고 세션은 백그라운드 일이 있는 Stop 을 `working` 으로 보고하므로 idle 사건 자체가 나지 않는다. Codex 작업자는 기록이 없어 지금 그대로다.
+- 12단계 백그라운드 인식(Orca 의 "백그라운드 일이 있으면 작업 중" 과 같다, 1장): observed idle(작업·리뷰. 인수인계는 지금 그대로)을 처리하기 전에 그 Dispatch 터미널의 백그라운드 기록 `state/agents/<터미널>.json`(8.14)에서 그 idle 의 턴을 끝낸 Stop 을 고른다: `stops` 가운데 `at` 이 그 observed 메시지의 `created_at` 이전이고 그 Dispatch 를 띄우거나 넣은 뒤인 마지막 것이다(Stop 훅은 Claude 가 턴 끝 상태를 보고하기 전에 돌므로 그 턴의 Stop 이 메시지보다 앞이다. 메일함에 앞 턴의 idle 이 남아 있어도 그 턴의 기록을 쓴다, Codex 설계 리뷰 r1. 관제는 메시지의 `created_at` 을 `_idle` 에 넘긴다). 그 기록의 `background` 가 비지 않았으면 done 요청 글도 escalation·`--kill` 도 하지 않고 `idle_nudged` 도 쓰지 않는다. 로그 `<T> 백그라운드 일을 기다리는 idle 넘김(<type>: <description>)` 를 그 Dispatch 에 한 번만 남긴다. 기록이 없거나 읽지 못하거나 비었으면 위 표대로 한다. 백그라운드 일이 끝나면 Claude 가 시스템 턴을 시작하고(1장) 다음 Stop 이 기록을 고친다. 그 뒤의 idle 부터 위 표대로 센다. 대리 보고 세션은 백그라운드 일이 있는 Stop 을 `working` 으로 보고하므로 idle 사건 자체가 나지 않는다. Codex 작업자는 기록이 없어 지금 그대로다.
 
 `hteam review-finish T` 결과:
 
@@ -1870,7 +1872,7 @@ accept 뒤(`accepted`, 관제 판정 경로와 큐 accept 모두):
 6. 묶음 처리 안 된 done tester(8.4).
 7. `start-ready` → 디자인 단계(8.9) → 끝나지 않은 일괄 승인 결정 이어 하기(11.4)와 답 파일에만 있는 결정 실행(7.4) → 마무리(8.4).
 
-`reconcile_task(st)`: 열린 decide 가 있고 그 decide 의 라운드가 지금 라운드면(메인이 답하지 않았다) 건드리지 않는다. 그 태스크의 자식 프로세스가 돌아도 건드리지 않는다. 닫히지 않은 태스크에 지금 라운드의 `drive_fix` 가 남아 있으면 상태별 처리 대신 같은 note 로 그 fix 를 다시 한다(아래 "관제 fix 이어 하기"). 그 밖에는 상태별 하나:
+`reconcile_task(st)`: 열린 decide 가 있고 그 decide 의 라운드가 지금 라운드면(메인이 답하지 않았다) 건드리지 않는다. 12단계: 그 태스크에 미룬 요청(`fix --after`)이 있어도 건드리지 않는다(7.1). 그 태스크의 자식 프로세스가 돌아도 건드리지 않는다. 닫히지 않은 태스크에 지금 라운드의 `drive_fix` 가 남아 있으면 상태별 처리 대신 같은 note 로 그 fix 를 다시 한다(아래 "관제 fix 이어 하기"). 그 밖에는 상태별 하나:
 
 | 상태 | 조건 | 동작 |
 |---|---|---|
@@ -2058,29 +2060,32 @@ Claude Code 는 시작 때 한 번 Herdr 에 상태 보고를 할 수 있는지 
 
 대상: herdr-team 프로젝트(9.4 의 `find_root`, 슬롯 포함)에서 Herdr 터미널 안(`$HC_TERMINAL_ID`)에 도는 Claude 세션 모두다. 메인, 임시 워커, 고정 에이전트, Claude 리뷰어, 인수인계 세션이다. Codex 는 Claude 훅이 없어 대상이 아니다(지금의 `no_status` 처리, 8.6).
 
-세션 기록 `state/relay/<터미널>.json`: `{terminal, pid, tty, started_ms, decided, last, at}`. 세션 하나가 아니라 Claude 프로세스 하나에 하나다(판정은 프로세스마다 정해진다. `/clear`·compact 는 세션 id 가 바뀌어도 같은 프로세스다).
+세션 기록 `state/relay/<터미널>.json`: `{terminal, pid, tty, started_ms, decided, pending, last, at, write_failures, notified}`. 세션 하나가 아니라 Claude 프로세스 하나에 하나다(판정은 프로세스마다 정해진다. `/clear`·compact 는 세션 id 가 바뀌어도 같은 프로세스다). 기록을 읽고 판정하고 쓰는 일은 모두 터미널마다의 잠금 `state/relay/<터미널>.lock`(flock, 2초까지 기다린다) 안에서 한다. 한 턴의 도구 호출이 함께 끝나면 PostToolUse 훅이 여럿 함께 돈다(Codex 설계 리뷰 r1). 잠금을 얻지 못하면 그 사건에서는 대리 보고를 건너뛴다.
 
-1. SessionStart(모든 source): `hc get $HC_TERMINAL_ID`(3초)의 `foreground.pid` 가 이 훅 프로세스의 조상이면 그것이 이 세션의 Claude 다. 기록의 `pid` 가 같으면 그대로 둔다. 다르거나 기록이 없으면 새로 쓴다: `pid`, `tty`(`ps -o tty= -p <pid>` 로 `/dev/<tty>`. `??` 나 실패면 null), `started_ms`(훅 시작 epoch ms), `decided: null`, `last: null`. hc 가 실패하거나 조상이 아니면 쓰지 않는다(그 세션은 대리 보고 없이 지금처럼 돈다).
-2. 판정: 기록의 `decided` 가 null 이고 `started_ms` 에서 `RELAY_DECIDE_S`(5초)가 지났으면, 다음 사건에서 한 번 본다: `PostToolUse`·`PostToolUseFailure`·`PermissionRequest`·`Stop`·`StopFailure`. 이 사건들은 한 턴이 시작된 뒤에 오므로, 스스로 보고하는 세션이면 그 턴의 working 이 이미 들어가 있다. `UserPromptSubmit`·`PreToolUse` 에서는 판정하지 않는다(그 턴의 보고보다 먼저 돌 수 있다). `hc get $HC_TERMINAL_ID`(3초)의 `status_ms` 가 `started_ms` 이후면 `decided = "off"`(그 세션은 스스로 보고한다. 그 뒤 아무것도 쓰지 않는다). 아니면 `tty` 가 있으면 `decided = "on"`, 없으면 `"no_tty"`. hc 가 실패하면 판정하지 않고 다음 사건에서 다시 본다. 판정은 로그 `state/relay.log` 에 한 줄 남긴다(`<terminal> <pid> on|off|no_tty`).
-3. 쓰기(`decided = "on"` 일 때만. 판정한 그 사건부터):
+1. 기록 만들기: 어느 사건에서든 기록이 없거나 기록의 `pid` 가 지금 Claude 가 아니면 새로 만든다. 지금 Claude 는 `hc get $HC_TERMINAL_ID`(3초)의 `foreground.pid` 이고 그것이 이 훅 프로세스의 조상일 때만 인정한다(다른 터미널·프로세스에 쓰지 않는다). 새 기록: `pid`, `tty`(`ps -o tty= -p <pid>` 로 `/dev/<tty>`. `??` 나 실패면 null), `started_ms`(그 프로세스의 시작 시각 `ps -o lstart=`, 초 단위. 훅이 늦게 돌아도 같다), `decided: null`, `pending: "idle"`, `last: null`, `write_failures: 0`. hc 가 실패하거나 조상이 아니면 만들지 않고 다음 사건에서 다시 한다. SessionStart(새 프로세스)는 기록을 만든 뒤 판정 확인기를 분리 실행한다(아래 2).
+2. 판정: `decided` 가 null 이면 `started_ms` 에서 `RELAY_DECIDE_S`(3초)가 지난 뒤에 한 번 본다. 판정하는 곳은 둘이다: SessionStart 가 분리 실행한 확인기(`hteam_hook.py relay-check <터미널> <pid>`, 표준 입출력 없이, 그 시각까지 잔 뒤 한 번 보고 끝난다. 10초 넘게 걸리면 끝낸다)와, 그 시각이 지난 뒤의 훅 사건 가운데 `UserPromptSubmit` 이 아닌 것(`PreToolUse`·`PostToolUse`·`PermissionRequest`·`Stop` 등)이다. `UserPromptSubmit` 은 그 턴의 Claude 보고보다 먼저 돌 수 있어 판정하지 않는다. 도구 호출(`PreToolUse`)은 턴이 시작된 뒤라 스스로 보고하는 세션이면 그 턴의 `working` 이 이미 들어가 있다. 3초는 Claude 시작 질의의 2초 창 뒤다(1장 확인한 것). `hc get $HC_TERMINAL_ID`(3초)의 `status_ms` 가 `started_ms` 이후면 `decided = "off"`(그 세션은 스스로 보고한다). 아니면 `tty` 가 있으면 `"on"`, 없으면 `"no_tty"`. hc 가 실패하면 판정하지 않고 다음 곳에서 다시 본다. 판정은 `state/relay.log` 에 한 줄 남긴다(`<터미널> <pid> on|off|no_tty`).
+3. 판정 전 사건은 쓰지 않고 그 사건이 뜻하는 상태(아래 표)를 `pending` 에 적는다. `on` 으로 정하면 그 자리에서 `pending`(판정한 사건이 있으면 그 사건의 상태)을 쓴다. 그래서 시작 뒤 첫 질문·첫 긴 도구 호출도 판정 시각부터 보인다(Codex 설계 리뷰 r1).
+4. 쓰기(`decided = "on"` 일 때만):
 
    | 훅 사건 | 쓸 상태 |
    |---|---|
    | `UserPromptSubmit`(사용자·시스템 턴 모두) | `working` |
    | `PreToolUse`(AskUserQuestion) | `blocked`, kind `question` |
+   | `PreToolUse`(그 밖), `PostToolUse`·`PostToolUseFailure`(모든 도구) | `working`. `last` 가 이미 `working` 이면 쓰지 않는다 |
    | `PermissionRequest` | `blocked`, kind `permission` |
    | `Elicitation` | `blocked`, kind `question` |
-   | `PostToolUse`·`PostToolUseFailure`(모든 도구) | `working`. `last` 가 이미 `working` 이면 쓰지 않는다 |
-   | `Stop` | `background_tasks` 가 비지 않으면 `working`, 비면 `done` |
+   | `Stop` | 메인은 `done`. 워커·리뷰어·고정 에이전트는 `background_tasks` 가 비지 않으면 `working`, 비면 `done`(메인은 늘 백그라운드 watch 를 두므로 보지 않는다, 7.3. Codex 설계 리뷰 r1) |
    | `StopFailure` | `error` |
+   | `SessionStart`(같은 프로세스의 `clear`·`compact`) | `working` 뒤 곧바로 `idle`(한 번의 쓰기에 둘). horch 의 비우기 확인은 turn 이 오르고 `idle` 인 것을 기다린다(`persist._cleared`, 5.9.7 의 4). turn 은 상태가 `working` 을 벗어날 때 오르므로 둘을 쓴다(Codex 설계 리뷰 r1) |
    | `SessionEnd` | `clear`(셸 터미널의 메인이 끝난 뒤 옛 상태가 남지 않게) |
 
-   형식은 Claude 와 같다: `ESC]7501;state=<상태>:app=claude-code[:kind=<종류>]BEL`(1장). `os.open(tty, O_WRONLY | O_NOCTTY | O_NONBLOCK)` 로 열어 한 번의 `write` 로 쓰고 닫는다. 쓰기 실패(EAGAIN 포함)는 무시하고 `relay.log` 에 그 사건 이름과 함께 남긴다(같은 오류는 세션당 한 번). 쓴 뒤 기록의 `last`·`at` 을 고친다.
-4. `no_tty` 인 메인은 Stop 훅이 한 번 사용자에게 다시 열라고 알리게 한다(9.4). `no_tty` 인 워커는 대리 보고가 없으니 지금처럼 8.6 의 `no_status` 처리다.
+   형식은 Claude 와 같다: `ESC]7501;state=<상태>:app=claude-code[:kind=<종류>]BEL`(1장). `os.open(tty, O_WRONLY | O_NOCTTY | O_NONBLOCK)` 로 열어 한 번의 `write` 로 쓰고 닫는다. 쓴 뒤 `last`·`at` 을 고치고 `write_failures` 를 0 으로 둔다. 쓰기 실패(EAGAIN 포함)는 사건을 막지 않고 `write_failures` 를 올리며 `relay.log` 에 남긴다. 세 번 이어 실패하면 `decided = "write_failed"` 로 두고 그 뒤 쓰지 않는다(메인 알림은 `no_tty` 와 같다, 9.3·9.4. Codex 설계 리뷰 r1).
+5. 다시 확인: `on` 인 세션은 `Stop` 마다 쓰기 전에 `hc get`(3초)을 본다. `status_ms` 가 마지막 대리 쓰기(`at`)보다 1초 넘게 뒤이고 그 상태가 `last` 와 다르면 Claude 가 스스로 보고하는 것이다(판정 때 시작 확인 창이 떠 있어 아직 보고 전이었던 경우 등). `decided = "off"` 로 바꾸고 쓰지 않는다. hc 가 실패하면 그대로 쓴다.
+6. `no_tty`·`write_failed` 인 메인은 Stop 훅이 한 번 사용자에게 다시 열라고 알리게 한다(9.4). 그런 워커는 대리 보고가 없으니 지금처럼 8.6 의 `no_status` 처리다.
 
-백그라운드 기록(대상 세션 모두, `decided` 와 상관없다): `Stop` 훅이 `state/agents/<터미널>.json` 에 `{pid, at, background: [{type, status, description 80자}]}`(`background_tasks` 를 그대로 줄인 것, 없으면 빈 목록)를 원자적으로 쓴다. 관제는 observed idle 을 처리할 때 이 파일을 읽는다(8.6). 다음 Stop 이 덮어쓴다.
+백그라운드 기록(대상 세션 가운데 메인이 아닌 것, `decided` 와 상관없다): `Stop` 훅이 `state/agents/<터미널>.json` 의 `stops` 목록 끝에 `{pid, at, background: [{type, status, description 80자}]}`(`background_tasks` 를 그대로 줄인 것, 없으면 빈 목록)를 더한다(최근 20개만 남긴다, 잠금은 대리 보고와 같은 터미널 잠금). 관제는 observed idle 을 처리할 때 그 메시지 시각에 맞는 기록을 고른다(8.6). 기록을 쓰지 못하면 관제는 지금처럼 센다.
 
-빠른 길: 새로 거는 `PostToolUse`(모든 도구)는 도구 호출마다 돈다. 대상이 아니거나 `decided` 가 `off`·`no_tty` 면 기록 파일 하나를 읽고 끝낸다. 보고하는 세션의 도구 호출마다 생기는 지연은 계획 단계에서 재고, 크면 그 사건만 작은 셸 스크립트로 먼저 거른다(15.1).
+빠른 길: 새로 거는 `PostToolUse`(모든 도구)는 도구 호출마다 돈다. 대상이 아니거나 `decided` 가 `off`·`no_tty`·`write_failed` 면 기록 파일 하나를 읽고 끝낸다(잠금을 잡지 않는다). 보고하는 세션의 도구 호출마다 생기는 지연은 계획 단계에서 재고, 크면 그 사건만 작은 셸 스크립트로 먼저 거른다(15.1).
 
 8.6 의 `no_status` escalation 은 그대로 둔다. 대리 보고가 켜진 세션은 판정 몇 초 뒤부터 상태가 보이므로 걸리지 않는다. 걸리는 것은 훅도 돌지 않은 세션(시작 확인 창, 훅 오류, 0.7.2 전에 뜬 세션)이다. 문구에 이것을 더한다: `<T> 작업자가 상태를 보고하지 않는다(대리 보고도 없다. 시작 확인 창이거나 업그레이드 전에 뜬 세션일 수 있다). 사용자에게 그 탭을 보고 넘겨 달라고 한다`(Codex 작업자는 지금 문구).
 
@@ -2118,7 +2123,7 @@ Python 3.11 이상, git(없으면 `git init` 과 빈 커밋을 권함), `horch` 
 5. 0.3.0 의 `--force`(확인 불가 코디네이터의 인계 승인)는 없앴다. 관제 생존은 hc 가 아니라 pid 로 보므로 확인 불가가 없고, 관제는 Run 을 넘겨받을 때 스스로 `--force` 를 판단한다(8.2 의 4).
 6. 죽은 관제 터미널(끝난 터미널, `--keep` 이 셸로 바꾼 터미널)은 관제 탭에 남는다(0.3.0 의 코디네이터와 같다). 11단계 보강: 다시 묶기로 끝난 관제 터미널(끝난 터미널)은 새 관제가 지운다(8.13 의 "다시 뜬 뒤").
 7. 11단계 보강: 다시 묶기(8.13)로 끝난 관제도 꺼진 관제와 같이 2 의 판정으로 띄운다(Run 에 묶인 뒤라 `starting` 이 아니다). `up` 은 바뀌지 않는다.
-8. 12단계: 결과에 메인 상태 보고를 더한다. 이 터미널의 대리 보고 기록(`state/relay/<터미널>.json`, 8.14)이 `no_tty` 이거나, 기록이 없는데(0.7.2 전에 연 세션) `hc get` 의 `status_ms` 가 없으면 `warnings` 에 `main_unreported`(`이 메인 세션의 상태가 Herdr 에 가지 않는다. 질문이 Herdr "Needs you" 로 뜨지 않는다. 일이 덜 몰린 때 /exit 뒤 같은 터미널에서 claude --resume 으로 다시 연다`)를 넣는다. 판정할 수 없으면(hc 실패) 넣지 않는다. `/herdr-team:up` 스킬은 이 경고를 사용자에게 그대로 전한다.
+8. 12단계: 결과에 메인 상태 보고를 더한다. 이 터미널의 대리 보고 기록(`state/relay/<터미널>.json`, 8.14)이 `no_tty`·`write_failed` 이거나, 기록이 없는데(0.7.2 전에 연 세션) `hc get` 의 `status_ms` 가 없으면 `warnings` 에 `main_unreported`(`이 메인 세션의 상태가 Herdr 에 가지 않는다. 질문이 Herdr "Needs you" 로 뜨지 않는다. 일이 덜 몰린 때 /exit 뒤 같은 터미널에서 claude --resume 으로 다시 연다`)를 넣는다. 판정할 수 없으면(hc 실패) 넣지 않는다. `/herdr-team:up` 스킬은 이 경고를 사용자에게 그대로 전한다.
 
 `/herdr-team:up`(메인을 다시 열 때): `hteam status` → 관제가 꺼져 있으면 `hteam up --wait-run 180`(Bash `timeout: 240000`) → watch 가 없으면 띄움 → `hteam reask` 로 열린 질문을 하나씩 묻기(decide 는 판단 기준대로 처리) → 요약 표(관제, 고정 에이전트, 태스크). 스킬 description: "수동 복구. 관제는 보통 메인 세션 훅이 자동으로 살린다(config.toml `[drive] auto_up`). 자동 부활이 꺼져 있거나 훅이 안내했을 때, 메인을 다시 열어 열린 질문을 다시 물을 때 쓴다." `hung` 이면 다시 띄우지 않고 사용자에게 관제 탭을 보라고 한다. init 스킬 5 단계의 제목 "코디네이터" 는 "관제" 로 바꾸고 같은 `up` 을 쓴다.
 
@@ -2146,7 +2151,7 @@ Python 3.11 이상, git(없으면 `git init` 과 빈 커밋을 권함), `horch` 
 12단계:
 
 - 상태 대리 보고와 백그라운드 기록(8.14): `hooks.json` 에 사건을 더한다: `PostToolUse`(matcher 없음, 모든 도구), `PostToolUseFailure`, `PermissionRequest`, `Elicitation`, `StopFailure`, `SessionEnd`. 이미 있는 `SessionStart`·`UserPromptSubmit`·`PreToolUse`(AskUserQuestion 이 matcher 에 있다)·`Stop` 은 지금 처리 앞에 대리 보고 단계를 더한다. 대리 보고는 역할과 상관없이(메인·워커·리뷰어) 하고, 지금의 역할별 처리(거부·안내·막기)는 그대로다. 대리 보고 단계의 오류는 그 사건을 막지 않고 `hook-errors.log` 에 남긴다(9.4 머리말).
-- Stop(메인, `no_tty`): 메인이고 `setup-mode`·`stop_hook_active` 가 아니고 이 터미널의 대리 보고 기록이 `no_tty` 이고 아직 알리지 않았으면(기록의 `notified`) 한 번 막는다(`herdr-team: 이 메인 세션은 Herdr 에 상태를 보고하지 않고(Claude 시작 질의 실패) 훅이 대신 보낼 터미널도 찾지 못했다. 질문이 Herdr "Needs you" 로 뜨지 않는다. 사용자에게 그대로 알린다: 일이 덜 몰린 때 /exit 뒤 같은 터미널에서 claude --resume 으로 다시 열면 풀린다. 세션을 스스로 끝내지 않는다.`). `notified` 를 먼저 쓴다. 평문 질문·watch 글과 함께 걸리면 이 글을 맨 앞에 `\n\n` 으로 잇는다. 대리 보고가 켜진(`on`) 메인은 막지 않는다(Needs you 가 대리 보고로 뜬다).
+- Stop(메인, `no_tty`·`write_failed`): 메인이고 `setup-mode`·`stop_hook_active` 가 아니고 이 터미널의 대리 보고 기록이 `no_tty`·`write_failed` 이고 아직 알리지 않았으면(기록의 `notified`) 한 번 막는다(`herdr-team: 이 메인 세션은 Herdr 에 상태를 보고하지 않고(Claude 시작 질의 실패) 훅이 대신 보낼 터미널도 찾지 못했거나 거기에 쓰지 못했다. 질문이 Herdr "Needs you" 로 뜨지 않는다. 사용자에게 그대로 알린다: 일이 덜 몰린 때 /exit 뒤 같은 터미널에서 claude --resume 으로 다시 열면 풀린다. 세션을 스스로 끝내지 않는다.`). `notified` 를 먼저 쓴다. 평문 질문·watch 글과 함께 걸리면 이 글을 맨 앞에 `\n\n` 으로 잇는다. 대리 보고가 켜진(`on`) 메인은 막지 않는다(Needs you 가 대리 보고로 뜬다).
 - PreToolUse(Bash, 메인): watch 규칙을 더한다. `hteam_only` 이고 앞 옵션을 건너뛴 하위 명령이 정확히 `watch` 면 `tool_input.run_in_background` 가 `true` 일 때만 통과하고, 아니면 거부한다(`watch 는 Bash run_in_background: true 로 혼자 띄운다: .herdr-team/bin/hteam watch. 다른 명령과 잇거나 & 를 붙이지 않는다`). `hteam_only` 가 아닌 명령에서 `WATCH_RE`(`DRIVE_RE` 와 같은 경계 규칙으로 `hteam` 뒤 하위 명령 `watch`)가 맞으면 같은 글로 거부한다(`… hteam watch &`, `cd x && hteam watch`). 글 안의 낱말(`hteam answer out-1 "watch 를…"`)은 `hteam_only` 라 하위 명령이 `answer` 여서 통과한다.
 
 Codex 워커·리뷰어에는 Claude 훅이 걸리지 않는다. 그쪽은 `AGENTS.md` 의 규칙(owns 밖 커밋 금지, 리뷰어는 리뷰 파일만)과 리뷰 사전 검사·변조 검사로 막는다. Bash 로 하는 파일 수정(`sed -i` 등)은 훅이 막지 못한다(리뷰가 잡는다). Codex 고정 에이전트(6단계)도 같다.
@@ -2671,7 +2676,7 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
   - 메인이 hc 로 자식을 끝내거나 기다리면(hc skill 의 부모 동작) 워커가 끝나거나 메인이 묶인다. 메인 규칙은 hc 를 쓰라고 하지 않는다(7.7 의 11단계).
 - 12단계(실사용 대책) 한계:
   - 근본 원인은 Claude Code 의 한 번만 묻는 시작 질의다(1장 12단계 확인한 것). 대리 보고는 그 세션의 보고를 대신할 뿐 Claude 를 고치지 않는다. 상위(Claude Code)에 "시작 질의 실패 뒤 다시 묻기" 를 요청할 수 있다(16장).
-  - 대리 보고는 훅 사건이 있을 때만 쓴다. 판정 전(시작 뒤 5초와 첫 도구 호출·턴 끝 전)에는 상태가 없다. 한 턴 안의 긴 생각(도구 없이)은 그 턴 시작의 `working` 이 이어진다. 사용자가 Esc 로 턴을 끊으면 Stop 훅이 돌지 않을 수 있어 `working` 이 남는다(다음 사건이 고친다). 셸 터미널의 메인이 비정상으로 끝나면 `SessionEnd` 가 돌지 않아 옛 상태가 남는다(다음 세션이 판정 뒤 고친다).
+  - 대리 보고는 훅 사건과 시작 확인기(3초 뒤 한 번)가 있을 때만 쓴다. 판정 전(프로세스 시작 뒤 3초)에는 상태가 없다. 확인기가 돌지 못하면 첫 비-`UserPromptSubmit` 사건까지 늦어진다. 다시 확인(8.14 의 5)은 Stop 에서만 하므로, 늦게 스스로 보고를 시작한 세션은 그 턴 끝까지 두 쪽이 함께 쓴다. 한 턴 안의 긴 생각(도구 없이)은 그 턴 시작의 `working` 이 이어진다. 사용자가 Esc 로 턴을 끊으면 Stop 훅이 돌지 않을 수 있어 `working` 이 남는다(다음 사건이 고친다). 셸 터미널의 메인이 비정상으로 끝나면 `SessionEnd` 가 돌지 않아 옛 상태가 남는다(다음 세션이 판정 뒤 고친다).
   - 훅이 tty 에 쓰는 순간 Claude 가 화면을 쓰는 중이면 Claude 의 제어 순서 중간에 끼어 그 프레임 일부가 잠깐 깨질 수 있다(다음 그리기가 고친다). 대리 보고가 켜진 세션에서만 쓰고 한 사건에 짧은 쓰기 한 번이다. 실환경에서 본다(15.2).
   - 셸 터미널(메인)에서 앞 Claude 가 남긴 상태와 새 세션의 첫 보고가 같은 낱말이면 `status_ms` 가 바뀌지 않아 보고하는 세션을 대리 보고로 잘못 판정할 수 있다. 그러면 두 쪽이 함께 쓴다(같은 사건에 같은 낱말이라 대부분 해가 없다). 앞 Claude 가 정상으로 끝나면 `state=clear` 를 쓰므로 드물다.
   - 훅도 돌지 않는 세션(시작 확인 창, 훅 오류, 0.7.2 전에 뜬 세션)은 대리 보고가 없다. 워커는 지금의 `no_status` escalation(문구만 바꿈), 고정 에이전트는 맡은 태스크가 없을 때 인수인계 없이 닫힌다(5.9.9 의 2). 그 세션이 마지막 리셋 뒤 쌓은 대화는 다음 세션에 넘어가지 않는다.
@@ -2799,17 +2804,17 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
   - 되풀이 막기와 다시 띄우기(`tests/test_drive.py`·`test_setup.py`·`test_mainlink.py`·`test_autoup.py`): 다시 묶기로 끝난 뒤 watch 가 `orphaned`(starting 아님)를 내고, `up` 이 새 메인 아래(`--parent <메인>`) 관제를 띄우며, 새 관제는 parent 가 `main_terminal` 과 같아 끝나지 않는다(다시 띄우는 동안 메인이 바뀐 경합은 기존 `test_main_terminal_change_does_not_race_the_launch` 를 보강해 새 관제가 10분 뒤 다시 묶기 후보가 되는지 본다). 자동 부활은 다시 묶기로 끝난 관제를 REVIVED 로 띄운다(FAILED 가 아니다). 끝내기 직전 접수된 큐 요청은 `queued` 로 남아 다시 뜬 관제가 처리한다.
   - 고정 에이전트 다시 묶기(`tests/test_crew_reset.py`): clear 단계에서 작업 터미널 parent 가 M 과 다르고(null 포함) M 이 live·같은 space 면 `terminal-reset` 을 부르지 않고 `terminal-close`(`--abandon` 없음) 뒤 `terminal`·`terminal_argv`·`work_pane` 이 비고 로그 `new_terminal(parent_changed)` 이며 다음 태스크가 `--keep-open --tab … --parent <M>` 으로 새 세션을 띄우고 사양에 인수인계 줄이 든다. 같은 parent·`main_terminal` 없음·`hc get` 실패·M 이 live 아님·다른 space 면 지금처럼 `terminal-reset` 이다. 닫기 실패면 `rehome: "failed"`·`clear_error` 없음이고 그 뒤의 리셋 단계가 parent 를 보지 않고 `terminal-reset` 을 한다(틱 하나로 본다: 메일 확인이 처리한 worker_done 의 `terminal-close` 실패 → 같은 틱의 리셋 단계가 같은 터미널에 `terminal-reset`. 그것도 실패하면 지금의 닫기 세 번 규칙). `clear_error = "parent_changed"` 로 남은 채 관제가 다시 뜨면 닫기부터 한다. 리뷰 보기 pane 이 있으면 새 작업 pane 이 왼쪽에 온다(지금 배치 시험).
 - 12단계(실사용 대책. Herdr·Claude 를 부르지 않는다. 가짜 hc 는 herdr-orch `tests/fakes/hc` 이고 `get` 에 `status_ms`·`reported`·`created_ms`·`foreground.pid` 를 더한다. 가짜 hc 를 고쳐도 herdr-orch 버전은 그대로다. tty 는 시험이 만든 pty 쌍(`os.openpty`)의 slave 경로를 쓴다):
-  - 대리 보고 기록(`tests/test_hooks.py`): SessionStart 가 `foreground.pid` 가 훅의 조상일 때만 `state/relay/<터미널>.json`(`pid`·`tty`·`started_ms`·`decided: null`)을 쓴다. 같은 pid 면 그대로 두고(`/clear`), 다른 pid 면 새로 쓴다. 조상이 아니거나 hc 실패면 쓰지 않는다. Herdr 밖·herdr-team 프로젝트 밖이면 아무것도 하지 않는다.
-  - 판정(`tests/test_hooks.py`): 시작 뒤 5초 전, `UserPromptSubmit`·`PreToolUse` 에서는 판정하지 않는다. `PostToolUse`·`Stop` 등에서 `status_ms ≥ started_ms` 면 `off` 이고 그 뒤 아무것도 쓰지 않는다. null·앞이면 tty 가 있으면 `on`, 없으면 `no_tty`. hc 실패면 판정하지 않는다. `relay.log` 한 줄.
-  - 쓰기(`tests/test_hooks.py`, pty master 에서 읽는다): `on` 일 때 사건 표대로 정확한 바이트(`ESC]7501;state=working:app=claude-code BEL`, AskUserQuestion 의 `state=blocked:…:kind=question`, PermissionRequest 의 `kind=permission`, Stop 의 빈/빈 아닌 `background_tasks` 에 따라 `done`/`working`, StopFailure 의 `error`, SessionEnd 의 `state=clear`)를 한 번에 쓴다. `last` 가 working 이면 PostToolUse 는 쓰지 않는다. `off`·`no_tty` 는 아무것도 쓰지 않는다. 쓰기 실패(닫힌 slave)는 사건을 막지 않고 로그만 남긴다. 지금의 역할별 처리(메인 거부·평문 질문 막기 등)는 대리 보고와 함께 그대로 돈다(회귀).
-  - 백그라운드 기록(`tests/test_hooks.py`): Stop 이 역할과 상관없이 `state/agents/<터미널>.json` 에 `background` 를 쓴다(빈 목록 포함, description 80자).
-  - 메인 `no_tty` 알림(`tests/test_hooks.py`·`test_setup.py`): `no_tty` 인 메인의 Stop 이 한 번 막고(글에 `claude --resume`) `notified` 뒤에는 막지 않는다. `on` 이면 막지 않는다. 평문 질문·watch 글과 함께면 이 글이 맨 앞이다. `up` 의 `warnings` 에 `no_tty`·기록 없는 미보고 세션이면 `main_unreported` 가 들고, 그 밖에는 없다.
+  - 대리 보고 기록(`tests/test_hooks.py`): 어느 사건에서든 기록이 없거나 pid 가 다르면 `foreground.pid` 가 훅의 조상일 때만 `state/relay/<터미널>.json`(`pid`·`tty`·`started_ms`(프로세스 시작 시각)·`decided: null`·`pending: idle`)을 만든다. 같은 pid 면 그대로 둔다(`/clear`). 조상이 아니거나 hc 실패면 만들지 않고 다음 사건에 다시 만든다. SessionStart 가 확인기를 분리 실행한다(표준 입출력 없음). Herdr 밖·herdr-team 프로젝트 밖이면 아무것도 하지 않는다.
+  - 판정(`tests/test_hooks.py`): 시작 뒤 3초 전과 `UserPromptSubmit` 에서는 판정하지 않고 `pending` 만 고친다. 확인기와 그 뒤의 `PreToolUse`·`PostToolUse`·`Stop` 등에서 `status_ms ≥ started_ms` 면 `off`, null·앞이면 tty 가 있으면 `on`, 없으면 `no_tty`. `on` 으로 정한 자리에서 `pending`(첫 AskUserQuestion 이면 `blocked`·`question`)을 쓴다. hc 실패면 판정하지 않는다. 두 훅이 함께 판정해도(스레드 둘) 결과가 하나이고 `off` 로 덮이지 않는다(잠금). `relay.log` 한 줄.
+  - 쓰기(`tests/test_hooks.py`, pty master 에서 읽는다): `on` 일 때 사건 표대로 정확한 바이트(`ESC]7501;state=working:app=claude-code BEL`, AskUserQuestion 의 `kind=question`, PermissionRequest 의 `kind=permission`, 워커 Stop 의 빈/빈 아닌 `background_tasks` 에 따라 `done`/`working`, 메인 Stop 은 늘 `done`, StopFailure 의 `error`, 같은 pid 의 SessionStart(clear) 는 `working` 다음 `idle`, SessionEnd 의 `state=clear`)를 쓴다. `last` 가 working 이면 PostToolUse 는 쓰지 않는다. `off`·`no_tty`·`write_failed` 는 아무것도 쓰지 않는다. 쓰기 실패(닫힌 slave)는 사건을 막지 않고 `write_failures` 를 올리며 세 번째에 `write_failed`. 다시 확인: `on` 세션의 Stop 에서 가짜 hc 의 `status_ms` 가 마지막 쓰기보다 1초 넘게 뒤이고 상태가 다르면 `off` 로 바뀌고 쓰지 않는다. 지금의 역할별 처리(메인 거부·평문 질문 막기 등)는 대리 보고와 함께 그대로 돈다(회귀).
+  - 백그라운드 기록(`tests/test_hooks.py`): 메인이 아닌 Stop 이 `state/agents/<터미널>.json` 의 `stops` 끝에 `background` 를 더한다(빈 목록 포함, description 80자, 20개까지). 메인 Stop 은 쓰지 않는다.
+  - 메인 `no_tty` 알림(`tests/test_hooks.py`·`test_setup.py`): `no_tty`·`write_failed` 인 메인의 Stop 이 한 번 막고(글에 `claude --resume`) `notified` 뒤에는 막지 않는다. `on` 이면 막지 않는다. 평문 질문·watch 글과 함께면 이 글이 맨 앞이다. `up` 의 `warnings` 에 `no_tty`·`write_failed`·기록 없는 미보고 세션이면 `main_unreported` 가 들고, 그 밖에는 없다.
   - watch 규칙(`tests/test_hooks.py`): `.herdr-team/bin/hteam watch` 에 `run_in_background: true` 면 통과, 없거나 false 면 거부. `hteam watch &`, `cd x && hteam watch`, `hteam watch; echo` 는 거부. `hteam --root /x watch` 는 하위 명령 규칙대로. `hteam answer out-1 "watch …"` 는 통과. 워커의 같은 명령은 보지 않는다.
-  - 백그라운드 인식(`tests/test_drive_events.py`): 작업·리뷰 Dispatch 의 observed idle 에서 그 터미널 기록의 `at` 이 Dispatch 뒤이고 `background` 가 비지 않으면 done 요청·escalation·`--kill` 이 없고 `idle_nudged` 가 그대로이며 로그가 한 번이다. 기록이 비었거나 없거나 Dispatch 앞이면 지금처럼 센다. 인수인계 Dispatch 는 지금 그대로다.
+  - 백그라운드 인식(`tests/test_drive_events.py`): 작업·리뷰 Dispatch 의 observed idle 에서 그 메시지 `created_at` 이전이고 Dispatch 뒤인 마지막 Stop 기록의 `background` 가 비지 않으면 done 요청·escalation·`--kill` 이 없고 `idle_nudged` 가 그대로이며 로그가 한 번이다. 기록이 비었거나 없거나 Dispatch 앞이면 지금처럼 센다. 앞 턴(백그라운드 있음)의 idle 이 남은 채 다음 턴(빈 목록)의 기록이 더해져도 앞 idle 은 넘기고 뒤 idle 만 센다. 인수인계 Dispatch 는 지금 그대로다.
   - `no_status` 문구(`tests/test_drive.py`): Claude 작업자는 8.14 의 문구, Codex 작업자는 지금 문구다.
   - 대리 보고도 없는 고정 에이전트(`tests/test_crew.py`·`test_crew_reset.py`): 작업 터미널의 `created_ms` 이후 `status_ms` 가 없고 맡은 태스크가 없으면 `terminal-close` 뒤 터미널을 잊고 `reset_pending`·`since_reset` 을 지운다(인수인계 없음). 맡은 태스크가 있으면 두고 worker_done 뒤 닫는다. 이런 세션에 8.7 의 2 의 `보고 없음 60초` escalation 과 5.9.7 의 2 의 30분 대기가 없다. 닫기 세 번 실패면 decide 와 터미널 잊기.
   - 다시 묶기 앞당기기(`tests/test_crew_reset.py`·`test_drive.py`): 조건이 맞고 `since_reset ≥ 1` 이면 `reset_pending = true`·`rehome_main = M` 뒤 지금의 리셋이 `new_terminal(parent_changed)` 로 끝난다. `since_reset = 0` 이면 인수인계 없이 닫는다. 같은 M 으로 두 번 하지 않는다. 맡은 태스크·대기열·리셋 중·`reset_pending` 이면 하지 않는다. M 이 다른 space·finished 면 하지 않는다.
-  - `fix --after`(`tests/test_queue.py`·`test_drive.py`·`test_cli.py`): 메인 쪽 `unknown_task`·`usage`(같은 태스크, fix 밖의 명령)·`after_closed`(dropped). 선행이 done 이면 바로 실행(`after: already_done`). 미룸이면 요청 파일의 `after` 와 `.abandoned`, 출력 `status: deferred`. 관제가 선행이 pending·working·changes 인 동안 건너뛰고 뒤 요청을 실행한다. 선행이 done 이 된 틱에 실행하고 outbox `result` 를 쓴다. 선행 dropped 면 `after_failed` 결과. 그 사이 라운드가 바뀌면 `round_changed` 결과. `hteam cancel` 의 성공·`not_deferred`·`unknown_request`. 미룬 요청은 `queue.waiting()`(다시 묶기 한가함)에서 빠진다. 관제가 다시 떠도 미룬 요청이 이어진다. `status` 의 `deferred`.
+  - `fix --after`(`tests/test_queue.py`·`test_drive.py`·`test_cli.py`): 메인 쪽 `unknown_task`·`usage`(같은 태스크, fix 밖의 명령)·`after_closed`(dropped). 선행이 done 이면 바로 실행(`after: already_done`). 미룸이면 요청 파일의 `after` 와 `.abandoned`, 출력 `status: deferred`. 관제가 선행이 pending·working·changes 인 동안 건너뛰고 뒤 요청을 실행한다. 선행이 done 이 된 틱에 실행하고 outbox `result` 를 쓴다. 선행 dropped 면 `after_failed` 결과. 그 사이 라운드가 바뀌면 `round_changed` 결과. `hteam cancel` 의 성공·`not_deferred`·`unknown_request`. 미룬 요청이 있는 태스크를 재확인이 건드리지 않는다(`changes` 의 자동 fix 없음), 요청이 없어지면 다시 다룬다. 관제가 요청을 읽은 뒤 취소가 끼어도 실행하지 않는다(잠금 안 다시 읽기). 미룬 요청은 `queue.waiting()`(다시 묶기 한가함)에서 빠진다. 관제가 다시 떠도 미룬 요청이 이어진다. `status` 의 `deferred`.
   - watch idle(`tests/test_mainlink.py`): `HTEAM_REMIND_S` 를 줄여 열린 decide 가 그 시간을 넘기면 `status: idle` 과 `open` 으로 끝나고 `reminded.json` 에 id 가 든다. 다음 watch 는 같은 decide 로 끝나지 않는다. 답한 decide·ask·question·approval 은 보지 않는다. 열린 decide 가 없으면 끝나지 않는다(시간 상한으로 끊는 시험). 새 outbox 줄이 있으면 그것이 먼저다.
   - 훅 등록(`tests/test_hooks.py`): `hooks.json` 에 `PostToolUse`·`PostToolUseFailure`·`PermissionRequest`·`Elicitation`·`StopFailure`·`SessionEnd` 가 있고 모두 같은 훅 스크립트다. 빠른 길: `off` 세션의 PostToolUse 한 번이 hc 를 부르지 않는다. 지연은 계획에서 정한 상한 안이다.
   - 메인 규칙(메인 규칙 시험): `CLAUDE.section.md` 에 watch 줄의 잇지 않기·`idle` 처리, `--after` 줄, 미보고 escalation 기준, `no_tty` 알림 전하기 줄이 있다.
