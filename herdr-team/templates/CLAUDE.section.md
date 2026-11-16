@@ -18,6 +18,7 @@
   3. 경로 지정 커밋: `git add -- .herdr-team/tasks/T-xxx.md && git commit -m "spec: T-xxx" -- .herdr-team/tasks/T-xxx.md`. 경로 없는 커밋은 하지 않는다.
   4. `.herdr-team/bin/hteam start T-xxx`, 넘겼다고 한 줄로 알린다. 지금 시작할 수 없으면 `start` 가 `{"status": "waiting"}` 을 돌려주고 관제가 나중에 띄운다.
 - 사용자의 답·결정·행동(고르기, 확인, 로그인, 확인 창 승인 등)이 필요하면 언제나 AskUserQuestion 으로 묻는다(질문 하나, 선택지 2–4개, 추천 하나. 자유 답은 Other 로 받는다). 진행 보고 글에 질문이나 부탁을 섞지 않는다. 평문 질문은 턴을 끝내고, 뒤이은 관제 메시지가 메인을 다시 깨워 질문이 밀려 지나간다(어디에도 기록되지 않는다). AskUserQuestion 은 답할 때까지 화면에 남고 그동안 관제는 따로 돈다. 마지막 글에 질문·부탁이 있으면 Stop 훅이 한 번 막는다.
+- 사용자에게 보이는 글(진행 보고, 질문 앞 글)에서 줄글보다 표로 구분하기 좋은 데이터(여러 항목을 같은 기준으로 견주는 것, 항목마다 값·상태·결과가 있는 목록)는 마크다운 표로 쓴다. 표는 생각 블록이 아니라 답변 글에 둔다.
 - 진행 중 태스크에 범위를 더할 때: 사양에 "추가 범위" 를 커밋하고, working 이면 `.herdr-team/bin/hteam scope T-xxx "<내용>"`, pending 이면 커밋으로 끝난다.
 - 작업 공간 태스크가 기준 브랜치의 새 커밋(나중에 병합된 회귀 수정 등)을 받아야 하면 `.herdr-team/bin/hteam fix T-xxx --base-merge --note "<이유>"` 를 한다. 일하는 중이면 그 워커를 닫고 새 라운드가 병합부터 한다. 워커에게 병합·rebase 를 직접 지시하지 않는다(사전 검사가 기준에서 들어온 파일을 소유 경로 밖 변경으로 반려한다).
 - decide 를 처리하며 만든 태스크(회귀 수정, `[test]` 고치기, 증분 기획)도 같은 순서(task new → 채우기 → 커밋 → start)를 마친 뒤 decide 를 `hteam answer` 로 닫는다.
@@ -57,7 +58,7 @@ decide 에 적힌 `files` 만 읽고 `commands` 가운데 하나로 처리한다
 | `workspace_failed` | `detail.kind` 로 가른다. `setup_failed` 는 로그 끝을 보이고 사용자가 setup 이나 환경을 고친 뒤 `hteam start T-xxx`(decide 에 태스크가 없으면 마무리 전체 테스트다. `hteam start` 없이 닫으면 관제가 다시 돌린다). `slot_dirty` 는 그 슬롯의 `git status` 를 보이고, 사용자가 버려도 된다고 하면 `hteam slot reset <N>`. `branch_exists`·`base_moved`·`merge_blocked` 는 git 상태를 보이고 사용자에게 묻는다(메인 폴더를 기준 브랜치로 되돌리기, 남은 브랜치 지우기 등은 사용자가 정한다) |
 
 ### 질문 표시 규칙
-- `render.context` 를 답변 글로 그대로 쓴다(마크다운 그대로. 생각 블록에만 쓰면 사용자에게 보이지 않는다). 비었으면 쓰지 않는다. 짧은 표는 훅이 선택 창 미리보기에도 넣는다. 훅은 이 질문을 거부하지 않는다.
+- `render.context` 를 답변 글로 그대로 쓴다(마크다운 그대로. 표를 줄글로 풀거나 요약하지 않는다. 생각 블록에만 쓰면 사용자에게 보이지 않는다). 비었으면 쓰지 않는다. 짧은 표는 훅이 선택 창 미리보기에도 넣는다. 훅은 이 질문을 거부하지 않는다.
 - 같은 응답에서 이어서 `render` 그대로 AskUserQuestion 을 부른다: question 은 `render.question`, header 는 `render.header`, 선택지는 `render.options` 의 label·description 을 순서대로, `multiSelect: false`. 질문 하나만 묻는다. 턴을 끝내지 않는다(사용자의 다른 말을 기다리지 않는다).
 - 사용자가 고른 label 을, Other 로 쓴 글이면 그 글을 그대로 `hteam answer` 로 넘긴다. 질문을 바꾸거나 합치지 않는다. 여러 개가 오면 하나씩 묻는다.
 - `progress` 에 `stale_question` 이 있으면 그 일괄 승인 질문의 일부 태스크를 다른 수정 요청으로 다시 고친다는 뜻이다. 그 질문을 물을 때(이미 물었으면 지금) body 를 사용자에게 함께 알린다.

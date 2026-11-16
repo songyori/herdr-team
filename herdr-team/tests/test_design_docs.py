@@ -104,6 +104,12 @@ class DirectorDocTest(unittest.TestCase):
         self.assertIn("답만 있고 댓글 처리가 없는 질문", resume)
         self.assertIn("`previous_design_system_url: <옛 URL>`", section(self.text, "산출물"))
         self.assertIn("보드·시안·시스템 URL(각각 `<URL> (버전 N)`", section(self.text, "산출물"))
+        # 10단계 실환경 뒤 사용자 결정: 견주는 요약은 표로 쓴다(예시도 표다)
+        self.assertIn("줄글보다 마크다운 표로 쓴다", section(self.text, "사용자에게 묻기"))
+        tone = [json.loads(x) for x in HEREDOC.findall(self.text)][1]
+        self.assertIn("| 안 | 배경 | 글자 | 강조 | 모서리 |", tone["context"])
+        planner = (ROOT / "templates" / "roles" / "planner.md").read_text(encoding="utf-8")
+        self.assertIn("같은 기준으로 견주는 내용은 줄글보다 마크다운 표로 쓴다", planner)
 
     def test_planner_names_the_director_task(self):
         planner = (ROOT / "templates" / "roles" / "planner.md").read_text(encoding="utf-8")

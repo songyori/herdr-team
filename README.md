@@ -157,7 +157,7 @@ Run 소유자가 Claude·Codex 워커를 Herdr pane 으로 띄우고, SQLite 메
 
 - 메인: 사용자가 연 Claude 세션. 사용자 요청을 기획 태스크 사양으로 써서 커밋하고 `hteam start` 한다. 산출물을 만들지 않고 `horch`·`hteam drive` 를 직접 부르지 않는다(훅이 막는다). `hteam watch` 를 늘 하나 띄워 두고, 관제가 올린 decide 를 `CLAUDE.md` 의 판단 기준대로 처리한 뒤 `hteam answer` 로 닫는다.
   - 메인은 사용자에게 언제나 선택 창(AskUserQuestion)으로 묻는다. 평문 질문은 Stop 훅이 한 번 막는다.
-  - 관제·기획자·디렉터 질문의 표(`render.context`)는 메인이 질문 전에 답변 글로 그린다. 짧은 표(접어서 15줄 이하)는 훅이 선택 창 오른쪽 미리보기에도 넣는다. 훅은 질문을 거부하지 않는다.
+  - 관제·기획자·디렉터 질문의 표(`render.context`)는 메인이 질문 전에 답변 글로 그린다. 짧은 표(접어서 15줄 이하)는 훅이 선택 창 오른쪽 미리보기에도 넣는다. 훅은 질문을 거부하지 않는다. 메인은 줄글보다 표로 구분하기 좋은 데이터를 표로 쓴다. 긴 표가 화면에 없으면(모델이 생각 블록에만 두는 일이 있다) 메인에게 "표 보여 줘" 라고 한다.
   - 작업 공간 태스크가 기준의 새 커밋을 받아야 하면 `hteam fix T-xxx --base-merge` 로 기준 병합 라운드를 연다(메인에 부탁한다).
 - 관제(`hteam drive`): 관제 탭(`herdr-team 관제`)에서 도는 Python 프로그램(Claude 가 아니다). horch Run 을 갖고 디스패치, 리뷰, accept·fix, 묶음 후속, 마무리, 디자인 보강, 세션 리셋, 복구를 정해진 절차로 돌린다. 판단이 필요한 일(워커 질문, 실패, 최대 라운드, 회귀의 원인 등)만 outbox `decide` 로 메인에 올린다. 기록은 `.herdr-team/state/drive/drive.log`.
 - 요청 큐: horch 를 건드리는 메인 명령(`start`, `start-ready`, `fix`, `accept`, `drop`, `review --retry`, `design-decide`, `scope`, `agent reset`, `test-confirm`, `slot reset`)은 파일 큐(`.herdr-team/state/drive/queue/`)로 관제에 넘어간다. 관제가 90초 안에 실행하면 그 결과를, 아니면 `status: queued` 를 돌려주고 결과는 watch 의 `result` 로 온다. 관제가 꺼져 있으면 큐에 넣지 않고 `drive_down` 으로 거부한다.
@@ -299,8 +299,9 @@ herdr-orch 는 그대로(0.3.0)다. 디자인 아티팩트에 올린 파일을 �
 1. 플러그인을 올린다(`claude plugin marketplace update herdr-team`, `claude plugin update herdr-team@herdr-team`).
 2. 프로젝트 루트에서 `.herdr-team/bin/hteam upgrade` 를 실행한다.
    - 직무 문서(`.herdr-team/roles/director.md`·`designer.md`·`developer.md`)가 `updated` 에 나온다. init 때 지운 직무 문서가 `created` 에 있으면 지운다.
-   - `manual` 에 `CLAUDE.md` 가 나온다. `<!-- herdr-team -->` 절을 `herdr-team/templates/CLAUDE.section.md` 와 견줘 고친다. 바뀐 곳은 둘이다.
-     - 질문 표시 규칙의 첫 두 줄: `render.context` 를 답변 글로 먼저 쓰고, 같은 응답에서 이어서 AskUserQuestion 을 부른다.
+   - `manual` 에 `CLAUDE.md` 가 나온다. `<!-- herdr-team -->` 절을 `herdr-team/templates/CLAUDE.section.md` 와 견줘 고친다. 바뀐 곳은 셋이다.
+     - 메인 규칙의 새 줄: 줄글보다 표로 구분하기 좋은 데이터는 마크다운 표로 답변 글에 쓴다.
+     - 질문 표시 규칙의 첫 두 줄: `render.context` 를 답변 글로 먼저 쓰고(표를 줄글로 풀지 않는다), 같은 응답에서 이어서 AskUserQuestion 을 부른다.
      - 일괄 승인 줄 뒤의 새 줄: 답이 아티팩트 댓글을 가리키면 메인이 댓글을 읽어 고칠 태스크를 고르고 댓글 글을 요청에 담는다.
    - 바꾼 파일을 경로를 지정해 커밋한다(`git add -- <경로> && git commit -m "chore: herdr-team 0.7.0" -- <경로>`).
 3. 지금 메인 세션을 끝낸다(`/exit`).

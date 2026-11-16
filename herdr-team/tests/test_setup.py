@@ -400,13 +400,17 @@ class TemplateContractTest(unittest.TestCase):
         # 설계 7.7·7.4a 10단계: 메인이 표를 답변 글로 먼저 쓰고 같은 응답에서 묻는다. 짧은 표는 훅이 미리보기에도 넣는다.
         # 질문 보기 pane 은 없다. 8단계에 뺀 거부(보일 때까지 막기)는 돌아오지 않는다
         main = (ROOT / "templates/CLAUDE.section.md").read_text(encoding="utf-8")
-        context = ("- `render.context` 를 답변 글로 그대로 쓴다(마크다운 그대로. 생각 블록에만 쓰면 사용자에게 보이지 않는다). "
+        context = ("- `render.context` 를 답변 글로 그대로 쓴다(마크다운 그대로. 표를 줄글로 풀거나 요약하지 않는다. 생각 블록에만 쓰면 "
+                   "사용자에게 보이지 않는다). "
                    "비었으면 쓰지 않는다. 짧은 표는 훅이 선택 창 미리보기에도 넣는다. 훅은 이 질문을 거부하지 않는다.")
         ask = ("- 같은 응답에서 이어서 `render` 그대로 AskUserQuestion 을 부른다: question 은 `render.question`, header 는 "
                "`render.header`, 선택지는 `render.options` 의 label·description 을 순서대로, `multiSelect: false`. 질문 하나만 "
                "묻는다. 턴을 끝내지 않는다(사용자의 다른 말을 기다리지 않는다).")
         self.assertIn(context + "\n" + ask + "\n", main)
         self.assertNotIn("질문 보기", main)
+        # 10단계 실환경 뒤 사용자 결정(2026-11-16): 메인이 표를 생각 블록에만 두거나 줄글로 요약했다. 표로 쓰라는 지침을 둔다
+        self.assertIn("- 사용자에게 보이는 글(진행 보고, 질문 앞 글)에서 줄글보다 표로 구분하기 좋은 데이터(여러 항목을 같은 기준으로 "
+                      "견주는 것, 항목마다 값·상태·결과가 있는 목록)는 마크다운 표로 쓴다. 표는 생각 블록이 아니라 답변 글에 둔다.", main)
         self.assertNotIn("훅이 보일 때까지 그 질문을 거부한다", main)
         hook = (ROOT / "hooks/hteam_hook.py").read_text(encoding="utf-8")
         for gone in ("context-denied", "CONTEXT_DENY_MAX", "먼저 보여 줄 `render.context` 가 있다", "question-view", "LONG_NOTE"):
