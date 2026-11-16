@@ -417,9 +417,9 @@ def watch(p, main: str | None = None) -> dict:
     fh = _lock_watch(p)
     handed = False
     try:
+        write_json(p.watch_pid, procs.me())  # run.lock 을 기다리기 전에 쓴다(그동안에도 Stop 훅의 watch_alive 가 참이다)
         if main:
             set_main_terminal(p, main)  # 잠금 순서: watch 잠금 → run.lock
-        write_json(p.watch_pid, procs.me())
         poll, every = env_float("HTEAM_POLL", 2.0), env_float("HTEAM_ORPHAN_CHECK", 10.0)
         last = 0.0
         while True:

@@ -19,6 +19,9 @@
 - 모르는 pane 이면 {"error": "no pane \"<id>\""} 와 exit 1(실제 꼴, 2026-11-11). 그 밖의 명령은 exit 2.
 - 실제와 다른 점(2026-11-11 실환경): 실제는 프로그램이 끝난 split pane 이 저절로 닫히고(터미널은 finished 로 남는다)
   결과 JSON 을 여러 줄로 쓴다. 가짜는 pane.close 를 받을 때까지 layout 에 남기고 한 줄로 쓴다(해석은 같다).
+  hc parent 도 흉내 내지 않는다(sub_agents 는 늘 빈 목록). 실제는 parent 가 있는 터미널을 부모 항목의 sub_agents 에
+  넣고, pane 이 있는 자식은 자기 탭 terminals 에도 그대로 나온다(2026-11-16 실험, 설계 1장 11단계 확인한 것). 그래서
+  pane_of 는 탭의 terminals 만 본다.
 """
 import fcntl
 import json

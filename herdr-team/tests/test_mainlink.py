@@ -10,6 +10,7 @@ from tests.helpers import DRIVE, MAIN, TeamCase
 from hteam import outbox, roles, state, testgate
 from hteam.errors import HteamError
 from hteam.paths import Project
+from hteam.util import flock
 
 
 def render(**kw):
@@ -792,6 +793,17 @@ class WatchMainTerminalTest(LinkCase):
         code, out = self.hteam("watch", as_=None, terminal="t2", timeout=10)  # 이미 다른 watch 가 돈다
         self.assertEqual((code, out["error"]["code"]), (3, "watch_running"), out)
         self.assertEqual(self.run_json()["main_terminal"], MAIN)
+        self.progress("하나")
+        self.assertEqual(self.finish(proc, timeout=10)[0], 0)
+
+    def test_watch_pid_is_written_before_waiting_for_run_lock(self):
+        # watch.pid 는 main_terminal 을 쓰려고 run.lock 을 기다리기 전에 쓴다. 관제가 run.lock 을 쥔 동안에도 Stop 훅의
+        # watch_alive 가 참이다(브랜치 최종 리뷰: 순서가 거꾸로면 그 사이 Stop 훅이 헛 경고를 낸다)
+        with flock(self.p.run_lock):
+            proc = self.hteam_bg("watch", as_="main")
+            self.wait_until(lambda: (self.state_dir / "watch.pid").exists(), "run.lock 을 기다리는 watch 도 watch.pid 를 쓴다")
+            self.assertNotIn("main_terminal", self.run_json())
+        self.wait_until(lambda: self.run_json().get("main_terminal") == MAIN, "run.lock 이 풀리면 main_terminal 을 쓴다")
         self.progress("하나")
         self.assertEqual(self.finish(proc, timeout=10)[0], 0)
 
