@@ -338,7 +338,7 @@ hteam 이 hc·herdr-app 을 직접 부르는 곳은 `lib/hteam/herdr.py` 한 모
 
 11단계는 herdr-orch 0.4.0 의 `worker-start --parent`(herdr-orch 설계 15장)를 쓴다. `HORCH_MIN`(`lib/hteam/horch.py`, 지금 0.3.0)을 0.4.0 으로 올린다(3.1 의 버전 고르기가 낮은 설치를 뺀다). 옛 horch 가 `--parent` 를 usage 로 거부할 때 `--parent` 없이 다시 부르는 길은 두지 않는다(버전을 올리는 쪽이 단순하다). hteam 이 직접 부르는 hc 에서는 관제 실행에 parent 를 주고(9.3), 리뷰 보기 pane 을 `pane.split` 대신 `hc run` 으로 띄운다(6.5).
 
-12단계는 herdr-orch 0.5.0 의 Claude 상태 대리 보고와 백그라운드 인식(herdr-orch 설계 16장)을 쓴다. `HORCH_MIN` 을 0.5.0 으로 올린다. horch 가 하는 것: Claude 훅(대상은 `HORCH_HOME` 이 있는 워커와 `HORCH_RELAY_HOME` 이 있는 옵트인 메인), launch-guard 의 `HORCH_HOME`, `observe_one` 의 idle 넘기기와 observed `relay_failed`, `worker-list` attention `relay_failed`, `horch relay-status`. hteam 이 하는 것: 메인 옵트인 env 쓰기와 다시 열기 안내, 메인 알림, `up` 의 `main_unreported`, `relay_failed` 처리, 옛 고정 에이전트 세션 바꾸기(8.14, 5.9.9 의 4). hteam 은 대리 보고 기록을 직접 읽지 않고 `horch relay-status` 로 읽는다.
+12단계는 herdr-orch 0.5.0 의 Claude 상태 대리 보고와 백그라운드 인식(herdr-orch 설계 16장)을 쓴다. `HORCH_MIN` 을 0.5.0 으로 올린다. horch 가 하는 것: Claude 훅(대상은 `HORCH_HOME` 이 있는 워커와 `HORCH_RELAY_HOME` 이 있는 옵트인 메인), launch-guard 의 `HORCH_HOME`, `observe_one` 의 idle 넘기기와 observed `relay_failed`, `worker-list` attention `relay_failed`, `horch relay-status`. hteam 이 하는 것: 메인 옵트인 env 쓰기와 다시 열기 안내, 메인 알림, `up` 의 `main_unreported`, `relay_failed` 처리, 옛 고정 에이전트 세션 바꾸기(8.14, 5.9.9 의 4). hteam 은 대리 보고 기록을 직접 읽지 않고 `horch relay-status` 로 읽는다. `HORCH_MIN` 은 지금 설치 목록에서 고를 때만 보므로, `HERDR_ORCH_BIN`·형제 경로로 고른 horch 도 버전(`horch --version`, 같은 플러그인의 `plugin.json`)을 읽어 0.5.0 아래면 exit 12 로 멈추게 한다. 그래야 0.4.0 horch 로 새 세션에 `relay_ready` 를 적지 않는다(Codex 설계 리뷰 r2).
 
 ### 3.4 대상 프로젝트 파일
 
@@ -2080,7 +2080,7 @@ Claude Code 는 시작 때 한 번 Herdr 에 상태 보고를 할 수 있는지 
 2. 메인 옵트인 env: 메인은 horch 워커가 아니므로 `HORCH_RELAY_HOME` 으로 옵트인한다. init(scaffold, 9.1)과 `up`(9.3)이 프로젝트 `.claude/settings.local.json` 의 `env.HORCH_RELAY_HOME` 을 `<프로젝트 루트 절대 경로>/.herdr-team/state/horch` 로 쓴다(hteam 이 horch 를 부르는 `--home` 과 같다).
    - 없거나 값이 다를 때만 쓴다. 다른 키는 그대로 두고 JSON 을 합친다(최상위 `env` 객체의 이 키 하나만 바꾼다). 파일이 없으면 `{"env": {"HORCH_RELAY_HOME": "…"}}` 로 만든다. 임시 파일과 rename 으로 쓴다.
    - 읽지 못하는 JSON 이거나 최상위·`env` 가 객체가 아니면 고치지 않고 경고 `relay_env_unreadable`(`.claude/settings.local.json 을 읽지 못해 메인 대리 보고 설정(HORCH_RELAY_HOME)을 쓰지 않았다. 파일을 고친 뒤 /herdr-team:up 을 다시 한다`)를 낸다. 쓰기가 실패해도 같은 경고다. init·`up` 의 다른 일은 계속한다.
-   - `.gitignore` 에 `.claude/settings.local.json` 줄이 없으면 더한다(개인 절대 경로가 커밋되지 않게. 덧붙이기만 한다).
+   - `.gitignore` 에 `.claude/settings.local.json` 줄이 없으면 더한다(개인 절대 경로가 커밋되지 않게. 덧붙이기만 한다). 그 파일을 git 이 이미 추적하고 있으면(`git ls-files --error-unmatch`) ignore 줄로 막히지 않으므로 쓰지 않고 경고 `relay_env_tracked`(`.claude/settings.local.json 이 git 에 들어 있어 메인 대리 보고 설정(HORCH_RELAY_HOME, 개인 절대 경로)을 쓰지 않았다. 파일을 git 에서 빼거나(git rm --cached) 직접 넣는다`)를 낸다(Codex 설계 리뷰 r2).
    - 다시 열기 안내는 쓰기 시점이 아니라 상태로 판정한다(Codex 설계 리뷰 r1 의 4. 자동 부활의 `up` 이 먼저 쓰면 그 출력은 `auto-up.log` 로만 가고, 그 뒤 수동 `up` 은 값이 같아 쓰지 않는다). 판정: 그 파일의 `env.HORCH_RELAY_HOME` 이 이 프로젝트의 홈인데, 이 세션의 환경(`up` 과 훅은 메인 Claude 의 환경을 물려받는다)에 `HORCH_RELAY_HOME` 이 없거나 값이 다르다.
      - `up` 결과: 이 판정이면 `warnings` 에 `relay_env_new`(`메인 대리 보고 설정(.claude/settings.local.json 의 HORCH_RELAY_HOME)이 이 세션에 아직 없다. 설정은 세션을 시작할 때 읽히므로 메인을 다시 열어야 켜진다: 일이 덜 몰린 때 /exit 뒤 같은 터미널에서 claude --resume`)를 넣는다. 방금 쓴 경우도 같은 판정으로 든다. `/herdr-team:up` 스킬은 이 경고를 사용자에게 그대로 전한다.
      - 메인 훅: SessionStart·UserPromptSubmit 이 메인이고 `setup-mode` 가 아니면 같은 판정을 해, 걸리면 세션마다 한 번 `additionalContext` 로 같은 안내를 넣는다("사용자에게 알린다" 를 붙인다, 9.4). 그래서 자동 부활이 env 를 쓴 뒤 다음 프롬프트에서 메인이 알게 된다. 한 번은 `state/sessions/` 의 그 세션 표시로 센다.
