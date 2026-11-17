@@ -68,7 +68,7 @@ p13b 가 만들고 Task 7 의 측정 스크립트가 부르는 것(이 계획에
 ```python
 # herdr-team/lib/hteam/palette.py (p13b)
 def deal(seed: str, brand_hue: float | None = None) -> dict   # 설계 11.10 의 출력 JSON 과 같은 dict
-# herdr-team/lib/hteam/data/overused.json (p13b): {"colors": [{"hex", "name"}], "tailwind_ramp": ["#…"], "fonts": ["…"]}
+# herdr-team/lib/hteam/data/overused.json (p13b): {"colors": [{"hex", "name"}], "tailwind_ramp": ["#…"], "fonts_ko": ["…"], "fonts_latin": ["…"]}  (Task 7 리뷰에서 fonts 를 둘로 나눴다, 설계 11.10)
 # herdr-team/templates/palette.md, fonts-ko.md (p13b)
 ```
 
