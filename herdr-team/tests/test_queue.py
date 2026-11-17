@@ -634,6 +634,21 @@ class AfterTest(QueueCase):
         self.assertEqual(self.requests(), ["000002", "000003"])
         self.assertEqual(queue.held_tasks(self.p), set())
 
+    def test_start_ready_skips_a_task_with_a_deferred_fix(self):
+        # Codex 커밋 리뷰 50686e0: launch_failed 태스크에 미룬 fix 가 있으면 start-ready 도 옛 사양으로 띄우지 않는다
+        self.failed_work()
+        self.pending("T-002")
+        self.defer("T-001", "--note=다시", "--after", "T-002")
+        self.move("T-001", "launch_failed")
+        code, out = self.hteam("start-ready")
+        self.assertEqual(code, 0, out)
+        self.assertEqual([w for w in out["waiting"] if w["task"] == "T-001"][0]["reason"], "deferred_fix", out)
+        self.assertNotIn("T-001", [s["task"] for s in out["started"]])
+        self.assertEqual(self.task_state("T-001")["status"], "launch_failed")
+        queue.cancel(self.p, "q-000001")  # 미룬 fix 가 없어지면 보통대로 띄운다
+        code, out = self.hteam("start-ready")
+        self.assertIn("T-001", [s["task"] for s in out["started"]], out)
+
     def test_cancel_after_the_drive_read_the_request_wins(self):
         # 관제가 잠금 없이 요청을 읽은 뒤 취소가 끼어도 실행하지 않는다(잠금 안에서 다시 읽는다, Codex 설계 리뷰 r1)
         self.failed_work()

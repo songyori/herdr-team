@@ -644,6 +644,7 @@ def start_ready(p) -> dict:
     started, waiting, failed = [], [], []
     graph = None  # dropped 선행을 볼 때 만든다
     order = plan.order(p)
+    held = queue.held_tasks(p)  # 미룬 fix 의 대상(Codex 커밋 리뷰 50686e0): 그 fix 가 실행될 때까지 옛 사양으로 띄우지 않는다
     for tid in state.unreadable_ids(p):  # plan.order 는 읽히는 상태만 본다. 손상된 상태 파일도 실패로 알린다
         if tid not in order:
             failed.append({"task": tid, "error": _unreadable(p, [tid]).to_json()["error"]})
@@ -651,6 +652,9 @@ def start_ready(p) -> dict:
         try:
             st = state.load(p, tid)
             if not st or st["status"] not in ("pending", "launch_failed"):
+                continue
+            if tid in held:
+                waiting.append({"task": tid, "reason": "deferred_fix", "detail": "미룬 fix 가 실행될 때까지 기다린다"})
                 continue
             oid = outbox.open_decide(p, st)  # 메인이 답하지 않은 지금 라운드의 decide 가 있으면 띄우지 않는다(설계 5.4)
             if oid:
