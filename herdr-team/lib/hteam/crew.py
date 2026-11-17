@@ -748,10 +748,12 @@ def begin_reset(d, cfg, name: str) -> None:
     if verdict == "gone":
         return _skip(d, name)
     w = word(info) if verdict == "live" else None
-    if verdict == "live" and (_silent(info) or (w in READY and _write_failed(p, e["terminal"]))):
+    if (verdict == "live" and e["agent"] == "claude"
+            and (_silent(info) or (w in READY and _write_failed(p, e["terminal"])))):
         # 12단계(5.9.9 의 2): 대리 보고도 없는 세션에는 인수인계를 넣을 수 없다. 30분 대기 없이 두면 맡은 일이 없으니 재확인의
         # 터미널 확인이 인수인계 없이 닫는다. 쓰기 실패는 넣기 직전(idle·done)에만 relay-status 로 본다(틱마다 horch 를
-        # 부르지 않게. 일하는 중으로 남은 쓰기 실패 세션도 재확인이 닫는다)
+        # 부르지 않게. 일하는 중으로 남은 쓰기 실패 세션도 재확인이 닫는다). Claude 만이다: 재확인은 Codex 를 닫지 않으니
+        # (unreported) Codex 는 아래의 확인 불가 대기로 간다(Codex 브랜치 리뷰)
         if e["reset_busy_since"] or e["reset_unknown_since"]:
             _set(p, name, reset_busy_since=None, reset_unknown_since=None)
         return None

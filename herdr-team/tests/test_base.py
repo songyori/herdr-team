@@ -51,6 +51,33 @@ class UtilTest(unittest.TestCase):
             self.assertEqual(util.read_json(Path(d) / "none.json", 7), 7)
             self.assertEqual([p.name for p in path.parent.iterdir()], ["b.json"])
 
+    def test_write_atomic_mode_is_set_before_content(self):
+        """mode 를 주면 임시 파일을 처음부터 제한된 권한으로 만든다(Codex 브랜치 리뷰): umask 022 에서도 비밀이 든 내용이
+        0644 임시 파일에 먼저 쓰이지 않는다."""
+        with __import__("tempfile").TemporaryDirectory() as d:
+            path = Path(d) / "s.json"
+            path.write_text("old\n")
+            os.chmod(path, 0o600)
+            seen = []
+            real_open = os.open
+
+            def spy(name, flags, *args, **kwargs):
+                fd = real_open(name, flags, *args, **kwargs)
+                st = os.fstat(fd)
+                seen.append((Path(name).name, st.st_mode & 0o777, st.st_size))
+                return fd
+
+            old_umask = os.umask(0o022)
+            try:
+                with mock.patch("hteam.util.os.open", side_effect=spy):
+                    util.write_atomic(path, '{"SECRET": "x"}\n', mode=0o600)
+            finally:
+                os.umask(old_umask)
+            tmp = [s for s in seen if s[0].startswith(".s.json.")]
+            self.assertEqual([s[1:] for s in tmp], [(0o600, 0)], seen)
+            self.assertEqual((path.read_text(), path.stat().st_mode & 0o777), ('{"SECRET": "x"}\n', 0o600))
+            self.assertEqual([p.name for p in Path(d).iterdir()], ["s.json"])
+
     def test_flock_serializes(self):
         with __import__("tempfile").TemporaryDirectory() as d:
             lock = Path(d) / "lock"

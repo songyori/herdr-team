@@ -50,13 +50,18 @@ def local_age(stamp) -> float | None:
 
 def write_atomic(path: Path, text: str, *, mode: int | None = None) -> None:
     """임시 파일에 쓴 뒤 os.replace 한다. 읽는 쪽은 잠금 없이도 완전한 파일만 본다.
-    mode 를 주면 바꿔치기 전에 임시 파일에 chmod 한다(기존 파일의 권한을 지키려는 쪽이 쓴다)."""
+    mode 를 주면 임시 파일을 0600 으로 만들고 내용을 쓰기 전에 그 권한으로 바꾼다(기존 파일의 권한을 지키려는 쪽이 쓴다.
+    비밀이 든 내용이 umask 의 넓은 권한 파일에 먼저 쓰이지 않는다)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
-        tmp.write_text(text, encoding="utf-8")
-        if mode is not None:
-            os.chmod(tmp, mode)
+        if mode is None:
+            tmp.write_text(text, encoding="utf-8")
+        else:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                os.fchmod(f.fileno(), mode)  # 남은 같은 이름 임시 파일이 있었어도 쓰기 전에 권한을 맞춘다
+                f.write(text)
         os.replace(tmp, path)
     except BaseException:  # 디스크가 차는 등 쓰다 실패하면 임시 파일을 남기지 않는다
         tmp.unlink(missing_ok=True)

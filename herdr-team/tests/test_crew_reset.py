@@ -1044,6 +1044,24 @@ class QuietResetTest(ResetCase):
         self.assertEqual(self.decides(), [])
         self.assertFalse(any("리셋 시작" in x for x in self.log_lines()), self.log_lines())
 
+    def test_codex_unreported_session_keeps_the_unknown_wait(self):
+        """Codex 고정 에이전트는 보고 없는 세션의 단축 경로를 타지 않는다(unreported 와 같다, Codex 브랜치 리뷰). 재확인이
+        닫지 않으니 단축하면 reset_pending 이 영구히 남는다. 지금처럼 확인 불가로 30분을 기다린 뒤 리셋을 취소한다."""
+        self.set_entry(agent="codex")
+        self.mark()
+        self.update_terminal(self.t, status=None, status_ms=None, created_ms=int(time.time() * 1000) - 1000)
+        with mock.patch("hteam.herdr.relay_status", return_value=None) as relay_status:
+            self.step()
+            self.assertTrue(self.entry()["reset_unknown_since"])
+            self.set_entry(reset_unknown_since=ago(31 * 60 + 5))
+            self.step()
+        self.assertEqual(relay_status.call_count, 0)
+        e = self.entry()
+        self.assertEqual((e["reset_pending"], e["resetting"], e["terminal"]), (False, None, self.t))
+        d = self.decides()
+        self.assertEqual(len(d), 1, d)
+        self.assertTrue(d[0]["summary"].startswith("production 에이전트의 작업 터미널 상태를 31분 넘게 알 수 없어"), d[0])
+
     def test_write_failed_ready_session_gets_no_handoff(self):
         self.mark()
         with relay_failed_on(self.t):
