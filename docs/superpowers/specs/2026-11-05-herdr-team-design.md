@@ -1911,7 +1911,7 @@ accept 뒤(`accepted`, 관제 판정 경로와 큐 accept 모두):
 
 - `settled` 면 worker_done 을 놓친 것이다 → 8.6 의 worker_done 처리(outcome 대로).
 - `retained` 이거나, 이 라운드에 끝나지 않은 리뷰 시도 기록이 있으면(6.1 6 이 쓰고 `reviewing` 전이 전) 리뷰가 retain 한 뒤 관문 도중이나 리뷰어를 띄우는 도중에 리뷰 자식이나 관제가 죽은 것이다(작업 완료 메시지는 이미 ack 됐다). 8.8 대로 살아 있는 리뷰 실행자를 먼저 확인하고, 없으면 `hteam review T` 자식으로 이어 간다(retain 은 그대로 되고, 시도 기록이 있으면 6.1 0 의 복구가 저장된 입력으로 잇는다).
-- `active` 이고 판정 `live` → 둔다(생존 모름 표시가 있으면 지운다). `attention` 이 `no_status` 이고 1분이 넘었으면 decide escalation 한 번(8.6). 12단계: 문구는 8.14 의 것이다(Claude 작업자).
+- `active` 이고 판정 `live` → 둔다(생존 모름 표시가 있으면 지운다). `attention` 이 `no_status` 이고 1분이 넘었으면 decide escalation 한 번(8.6). 12단계: 문구는 8.14 의 것이다(Claude 작업자). 열린 decide 나 리뷰 자식이 있는 태스크는 알리지 않되 그 Dispatch 의 알림 기록(`attention.json` 의 reported·since·ok)은 남겨, decide 를 닫은 뒤 같은 `no_status` escalation 을 다시 올리지 않는다(comment-browser 실사용 보고(2026-11-17), 0.7.1 은 기록을 지워 다시 올렸다).
 - `active` 이고 판정 `exited`·`lost` → 8.6 의 exited·lost 처리.
 - 판정 `unverifiable` → 생존 모름: 처음 본 시각을 적고 30분 넘게 이어지면 decide escalation 한 번 `작업자 생존을 <분>분 넘게 확인하지 못했다(<상태>). 끝났는지 알 수 없어 그대로 둔다. 작업자 탭이 멈췄으면 다시 보내거나 중단한다`(commands `hteam fix T --force --note "<지시>"`, `hteam drop T --force`). 작업자를 죽이지 않는다.
 - 쉬는 고정 에이전트(맡은 태스크 없음)는 이 확인을 하지 않는다(2 의 터미널 확인만. orca §17: 8시간 동안 거짓 escalation 이 없었다).
@@ -2645,7 +2645,6 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
 - 보강 기록(`supplement.json`)을 쓴 뒤 UI 기반 처리를 마치기 전에 관제가 죽거나 그 처리가 실패하면 다시 돌지 않는다. 보강 의존 추가·토큰 갱신 태스크가 빠지고 `start-ready` 가 옛 토큰으로 UI 기반·화면 구현 태스크를 시작할 수 있다(11장, Codex 커밋 리뷰 f7a2216, 기록만).
 - 바뀐 파일 경로에 UTF-8 이 아닌 바이트가 있으면 done 본문을 outbox 에 쓰지 못해 완료 보고와 `reported` 가 남지 않는다(8.4 의 7, Codex 커밋 리뷰 f7a2216, 기록만).
 - 끝나지 않은 일괄 승인 결정(11.4)이 고치는 태스크나 그 의존 태스크가 그 사이 `approved` 가 되면, 관제의 accept(review-finish 판정 경로와 재확인)가 `decision_pending` 을 받는다. 관제는 그것을 "관제 절차 실패" escalation 으로 올린다. 결정 이어 하기가 그 태스크를 새 라운드로 열면 그 decide 는 지난 것이 되지만, 메인은 쓸데없는 decide 를 하나 닫아야 한다(8.5, 8.7, 최종 리뷰, 기록만).
-- 재확인의 `no_status` 확인은 열린 decide 나 리뷰 자식이 있는 태스크를 빼고 본다. 그동안 그 Dispatch 의 알림 기록(`attention.json`)이 지워진다. 그래서 메인이 `no_status` decide 를 닫은 뒤에도 워커가 여전히 상태를 보고하지 않으면, 다음 재확인이 같은 Dispatch 로 decide 를 다시 올린다(8.7, 8.10, 최종 리뷰, 기록만).
 - 관제는 heartbeat 를 틱 시작, 자식 처리 뒤, 큐 요청마다, 재확인의 태스크마다, Run 연결 앞과 재시도 앞뒤에만 쓴다. `start-ready` 의 띄우기 사이, 결정 적용의 단계 사이, 리셋 단계 사이에는 쓰지 않는다. hc·horch 가 느려 한 단계가 120초를 넘기면 그동안 메인 큐 명령이 `drive_hung` 으로 거부되고 훅이 HUNG 을 알린다(8.2. 8.2 의 heartbeat 목록도 이에 맞춘다. 최종 리뷰, 기록만).
 - 고정 에이전트에 넣기가 일시 거부(`transient`)된 뒤 같은 라운드 복구가 다른 오류로 실패해도 일시 거부 표시가 남는다. start-ready 는 그 태스크를 `agent` 대기로 보고 계속 다시 넣고, 재확인은 launch_failed decide 를 올리지 않는다(5.9.3, 8.7, 최종 리뷰, 기록만).
 - 고정 에이전트 태스크의 리뷰 관문이 도는 동안(상태 `working`) 메인이 fix 를 낼 수 있다. 에이전트가 다른 태스크로 바쁘면 그 fix 는 대기열(`queued_fix`)에 들어간다. 리뷰가 승인되면 accept 가 그 대기 수정을 지워 메인 지시가 사라진다. 임시 워커 태스크는 `review_busy` 뒤 `bad_state` 로 알린다(5.9.5, 5.9.6, 최종 리뷰, 기록만).

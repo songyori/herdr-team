@@ -194,5 +194,46 @@ class StatusTest(CoordCase):
         self.assertIn("max_rounds", task["hint"])
 
 
+class AttentionHeldTest(CoordCase):
+    """attention 의 held(설계 8.2): 열린 decide·리뷰 자식 때문에 알리지 않는 태스크도 알림 기록(reported·since·ok)을
+    지우지 않는다. 지우면 decide 를 닫은 뒤 같은 no_status 를 새로 보고 다시 올린다(comment-browser 실사용 보고(2026-11-17))."""
+
+    def no_status_rows(self) -> list[dict]:
+        code, out = self.horch("worker-list")
+        self.assertEqual(code, 0, out)
+        return [dict(r, attention="no_status") for r in out["workers"]]
+
+    def marks(self) -> dict:
+        import json
+        if not self.p.attention.exists():  # 바뀐 것이 없으면 쓰지 않는다
+            return {}
+        return json.loads(self.p.attention.read_text(encoding="utf-8"))
+
+    def test_reported_is_kept_while_held_and_not_raised_again(self):
+        from hteam import coord
+        did = self.started()["dispatch"]
+        rows = self.no_status_rows()
+        (item,) = coord.attention(self.p, rows, 0)
+        self.assertEqual((item["dispatch"], item["attention"]), (did, "no_status"))
+        self.assertEqual(coord.attention(self.p, rows, 0, held={"T-001"}), [])
+        self.assertEqual(self.marks()["reported"], {did: "no_status"})
+        self.assertEqual(coord.attention(self.p, rows, 0), [])  # held 가 풀려도 다시 알리지 않는다
+
+    def test_since_and_ok_are_kept_while_held_and_not_started(self):
+        from hteam import coord
+        did = self.started()["dispatch"]
+        rows = self.no_status_rows()
+        self.assertEqual(coord.attention(self.p, rows, 0, held={"T-001"}), [])
+        self.assertEqual(self.marks().get("since", {}), {})  # held 동안 새로 세지 않는다
+        calm = [dict(r, attention=None) for r in rows]
+        self.assertEqual(coord.attention(self.p, calm, 3600, held={"T-001"}), [])
+        self.assertEqual(self.marks()["ok"], [did])  # held 동안의 실제 상태 관측도 남는다
+        self.assertEqual(coord.attention(self.p, rows, 3600), [])
+        first = self.marks()["since"][did]
+        self.assertEqual(coord.attention(self.p, rows, 3600, held={"T-001"}), [])
+        self.assertEqual(self.marks()["since"], {did: first})  # 세던 시각을 지우지도 옮기지도 않는다
+        self.assertEqual(self.marks()["ok"], [did])
+
+
 if __name__ == "__main__":
     unittest.main()

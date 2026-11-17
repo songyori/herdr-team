@@ -1184,6 +1184,23 @@ class ReconcileTest(EventCase):
         (e,) = self.decides()
         self.assertEqual((e["kind"], e["task"], e["summary"]), ("escalation", "T-001", NO_STATUS_CLAUDE))  # 12단계
 
+    def test_no_status_is_not_raised_again_after_the_decide_is_answered(self):
+        """열린 decide 동안에도 attention 의 알림 기록이 남는다(설계 8.2). comment-browser 실사용 보고(2026-11-17):
+        0.7.1 은 decide 를 닫은 뒤 같은 no_status escalation 을 다시 올렸다."""
+        self.start()
+        did, term = self.work_dispatch("T-001"), self.work_terminal()
+        self.update_terminal(term, status=None)
+        conn = sqlite3.connect(self.horch_home / "orch.db")
+        conn.execute("UPDATE dispatches SET created_at=? WHERE id=?", (ago(120), did))
+        conn.commit()
+        conn.close()
+        self.d.reconcile()
+        (e,) = self.decides()
+        self.d.reconcile()  # decide 가 열려 있는 동안의 재확인
+        self.answer(e["id"])
+        self.d.reconcile()
+        self.assertEqual([x["id"] for x in self.decides()], [e["id"]])
+
     def test_exited_worker_starts_fix(self):
         self.start()
         self.update_terminal(self.work_terminal(), state="finished")

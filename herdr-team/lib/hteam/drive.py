@@ -1225,8 +1225,10 @@ class Drive:
                 self.retry_reviews.discard(tid)
                 self._retry_args.pop(tid, None)
         states = state.all_states(self.p)
-        quiet = [s for s in states if not outbox.open_decide(self.p, s) and not self.running(f"review:{s['id']}")]
-        for item in coord.attention(self.p, rows, NO_STATUS_GRACE_S, states=quiet):
+        # 열린 decide·리뷰 자식이 있는 태스크는 알리지 않되 알림 기록은 남긴다(states 에서 빼면 기록이 지워져 decide 를
+        # 닫은 뒤 같은 no_status escalation 이 다시 온다. comment-browser 실사용 보고(2026-11-17))
+        held = {s["id"] for s in states if outbox.open_decide(self.p, s) or self.running(f"review:{s['id']}")}
+        for item in coord.attention(self.p, rows, NO_STATUS_GRACE_S, states=states, held=held):
             if item.get("attention") == "no_status":  # attention.json 이 한 번만 알린다
                 agent = (dispatch.row_by_id(rows, item["dispatch"]) or {}).get("agent")
                 text = NO_STATUS_CLAUDE if agent == "claude" else NO_STATUS_TEXT  # 12단계(8.14 의 6)

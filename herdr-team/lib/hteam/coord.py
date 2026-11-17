@@ -114,7 +114,7 @@ def _dict(value) -> dict:
 
 
 def attention(p, rows: list[dict], grace: float, *, states: list[dict] | None = None,
-              horch_cmd: str = "horch") -> list[dict]:
+              held: set[str] | None = None, horch_cmd: str = "horch") -> list[dict]:
     """메시지 없이도 손볼 행(설계 8.2): grace 초 넘게 이어진 no_status, launch_failed. 끝나지 않은 태스크의 현재 라운드·
     현재 시도 Dispatch 만 본다.
 
@@ -125,6 +125,10 @@ def attention(p, rows: list[dict], grace: float, *, states: list[dict] | None = 
     (끝난 Dispatch 가 쌓이지 않게. 다시 볼 일이 없다). no_status 는 Dispatch 를 만든 시각(worker-list 의 created_at)부터
     센다(처음 본 시각부터 세면 wait 이 늦게 돌면 최악 2배를 기다린다). 그 시각을 읽지 못하면 처음 본 시각이다. 시각을
     파일에 남기므로 wait 호출이 바뀌어도 이어 센다. no_status 가 풀리면 지운다(다시 no_status 가 되면 그때부터 센다).
+    held: 지금 알리지 않을 태스크 ID(관제: 열린 decide 가 있거나 리뷰 자식이 도는 태스크). 그 Dispatch 도 지금 보는
+    Dispatch 로 세어 알림 기록(reported·since·ok)을 남기고, 항목을 내지 않으며 since 를 새로 세지 않는다. 0.7.1 은 그
+    태스크를 states 에서 빼서 기록이 지워졌고, decide 를 닫은 뒤 같은 no_status 를 새로 보고 다시 올렸다
+    (comment-browser 실사용 보고(2026-11-17)).
     horch_cmd: 힌트에 넣을 horch 명령(--home 포함, Horch.cmd)."""
     if states is None:
         states = state.all_states(p)
@@ -147,6 +151,10 @@ def attention(p, rows: list[dict], grace: float, *, states: list[dict] | None = 
                 if word not in UNCONFIRMED:  # 실제 상태 보고가 있는 관측(없음·idle·blocked·error 등)
                     ok.add(did)
                 if word not in ("no_status", "launch_failed") or reported.get(did) == word:
+                    continue
+                if held and st["id"] in held:  # 알리지 않는다. 세던 no_status 는 이어 가고 새로 세지 않는다
+                    if word == "no_status" and did in since:
+                        watching.add(did)
                     continue
                 if word == "no_status":
                     watching.add(did)
