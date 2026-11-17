@@ -10,13 +10,17 @@ from . import agents, auth
 from .errors import CONFLICT, MISSING, USAGE, HorchError
 
 
-def inject_codex_env(argv: list[str], terminal: str, env: dict[str, str] | None = None) -> list[str]:
+def inject_codex_env(argv: list[str], terminal: str, env: dict[str, str] | None = None,
+                     home: str | Path | None = None) -> list[str]:
     """Codex 설정이 inherit=core 여도 Codex 셸에 HC_TERMINAL_ID 와 worker-start --env 값이 보이게 한다.
-    --env 값은 HC_TERMINAL_ID 뒤에 이름 순서로 더한다(사전 검증 S2: 환경에만 두면 사용자 정책이 뺀다)."""
+    --env 값은 HC_TERMINAL_ID 뒤에 이름 순서로 더한다(사전 검증 S2: 환경에만 두면 사용자 정책이 뺀다).
+    home 이 있으면 맨 끝에 HORCH_HOME 도 더한다(설계 16.2. Codex 는 Claude 훅이 없어 지금은 대리 보고 대상이 아니다)."""
     if argv and Path(argv[0]).name == "codex":
         extra = ["-c", f"shell_environment_policy.set.HC_TERMINAL_ID={agents.toml_str(terminal)}"]
         for name in sorted(env or {}):
             extra += ["-c", f"shell_environment_policy.set.{name}={agents.toml_str(env[name])}"]  # -c 값은 TOML 이다
+        if home is not None:
+            extra += ["-c", f"shell_environment_policy.set.HORCH_HOME={agents.toml_str(str(home))}"]
         return [argv[0], *extra, *argv[1:]]
     return list(argv)
 
@@ -48,7 +52,8 @@ def run(store, dispatch_id: str, argv: list[str]) -> None:
     # worker-start --env 값(설계 14.3). hc run 터미널은 부른 셸의 환경을 물려받지 않으므로 exec 직전에 더한다
     raw = store.one("SELECT env FROM dispatches WHERE id=?", (dispatch_id,))["env"]
     env = json.loads(raw) if raw is not None else None
-    final = inject_codex_env(argv, terminal, env)
+    home = str(store.home)  # 가드가 연 저장 루트(resolve_home 이 절대 경로로 정했다). 워커의 HORCH_HOME(설계 16.2)
+    final = inject_codex_env(argv, terminal, env, home)
     store.close()
     # CPython 이 무시로 바꾼 SIGPIPE·SIGXFSZ 는 exec 뒤에도 남아 에이전트와 자식이 물려받으므로 되돌린다.
     for name in ("SIGPIPE", "SIGXFSZ"):
@@ -56,6 +61,8 @@ def run(store, dispatch_id: str, argv: list[str]) -> None:
             signal.signal(getattr(signal, name), signal.SIG_DFL)
     if env is not None:
         os.environ.update(env)  # 같은 이름은 덮어쓴다. 프리앰블에는 넣지 않는다(Codex 는 위의 -c 인자로도 받는다)
+    # 대리 보고 대상 표시(설계 16.2): 이 세션의 훅이 이 홈에 기록을 둔다. Dispatch env 는 HORCH_ 이름을 받지 않는다
+    os.environ["HORCH_HOME"] = home
     try:
         os.execvp(final[0], final)
     except OSError as exc:

@@ -135,6 +135,14 @@ class InjectTest(unittest.TestCase):
     def test_claude_unchanged(self):
         self.assertEqual(guard.inject_codex_env(["claude", "x"], "t7"), ["claude", "x"])
         self.assertEqual(guard.inject_codex_env(["claude", "x"], "t7", {"A": "1"}), ["claude", "x"])
+        self.assertEqual(guard.inject_codex_env(["claude", "x"], "t7", None, "/h"), ["claude", "x"])
+
+    def test_codex_horch_home_comes_last(self):
+        # 설계 16.2: HC_TERMINAL_ID, --env 값(이름 순서) 다음 맨 끝에 HORCH_HOME
+        self.assertEqual(guard.inject_codex_env(["codex", "--no-daemon"], "t7", {"A": "1"}, Path("/h/가")),
+                         ["codex", "-c", 'shell_environment_policy.set.HC_TERMINAL_ID="t7"',
+                          "-c", 'shell_environment_policy.set.A="1"',
+                          "-c", 'shell_environment_policy.set.HORCH_HOME="/h/가"', "--no-daemon"])
 
     def test_codex_env_goes_to_policy_set_in_name_order(self):
         # 사전 검증 S2: 사용자 정책이 inherit = "core" 여도 Codex 셸이 --env 값을 보게 한다
@@ -209,7 +217,9 @@ class GuardCliTest(HorchCase):
         code, out = self.guard("codex", "--no-daemon", "P")
         self.assertEqual(code, 0, out)
         self.assertEqual(json.loads(out)["argv"],
-                         ["-c", 'shell_environment_policy.set.HC_TERMINAL_ID="t42"', "--no-daemon", "P"])
+                         ["-c", 'shell_environment_policy.set.HC_TERMINAL_ID="t42"',
+                          "-c", f"shell_environment_policy.set.HORCH_HOME={json.dumps(str(self.home))}",
+                          "--no-daemon", "P"])
 
     def test_double_dash_before_preamble_reaches_agent(self):
         code, out = self.guard("claude", "--add-dir", "/x", "--", "P")
@@ -235,6 +245,26 @@ class GuardCliTest(HorchCase):
         proc = subprocess.run([sys.executable, str(BIN), "--home", str(self.home), "launch-guard", "--dispatch", self.did],
                               capture_output=True, text=True, env=self._env("t42", None), timeout=30)
         self.assertEqual(proc.returncode, 2)
+
+    def test_horch_home_reaches_the_agent(self):
+        """설계 16.2: 가드는 exec 직전에 HORCH_HOME(가드가 연 저장 루트의 절대 경로)을 에이전트 환경에 넣는다. 부른 쪽 환경의
+        같은 이름은 덮어쓴다. --env 값과 함께 된다. Codex 는 -c shell_environment_policy.set.HORCH_HOME 도 받는다."""
+        db = self.db()
+        db.execute("UPDATE dispatches SET env=? WHERE id=?", (json.dumps({"HT_PORT": "1"}), self.did))
+        db.commit()
+        env = self._env("t42", {"FAKE_AGENT_ENV": "HORCH_HOME,HT_PORT", "HORCH_HOME": "/elsewhere"})
+        for agent in ("claude", "codex"):
+            with self.subTest(agent=agent):
+                proc = subprocess.run([sys.executable, str(BIN), "--home", str(self.home), "launch-guard", "--dispatch",
+                                       self.did, "--", agent, "P"], capture_output=True, text=True, env=env, timeout=30)
+                self.assertEqual(proc.returncode, 0, proc.stdout)
+                got = json.loads(proc.stdout)
+                self.assertEqual(got["env"], {"HORCH_HOME": str(self.home), "HT_PORT": "1"})
+                sets = [a for a in got["argv"] if a.startswith("shell_environment_policy.set.")]
+                self.assertEqual(sets, [] if agent == "claude" else [
+                    'shell_environment_policy.set.HC_TERMINAL_ID="t42"', 'shell_environment_policy.set.HT_PORT="1"',
+                    f"shell_environment_policy.set.HORCH_HOME={json.dumps(str(self.home))}"])
+        self.assertTrue(Path(str(self.home)).is_absolute())
 
 
 if __name__ == "__main__":

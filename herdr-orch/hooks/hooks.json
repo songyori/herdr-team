@@ -1,0 +1,90 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          { "type": "command", "command": "[ -n \"$HC_TERMINAL_ID\" ] && [ -n \"$HORCH_HOME$HORCH_RELAY_HOME\" ] || exit 0; exec python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/horch_hook.py\" SessionStart", "timeout": 15 }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "[ -n \"$HC_TERMINAL_ID\" ] && [ -n \"$HORCH_HOME$HORCH_RELAY_HOME\" ] || exit 0; exec python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/horch_hook.py\" UserPromptSubmit", "timeout": 15 }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          { "type": "command", "command": "[ -n \"$HC_TERMINAL_ID\" ] && [ -n \"$HORCH_HOME$HORCH_RELAY_HOME\" ] || exit 0; exec python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/horch_hook.py\" PreToolUse", "timeout": 15 }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          { "type": "command", "command": "[ -n \"$HC_TERMINAL_ID\" ] && [ -n \"$HORCH_HOME$HORCH_RELAY_HOME\" ] || exit 0; exec python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/horch_hook.py\" PostToolUse", "timeout": 15 }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          { "type": "command", "command": "[ -n \"$HC_TERMINAL_ID\" ] && [ -n \"$HORCH_HOME$HORCH_RELAY_HOME\" ] || exit 0; exec python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/horch_hook.py\" PostToolUseFailure", "timeout": 15 }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          { "type": "command", "command": "[ -n \"$HC_TERMINAL_ID\" ] && [ -n \"$HORCH_HOME$HORCH_RELAY_HOME\" ] || exit 0; exec python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/horch_hook.py\" PermissionRequest", "timeout": 15 }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "hooks": [
+          { "type": "command", "command": "[ -n \"$HC_TERMINAL_ID\" ] && [ -n \"$HORCH_HOME$HORCH_RELAY_HOME\" ] || exit 0; exec python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/horch_hook.py\" PermissionDenied", "timeout": 15 }
+        ]
+      }
+    ],
+    "Elicitation": [
+      {
+        "hooks": [
+          { "type": "command", "command": "[ -n \"$HC_TERMINAL_ID\" ] && [ -n \"$HORCH_HOME$HORCH_RELAY_HOME\" ] || exit 0; exec python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/horch_hook.py\" Elicitation", "timeout": 15 }
+        ]
+      }
+    ],
+    "ElicitationResult": [
+      {
+        "hooks": [
+          { "type": "command", "command": "[ -n \"$HC_TERMINAL_ID\" ] && [ -n \"$HORCH_HOME$HORCH_RELAY_HOME\" ] || exit 0; exec python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/horch_hook.py\" ElicitationResult", "timeout": 15 }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "[ -n \"$HC_TERMINAL_ID\" ] && [ -n \"$HORCH_HOME$HORCH_RELAY_HOME\" ] || exit 0; exec python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/horch_hook.py\" Stop", "timeout": 15 }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          { "type": "command", "command": "[ -n \"$HC_TERMINAL_ID\" ] && [ -n \"$HORCH_HOME$HORCH_RELAY_HOME\" ] || exit 0; exec python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/horch_hook.py\" StopFailure", "timeout": 15 }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          { "type": "command", "command": "[ -n \"$HC_TERMINAL_ID\" ] && [ -n \"$HORCH_HOME$HORCH_RELAY_HOME\" ] || exit 0; exec python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/horch_hook.py\" SessionEnd", "timeout": 15 }
+        ]
+      }
+    ]
+  }
+}

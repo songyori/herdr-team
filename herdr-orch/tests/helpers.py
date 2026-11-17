@@ -30,7 +30,9 @@ class HorchCase(unittest.TestCase):
         self.hcdir = self.tmp / "hc"
         self.hcdir.mkdir()
         self.set_hc_state({"next": 1, "terminals": {}, "fail": {}, "screens": {}, "sent": []})
-        drop = ("HC_TERMINAL_ID", "CODEX_SANDBOX", "HERDR_ORCH_HOME", "XDG_STATE_HOME")
+        # 0.5.0(설계 16.2·16.11): 대리 보고 대상 변수와 시험 변수도 뺀다(horch 워커 터미널에서 시험을 돌려도 결과가 같다)
+        drop = ("HC_TERMINAL_ID", "CODEX_SANDBOX", "HERDR_ORCH_HOME", "XDG_STATE_HOME", "HORCH_HOME", "HORCH_RELAY_HOME",
+                "HORCH_TEST_RELAY_DECIDE_S", "HORCH_TEST_IDLE_RECORD_GRACE_S")
         self.env = {k: v for k, v in os.environ.items() if k not in drop}
         self.env.update({
             "PATH": f"{FAKES}{os.pathsep}{os.environ['PATH']}",

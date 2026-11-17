@@ -17,7 +17,11 @@ value 그대로). events 는 실제 hc 꼴이다: 처음 스냅숏 한 줄 {"cha
 0.4.0(herdr-orch 설계 15.4): run 은 --parent <값> 을 값 있는 옵션으로 읽어 터미널의 "parent" 에 그 터미널 주소를 둔다
 (--no-parent 나 둘 다 없으면 null). 없는 parent 는 not_found·`no terminal "<값>"`(hc 0.1.20 의 문구)로 실패하고 터미널을
 만들지 않는다(끝난 터미널은 parent 로 받는다). --parent 와 --no-parent 를 함께 주면 exit 2 usage. flags 에 --outlive-parent 를
-남긴다. get 은 parent 를 돌려준다."""
+남긴다. get 은 parent 를 돌려준다.
+
+0.5.0(herdr-orch 설계 16.11): get 은 실제 hc 처럼 status_ms(마지막 상태가 바뀐 epoch ms, 보고한 적 없으면 null)·reported·
+created_ms·foreground({pid, name, argv, cwd} 또는 null)를 준다. 기본은 null·false 이고, 터미널 기록에 그 키가 있으면 그
+값이다(시험이 준 값이 앞선다)."""
 import fcntl
 import json
 import os
@@ -130,7 +134,9 @@ def handle(st, argv, lines=()):
         t = find(st, args[0])
         if not t:
             return fail("not_found", 3)
-        out({"title": "", **{k: v for k, v in t.items() if k != "flags"}})
+        # 0.5.0(설계 16.11): status_ms·reported·created_ms·foreground. 시험이 터미널 기록에 넣은 값이 앞선다
+        out({"title": "", "status_ms": None, "reported": False, "created_ms": None, "foreground": None,
+             **{k: v for k, v in t.items() if k != "flags"}})
         return 0
     if cmd == "ls":
         items = [ls_item(t) for t in st["terminals"].values() if "--all" in args or t["state"] == "live"]
