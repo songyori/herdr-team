@@ -7,6 +7,7 @@ import os
 import platform
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -434,8 +435,11 @@ def write_relay_env(root: Path) -> str:
         old = _read_existing(root / ".gitignore")
         if SETTINGS_LOCAL not in [_ignore_pattern(ln) for ln in (old or "").splitlines()]:
             _append(root / ".gitignore", old, SETTINGS_LOCAL, blank=False)
-        write_atomic(root / SETTINGS_LOCAL,
-                     json.dumps({**data, "env": {**env, RELAY_KEY: home}}, ensure_ascii=False, indent=2) + "\n")
+        target = root / SETTINGS_LOCAL
+        # 기존 파일이면 그 권한(0600 등)을 새 파일에 그대로 넘긴다. 비밀이 든 env 가 0644 로 풀리지 않게 한다
+        mode = stat.S_IMODE(os.stat(target).st_mode) if target.exists() else None
+        write_atomic(target, json.dumps({**data, "env": {**env, RELAY_KEY: home}}, ensure_ascii=False, indent=2) + "\n",
+                     mode=mode)
     except (OSError, HteamError):
         return "unreadable"
     return "new"

@@ -1140,6 +1140,16 @@ class RelayEnvTest(SetupCase):
         code, out = self.hteam("up", as_="main")
         self.assertEqual((code, out["status"], out.get("warnings")), (0, "starting", [RELAY_ENV_NEW]), out)
 
+    def test_existing_settings_keep_their_mode(self):
+        self.started()
+        self.path.parent.mkdir()
+        self.path.write_text('{"env": {"SECRET": "x"}}\n')
+        os.chmod(self.path, 0o600)
+        code, out = self.scaffold()
+        self.assertEqual((code, out["relay_env"]), (0, "new"), out)
+        self.assertEqual(oct(self.path.stat().st_mode & 0o777), "0o600")
+        self.assertEqual(self.saved(), {"env": {"SECRET": "x", "HORCH_RELAY_HOME": self.home}})
+
     def test_unreadable_settings_are_left_alone(self):
         self.started()
         self.path.parent.mkdir()
