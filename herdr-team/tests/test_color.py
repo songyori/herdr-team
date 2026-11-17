@@ -40,6 +40,19 @@ class ColorTest(unittest.TestCase):
                      "oklch(inf 0.1 30)", "rgb(nan 0 0)", "hsl(nan 100% 50%)"):
             self.assertIsNone(color.parse(text), text)
 
+    def test_clamp_and_args(self):
+        for a, b in (("hsl(0 200% 25%)", "hsl(0 100% 25%)"), ("hsla(0, 200%, 25%, 0.5)", "hsl(0 100% 25%)"),
+                     ("hsl(0 -50% 50%)", "hsl(0 0% 50%)"), ("hsl(0 50% 250%)", "hsl(0 50% 100%)")):
+            self.assertLess(color.delta(color.parse(a), color.parse(b)), 1e-9, a)
+        self.assertEqual(color.parse("oklch(150% 0.1 30)"), (1.0, 0.1, 30.0))
+        self.assertEqual(color.parse("oklch(-0.2 0.1 30)")[0], 0.0)
+        self.assertEqual(color.parse("oklch(50% -0.2 30)"), (0.5, 0.0, 0.0))
+        for text in ("rgb(255 0 0 / 50%)", "oklch(0.6 0.15 30 / 0.8)"):
+            self.assertIsNotNone(color.parse(text), text)
+        for text in ("rgba(255,0,0,nan)", "oklch(0.6 0.15 30 / inf)", "rgb(255 0 0 garbage garbage)",
+                     "rgb(255 0 0 1 1)", "rgb(255 0 0 x)", "rgb(255 0)"):
+            self.assertIsNone(color.parse(text), text)
+
     def test_distances(self):
         self.assertEqual(color.hue_distance(350, 10), 20)
         self.assertEqual(color.hue_distance(10, 350), 20)

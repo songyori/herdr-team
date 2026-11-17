@@ -75,17 +75,21 @@ def _parse(text: str) -> LCH | None:
     if not m:
         return None
     name, args = m.group(1).lower(), _parts(m.group(2))
-    if len(args) < 3:
+    if len(args) not in (3, 4):
         return None
     try:
+        if len(args) == 4:  # 알파(수 또는 %)는 유한해야 하고 버린다
+            _num(args[3][:-1] if args[3].endswith("%") else args[3])
         if name.startswith("rgb"):
             return from_srgb(*(_num(x[:-1]) / 100 if x.endswith("%") else _num(x) / 255 for x in args[:3]))
         if name.startswith("hsl"):
-            h, s, l = _angle(args[0]), _num(args[1].rstrip("%")) / 100, _num(args[2].rstrip("%")) / 100
+            h = _angle(args[0])
+            s, l = (min(max(_num(x.rstrip("%")) / 100, 0.0), 1.0) for x in args[1:3])  # CSS: 0–1 로 자른다
             return from_srgb(*colorsys.hls_to_rgb((h % 360) / 360, l, s))
         lightness = _num(args[0][:-1]) / 100 if args[0].endswith("%") else _num(args[0])
         chroma = _num(args[1][:-1]) / 100 * 0.4 if args[1].endswith("%") else _num(args[1])
         h = 0.0 if args[2].lower() == "none" else _angle(args[2])
+        lightness, chroma = min(max(lightness, 0.0), 1.0), max(chroma, 0.0)
         return (lightness, chroma, _hue(chroma, h))
     except ValueError:
         return None
