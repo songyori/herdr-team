@@ -998,7 +998,13 @@ def handoff_message(d, m: dict) -> bool:
         msg = str(d.hc_status(did).get("msg") or "")  # observed 본문에는 상태 낱말만 있다(작업 _stuck 과 같다)
         d.decide("escalation", None, HANDOFF_PAUSED.format(name=name, word=what, msg=msg[:120]))
     elif kind == "observed" and what == "relay_failed":
-        # 12단계(설계 8.6 표): 상태를 보낼 수 없어 인수인계 끝·비우기 확인을 알 수 없다. 그 자리에서 정리하고 decide
+        # 12단계(설계 8.6 표): 상태를 보낼 수 없어 인수인계 끝·비우기 확인을 알 수 없다. 그 자리에서 정리하고 decide.
+        # 이미 끝난(진행 중 아닌) Dispatch 의 늦은 relay_failed 는 무시한다: 같은 묶음의 worker_done 이나 재확인이 결과대로
+        # 끝낸다(Codex 커밋 리뷰 2efd085)
+        row = dispatch.row_by_id(d.horch().workers(), did)
+        if row is not None and row.get("state") not in drive.LIVE:
+            d.log(f"{name} 인수인계 Dispatch 의 {kind} 무시(이미 끝남): {did}")
+            return True
         _handoff_failed(d, name, did, RELAY_HANDOFF.format(name=name))
     elif kind == "observed" and what in ("exited", "lost"):
         forget(d.p, name)  # terminal-close --abandon 으로 남은 기록 정리. 다음 세션은 새로 뜬다

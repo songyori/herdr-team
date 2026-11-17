@@ -982,6 +982,17 @@ class RelayHandoffTest(ResetCase):
         self.handle("observed", self.did, self.observed(self.did, "relay_failed", "4242"), sender="horch")
         self.stopped()
 
+    def test_late_relay_failed_after_the_dispatch_settled_is_ignored(self):
+        # Codex 커밋 리뷰 2efd085: 끝난 인수인계 Dispatch 에 relay_failed 가 worker_done 보다 먼저 읽혀도 리셋을 취소하지 않는다
+        self.write_handoff()
+        self.handle("observed", self.did, self.observed(self.did, "relay_failed", "4242"), sender="horch")
+        self.assertEqual(self.entry()["resetting"]["step"], "handoff")
+        self.assertEqual(self.decides(), [])
+        self.handle("worker_done", self.did, self.done_body(self.did), sender="horch")
+        e = self.entry()  # 리셋이 이어져 끝났다(취소도 실패 decide 도 아니다)
+        self.assertEqual((e["resetting"], e["reset_pending"], e["since_reset"]), (None, False, 0))
+        self.assertEqual(self.decides(), [])
+
     def test_reconcile_stops_it_from_the_attention(self):
         with self.in_drive():
             d = self.make_drive()
