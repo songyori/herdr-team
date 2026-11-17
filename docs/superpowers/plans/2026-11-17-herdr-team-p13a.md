@@ -511,6 +511,12 @@ class ProjectRulesSpecTest(TeamCase):
         with self.assertRaises(HteamError) as ctx:
             self.spec_text()
         self.assertEqual(ctx.exception.code, "project_rules_unreadable")
+        self.rules.unlink()
+        self.rules.symlink_to(self.tmp / "없는-규칙.md")  # 끊어진 링크는 "없음" 이 아니다
+        with self.assertRaises(HteamError) as ctx:
+            self.spec_text()
+        self.assertEqual(ctx.exception.code, "project_rules_unreadable")
+        self.assertIn("끊어진 심볼릭 링크", ctx.exception.message)
 
 
 class ProjectRulesReviewTest(TeamCase):
@@ -601,6 +607,9 @@ def project_rules(p, role: str) -> str | None:
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
+        if path.is_symlink():  # 끊어진 심볼릭 링크: 규칙이 있다고 정했는데 읽지 못한다
+            raise HteamError("project_rules_unreadable",
+                             f"프로젝트 규칙을 읽지 못했다: {path.relative_to(p.root)} (끊어진 심볼릭 링크)", FAIL) from None
         return None
     except (OSError, UnicodeDecodeError) as exc:
         raise HteamError("project_rules_unreadable",
