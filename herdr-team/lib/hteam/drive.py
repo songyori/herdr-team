@@ -215,6 +215,7 @@ class Drive:
         self.rows: list[dict] = []  # 마지막 워커 목록(재확인). locate 가 기록 전 Dispatch 를 제목으로 찾을 때 쓴다
         self.retry_reviews: set[str] = set()  # 관문 잠금 대기 초과로 미룬 리뷰(8.7 의 4)
         self._retry_args: dict[str, list[str]] = {}  # 미룬 리뷰의 원래 자식 인자(큐 review --retry 의 --retry·--round·--request)
+        self.after_waits: set[str] = set()  # 기다린다는 로그를 남긴 미룬 fix 요청 id(설계 7.1 12단계: 처음 미룰 때만)
         self._job_args: dict[str, list[str]] = {}  # 결과를 처리 중인 리뷰 자식의 인자
         self.pending_marks: dict[str, tuple[str, int]] = {}  # 리뷰 자식이 도는 태스크의 미룬 decide 표시(out id, 라운드)
         # 다시 묶기(11단계 보강, 설계 8.13). terminal 은 자기 터미널($HC_TERMINAL_ID), parent 는 Run 연결의 hc get 이 읽은 자기
@@ -1292,10 +1293,12 @@ class Drive:
 
     def reconcile_task(self, st: dict) -> None:
         """메시지 없이 끝난 일을 태스크 상태별로 맞춘다(설계 8.7 표). 열린 decide 가 지금 라운드면(메인이 답하지 않았다)·
-        리뷰 자식이 돌면 건드리지 않는다. 지금 라운드의 drive_fix 는 상태별 처리 대신 같은 지시로 fix 를 잇는다."""
+        리뷰 자식이 돌면·미룬 fix(`fix --after`, 7.1 12단계)의 대상이면 건드리지 않는다(요청이 실행·실패·취소로 없어지면 다음
+        재확인부터 다룬다). 지금 라운드의 drive_fix 는 상태별 처리 대신 같은 지시로 fix 를 잇는다."""
+        from . import queue  # queue 가 이 모듈을 쓴다
         tid = st["id"]
         st = state.require(self.p, tid)
-        if outbox.open_decide(self.p, st) or self.running(f"review:{tid}"):
+        if outbox.open_decide(self.p, st) or self.running(f"review:{tid}") or tid in queue.held_tasks(self.p):
             return
         status = st["status"]
         if status not in state.CLOSED and st.get("drive_fix"):

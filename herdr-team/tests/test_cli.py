@@ -23,6 +23,19 @@ class CliTest(TeamCase):
         sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
         self.assertIn("--base-merge", sub.choices["fix"].format_help())
 
+    def test_after_is_only_for_fix(self):
+        # 12단계(설계 7.1): --after 는 fix 만 받는다. 다른 큐 명령에 주면 exit 2 usage. 미룬 요청 지우기는 cancel
+        import argparse
+        from hteam import cli
+        for args in (("start", "T-001"), ("start-ready",), ("accept", "T-001"), ("drop", "T-001"),
+                     ("scope", "T-001", "더한다"), ("review", "T-001", "--retry"), ("test-confirm",)):
+            with self.subTest(args=args):
+                code, out = self.hteam(*args, "--after", "T-002", as_=None)
+                self.assertEqual((code, out["error"]["code"]), (2, "usage"), out)
+        sub = next(a for a in cli.build_parser()._actions if isinstance(a, argparse._SubParsersAction))
+        self.assertIn("--after", sub.choices["fix"].format_help())
+        self.assertIn("cancel", sub.choices)
+
     def test_unknown_command_is_usage_json(self):
         code, out = self.hteam("nope", as_=None)
         self.assertEqual(code, 2)

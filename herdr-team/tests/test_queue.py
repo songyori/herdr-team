@@ -8,9 +8,11 @@ import subprocess
 import sys
 import time
 import unittest
+from unittest import mock
 
 from tests.helpers import ROOT, TeamCase
-from hteam import state
+from hteam import queue, state
+from hteam.errors import HteamError
 from hteam.paths import Project
 
 QUEUED = "관제가 처리 중이다. 결과는 hteam watch 의 result 메시지로 온다"
@@ -20,6 +22,11 @@ DRIVE_HUNG = ("관제가 멈춘 것 같다(프로세스는 살아 있는데 hear
 DRIVE_ONLY = ("이 명령은 관제(hteam drive)가 스스로 한다. 메인이 관제 큐로 넣는 명령은 start, start-ready, fix, accept, drop, "
               "review --retry, design-decide, scope, agent reset, slot reset, test-confirm 이다")
 NOT_WORKING = "T-002: 일하는 중(working)인 태스크에만 범위를 더한다(status=pending). 시작 전이면 사양을 고쳐 커밋한다"
+# 12단계 미룬 fix(설계 7.1 원문)
+DEFERRED = "T-002 가 done 이 되면 관제가 실행한다. 결과는 hteam watch 의 result 메시지로 온다"
+CYCLE = "T-001: {after} 는 T-001 가 끝나야 진행한다. 서로 기다려 멈춘다"
+AFTER_CLOSED = "T-001: 선행 T-004 가 병합 없이 끝났다(dropped). 기다릴 것이 없다. 지금 fix 하거나 다시 판단한다"
+AFTER_FAILED = "{after} 가 병합 없이 끝났다({status}). T-001 의 fix 를 하지 않았다. 다시 판단한다"
 
 # 관제의 큐 실행(Drive.run_queue)을 따로 띄운 프로세스에서 한다. HTEAM_TEST_DIE_AT 의 os._exit 가 시험 프로세스를 죽이지 않게
 RUNNER = ("import json, sys; sys.path.insert(0, sys.argv[1]); from hteam import drive; from hteam.paths import Project; "
@@ -458,6 +465,269 @@ class TestConfirmQueueTest(QueueCase):
         code, out = self.main("test-confirm")
         self.assertEqual((code, out["status"]), (0, "queued"), out)
         self.assertEqual((self.request()["command"], self.request()["args"]), ("test-confirm", {}))
+
+
+class AfterTest(QueueCase):
+    """미룬 fix(12단계, 설계 7.1 `hteam fix T --after <A>`): 메인 쪽 검사, 미룬 요청, 관제의 건너뛰기·실행·실패, 취소와의
+    배제, 대상 태스크 붙잡기, 한가함·status."""
+
+    def move(self, tid: str, to: str) -> None:
+        with state.edit(self.p, tid) as st:
+            state.move(st, to, "test")
+
+    def rounds(self, tid: str = "T-001") -> int:
+        return len(self.task_state(tid)["rounds"])
+
+    def defer(self, *args: str) -> dict:
+        code, out = self.main("fix", *args)
+        self.assertEqual((code, out.get("status")), (0, "deferred"), out)
+        return out
+
+    def test_main_side_refusals(self):
+        self.failed_work()  # T-001
+        self.pending("T-002", depends="T-001")  # 사양으로 T-001 을 기다린다
+        self.pending("T-003", depends="T-002")  # 이어서 기다린다
+        self.pending("T-004")
+        self.assertEqual(self.hteam("drop", "T-004")[0], 0)
+        self.pending("T-005")
+        code, out = self.hteam("task", "new", "--role", "developer", "--title", "새 태스크", "--depends-on", "T-001",
+                               as_="main")  # tasks.toml 없이 task new 로 만든 사양(커밋 전)
+        self.assertEqual(code, 0, out)
+        made = out["id"]
+        cases = [(("T-001", "--after", "T-001"), (2, "usage"), None),
+                 (("T-001", "--after", "T-009"), (2, "unknown_task"), None),
+                 (("T-001", "--after", "T-004"), (3, "after_closed"), AFTER_CLOSED),
+                 (("T-001", "--after", "T-002"), (3, "after_cycle"), CYCLE.format(after="T-002")),
+                 (("T-001", "--after", "T-003"), (3, "after_cycle"), CYCLE.format(after="T-003")),
+                 (("T-001", "--after", made), (3, "after_cycle"), CYCLE.format(after=made))]
+        for args, want, message in cases:
+            with self.subTest(args=args):
+                code, out = self.main("fix", *args)
+                self.assertEqual((code, out["error"]["code"]), want, out)
+                if message:
+                    self.assertEqual(out["error"]["message"], message)
+        self.assertEqual(self.requests(), [])
+        self.assertFalse((self.drive_dir / "queue.seq").exists())
+        self.defer("T-005", "--after", "T-001")  # 남은 미룬 요청: T-005 가 T-001 을 기다린다
+        code, out = self.main("fix", "T-001", "--after", "T-005")
+        self.assertEqual((code, out["error"]["code"], out["error"]["message"]),
+                         (3, "after_cycle", CYCLE.format(after="T-005")), out)
+        self.assertEqual(self.requests(), ["000001"])
+        code, out = self.hteam("fix", "T-001", "--after", "T-005")  # 관제 안에서는 받지 않는다
+        self.assertEqual((code, out["error"]["code"]), (2, "usage"), out)
+
+    def test_deferred_request_is_written_and_returns_at_once(self):
+        self.failed_work()
+        self.pending("T-002")
+        started = time.monotonic()
+        code, out = self.main("fix", "T-001", "--note=다시", "--after", "T-002", wait="30")
+        self.assertLess(time.monotonic() - started, 20)  # 결과를 기다리지 않는다
+        self.assertEqual((code, out), (0, {"ok": True, "status": "deferred", "request": "q-000001", "after": "T-002",
+                                           "message": DEFERRED}))
+        req = self.request()
+        self.assertEqual((req["command"], req["args"], req["after"], req["expect_round"]),
+                         ("fix", {"task": "T-001", "note": "다시"}, "T-002", 1))
+        self.assertNotIn("started_at", req)
+        self.assertTrue((self.queue_dir / "000001.abandoned").exists())
+        self.assertEqual(queue.held_tasks(self.p), {"T-001"})
+        self.assertEqual([r["id"] for r in queue.deferred(self.p)], ["q-000001"])
+        self.assertFalse(queue.waiting(self.p))  # 다시 묶기의 한가함에서 세지 않는다(설계 8.13)
+        code, out = self.hteam("status", as_="main")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["deferred"], [{"request": "q-000001", "command": "fix", "task": "T-001", "after": "T-002",
+                                            "at": req["at"]}])
+        self.pending("T-003")
+        self.main("drop", "T-003")  # 미루지 않은 요청은 센다
+        self.assertTrue(queue.waiting(self.p))
+        self.assertEqual([r["id"] for r in queue.deferred(self.p)], ["q-000001"])
+
+    def test_done_prerequisite_runs_now(self):
+        self.failed_work()
+        self.pending("T-002")
+        self.move("T-002", "done")
+        proc = self.main_bg("fix", "T-001", "--note=다시", "--after", "T-002")
+        self.assertNotIn("after", self.request())  # --after 를 떼고 지금 fix 로 보냈다
+        self.assertFalse((self.queue_dir / "000001.abandoned").exists())
+        self.assertEqual(self.run_queue(), ["q-000001"])
+        code, out = self.finish(proc)
+        self.assertEqual((code, out["round"], out["after"]), (0, 2, "already_done"), out)
+
+    def test_drive_skips_until_done_then_runs_and_posts_the_result(self):
+        self.failed_work()
+        self.pending("T-002")
+        self.pending("T-003")
+        self.defer("T-001", "--note=다시", "--after", "T-002")
+        self.main("drop", "T-003")  # 뒤 요청 q-000002
+        with self.in_drive():
+            d = self.make_drive()
+            self.assertEqual(d.run_queue(), ["q-000002"])  # 선행 pending: 건너뛰고 뒤 요청을 실행한다
+            for status in ("working", "changes"):
+                self.move("T-002", status)
+                self.assertEqual(d.run_queue(), [])
+        lines = [line.split(" ", 1)[1] for line in self.log_lines()]
+        self.assertEqual(lines.count("요청 q-000001 fix: T-002 를 기다린다"), 1)  # 처음 미룰 때만
+        self.assertEqual(self.task_state("T-003")["status"], "dropped")
+        self.assertEqual((self.requests(), self.rounds()), (["000001"], 1))
+        self.assertNotIn("started_at", self.request())
+        self.assertEqual(self.run_queue_proc(), 0)  # 다시 뜬 관제(다른 프로세스)도 그대로 둔다
+        self.assertEqual(self.requests(), ["000001"])
+        self.move("T-002", "done")
+        self.assertEqual(self.run_queue(), ["q-000001"])  # 또 다른 관제 객체가 이어 간다
+        [res] = [r for r in self.results() if r["request"] == "q-000001"]
+        self.assertEqual((res["command"], res["result"]["ok"], res["result"]["result"]["round"], res["body"]),
+                         ("fix", True, 2, "fix T-001 — 완료"), res)
+        self.assertEqual(self.rounds(), 2)
+        self.assertEqual(list(self.queue_dir.iterdir()), [])
+
+    def test_dropped_or_missing_prerequisite_closes_with_after_failed(self):
+        self.failed_work()
+        self.pending("T-002")
+        self.pending("T-003")
+        self.defer("T-001", "--note=다시", "--after", "T-002")
+        self.defer("T-001", "--note=또", "--after", "T-003")
+        self.assertEqual(self.hteam("drop", "T-002")[0], 0)  # 선행이 병합 없이 끝났다
+        (self.state_dir / "tasks" / "T-003.json").unlink()  # 선행의 상태 파일이 없어졌다
+        self.assertEqual(self.run_queue(), ["q-000001", "q-000002"])
+        first, second = self.results()
+        for res, after, status in ((first, "T-002", "dropped"), (second, "T-003", "상태 없음")):
+            message = AFTER_FAILED.format(after=after, status=status)
+            self.assertEqual(res["result"], {"ok": False, "error": {"code": "after_failed", "message": message, "hint": ""},
+                                             "exit": 3})
+            self.assertEqual(res["body"], f"fix T-001 — 실패: after_failed: {message}")
+        lines = [line.split(" ", 1)[1] for line in self.log_lines()]
+        self.assertIn("요청 q-000001 fix: after_failed: " + AFTER_FAILED.format(after="T-002", status="dropped"), lines)
+        self.assertEqual(self.rounds(), 1)  # 실행하지 않았다
+        self.assertEqual(list(self.queue_dir.iterdir()), [])
+
+    def test_round_changed_while_waiting_is_a_failed_result(self):
+        self.failed_work()
+        self.pending("T-002")
+        self.defer("T-001", "--note=다시", "--after", "T-002")
+        self.assertEqual(self.hteam("fix", "T-001", "--note=관제가 먼저")[0], 0)  # 그 사이 라운드가 바뀌었다
+        self.move("T-002", "done")
+        self.assertEqual(self.run_queue(), ["q-000001"])
+        [res] = self.results()
+        self.assertEqual((res["result"]["error"]["code"], res["result"]["exit"]), ("round_changed", 3), res)
+        self.assertEqual(self.rounds(), 2)
+
+    def test_cancel(self):
+        self.failed_work()
+        self.pending("T-002")
+        self.defer("T-001", "--note=다시", "--after", "T-002")  # q-000001
+        self.main("start-ready")  # q-000002: 미루지 않은 요청
+        self.defer("T-001", "--note=또", "--after", "T-002")  # q-000003
+        started = self.queue_dir / "000003.json"
+        started.write_text(json.dumps({**self.request("000003"), "started_at": "2026-01-01T00:00:00Z"}))  # 관제가 시작했다
+        (self.queue_dir / "000009.result.json").write_text("{}")  # 결과만 남았다
+        code, out = self.hteam("cancel", "q-000001")  # 관제 환경
+        self.assertEqual((code, out["error"]["code"]), (5, "not_main"), out)
+        code, out = self.main("cancel", "q-000001")
+        self.assertEqual((code, out), (0, {"ok": True, "request": "q-000001", "cancelled": True}))
+        self.assertFalse((self.queue_dir / "000001.json").exists())
+        self.assertFalse((self.queue_dir / "000001.abandoned").exists())
+        for rid, want in (("q-000001", (2, "unknown_request")), ("q-000008", (2, "unknown_request")),
+                          ("1", (2, "unknown_request")), ("q-000002", (3, "not_deferred")),
+                          ("q-000003", (3, "not_deferred")), ("q-000009", (3, "not_deferred"))):
+            with self.subTest(rid=rid):
+                code, out = self.main("cancel", rid)
+                self.assertEqual((code, out["error"]["code"]), want, out)
+        self.assertEqual(self.requests(), ["000002", "000003"])
+        self.assertEqual(queue.held_tasks(self.p), set())
+
+    def test_cancel_after_the_drive_read_the_request_wins(self):
+        # 관제가 잠금 없이 요청을 읽은 뒤 취소가 끼어도 실행하지 않는다(잠금 안에서 다시 읽는다, Codex 설계 리뷰 r1)
+        self.failed_work()
+        self.pending("T-002")
+        self.defer("T-001", "--note=다시", "--after", "T-002")
+        self.move("T-002", "done")
+        real, seen, cancelled = queue.read_json, [], []
+
+        def racing(path, default):
+            got = real(path, default)
+            if path.name == "000001.json" and not seen:
+                seen.append(path)
+                cancelled.append(queue.cancel(self.p, "q-000001"))
+            return got
+
+        with mock.patch.object(queue, "read_json", side_effect=racing):
+            self.assertEqual(self.run_queue(), [])
+        self.assertEqual(cancelled, [{"request": "q-000001", "cancelled": True}])
+        self.assertEqual(self.rounds(), 1)
+        self.assertEqual((self.results(), list(self.queue_dir.iterdir())), ([], []))
+
+    def test_cancel_before_the_first_read_leaves_no_result(self):
+        # 목록을 만든 뒤 첫 읽기 전에 취소돼도 결과 파일·outbox 결과·절차 실패가 없고 뒤 요청은 실행된다(Codex 계획 리뷰 r1)
+        self.failed_work()
+        self.pending("T-002")
+        self.pending("T-003")
+        self.defer("T-001", "--note=다시", "--after", "T-002")  # q-000001
+        self.main("drop", "T-003")  # 뒤 요청 q-000002
+        self.move("T-002", "done")
+        real, cancelled = queue._request_files, []
+
+        def listed(p):
+            files = real(p)
+            if not cancelled:
+                cancelled.append(queue.cancel(self.p, "q-000001"))
+            return files
+
+        with mock.patch.object(queue, "_request_files", side_effect=listed):
+            self.assertEqual(self.run_queue(), ["q-000002"])
+        self.assertEqual(cancelled, [{"request": "q-000001", "cancelled": True}])
+        self.assertEqual([r["request"] for r in self.results()], ["q-000002"])
+        self.assertEqual([e for e in self.outbox_items() if e["type"] == "decide"], [])
+        self.assertEqual(list(self.queue_dir.iterdir()), [])  # 000001.result.json 을 만들지 않았다
+        self.assertEqual((self.rounds(), self.task_state("T-003")["status"]), (1, "dropped"))
+
+    def test_mutual_after_at_once_lets_only_one_in(self):
+        # 두 메인이 서로를 --after 로 거의 함께 넣으면 뒤의 것이 queue.lock 안 다시 검사에서 after_cycle(Codex 설계 리뷰 r4)
+        self.pending("T-001")
+        self.pending("T-002")
+        fh = open(self.drive_dir / "queue.lock", "a+")
+        self.addCleanup(fh.close)
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        mains = [self.hteam_bg("fix", "T-001", "--after", "T-002", as_="main"),
+                 self.hteam_bg("fix", "T-002", "--after", "T-001", as_="main")]
+        time.sleep(2)  # 둘 다 잠금 밖 검사를 지나 queue.lock 을 기다린다
+        fcntl.flock(fh, fcntl.LOCK_UN)
+        outs = sorted((self.finish(proc) for proc in mains), key=lambda r: r[0])
+        self.assertEqual([(code, out.get("status") or out["error"]["code"]) for code, out in outs],
+                         [(0, "deferred"), (3, "after_cycle")], outs)
+        self.assertEqual(self.requests(), ["000001"])
+
+    def test_lock_recheck_sees_a_request_written_after_the_main_check(self):
+        # 잠금 안 다시 검사만 본다: 메인 쪽 검사(route)를 지난 뒤 다른 메인이 fix T-002 --after T-001 을 넣었다
+        self.pending("T-001")
+        self.pending("T-002")
+        self.defer("T-002", "--after", "T-001")
+        with self.assertRaises(HteamError) as cm:
+            queue.submit(self.p, "fix", {"task": "T-001"}, expect_round=0, after="T-002")
+        self.assertEqual((cm.exception.code, cm.exception.exit_code, cm.exception.message),
+                         ("after_cycle", 3, CYCLE.format(after="T-002")))
+        self.assertEqual(self.requests(), ["000001"])
+        self.assertEqual((self.drive_dir / "queue.seq").read_text().strip(), "2")  # 번호를 쓰지 않았다
+        self.assertTrue(queue.after_cycle(self.p, "T-001", "T-003", extra=[("T-003", "T-002")]))  # 아직 쓰지 않은 간선
+        self.assertFalse(queue.after_cycle(self.p, "T-001", "T-003"))
+
+    def test_held_task_is_not_handled_by_reconcile_until_the_request_goes(self):
+        # 대상 태스크 붙잡기(설계 7.1, 8.7): changes 의 자동 fix 를 하지 않는다. 요청이 없어지면 다음 재확인부터 다룬다
+        self.pending("T-001")
+        self.assertEqual(self.hteam("start", "T-001")[0], 0)
+        self.act_work("T-001")
+        self.assertEqual(self.hteam("review", "T-001")[0], 0)
+        self.act_review("T-001", "REQUEST_CHANGES")
+        self.assertEqual(self.hteam("review-finish", "T-001")[1].get("status"), "changes")
+        self.pending("T-002")
+        self.defer("T-001", "--note=선행 뒤 고친다", "--after", "T-002")
+        with self.in_drive():
+            self.make_drive().reconcile_task(self.task_state("T-001"))
+        st = self.task_state("T-001")
+        self.assertEqual((st["status"], st["round"]), ("changes", 1))
+        self.assertEqual(self.main("cancel", "q-000001")[0], 0)
+        with self.in_drive():
+            self.make_drive().reconcile_task(self.task_state("T-001"))
+        st = self.task_state("T-001")
+        self.assertEqual((st["status"], st["round"]), ("working", 2))
 
 
 class TaskNewTest(QueueCase):

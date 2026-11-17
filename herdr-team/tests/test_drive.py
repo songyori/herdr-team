@@ -733,6 +733,21 @@ class RehomeTest(DriveCase):
                 undo()
         self.assertTrue(self.end(d))
 
+    def test_deferred_fix_does_not_keep_the_drive_busy(self):
+        # 12단계(설계 7.1): 미룬 fix(after 가 있고 started_at 이 없음)는 한가함에서 세지 않는다. 시작한 것은 센다
+        d = self.d
+        self.decided(d)
+        queue = self.drive_dir / "queue"
+        queue.mkdir(parents=True, exist_ok=True)
+        request = queue / "000001.json"
+        req = {"id": "q-000001", "command": "fix", "args": {"task": "T-001"}, "at": util.now(), "expect_round": 1,
+               "after": "T-002"}
+        request.write_text(json.dumps({**req, "started_at": util.now()}))
+        self.assertFalse(self.end(d))  # 관제가 실행을 시작했다
+        self.assertFalse((self.drive_dir / "rehome.json").exists())
+        request.write_text(json.dumps(req))
+        self.assertTrue(self.end(d))
+
     def test_ends_even_if_the_record_or_progress_fails(self):
         cases = ((mock.patch.object(drive, "write_json", side_effect=OSError("디스크가 찼다")),
                   "rehome.json 을 쓰지 못했다: 디스크가 찼다. 앞 관제 터미널은 관제 탭에 남는다"),

@@ -1540,7 +1540,7 @@ def _cmd_fix(args) -> dict:
                        lambda req: fix(p, args.task, note=args.note, supplement=args.supplement,
                                        force_round=args.force_round, cli=cli, expect_round=args.expect_round,
                                        nowait=True, force=args.force, base_merge=args.base_merge),
-                       check=check, expect_round=_round(p, args.task, args.expect_round))
+                       check=check, expect_round=_round(p, args.task, args.expect_round), after=args.after)
 
 
 def _cmd_accept(args) -> dict:
@@ -1587,6 +1587,7 @@ def register(sub) -> None:
     s.add_argument("--force-round", action="store_true")
     s.add_argument("--force", action="store_true", help="고정 에이전트의 일하는 세션을 닫고 새 세션으로(설계 5.9.6)")
     s.add_argument("--round", type=int, dest="expect_round", help="지금 라운드가 이것일 때만(설계 6.4)")
+    s.add_argument("--after", help="이 선행 태스크가 done 이 된 뒤에 관제가 한다(메인만, 설계 7.1 12단계)")
     _overrides(s)
     s.set_defaults(func=_cmd_fix)
     s = sub.add_parser("accept")

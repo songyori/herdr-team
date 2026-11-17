@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import time
 
-from . import approval, config, crew, dispatch, drive, outbox, redmine, roles, state, tasks, testgate, workspace
+from . import approval, config, crew, dispatch, drive, outbox, queue, redmine, roles, state, tasks, testgate, workspace
 from .errors import HteamError
 from .horch import Horch
 from .paths import SHIM, find_project
@@ -421,7 +421,10 @@ def status(p) -> dict:
     out = {"tasks": items, "config_error": config_error, "run_error": run_error, "horch_error": horch_error,
            "horch": horch_cmd, "workers_at": workers_at, "drive": drive.view(p, run), "crew": crew_rows,
            "watch_alive": outbox.watch_alive(p),
-           "open_questions": questions, "unread_outbox": outbox.unread(p), "test_gate": testgate.gate_state(p)}
+           "open_questions": questions, "unread_outbox": outbox.unread(p), "test_gate": testgate.gate_state(p),
+           # 미룬 fix(설계 7.1 12단계). 비어도 키가 있다
+           "deferred": [{"request": r.get("id"), "command": r.get("command"), "task": queue._task_of(r),
+                         "after": r.get("after"), "at": r.get("at")} for r in queue.deferred(p)]}
     if slots is not None:
         out["workspace"] = slots
     if cfg is not None and cfg.redmine is not None:  # [redmine] 이 있을 때만 키가 있다. 키 값은 읽지 않는다(설계 8.12)
