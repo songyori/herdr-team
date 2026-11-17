@@ -623,6 +623,21 @@ class RehomeTest(DriveCase):
                                  ("progress", f"관제를 새 메인 터미널({MAIN}) 아래로 다시 띄우려고 끝냈다. watch 가 orphaned "
                                               "로 끝나면 /herdr-team:up 으로 다시 띄운다. 도는 워커는 그대로다"))
 
+    def test_crew_rehome_check_runs_with_the_60_second_check(self):
+        # 12단계(설계 5.9.9 의 3·4): 고정 에이전트 다시 묶기 앞당기기·옛 세션 바꾸기는 관제 다시 묶기 확인(60초)마다 격리해 돈다
+        with mock.patch("hteam.crew.rehome_check") as check:
+            self.d.mail_quiet = False
+            self.d.rehome_step()
+            self.d.rehome_step()  # 60초 안: 다시 보지 않는다
+            self.assertEqual(check.call_count, 1)
+            check.assert_called_with(self.d)
+            check.side_effect = RuntimeError("깨짐")
+            self.d.last_rehome -= drive.REHOME_CHECK_S + 1
+            self.assertFalse(self.d.rehome_step())  # 그 실패가 관제 다시 묶기 확인을 막지 않는다
+            self.assertEqual(check.call_count, 2)
+        self.assertEqual(self.d.rehome_to, MAIN)
+        self.assertTrue(any("crew_rehome 실패: RuntimeError: 깨짐" in x for x in self.log_lines()), self.log_lines())
+
     def test_checks_only_every_60_seconds(self):
         self.d.mail_quiet = True
         self.assertFalse(self.d.rehome_step())

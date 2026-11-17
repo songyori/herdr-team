@@ -16,11 +16,12 @@ import hashlib
 import os
 import re
 import time
+from datetime import datetime
 from typing import Iterator
 
 from . import config, dispatch, drive, herdr, outbox, queue, state
 from .errors import FAIL, MISSING, USAGE, HteamError
-from .horch import Horch, failure
+from .horch import Horch, failure, version_confirmed
 from .paths import TEMPLATES, find_project, handoff_rel
 from .util import (bad_side_file, die_at, dumps, fill, flock, local_age, local_now, now, read_json_strict, write_atomic,
                    write_json)
@@ -53,6 +54,12 @@ ENDED_NO_DONE = "done 없이 끝났다"  # 재확인이 본 끝난 인수인계(
 NOT_STARTED_LIMIT = "작업자 시작을 {n}번 확인하지 못했다"
 # 인수인계 중 대리 보고 쓰기 실패(설계 8.6 표·8.14 의 5, 12단계): 끝나지 않은 인수인계 정리의 실패 갈래(_handoff_failed)로 멈춘다
 RELAY_HANDOFF = "{name} 에이전트 인수인계 중 상태를 Herdr 에 보낼 수 없어(대리 보고 쓰기 실패) 인수인계를 멈췄다"
+# 보고 없는 세션 닫기·다시 묶기 앞당기기·옛 세션 바꾸기(설계 5.9.9 의 2–4 원문, 12단계). 닫기 실패 줄은 로그만이다
+QUIET_CLOSED = "{name} 보고 없는 세션 닫음: 다음 태스크가 새 세션으로 뜬다"
+CLOSE_QUIET_FAILED = "{name} 세션 닫기 실패({n}/{limit}): {code}: {message}"
+REHOME_EARLY = "{name} 다시 묶기: 메인 {main} 아래가 아니다(parent {parent}). {what}"
+RELAY_REPLACE = "{name} 옛 세션 바꾸기: 대리 보고·Stop 기록이 없는 세션이다. {what}"
+SESSION_MARKS = ("relay_ready", "relay_upgrade")  # 그 작업 세션의 표시(5.9.1): terminal 을 비울 때 함께 지운다
 
 
 def blank(name: str) -> dict:
@@ -80,6 +87,10 @@ def edit(p) -> Iterator[dict]:
         data = load(p)
         before = dumps(data)
         yield data
+        for e in data.values():  # 12단계(5.9.1): terminal 이 빈 entry 에는 세션 표시가 남지 않는다(비우는 곳 모두에 맞는다)
+            if isinstance(e, dict) and not e.get("terminal"):
+                for key in SESSION_MARKS:
+                    e.pop(key, None)
         if dumps(data) != before:
             write_json(p.crew_file, data)
 
@@ -177,6 +188,12 @@ def place(p, cfg, role: str, worker: str, *, crew_name: str | None = None) -> di
                 if not cur["terminal_unknown_since"]:
                     cur["terminal_unknown_since"] = local_now()
             return {"kind": "wait", "crew": c, "reason": _reason_unknown(c, e["terminal"])}
+        if unreported(p, e["terminal"], info):
+            # 12단계(5.9.9 의 2): 대리 보고도 없는 세션에는 넣지 않는다. 맡은 일이 없으니 인수인계 없이 닫고 이번 라운드는
+            # 새 세션으로 띄운다. 닫지 못했으면 확인 불가와 같이 기다린다
+            if close_unreported(p, c.name, e):
+                return {"kind": "crew", "crew": c, "mode": "fresh"}
+            return {"kind": "wait", "crew": c, "reason": _reason_unknown(c, e["terminal"])}
         if word(info) in READY:
             if e["terminal_unknown_since"] or e["terminal_unknown_asked"]:
                 with edit(p) as data:
@@ -256,7 +273,8 @@ def after_launch(p, plc: dict, tid: str, rd: dict, res: dict) -> None:
     if plc["mode"] != "fresh":
         with edit(p) as data:
             e = entry_of(data, c.name)
-            e.update(task=tid, dispatch=res["dispatch"])
+            e.update(task=tid, dispatch=res["dispatch"], close_failures=0)
+            e["assigned_since_reset"] = (e.get("assigned_since_reset") or 0) + 1  # 5.9.9 의 3: 리셋 뒤 넣은 태스크
             again = bool(e["layout_error"]) and not e["layout_retried"]
             if again:
                 e["layout_retried"] = True
@@ -265,11 +283,20 @@ def after_launch(p, plc: dict, tid: str, rd: dict, res: dict) -> None:
         return
     space = outbox._run(p).get("team_space")
     tab = agent_tab(p.root, space, c.name)
+    # 12단계(5.9.2 의 3, 설계 3.3): herdr-orch 0.5.0 이상을 확인한 때만 relay_ready(launch-guard 가 HORCH_HOME 을 넣어 띄운
+    # 세션). 확인하지 못하면 적지 않아 옛 세션으로 다룬다(5.9.9 의 4). 잠금 밖에서 묻는다(horch 를 부를 수 있다)
+    ready = version_confirmed(p.horch_home)
     with edit(p) as data:
-        entry_of(data, c.name).update(
+        e = entry_of(data, c.name)
+        e.update(
             terminal=terminal, agent=rd["agent"], model=rd["model"], effort=rd["effort"], space=space, tab=tab, task=tid,
             dispatch=res["dispatch"], launched_at=local_now(), since_reset=0, reset_tasks=[], terminal_argv=None,
-            work_pane=None, layout_error=None, layout_retried=False)
+            work_pane=None, layout_error=None, layout_retried=False, assigned_since_reset=1, close_failures=0)
+        e.pop("relay_upgrade", None)
+        if ready:
+            e["relay_ready"] = True
+        else:
+            e.pop("relay_ready", None)
     die_at("crew_saved")  # 테스트: 상태를 쓴 뒤 argv·탭 이름·배치 전에 죽는다(5.9.2 의 3)
     try:
         argv = herdr.get(terminal).get("argv")
@@ -416,7 +443,10 @@ def check_terminals(d) -> list[tuple[str, str | None, str, str]]:
     """고정 에이전트 터미널 확인. 끝났거나 없거나 lost 면 잊고(로그 한 번), 그때 맡고 있던 태스크를 (태스크, Dispatch, 터미널,
     exited|lost) 로 돌려준다. 확인 불가는 처음 시각을 적고 LIVENESS_UNKNOWN_S 넘게 이어지면 decide 한 번. 확인되면 argv 를
     채우고(없을 때) idle·done·working 이면 두 표시를 지운다. 맡은 태스크 없이 blocked·error·보고 없음이 NO_STATUS_GRACE_S
-    넘게 이어지면 decide 한 번."""
+    넘게 이어지면 decide 한 번.
+    12단계(5.9.9 의 2, 8.7 의 2a): 맡은 태스크가 없을 때 대리 보고도 없는 세션(unreported. 쓰기 실패는 relay-status)을
+    가른다. 리셋 중이 아니면 인수인계 없이 닫고(close_quiet), 리셋 중이면 두며 어느 쪽이든 위 decide 를 하지 않는다. 앞
+    확인에서 닫지 못한 세션(close_failures)도 맡은 일이 없으면 여기서 다시 닫는다."""
     p = d.p
     gone: list[tuple[str, str | None, str, str]] = []
     for name, raw in load(p).items():
@@ -441,6 +471,10 @@ def check_terminals(d) -> list[tuple[str, str | None, str, str]]:
                 d.decide("escalation", None, UNKNOWN_TEXT.format(name=name, terminal=terminal, minutes=int(age // 60)))
                 _mark(p, name, terminal, terminal_unknown_asked=True)
             continue
+        quiet = not e["task"] and unreported(p, terminal, info)  # 맡은 세션은 닫지도 escalation 하지도 않는다
+        if (quiet or e["close_failures"]) and not e["task"] and not e["resetting"]:
+            close_quiet(d, name, e, QUIET_CLOSED.format(name=name) if quiet else None)
+            continue
         fields: dict = {}
         if e["terminal_argv"] is None and info.get("argv") is not None:
             fields["terminal_argv"] = info["argv"]
@@ -448,7 +482,7 @@ def check_terminals(d) -> list[tuple[str, str | None, str, str]]:
         if w in (*READY, "working"):
             if e["terminal_unknown_since"] or e["terminal_unknown_asked"]:
                 fields.update(terminal_unknown_since=None, terminal_unknown_asked=False)
-        elif not e["task"] and not e["terminal_unknown_asked"]:
+        elif not e["task"] and not e["terminal_unknown_asked"] and not quiet:
             ms = info.get("status_ms")
             age = time.time() - ms / 1000 if isinstance(ms, (int, float)) else local_age(e["launched_at"])
             if age is not None and age >= drive.NO_STATUS_GRACE_S:
@@ -465,6 +499,167 @@ def _mark(p, name: str, terminal: str, **fields) -> None:
         e = entry_of(data, name)
         if e["terminal"] == terminal:
             e.update(fields)
+
+
+# --- 보고 없는 세션, 다시 묶기 앞당기기, 옛 세션 바꾸기(5.9.9 의 2–4, 12단계) ---
+def _silent(info: dict) -> bool:
+    """hc get 정보로 본 보고 없는 세션(설계 5.9.9 의 2): status_ms 키가 있고 그 값이 없거나 created_ms 앞이다(작업 터미널은
+    claude 하나만 돈다). 키가 없으면(이 필드를 주지 않는 hc) 가르지 않는다."""
+    if "status_ms" not in info:
+        return False
+    ms, created = info.get("status_ms"), info.get("created_ms")
+    if isinstance(ms, bool) or not isinstance(ms, (int, float)):
+        return True
+    return isinstance(created, (int, float)) and not isinstance(created, bool) and ms < created
+
+
+def _write_failed(p, terminal: str) -> bool:
+    """그 터미널의 대리 보고 쓰기가 실패했다: horch relay-status 기록의 decided 가 write_failed(herdr-orch 16.8, 설계 8.14 의
+    5 의 끝 줄). 기록이 없거나 horch 가 실패하면 False(지금처럼)."""
+    rec = herdr.relay_status(p, terminal)
+    return isinstance(rec, dict) and rec.get("decided") == "write_failed"
+
+
+def unreported(p, terminal: str, info: dict | None) -> bool:
+    """대리 보고도 없는 세션(설계 5.9.9 의 2): hc get 정보로 보고가 없거나(_silent) 대리 보고 쓰기가 실패했다(_write_failed.
+    hc 에는 마지막 대리 상태가 남는다). info 가 없으면(hc 실패) False 다(지금처럼 확인 불가). hc 로 갈리면 horch 를 부르지
+    않는다."""
+    if info is None:
+        return False
+    return _silent(info) or _write_failed(p, terminal)
+
+
+def _closed_fields() -> dict:
+    """인수인계 없이 닫은 세션의 entry 필드(5.9.9 의 2): 터미널을 잊고 리셋을 마친 것으로 둔다(세션 표시는 edit 가 지운다)."""
+    return {"terminal": None, "terminal_argv": None, "work_pane": None, "reset_pending": False, "since_reset": 0,
+            "reset_tasks": [], "assigned_since_reset": 0, "reset_failures": 0, "close_failures": 0,
+            "reset_busy_since": None, "reset_unknown_since": None, "terminal_unknown_since": None,
+            "terminal_unknown_asked": False}
+
+
+def _forget_closed(p, name: str, terminal: str, **extra) -> None:
+    """entry 의 터미널이 그대로일 때만 닫은 세션의 필드를 쓴다."""
+    with edit(p) as data:
+        e = entry_of(data, name)
+        if e["terminal"] == terminal:
+            e.update(_closed_fields(), **extra)
+
+
+def close_quiet(d, name: str, e: dict, done: str | None) -> None:
+    """맡은 일 없는 세션을 인수인계 없이 닫는다(5.9.9 의 2, 3·4 의 닫기). 진행 중 Dispatch 가 없으니 --abandon 없이
+    terminal-close. 성공하면 터미널을 잊고 리셋을 마친 것으로 두고(last_reset_at) done 로그. 실패하면 로그와 close_failures
+    (다음 터미널 확인이 다시 한다). 세 번째 실패면 5.9.7 의 4 와 같은 decide 를 올리고 터미널을 잊는다."""
+    p, terminal = d.p, e["terminal"]
+    code, data = _call(d, "terminal-close", "--terminal", terminal)
+    if code == 0 and data.get("ok"):
+        _forget_closed(p, name, terminal, last_reset_at=local_now())
+        if done:
+            d.log(done)
+        return
+    err = data.get("error") or {}
+    ecode, message = err.get("code") or f"exit_{code}", err.get("message") or ""
+    n = (e["close_failures"] or 0) + 1
+    d.log(CLOSE_QUIET_FAILED.format(name=name, n=n, limit=CLOSE_LIMIT, code=ecode, message=message))
+    if n < CLOSE_LIMIT:
+        return _mark(p, name, terminal, close_failures=n)
+    d.decide("escalation", None, CLEAR_FAILED.format(name=name, code=ecode, message=message))
+    _forget_closed(p, name, terminal)
+
+
+def close_unreported(p, name: str, e: dict) -> bool:
+    """넣기 전 확인(5.9.3 의 2: 배정 place·fix 의 _crew_fix·대기열 drain)이 대리 보고도 없는 세션을 만났고 그 에이전트가 맡은
+    태스크가 없다(5.9.9 의 2): 그 자리에서 인수인계 없이 닫는다(close_quiet). 터미널을 잊었으면(닫았거나 세 번째 실패) True:
+    이번 라운드는 5.9.2 로 새 세션에 띄운다. 닫지 못했으면 False: 넣지 않고 기다린다(확인 불가와 같다)."""
+    close_quiet(drive.Drive(p), name, e, QUIET_CLOSED.format(name=name))
+    return entry(p, name)["terminal"] != e["terminal"]
+
+
+def _stamp(value) -> datetime | None:
+    """저장된 시각 문자열(history·상태의 util.now() 꼴 UTC `Z`, crew.json 의 local_now() 꼴 오프셋 ISO)을 시각으로. 읽지
+    못하거나 오프셋이 없으면 None. 지금 시각에서 뺀 나이가 아니라 저장된 시각끼리 견주려고 쓴다(같은 초를 놓치지 않게)."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        then = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return then if then.tzinfo is not None and then.utcoffset() is not None else None
+
+
+def assigned(p, name: str, raw: dict) -> int:
+    """마지막 리셋·띄운 뒤 그 세션에 넣은 태스크 수(설계 5.9.9 의 3, assigned_since_reset). 0.7.2 전 entry(키 없음)는
+    since_reset 으로 대신하고, 그것도 0 이면: 리셋 기록(last_reset_at)이 없거나 launched_at 이 그보다 늦거나 같으면 1(마지막
+    리셋 뒤 새로 띄웠다. 5.9.2 의 띄우기는 늘 태스크를 넣는다), 아니면 그 에이전트 라운드의 작업 Dispatch 가 last_reset_at 과
+    같은 초이거나 뒤에 working 이 된 history(launched)가 있으면 1, 없으면 0. 저장된 시각끼리 견준다(_stamp)."""
+    value = raw.get("assigned_since_reset")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    since = raw.get("since_reset")
+    if isinstance(since, int) and not isinstance(since, bool) and since > 0:
+        return since
+    reset, launched = _stamp(raw.get("last_reset_at")), _stamp(raw.get("launched_at"))
+    if reset is None or (launched is not None and launched >= reset):
+        return 1
+    for st in state.all_states(p):
+        mine = {rd["work"].get("dispatch") for rd in st["rounds"] if round_crew(rd) == name} - {None}
+        for h in st.get("history") or []:
+            at = _stamp(h.get("at"))
+            if h.get("event") == "launched" and h.get("dispatch") in mine and at is not None and at >= reset:
+                return 1
+    return 0
+
+
+def rehome_check(d) -> None:
+    """다시 묶기 앞당기기와 옛 세션 바꾸기(설계 5.9.9 의 3·4): 관제의 다시 묶기 확인(8.5 의 10, 60초마다)이 부른다.
+    에이전트마다 rehome:<이름> 격리."""
+    for name in list(load(d.p)):
+        d.isolated(f"rehome:{name}", lambda name=name: _rehome_one(d, name))
+
+
+def _rehome_one(d, name: str) -> None:
+    """작업 터미널이 있고 task·queue·resetting·reset_pending 이 비었을 때만 본다. 먼저 옛 세션 바꾸기(5.9.9 의 4): claude
+    이고 relay_ready·relay_upgrade 가 없으면 바꾼다(hc 를 부르지 않는다. 다시 묶기 조건도 맞아도 새 세션이 둘을 함께 푸므로
+    이것 하나만 한다). 아니면 다시 묶기 앞당기기(5.9.9 의 3): main_parent 가 주소 M 이고 entry 의 rehome_main 이 M 이 아니고,
+    작업 터미널(hc get 3초, live)의 parent 로 outbox.moved_main 이 M 이면(parent 가 M 이 아님, M 은 같은 space 의 산 터미널,
+    5.9.7 의 4 의 11단계 보강 세 조건) 바꾼다. 확인하지 못하면 둔다."""
+    p = d.p
+    raw = load(p).get(name)
+    if not isinstance(raw, dict):
+        return
+    e = {**blank(name), **raw}
+    if not e["terminal"] or e["task"] or e["queue"] or e["resetting"] or e["reset_pending"]:
+        return
+    if e["agent"] == "claude" and not raw.get("relay_ready") and not raw.get("relay_upgrade"):
+        return _settle(d, name, raw, lambda what: RELAY_REPLACE.format(name=name, what=what), relay_upgrade=local_now())
+    main = outbox.main_parent(p)
+    if main is None or raw.get("rehome_main") == main:
+        return
+    try:
+        info = herdr.get(e["terminal"], timeout=3)
+    except HteamError as exc:
+        if exc.exit_code == MISSING:
+            raise
+        return
+    if info.get("state") != "live":
+        return  # 끝난 터미널은 재확인의 터미널 확인이 잊는다
+    parent = outbox._parent_ref(info.get("parent"))
+    if outbox.moved_main(p, parent, e["space"]) != main:
+        return
+    _settle(d, name, raw, lambda what: REHOME_EARLY.format(name=name, main=main, parent=parent or "없음", what=what),
+            rehome_main=main)
+
+
+def _settle(d, name: str, raw: dict, line, **mark) -> None:
+    """다시 묶기 앞당기기·옛 세션 바꾸기의 처리(5.9.9 의 3·4): 리셋 뒤 넣은 태스크가 있으면(assigned ≥ 1) reset_pending(지금
+    리셋 흐름의 clear 단계가 parent_changed·relay_missing 으로 닫는다), 없으면 인수인계 없이 닫는다(새 대화가 없어 인수인계가
+    앞 파일보다 나을 것이 없다). 표시(mark: rehome_main 또는 relay_upgrade)를 먼저 한 번 쓴다(리셋이 실패·취소돼도 되풀이하지
+    않는다). 로그 line(what)."""
+    p, terminal = d.p, raw["terminal"]
+    close = assigned(p, name, raw) == 0
+    _mark(p, name, terminal, **mark, **({} if close else {"reset_pending": True}))
+    d.log(line("닫는다" if close else "리셋을 건다"))
+    if close:
+        close_quiet(d, name, entry(p, name), None)
 
 
 # --- status(8.3) ---
@@ -549,6 +744,13 @@ def begin_reset(d, cfg, name: str) -> None:
     if verdict == "gone":
         return _skip(d, name)
     w = word(info) if verdict == "live" else None
+    if verdict == "live" and (_silent(info) or (w in READY and _write_failed(p, e["terminal"]))):
+        # 12단계(5.9.9 의 2): 대리 보고도 없는 세션에는 인수인계를 넣을 수 없다. 30분 대기 없이 두면 맡은 일이 없으니 재확인의
+        # 터미널 확인이 인수인계 없이 닫는다. 쓰기 실패는 넣기 직전(idle·done)에만 relay-status 로 본다(틱마다 horch 를
+        # 부르지 않게. 일하는 중으로 남은 쓰기 실패 세션도 재확인이 닫는다)
+        if e["reset_busy_since"] or e["reset_unknown_since"]:
+            _set(p, name, reset_busy_since=None, reset_unknown_since=None)
+        return None
     if w in READY:
         return _insert(d, cfg, name, e)
     busy = w in ("working", "blocked")  # 그 밖(hc 실패·판정 불가·error·보고 없음)은 확인 불가
@@ -570,7 +772,8 @@ def begin_reset(d, cfg, name: str) -> None:
 def _skip(d, name: str) -> None:
     """비울 세션이 없다(터미널 없음·끝남·lost·terminal_gone): 리셋을 마친 것으로 둔다."""
     _set(d.p, name, reset_pending=False, reset_failures=0, since_reset=0, reset_tasks=[], terminal=None,
-         terminal_argv=None, work_pane=None, resetting=None, reset_busy_since=None, reset_unknown_since=None)
+         terminal_argv=None, work_pane=None, resetting=None, reset_busy_since=None, reset_unknown_since=None,
+         assigned_since_reset=0)
     d.log(f"{name} 리셋 시작: skipped")
 
 
@@ -628,8 +831,23 @@ def _resume_start(d, cfg, name: str, e: dict) -> None:
 
 def _reset_done(d, name: str, text: str, **fields) -> None:
     _set(d.p, name, resetting=None, reset_pending=False, since_reset=0, reset_tasks=[], last_reset_at=local_now(),
-         reset_failures=0, close_failures=0, reset_busy_since=None, reset_unknown_since=None, **fields)
+         reset_failures=0, close_failures=0, reset_busy_since=None, reset_unknown_since=None, assigned_since_reset=0,
+         **fields)
     d.log(f"{name} 리셋: {text}")
+
+
+def _unreported_now(p, terminal: str) -> bool:
+    """clear 단계의 바쁨 판정: 그 작업 터미널이 대리 보고도 없는 세션(5.9.9 의 2)인가. 대리 보고 쓰기 실패면 hc 를 부르지
+    않고 True, 아니면 hc get(3초)의 _silent. hc 실패면 False(지금처럼 바쁨)."""
+    if _write_failed(p, terminal):
+        return True
+    try:
+        info = herdr.get(terminal, timeout=3)
+    except HteamError as exc:
+        if exc.exit_code == MISSING:
+            raise
+        return False
+    return _silent(info)
 
 
 def _parent_changed(p, e: dict) -> bool:
@@ -659,6 +877,12 @@ def _clear(d, name: str) -> None:
     reason, terminal = res.get("clear_error"), e["terminal"]
     if not terminal:  # 그 사이 재확인이 끝난 터미널을 잊었다: 비울 세션이 없다
         return _reset_done(d, name, f"new_terminal({reason or 'terminal_gone'})", terminal_argv=None, work_pane=None)
+    if e["close_failures"] == 0 and reason is None and e["agent"] == "claude" and not e.get("relay_ready"):
+        # 12단계(5.9.9 의 4): 대리 보고·Stop 기록이 없는 옛 세션은 비우지 않고 닫아 다음 태스크가 새 세션으로 뜬다. 닫기
+        # 실패는 다른 clear_error 와 같은 세 번 규칙이다
+        reason = "relay_missing"
+        res = {**res, "clear_error": reason}
+        _set(p, name, resetting=res)  # 닫기 전에 죽으면 다시 뜬 관제가 닫기부터 한다
     if e["close_failures"] == 0 and reason is None and not res.get("rehome") and _parent_changed(p, e):
         # 메인이 바뀌었다: 비우지 않고 닫아 다음 태스크가 새 메인 아래 새 세션으로 띄운다(인수인계 파일은 그대로 읽는다)
         reason = "parent_changed"
@@ -674,7 +898,9 @@ def _clear(d, name: str) -> None:
             return _reset_done(d, name, f"reset(turn {data.get('turn')}, {data.get('seconds')}초)")
         reason = (data.get("error") or {}).get("code") or f"exit_{code}"
         w = data.get("status")
-        if reason == "terminal_not_ready" and w in ("working", "blocked"):
+        if reason == "terminal_not_ready" and w in ("working", "blocked") and not _unreported_now(p, terminal):
+            # 12단계: 대리 보고도 없는 세션(인수인계 done 뒤 Stop 쓰기 실패로 옛 working 이 남았다 등)은 상태가 바뀌지 않으므로
+            # 바쁨으로 기다리지 않고 아래 닫기로 간다(인수인계 파일은 그대로다)
             # 에이전트는 done 명령을 턴 안에서 부른다(6단계 실환경): 아무것도 치지 않았으니 세션을 닫지 않고 2 의 바쁨처럼
             # 미룬다. clear 단계로 남아 다음 틱에 다시 하고, RESET_BUSY_S 가 지나면 아래 닫기로 간다
             since = e["reset_busy_since"]
@@ -856,8 +1082,10 @@ def not_started(d, tid: str, did: str) -> bool:
     w = word(info)
     if abandon and _started(row, rd, info, w):
         return _went_in(d, tid, did)
-    if w not in READY:
-        return False  # blocked·error·보고 없음은 resend 를 두어 다음 재확인이 다시 본다
+    if w not in READY or unreported(p, e["terminal"], info):
+        # blocked·error·보고 없음은 resend 를 두어 다음 재확인이 다시 본다. 대리 보고도 없는 세션(5.9.9 의 2. 쓰기 실패면 hc 에
+        # 옛 done 이 남는다)은 넣은 입력이 들어갔는지 알 수 없어 다시 넣지 않는다(이 태스크를 맡은 세션이라 닫지도 않는다)
+        return False
     if n >= drive.UNKNOWN_START_LIMIT:
         d.decide("escalation", tid, NOT_STARTED_LIMIT.format(n=n),
                  commands=[d._fix_cmd(st), d._fix_cmd(st, force=True), f"hteam drop {tid}"])

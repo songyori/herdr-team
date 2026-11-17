@@ -6,9 +6,11 @@ import json
 import re
 import time
 from datetime import datetime, timedelta
+from unittest import mock
 
 from tests.helpers import BASE_CONFIG, CREW_CONFIG, DRIVE, MAIN, TeamCase
-from hteam import compose, config, crew, specs, state
+from hteam import compose, config, crew, specs, state, tasks
+from hteam.errors import HteamError
 from hteam.paths import Project
 
 LOCAL_ISO = r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d"
@@ -24,6 +26,15 @@ HANDOFF_LINE = ("먼저 `docs/handoff/production.md` 를 읽는다. 생산 에�
 def ago(seconds: float) -> str:
     """로컬 오프셋 ISO 8601 초 단위(crew.json 의 시각, 설계 5.9.1) seconds 초 전."""
     return (datetime.now().astimezone() - timedelta(seconds=seconds)).isoformat(timespec="seconds")
+
+
+def relay_failed_on(terminal: str):
+    """그 터미널의 대리 보고 쓰기가 실패했다(12단계): horch relay-status 의 기록 decided 가 write_failed 다(herdr-orch 16.8,
+    herdr.relay_status 가 준다). 이 프로세스의 herdr.relay_status 만 바꾼다(hteam 하위 프로세스에는 닿지 않는다). hc 에는
+    마지막 대리 상태가 그대로 남는다. with 블록으로 쓴다."""
+    rec = {"terminal": terminal, "pid": 4242, "tty": "/dev/ttys042", "started_ms": 1000, "decided": "write_failed",
+           "pending": "idle", "last": "done", "at": 2000, "blockers": {}, "perm_tools": {}, "write_failures": 3}
+    return mock.patch("hteam.herdr.relay_status", side_effect=lambda p, t: dict(rec) if t == terminal else None)
 
 
 class CrewCase(TeamCase):
@@ -958,7 +969,7 @@ class TerminalCheckTest(CrewCase):
 
     def test_idle_agent_stuck_decides_once(self):
         old_ms = int((datetime.now() - timedelta(seconds=120)).timestamp() * 1000)
-        self.update_terminal(self.t, status="blocked", status_ms=old_ms)
+        self.update_terminal(self.t, status="blocked", status_ms=old_ms, created_ms=old_ms - 1000)  # 이 세션이 보고했다
         self.check()
         self.check()
         d = [x for x in self.decides() if "production 에이전트 작업 세션이 태스크 없이" in x["summary"]]
@@ -990,6 +1001,84 @@ class TerminalCheckTest(CrewCase):
         self.check()
         e = self.entry()
         self.assertEqual((e["terminal_unknown_since"], e["terminal_unknown_asked"]), (None, False))
+
+    # --- 12단계: 대리 보고도 없는 세션(설계 5.9.9 의 2, 15.1)과 세션 표시(5.9.1) ---
+    def unreport(self, **fields) -> None:
+        """작업 세션이 Herdr 에 보고하지 않는다: 터미널 created_ms 뒤 status_ms 가 없다."""
+        self.update_terminal(self.t, **{"status": None, "status_ms": None,
+                                        "created_ms": int(time.time() * 1000) - 1000, **fields})
+
+    def closed(self) -> None:
+        e = self.entry()
+        self.assertEqual((e["terminal"], e["terminal_argv"], e["work_pane"], e["reset_pending"], e["since_reset"],
+                          e["reset_tasks"], e["assigned_since_reset"], e["close_failures"], e["resetting"]),
+                         (None, None, None, False, 0, [], 0, 0, None))
+        self.assertNotIn("relay_ready", e)  # 터미널을 비우면 세션 표시도 지운다
+        self.assertRegex(e["last_reset_at"], LOCAL_ISO)
+        self.assertNotIn(self.t, self.terminals())  # terminal-close 가 끄고 지웠다
+
+    def test_new_session_marks_are_dropped_with_the_terminal(self):
+        self.assertTrue(self.entry()["relay_ready"])  # 5.9.2 의 띄우기(herdr-orch 0.5.0 launch-guard 가 HORCH_HOME 을 넣었다)
+        self.set_entry(relay_upgrade=ago(5))
+        self.update_terminal(self.t, state="finished")
+        self.check()
+        e = self.entry()
+        self.assertIsNone(e["terminal"])
+        self.assertNotIn("relay_ready", e)
+        self.assertNotIn("relay_upgrade", e)
+
+    def test_unreported_free_session_is_closed_without_handoff(self):
+        self.set_entry(reset_pending=True, launched_at=ago(600))
+        self.unreport()
+        self.check()
+        self.closed()
+        self.assertEqual(self.decides(), [])  # "태스크 없이 보고 없음" escalation 대신 닫는다
+        self.assertEqual(sum(x.endswith(" production 보고 없는 세션 닫음: 다음 태스크가 새 세션으로 뜬다")
+                             for x in self.log_lines()), 1)
+        self.assertFalse(any("리셋 시작" in x for x in self.log_lines()))  # 인수인계를 넣지 않았다
+        out = self.started("T-002")  # 다음 태스크가 새 세션으로 뜬다
+        self.assertNotEqual(out["terminal"], self.t)
+        self.assertTrue(self.entry()["relay_ready"])
+
+    def test_status_from_before_the_session_counts_as_unreported(self):
+        old_ms = int((datetime.now() - timedelta(seconds=120)).timestamp() * 1000)
+        self.update_terminal(self.t, status="blocked", status_ms=old_ms, created_ms=old_ms + 1000)
+        self.check()
+        self.closed()
+        self.assertEqual(self.decides(), [])
+
+    def test_write_failed_session_is_closed(self):
+        with relay_failed_on(self.t):
+            self.check()  # hc 에는 마지막 대리 상태(done)가 남아 있다
+        self.closed()
+
+    def test_unreported_session_with_task_or_reset_is_kept_without_escalation(self):
+        self.unreport()
+        self.set_entry(task="T-009", dispatch="dsp-x", launched_at=ago(600))
+        self.check()
+        self.check()
+        self.assertEqual((self.entry()["terminal"], self.decides()), (self.t, []))
+        self.set_entry(task=None, dispatch=None, resetting={"step": "handoff", "dispatch": "dsp-y",
+                                                            "title": "[handoff] production s1", "at": ago(5)})
+        self.check()
+        self.assertEqual((self.entry()["terminal"], self.decides()), (self.t, []))
+        self.set_entry(resetting=None)  # worker_done·인수인계 끝 뒤(맡은 일이 없다)
+        self.check()
+        self.closed()
+
+    def test_close_failure_retries_then_decides_and_forgets_on_third(self):
+        self.unreport()
+        self.fail_hc("kill", "timeout")  # terminal-close 가 실패한다
+        self.check()
+        self.assertEqual((self.entry()["terminal"], self.entry()["close_failures"]), (self.t, 1))
+        self.check()
+        self.assertEqual((self.entry()["close_failures"], self.decides()), (2, []))
+        self.check()
+        e = self.entry()
+        self.assertEqual((e["terminal"], e["close_failures"], e["reset_pending"]), (None, 0, False))
+        (x,) = self.decides()
+        self.assertTrue(x["summary"].startswith("production 에이전트 세션을 비우지도 닫지도 못했다: "), x)
+        self.assertEqual(sum("production 세션 닫기 실패(" in line for line in self.log_lines()), 3)
 
     def test_reconcile_runs_crew_check_and_handles_assigned_task(self):
         self.set_entry(task=None)
@@ -1059,6 +1148,75 @@ class RelayCrewTest(CrewCase):
         self.assertEqual((code, res["status"]), (0, "dropped"), res)
         self.assertNotIn(self.t, self.terminals())
         self.assertEqual((self.entry()["terminal"], self.entry()["task"]), (None, None))
+
+
+class QuietInsertTest(CrewCase):
+    """12단계(설계 5.9.9 의 2): 넣기 전 확인(5.9.3 의 2: 배정·fix·대기열)이 대리 보고도 없는 세션을 보면 그 세션에 넣지
+    않는다. 맡은 일이 없으면 인수인계 없이 닫고 이번 라운드를 새 세션으로 띄운다(재확인보다 먼저 와도). 쓰기 실패 세션은
+    hc 에 마지막 대리 상태(done)가 남아 넣기 준비로 보인다. 쓰기 실패는 relay_failed_on 으로 흉내 내므로 그 시험은 배정·fix
+    를 이 프로세스에서 부른다."""
+
+    def setUp(self):
+        super().setUp()
+        self.t = self.first("T-001")  # 생산 에이전트: T-001 을 마치고(실패 done) 맡은 일 없이 done 으로 쉰다
+
+    def closed_and_moved(self, new: str) -> None:
+        self.assertNotEqual(new, self.t)
+        self.assertNotIn(self.t, self.terminals())  # terminal-close 가 끄고 지웠다
+        self.assertEqual(self.entry()["terminal"], new)
+        self.assertEqual([s for s in self.hc_state()["sent"] if s["terminal"] == self.t], [])  # 옛 세션에 넣지 않았다
+        self.assertEqual(sum(x.endswith(" production 보고 없는 세션 닫음: 다음 태스크가 새 세션으로 뜬다")
+                             for x in self.log_lines()), 1)
+        self.assertFalse(any("리셋 시작" in x for x in self.log_lines()))  # 인수인계 없음
+
+    def test_start_closes_the_session_and_launches_a_new_one(self):
+        self.task("T-002")
+        with self.in_drive(), relay_failed_on(self.t):
+            out = tasks.start_command(self.p, "T-002", {})
+        self.closed_and_moved(out["terminal"])
+        self.assertEqual((self.rnd("T-002")["crew"], self.entry()["task"]), ("production", "T-002"))
+        self.assertTrue(self.entry()["relay_ready"])
+
+    def test_fix_of_a_free_agent_closes_the_session_and_launches_a_new_one(self):
+        with self.in_drive(), relay_failed_on(self.t):
+            res = tasks.fix(self.p, "T-001", note="다시", supplement=None, force_round=False, cli={}, nowait=True)
+        self.closed_and_moved(res["terminal"])
+        self.assertEqual(self.task_state("T-001")["round"], 2)
+
+    def test_queued_fix_drained_before_reconcile_goes_to_a_new_session(self):
+        self.started("T-002")  # 같은 세션에 넣었다(맡은 태스크 T-002)
+        code, res = self.hteam("fix", "T-001", "--note=다시")
+        self.assertEqual((code, res["status"]), (0, "queued"), res)
+        self.work("T-002")
+        self.free("T-002")
+        sent = len([s for s in self.hc_state()["sent"] if s["terminal"] == self.t])
+        # 그 세션이 보고하지 않는다(status_ms 없음). 재확인 전에 start-ready 의 대기열 비우기가 온다
+        self.update_terminal(self.t, status=None, status_ms=None, created_ms=int(time.time() * 1000) - 1000)
+        code, res = self.hteam("start-ready")
+        self.assertEqual(code, 0, res)
+        e = self.entry()
+        self.assertEqual((e["task"], e["queue"]), ("T-001", []), e)
+        self.assertNotEqual(e["terminal"], self.t)
+        self.assertEqual(len([s for s in self.hc_state()["sent"] if s["terminal"] == self.t]), sent)
+        self.assertEqual(self.task_state("T-001")["round"], 2)
+
+    def test_fix_of_the_held_task_refuses_without_force(self):
+        self.started("T-002")
+        with self.in_drive(), relay_failed_on(self.t), self.assertRaises(HteamError) as cm:
+            tasks.fix(self.p, "T-002", note="x", supplement=None, force_round=False, cli={}, nowait=True)
+        self.assertEqual(cm.exception.code, "worker_active")
+        self.assertIn("(보고 없음)", cm.exception.message)
+        self.assertEqual(self.entry()["terminal"], self.t)  # 일하는 중일 수 있어 닫지 않는다(--force 는 지금처럼 닫는다)
+
+    def test_close_failure_waits_instead_of_inserting(self):
+        self.fail_hc("kill", "timeout")  # terminal-close 가 실패한다
+        self.task("T-002")
+        with self.in_drive(), relay_failed_on(self.t):
+            out = tasks.start_command(self.p, "T-002", {})
+        self.assertEqual((out["status"], out["reason"]), ("waiting", "agent"), out)
+        e = self.entry()
+        self.assertEqual((e["terminal"], e["task"], e["close_failures"]), (self.t, None, 1))
+        self.assertEqual([s for s in self.hc_state()["sent"] if s["terminal"] == self.t], [])
 
 
 class StatusCrewTest(CrewCase):

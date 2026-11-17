@@ -604,8 +604,9 @@ def drain(p, cfg) -> list[dict]:
             continue
         if e["terminal"]:
             verdict, info = crew.probe(e["terminal"], e["terminal_argv"])
-            if verdict == "unknown" or (verdict == "live" and crew.word(info) not in crew.READY):
-                continue
+            if verdict == "unknown" or (verdict == "live" and crew.word(info) not in crew.READY
+                                        and not crew.unreported(p, e["terminal"], info)):
+                continue  # 대리 보고도 없는 세션은 꺼낸다: fix(_crew_fix)가 닫고 새 세션으로 띄운다(5.9.9 의 2)
         try:
             res = fix(p, tid, note=q.get("note"), supplement=q.get("supplement"), force_round=bool(q.get("force_round")),
                       cli={}, from_queue=True, request=q.get("request"), nowait=True)
@@ -898,13 +899,19 @@ def _crew_fix(p, h, tid: str, member, st: dict, *, force: bool, from_queue: bool
                              "상태를 확인하지 못했다", FAIL, "잠시 뒤 다시 한다")
         return None, False
     word = crew.word(info)
-    if word in crew.READY:
+    quiet = crew.unreported(p, e["terminal"], info)
+    if quiet and not held:
+        # 12단계(5.9.9 의 2): 대리 보고도 없는 세션에는 넣지 않는다. 맡은 일이 없으니 인수인계 없이 닫고 새 세션으로 띄운다.
+        # 닫지 못했으면 대기열에서 기다린다. 이 태스크를 맡은 세션이면 일하는 중일 수 있어 아래 worker_active 다
+        return (fresh, False) if crew.close_unreported(p, member.name, e) else (None, False)
+    if word in crew.READY and not quiet:
         if held:  # 떼고 바로 넣는다(5.9.5): 버린 Dispatch 에서는 worker_done 이 오지 않으므로 맡은 태스크도 비운다
             _keep_abandon(h, did)
             crew.free(p, tid)
         return {"kind": "crew", "crew": member, "mode": "insert", "terminal": e["terminal"], "entry": e}, False
     if held:
-        raise HteamError("worker_active", f"{tid}: 고정 에이전트가 아직 이 태스크를 하고 있을 수 있다({word or '보고 없음'}). "
+        shown = None if quiet else word
+        raise HteamError("worker_active", f"{tid}: 고정 에이전트가 아직 이 태스크를 하고 있을 수 있다({shown or '보고 없음'}). "
                          "worker_done 을 기다린다. 지금 고쳐야 하면 --force(세션을 닫고 새 세션으로 띄운다)", CONFLICT)
     return None, False
 

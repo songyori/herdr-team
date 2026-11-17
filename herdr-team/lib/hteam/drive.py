@@ -1954,12 +1954,15 @@ class Drive:
         """틱 10(설계 8.13): REHOME_CHECK_S 마다 후보를 보고, 같은 M 이 두 번 연달아 후보면 다시 묶기로 정한다(로그 한 줄).
         정했으면 틱 끝마다 main_parent 가 아직 M 이고 한가하고 메인 watch 가 돌 때 끝낸다(rehome.json·progress·로그 뒤 True:
         관제가 exit 0 으로 끝난다). 계속 바쁘거나 watch 가 없으면 기다리기만 한다(상한 없음). Run 에 묶이지 않은 관제 객체
-        (bound_at 없음)는 아무것도 하지 않는다."""
+        (bound_at 없음)는 아무것도 하지 않는다. 12단계(5.9.9 의 3·4): 확인마다 먼저 고정 에이전트 다시 묶기 앞당기기·옛 세션
+        바꾸기(crew.rehome_check)를 격리해 한다."""
+        from . import crew  # crew 가 이 모듈을 쓴다
         if self.bound_at is None:
             return False
         every = env_float("HTEAM_REHOME_CHECK_S", REHOME_CHECK_S)
         if self.last_rehome is None or time.monotonic() - self.last_rehome >= every:
             self.last_rehome = time.monotonic()
+            self.isolated("crew_rehome", lambda: crew.rehome_check(self))
             found = self._rehome_candidate()
             if found is None:
                 self.rehome_seen = self.rehome_to = None
