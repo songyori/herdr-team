@@ -49,6 +49,8 @@ class ColorTest(unittest.TestCase):
         self.assertEqual(color.parse("oklch(50% -0.2 30)"), (0.5, 0.0, 0.0))
         for text in ("rgb(255 0 0 / 50%)", "oklch(0.6 0.15 30 / 0.8)"):
             self.assertIsNotNone(color.parse(text), text)
+        self.assertEqual(color.parse("oklch(0.6 0.15 30 / none)"), color.parse("oklch(0.6 0.15 30)"))
+        self.assertEqual(color.parse("rgb(255 0 0 / NONE)"), color.parse("rgb(255 0 0)"))
         for text in ("rgba(255,0,0,nan)", "oklch(0.6 0.15 30 / inf)", "rgb(255 0 0 garbage garbage)",
                      "rgb(255 0 0 1 1)", "rgb(255 0 0 x)", "rgb(255 0)"):
             self.assertIsNone(color.parse(text), text)

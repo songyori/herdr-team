@@ -78,7 +78,7 @@ def _parse(text: str) -> LCH | None:
     if len(args) not in (3, 4):
         return None
     try:
-        if len(args) == 4:  # 알파(수 또는 %)는 유한해야 하고 버린다
+        if len(args) == 4 and args[3].lower() != "none":  # 알파(수 또는 %, 또는 none)는 유한해야 하고 버린다
             _num(args[3][:-1] if args[3].endswith("%") else args[3])
         if name.startswith("rgb"):
             return from_srgb(*(_num(x[:-1]) / 100 if x.endswith("%") else _num(x) / 255 for x in args[:3]))
