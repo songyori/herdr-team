@@ -109,6 +109,10 @@ class Project:
     def role_doc(self, role: str) -> Path:
         return self.roles / f"{role}.md"
 
+    def project_rules(self, role: str) -> Path:
+        """프로젝트가 그 직무에 더한 규칙(설계 5.11 의 1, 13단계). hteam 은 만들거나 고치지 않는다(upgrade 옮기기만 쓴다)."""
+        return self.team / "project-rules" / f"{role}.md"
+
     def state_ref(self, rel: str) -> str:
         """세션(워커·리뷰어)에게 주는 상태 루트(메인) 파일 rel(프로젝트 기준 상대 경로)의 경로. 두 루트가 같으면 rel 그대로,
         다르면(슬롯) 작업 루트에서 메인 루트로 가는 상대 경로 뒤에 rel(`../../../../.herdr-team/state/…` 꼴)이다. 슬롯 세션의

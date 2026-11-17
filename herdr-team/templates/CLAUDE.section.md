@@ -39,6 +39,7 @@
 - decide 가 열린 동안 관제는 그 태스크를 자동으로 다루지 않는다. 처리했으면 명령이 적히지 않은 escalation 도 반드시 `hteam answer <id> "<처리 내용>"` 으로 닫는다.
 - 다른 태스크가 끝나기를 기다렸다가 할 fix 는 머릿속에 두지 않고 `.herdr-team/bin/hteam fix T-xxx [플래그] --after T-yyy` 로 관제에 맡긴 뒤 그 decide 를 닫는다(결과는 watch 의 `result` 로 온다. 거두려면 `.herdr-team/bin/hteam cancel <요청 id>`). 그 밖의 조건을 기다려야 하면 decide 를 열어 둔 채 기다리지 말고 사용자에게 알린다.
 - 플러그인을 올린 뒤 사용자가 업그레이드를 부탁하면 `.herdr-team/bin/hteam upgrade` 를 실행해 바꾼 것·건너뛴 것·`manual` 을 보여 주고, 사용자가 확인하면 바뀐 파일을 경로 지정 커밋한다(README "업그레이드"). `CLAUDE.md` 절이 바뀌었으면 사용자에게 메인 세션을 새로 열라고 알린다(메인 규칙은 세션을 시작할 때 읽힌다).
+- 사용자가 이 프로젝트에 맞는 직무 규칙(기기 사용, 스택, 하지 말 것 등)을 더하라고 하면 직무 문서(`.herdr-team/roles/<직무>.md`)가 아니라 `.herdr-team/project-rules/<직무>.md` 에 쓰고 커밋한다. 직무 문서는 upgrade 가 템플릿으로 바꾸고, project-rules 는 그 직무 워커의 사양에 직무 문서 뒤로 붙는다.
 - 관제는 훅이 확인하고 꺼져 있으면 자동으로 다시 띄운다(config.toml `[drive] auto_up`). 훅 안내가 없는데 관제 상태가 의심되면 `/herdr-team:up` 을 실행한다. 메인을 다시 열었는데 답하지 않은 질문이 있으면 `/herdr-team:up` 이 다시 묻는다.
 - 훅(herdr-orch)이 이 세션의 상태를 Herdr 에 보낼 수 없다고 알리면(대리 보고도 못 하는 드문 경우) 사용자에게 그대로 전한다. `/herdr-team:up` 의 `main_unreported` 경고와 메인 대리 보고 설정이 이 세션에 아직 없다는 안내(`relay_env_new`)도 같다. 사용자가 일이 덜 몰린 때 `/exit` 뒤 같은 터미널에서 `claude --resume` 으로 다시 열면 풀린다. 메인이 스스로 세션을 끝내지 않는다.
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 
 from . import designdiff, gitio, lint, specs, state, testgate, textlint, workspace
-from .errors import USAGE, HteamError
+from .errors import FAIL, USAGE, HteamError
 from .paths import SHIM, TEMPLATES, handoff_rel, report_rel, review_rel
 from .util import fill, show
 
@@ -25,6 +25,27 @@ def role_doc(p, role: str) -> str:
         return path.read_text(encoding="utf-8").rstrip() + "\n"
     except FileNotFoundError:
         raise HteamError("no_role_doc", f"직무 문서가 없다: {path.relative_to(p.root)}", USAGE) from None
+
+
+PROJECT_RULES_NOTE = ("아래는 이 프로젝트가 더한 {role} 규칙이다(.herdr-team/project-rules/{role}.md). 이 사양의 작업 규칙"
+                      "(소유 경로, 커밋, 보고서, done)은 바꾸지 않는다.")
+
+
+def project_rules(p, role: str) -> str | None:
+    """프로젝트가 더한 직무 규칙(설계 5.11 의 1). 상태 루트의 파일이다. 없거나 공백뿐이면 None. 있는데 읽지 못하면 시작을 멈춘다
+    (project_rules_unreadable): 기기 사용 금지 같은 안전 규칙을 빼고 일하게 두지 않는다."""
+    path = p.project_rules(role)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        if path.is_symlink():  # 끊어진 심볼릭 링크: 규칙이 있다고 정했는데 읽지 못한다
+            raise HteamError("project_rules_unreadable",
+                             f"프로젝트 규칙을 읽지 못했다: {path.relative_to(p.root)} (끊어진 심볼릭 링크)", FAIL) from None
+        return None
+    except (OSError, UnicodeDecodeError) as exc:
+        raise HteamError("project_rules_unreadable",
+                         f"프로젝트 규칙을 읽지 못했다: {path.relative_to(p.root)} ({exc.__class__.__name__})", FAIL) from None
+    return text.strip() + "\n" if text.strip() else None
 
 
 TEAM_REF = re.compile(r"`\.herdr-team/(?!bin/)")  # 글 안의 팀 파일 경로. shim(`.herdr-team/bin/hteam`)은 슬롯 것을 부른다
@@ -180,9 +201,13 @@ def work_spec(p, cfg, spec, rd: dict, owns: list[str], st: dict | None = None) -
                     "직무 문서의 질문 형식). 메인에게 물을 것은 프리앰블의 ask 명령을 쓴다.")
     else:
         ask_rule = "막히면 프리앰블의 ask 명령으로 메인에게 묻고 답을 기다린다."
-    parts = [team_refs(p, role_doc(p, spec.role)), "---", "",
-             f"# 태스크 {tid} · 라운드 {n} — [{cfg.role_title(spec.role)}] {spec.title}", "",
-             team_refs(p, spec.body.strip()), ""]
+    parts = [team_refs(p, role_doc(p, spec.role))]
+    extra_rules = project_rules(p, spec.role)  # 직무 문서 바로 뒤(설계 5.11 의 1)
+    if extra_rules:
+        parts += [PROJECT_RULES_NOTE.format(role=spec.role), "", team_refs(p, extra_rules)]
+    parts += ["---", "",
+              f"# 태스크 {tid} · 라운드 {n} — [{cfg.role_title(spec.role)}] {spec.title}", "",
+              team_refs(p, spec.body.strip()), ""]
     parts.append("## 선행 태스크")
     if spec.depends_on:
         parts.append("먼저 `docs/planning/contracts.md`(있으면)와 선행 태스크의 보고서를 읽는다:")
@@ -485,6 +510,8 @@ def review_prompt(p, cfg, spec, rd: dict, att: dict, rounds: list[dict] | None =
                 issue=f"\n- {issue}" if issue else "", extra=team_refs(p, extra),
                 spec_path=p.state_ref(f".herdr-team/tasks/{tid}.md"),
                 role_doc=p.state_ref(f".herdr-team/roles/{spec.role}.md"),
+                project_rules=(f"\n- 프로젝트 규칙: `{p.state_ref(f'.herdr-team/project-rules/{spec.role}.md')}`"
+                               if p.project_rules(spec.role).is_file() else ""),
                 report=report_rel(tid), prior=", ".join(f"`{x}`" for x in prior) or "없음", request=request,
                 workspace=review_workspace(cfg, st) + (f"\n- {merged}" if merged else ""),
                 request_rule=request_rule, verify_rule=verify_rule(p, spec.role, tests), tests=tests_section(tests, p),

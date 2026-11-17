@@ -16,7 +16,7 @@ REVIEW_FILE: {{review_file}}
 ## 태스크
 - {{task_id}} 라운드 {{round}} 리뷰 시도 {{attempt}} — [{{role}}] {{title}}{{issue}}
 - 사양: `{{spec_path}}`
-- 직무 문서: `{{role_doc}}`
+- 직무 문서: `{{role_doc}}`{{project_rules}}
 - 워커 보고서: `{{report}}`
 - 이전 리뷰: {{prior}}{{request}}{{workspace}}
 
@@ -30,7 +30,7 @@ diff 는 `git show <sha>` 로 본다.
 
 ## 기준
 1. 사양의 Acceptance 를 실제로 충족하는가. {{verify_rule}}
-2. 직무 문서의 규칙과 품질 기준을 지키는가.
+2. 직무 문서와 프로젝트 규칙(위에 있으면)의 규칙과 품질 기준을 지키는가.
 3. 버그, 보안, 회귀 위험.
 4. 수정 라운드면 이전 리뷰의 P1 지적이 모두 반영됐는가.{{request_rule}}
 
