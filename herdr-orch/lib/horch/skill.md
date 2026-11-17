@@ -67,7 +67,7 @@
 - Claude 워커의 상태(working·blocked·idle 등)는 그 세션이 Herdr 에 보고하지 않아도 herdr-orch 훅이 대신 보낸다. 가드가 워커 환경에 넣는 `HORCH_HOME` 으로 대상을 안다(0.4.0 이하에서 띄운 워커는 대상이 아니다. Codex 워커는 Claude 훅이 없다).
 - 백그라운드 일(Bash `run_in_background`, 백그라운드 서브에이전트 등)을 남기고 턴을 마친 워커에는 observed `idle` 이 나지 않고 `worker-list` 의 `attention` 도 `idle` 이 아니다. 백그라운드 일이 끝난 뒤의 턴이 끝나면 그때 판정한다. 그 사이 감독은 따로 할 일이 없다.
 - 대리 보고의 쓰기가 실패하면 observed `relay_failed` 와 `attention: "relay_failed"` 가 온다(위 6 의 처리).
-- 감독 메인(사람이 보는 Claude 세션)의 Needs you 도 Herdr 에 보이게 하려면 그 프로젝트 `.claude/settings.local.json` 의 `env` 에 `"HORCH_RELAY_HOME": "<위 HORCH: 줄의 --home 값>"` 을 넣고(개인 절대 경로라 git 에 넣지 않는다) 그 세션을 다시 연다. 환경 변수는 세션을 시작할 때 읽힌다. 옵트인한 메인이 스스로 보고하지도 못하고 대신 보낼 수도 없으면(tty 없음·대리 쓰기 실패) 그 세션의 Stop 이 한 번 막히며 다시 여는 법을 알린다(`/exit` 뒤 같은 터미널에서 `claude --resume`).
+- 감독 메인(사람이 보는 Claude 세션)의 Needs you 도 Herdr 에 보이게 하려면 그 프로젝트 `.claude/settings.local.json` 의 `env` 에 `"HORCH_RELAY_HOME": "<위 HORCH: 줄의 --home 값>"` 을 넣는다(개인 절대 경로라 git 에 넣지 않는다). Claude Code 가 세션 중 바뀐 설정을 다시 읽으면(2.1.326 에서 확인) 바로 켜진다. 켜지지 않으면 그 세션을 다시 연다. 옵트인한 메인이 스스로 보고하지도 못하고 대신 보낼 수도 없으면(tty 없음·대리 쓰기 실패) 그 세션의 Stop 이 한 번 막히며 다시 여는 법을 알린다(`/exit` 뒤 같은 터미널에서 `claude --resume`).
 - `horch relay-status --terminal <t>` 은 그 터미널의 대리 보고 기록을 준다(`record.decided`: `on` 대리 보고 중, `off` 스스로 보고한다, `no_tty`·`write_failed` 상태가 가지 않는다. 기록이 없으면 `record: null`).
 
 ## 워커 의무

@@ -472,10 +472,12 @@ def _main_unreported(p, main: str) -> bool:
 
 def _relay_notes(p, main: str) -> list[str]:
     """up 결과의 12단계 경고(설계 9.3 의 8): 옵트인 env 를 쓴 결과(relay_env_unreadable·relay_env_tracked), 다시 열기
-    안내(relay_env_new), main_unreported 차례다(다시 열면 relay_env_new 와 main_unreported 가 함께 풀린다)."""
+    안내(relay_env_new), main_unreported 차례다(다시 열면 relay_env_new 와 main_unreported 가 함께 풀린다).
+    relay_env_new 는 이번 up 이 쓰지 않았을 때(same)만 본다(13단계 9.7 의 3): 막 쓴 up 은 쓰기 전에 받은 환경이라 늘 참이고,
+    Claude Code 는 세션 중 바뀐 설정 env 를 훅·Bash 에 넣으므로 다음 up 이 그 값을 물려받는다. 그때도 없으면 받지 못한 세션이다."""
     written = write_relay_env(p.root)
     notes = {"unreadable": [RELAY_ENV_UNREADABLE], "tracked": [RELAY_ENV_TRACKED]}.get(written, [])
-    if written != "unreadable" and relay_env_new(p.root):
+    if written == "same" and relay_env_new(p.root):
         notes.append(RELAY_ENV_NEW)
     if _main_unreported(p, main):
         notes.append(MAIN_UNREPORTED)
@@ -553,9 +555,8 @@ def _wait_bound(p, nonce: str, wait: float | None) -> str | None:
 HUNG_MESSAGE = "관제 프로세스가 살아 있지만 응답이 없다. 관제 탭을 확인한다"
 STARTING_MESSAGE = "관제가 아직 시작 중이다(180초 안에 다시 띄우지 않는다). hteam status 로 확인한다"
 # 12단계 up 경고(설계 9.3 의 8, 8.14 의 2). 끝 괄호는 경고 이름이다(parent_missing 과 같은 꼴)
-RELAY_ENV_NEW = ("메인 대리 보고 설정(.claude/settings.local.json 의 HORCH_RELAY_HOME)이 이 세션에 아직 없다. 설정은 세션을 "
-                 "시작할 때 읽히므로 메인을 다시 열어야 켜진다: 일이 덜 몰린 때 /exit 뒤 같은 터미널에서 claude --resume"
-                 "(relay_env_new)")
+RELAY_ENV_NEW = ("메인 대리 보고 설정(.claude/settings.local.json 의 HORCH_RELAY_HOME)이 이 메인 세션에 아직 들어오지 않았다. "
+                 "일이 덜 몰린 때 /exit 뒤 같은 터미널에서 claude --resume 으로 다시 연다(relay_env_new)")
 RELAY_ENV_UNREADABLE = (".claude/settings.local.json 을 읽지 못해 메인 대리 보고 설정(HORCH_RELAY_HOME)을 쓰지 않았다. 파일을 "
                         "고친 뒤 /herdr-team:up 을 다시 한다(relay_env_unreadable)")
 RELAY_ENV_TRACKED = (".claude/settings.local.json 이 git 에 들어 있어 메인 대리 보고 설정(HORCH_RELAY_HOME, 개인 절대 경로)을 "

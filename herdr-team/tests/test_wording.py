@@ -513,3 +513,18 @@ class ReadmeP7Test(unittest.TestCase):
         for needle in ("플러그인만 올리면 된다(herdr-orch 0.3.0 과 함께). 새 기능은 설정으로 켜고, 켜지 않으면 0.4.0 과 같이 돈다.",
                        "`[workspace]`", "`[redmine]`", "`manual`", "`merge_conflict`·`workspace_failed`"):
             self.assertIn(needle, part)
+
+
+
+class ReopenWordingTest(unittest.TestCase):
+    """13단계(설계 9.7 의 3): Claude Code 2.1.326 은 세션 중 바뀐 설정 env 를 다시 읽는다. README 의 herdr-orch 두 곳과
+    herdr-orch skill 은 "세션을 시작할 때 읽힌다" 대신 "다시 읽으면 바로 켜진다, 아니면 다시 연다" 를 쓴다."""
+
+    def test_reopen_wording(self):
+        readme = (REPO / "README.md").read_text(encoding="utf-8")
+        skill = (REPO / "herdr-orch" / "lib" / "horch" / "skill.md").read_text(encoding="utf-8")
+        self.assertNotIn("(설정은 세션을 시작할 때 읽힌다)", readme)
+        self.assertNotIn("환경 변수는 세션을 시작할 때 읽힌다", skill)
+        self.assertEqual(readme.count("Claude Code 가 세션 중 바뀐 설정을 다시 읽으면"), 2)
+        self.assertIn("Claude Code 가 세션 중 바뀐 설정을 다시 읽으면(2.1.326 에서 확인) 바로 켜진다. 켜지지 않으면 그 세션을 "
+                      "다시 연다", skill)

@@ -1083,9 +1083,8 @@ class UpDriveTest(SetupCase):
 
 
 # 12단계 up 경고(설계 9.3 의 8, 8.14 의 2). 끝 괄호는 경고 이름이다(parent_missing 과 같은 꼴)
-RELAY_ENV_NEW = ("메인 대리 보고 설정(.claude/settings.local.json 의 HORCH_RELAY_HOME)이 이 세션에 아직 없다. 설정은 세션을 "
-                 "시작할 때 읽히므로 메인을 다시 열어야 켜진다: 일이 덜 몰린 때 /exit 뒤 같은 터미널에서 claude --resume"
-                 "(relay_env_new)")
+RELAY_ENV_NEW = ("메인 대리 보고 설정(.claude/settings.local.json 의 HORCH_RELAY_HOME)이 이 메인 세션에 아직 들어오지 않았다. "
+                 "일이 덜 몰린 때 /exit 뒤 같은 터미널에서 claude --resume 으로 다시 연다(relay_env_new)")
 RELAY_ENV_UNREADABLE = (".claude/settings.local.json 을 읽지 못해 메인 대리 보고 설정(HORCH_RELAY_HOME)을 쓰지 않았다. 파일을 "
                         "고친 뒤 /herdr-team:up 을 다시 한다(relay_env_unreadable)")
 RELAY_ENV_TRACKED = (".claude/settings.local.json 이 git 에 들어 있어 메인 대리 보고 설정(HORCH_RELAY_HOME, 개인 절대 경로)을 "
@@ -1096,8 +1095,9 @@ MAIN_UNREPORTED = ("이 메인 세션의 상태가 Herdr 에 가지 않는다. �
 
 class RelayEnvTest(SetupCase):
     """12단계(설계 8.14 의 2, 9.1 의 3a, 9.3 의 8): scaffold·up 이 .claude/settings.local.json 의 env.HORCH_RELAY_HOME 을 이
-    프로젝트의 horch 홈으로 쓴다. relay_env_new 는 쓰기와 상관없이 파일에 그 값이 있고 이 세션(시험) 환경에 없거나 다를 때
-    든다. 시험 환경은 기본으로 옵트인한 메인과 같은 값을 갖는다(helpers). 여기서는 뺀다."""
+    프로젝트의 horch 홈으로 쓴다. relay_env_new 는 이번 up 이 쓰지 않았는데(same, 13단계 9.7 의 3) 파일에 그 값이 있고 이
+    세션(시험) 환경에 없거나 다를 때 든다. 새로 쓴 up 은 알리지 않는다(Claude Code 가 세션 중 바뀐 설정을 다시 읽는다).
+    시험 환경은 기본으로 옵트인한 메인과 같은 값을 갖는다(helpers). 여기서는 뺀다."""
 
     def setUp(self):
         super().setUp()
@@ -1136,12 +1136,12 @@ class RelayEnvTest(SetupCase):
         self.path.write_text(json.dumps({"permissions": {"allow": ["Bash(ls)"]},
                                          "env": {"FOO": "1", "HORCH_RELAY_HOME": "/old"}}))
         code, out = self.hteam("up", as_="main")
-        self.assertEqual((code, out["status"], out.get("warnings")), (0, "running", [RELAY_ENV_NEW]), out)
+        self.assertEqual((code, out["status"], out.get("warnings")), (0, "running", None), out)  # 새로 쓴 up 은 알리지 않는다
         self.assertEqual(self.saved(), {"permissions": {"allow": ["Bash(ls)"]},
                                         "env": {"FOO": "1", "HORCH_RELAY_HOME": self.home}})
         self.assertEqual(list(self.saved()), ["permissions", "env"])  # 키 차례도 그대로다
         self.assertEqual((self.proj / ".gitignore").read_text(), ".herdr-team/state/\n.claude/settings.local.json\n")
-        # 쓰기와 상관없이 상태로 본다: 값이 같아 쓰지 않는 다음 up 에도 든다(자동 부활의 up 이 먼저 쓴 경우)
+        # 이미 그 값인데(same) 이 세션 환경에 없으면 세션이 받지 못한 것이다(자동 부활의 up 이 먼저 쓴 경우도 같다)
         code, out = self.hteam("up", as_="main")
         self.assertEqual((code, out.get("warnings")), (0, [RELAY_ENV_NEW]), out)
         code, out = self.hteam("up", as_="main", env={"HORCH_RELAY_HOME": "/elsewhere"})
@@ -1154,7 +1154,7 @@ class RelayEnvTest(SetupCase):
         self.started()
         self.write_heartbeat(age_s=200)
         code, out = self.hteam("up", as_="main")
-        self.assertEqual((code, out["status"], out.get("warnings")), (0, "hung", [RELAY_ENV_NEW]), out)
+        self.assertEqual((code, out["status"], out.get("warnings")), (0, "hung", None), out)  # 이 up 이 썼다
         self.assertEqual(self.saved(), {"env": {"HORCH_RELAY_HOME": self.home}})
         (self.drive_dir / "drive.pid").unlink()
         code, out = self.hteam("up", as_="main")
@@ -1198,6 +1198,7 @@ class RelayEnvTest(SetupCase):
 
     def test_main_unreported_comes_after_relay_env_new(self):
         self.started()
+        self.assertEqual(self.hteam("up", as_="main")[0], 0)  # 설정을 먼저 쓴다(다음 up 은 same)
         relay = self.fake_relay(MAIN, {"terminal": MAIN, "pid": 4242, "started_ms": 1, "decided": "no_tty"})
         code, out = self.hteam("up", as_="main", env=relay)
         self.assertEqual((code, out.get("warnings")), (0, [RELAY_ENV_NEW, MAIN_UNREPORTED]), out)
