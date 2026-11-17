@@ -17,7 +17,7 @@
 | 항목 | 쓰는 곳 | 확인한 버전 |
 |---|---|---|
 | Herdr: herdr-app, herdr-core `hc` | 에이전트 터미널과 창 | herdr-app 0.1.15, hc 0.1.20 |
-| Claude Code(로그인한 것) | 메인 세션, Claude 워커·리뷰어 | 2.1.323 |
+| Claude Code(로그인한 것) | 메인 세션, Claude 워커·리뷰어 | 2.1.323. 대리 보고·백그라운드 인식의 훅은 2.1.325 에서 확인했다 |
 | Codex CLI(로그인한 것) | Codex 워커·리뷰어 | codex-cli 0.167.1 |
 | Python 3.11 이상 | `horch`·`hteam`(표준 라이브러리만 쓴다) | 3.14.6 |
 | git | 태스크 사양과 산출물 커밋. 작업 공간(worktree 모드)은 2.23 이상 | |
