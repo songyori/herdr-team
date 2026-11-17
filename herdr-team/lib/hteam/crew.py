@@ -188,7 +188,10 @@ def place(p, cfg, role: str, worker: str, *, crew_name: str | None = None) -> di
                 if not cur["terminal_unknown_since"]:
                     cur["terminal_unknown_since"] = local_now()
             return {"kind": "wait", "crew": c, "reason": _reason_unknown(c, e["terminal"])}
-        if unreported(p, e["terminal"], info):
+        if unreported(p, e["terminal"], info) or e["close_failures"]:
+            # Codex 커밋 리뷰 6224f9b: 옛 세션 바꾸기·다시 묶기 앞당기기의 닫기가 실패해 close_failures 가 남은 세션도 보고 없는
+            # 세션처럼 넣지 않는다. 같은 세션에 넣으면 after_launch 가 close_failures 를 0 으로 되돌려 닫기가 영영 다시
+            # 되지 않는다(표시 relay_upgrade·rehome_main 은 한 번 규칙이라 남는다). 닫고 새 세션으로 띄운다(5.9.9 의 배정 길)
             # 12단계(5.9.9 의 2): 대리 보고도 없는 세션에는 넣지 않는다. 맡은 일이 없으니 인수인계 없이 닫고 이번 라운드는
             # 새 세션으로 띄운다. 닫지 못했으면 확인 불가와 같이 기다린다
             if close_unreported(p, c.name, e):

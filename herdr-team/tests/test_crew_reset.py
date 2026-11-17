@@ -1145,6 +1145,21 @@ class RehomeEarlyTest(ResetCase):
         out = self.started("T-002")  # 다음 태스크가 메인 아래 새 세션으로 뜬다
         self.assertEqual(self.terminals()[out["terminal"]]["parent"], MAIN)
 
+    def test_close_failure_then_assignment_still_rehomes_under_the_new_main(self):
+        # Codex 커밋 리뷰 6224f9b: 닫기가 실패한 뒤 재확인 전에 태스크가 오면 같은 세션에 넣지 않고 닫아 새 메인 아래로 띄운다
+        self.after_reset()
+        self.fail_hc("kill", "timeout")
+        self.rehome()
+        e = self.entry()
+        self.assertEqual((e["terminal"], e["close_failures"], e["rehome_main"]), (self.t, 1, MAIN))
+        with self._hc_locked() as st:
+            st["fail"].clear()
+        out = self.started("T-002")
+        self.assertNotEqual(out["terminal"], self.t)
+        self.assertNotIn(self.t, self.terminals())
+        self.assertEqual(self.terminals()[out["terminal"]]["parent"], MAIN)
+        self.assertEqual((self.entry()["terminal"], self.entry()["close_failures"]), (out["terminal"], 0))
+
     def test_task_dropped_without_done_counts(self):
         self.after_reset()
         self.started("T-002")  # 같은 세션에 넣었다
@@ -1287,6 +1302,24 @@ class RelayUpgradeTest(ResetCase):
         self.assertEqual(self.said("닫는다"), 1)
         self.assertFalse(any("리셋 시작" in x or "보고 없는 세션 닫음" in x for x in self.log_lines()), self.log_lines())
         self.replaced()
+
+    def test_close_failure_then_assignment_still_replaces_the_old_session(self):
+        # Codex 커밋 리뷰 6224f9b: 닫기가 한 번 실패한 뒤 다음 재확인 전에 태스크가 오면 같은 옛 세션에 넣지 않고 닫아 새 세션으로 띄운다
+        self.old(since_reset=0, reset_tasks=[], assigned_since_reset=0, last_reset_at=ago(5))
+        self.fail_hc("kill", "timeout")
+        self.rehome()
+        e = self.entry()
+        self.assertEqual((e["terminal"], e["close_failures"]), (self.t, 1))
+        self.assertRegex(e["relay_upgrade"], LOCAL_ISO)
+        with self._hc_locked() as st:
+            st["fail"].clear()
+        out = self.started("T-002")
+        self.assertNotEqual(out["terminal"], self.t)
+        self.assertNotIn(self.t, self.terminals())
+        e = self.entry()
+        self.assertEqual((e["terminal"], e["close_failures"], e["task"]), (out["terminal"], 0, "T-002"))
+        self.assertTrue(e["relay_ready"])
+        self.assertNotIn("relay_upgrade", e)
 
     def test_batch_reset_of_an_old_session_closes_it(self):
         self.old()
