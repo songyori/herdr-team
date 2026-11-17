@@ -1052,6 +1052,22 @@ class TerminalCheckTest(CrewCase):
             self.check()  # hc 에는 마지막 대리 상태(done)가 남아 있다
         self.closed()
 
+    def test_codex_session_is_not_closed_as_unreported(self):
+        """Codex 고정 에이전트는 보고 없는 세션 닫기 대상이 아니다(설계 5.9.9 의 2·8.14 의 1, 최종 리뷰 M1). 상태 보고도 대리
+        보고 기록도 없어도 닫지 않고 지금의 no_status 처리("보고 없음" escalation 한 번)를 한다. horch relay-status 도 부르지
+        않는다."""
+        self.set_entry(agent="codex", launched_at=ago(600))
+        self.unreport()
+        with mock.patch("hteam.herdr.relay_status", return_value=None) as relay_status:
+            self.check()
+            self.check()
+        self.assertEqual(relay_status.call_count, 0)
+        self.assertEqual(self.entry()["terminal"], self.t)
+        self.assertIn(self.t, self.terminals())
+        self.assertFalse(any("보고 없는 세션 닫음" in x for x in self.log_lines()))
+        d = [x for x in self.decides() if "태스크 없이 보고 없음 로 멈춰 있다" in x["summary"]]
+        self.assertEqual(len(d), 1, self.decides())
+
     def test_unreported_session_with_task_or_reset_is_kept_without_escalation(self):
         self.unreport()
         self.set_entry(task="T-009", dispatch="dsp-x", launched_at=ago(600))

@@ -605,7 +605,7 @@ def drain(p, cfg) -> list[dict]:
         if e["terminal"]:
             verdict, info = crew.probe(e["terminal"], e["terminal_argv"])
             if verdict == "unknown" or (verdict == "live" and crew.word(info) not in crew.READY
-                                        and not crew.unreported(p, e["terminal"], info)):
+                                        and not crew.unreported(p, e, info)):
                 continue  # 대리 보고도 없는 세션은 꺼낸다: fix(_crew_fix)가 닫고 새 세션으로 띄운다(5.9.9 의 2)
         try:
             res = fix(p, tid, note=q.get("note"), supplement=q.get("supplement"), force_round=bool(q.get("force_round")),
@@ -903,7 +903,7 @@ def _crew_fix(p, h, tid: str, member, st: dict, *, force: bool, from_queue: bool
                              "상태를 확인하지 못했다", FAIL, "잠시 뒤 다시 한다")
         return None, False
     word = crew.word(info)
-    quiet = crew.unreported(p, e["terminal"], info)
+    quiet = crew.unreported(p, e, info)
     if (quiet or e["close_failures"]) and not held:  # close_failures: 닫기가 실패한 옛 세션(Codex 커밋 리뷰 6224f9b, crew.place)
         # 12단계(5.9.9 의 2): 대리 보고도 없는 세션에는 넣지 않는다. 맡은 일이 없으니 인수인계 없이 닫고 새 세션으로 띄운다.
         # 닫지 못했으면 대기열에서 기다린다. 이 태스크를 맡은 세션이면 일하는 중일 수 있어 아래 worker_active 다

@@ -188,7 +188,7 @@ def place(p, cfg, role: str, worker: str, *, crew_name: str | None = None) -> di
                 if not cur["terminal_unknown_since"]:
                     cur["terminal_unknown_since"] = local_now()
             return {"kind": "wait", "crew": c, "reason": _reason_unknown(c, e["terminal"])}
-        if unreported(p, e["terminal"], info) or e["close_failures"]:
+        if unreported(p, e, info) or e["close_failures"]:
             # Codex 커밋 리뷰 6224f9b: 옛 세션 바꾸기·다시 묶기 앞당기기의 닫기가 실패해 close_failures 가 남은 세션도 보고 없는
             # 세션처럼 넣지 않는다. 같은 세션에 넣으면 after_launch 가 close_failures 를 0 으로 되돌려 닫기가 영영 다시
             # 되지 않는다(표시 relay_upgrade·rehome_main 은 한 번 규칙이라 남는다). 닫고 새 세션으로 띄운다(5.9.9 의 배정 길)
@@ -474,7 +474,7 @@ def check_terminals(d) -> list[tuple[str, str | None, str, str]]:
                 d.decide("escalation", None, UNKNOWN_TEXT.format(name=name, terminal=terminal, minutes=int(age // 60)))
                 _mark(p, name, terminal, terminal_unknown_asked=True)
             continue
-        quiet = not e["task"] and unreported(p, terminal, info)  # 맡은 세션은 닫지도 escalation 하지도 않는다
+        quiet = not e["task"] and unreported(p, e, info)  # 맡은 세션은 닫지도 escalation 하지도 않는다
         if (quiet or e["close_failures"]) and not e["task"] and not e["resetting"]:
             close_quiet(d, name, e, QUIET_CLOSED.format(name=name) if quiet else None)
             continue
@@ -523,13 +523,14 @@ def _write_failed(p, terminal: str) -> bool:
     return isinstance(rec, dict) and rec.get("decided") == "write_failed"
 
 
-def unreported(p, terminal: str, info: dict | None) -> bool:
-    """대리 보고도 없는 세션(설계 5.9.9 의 2): hc get 정보로 보고가 없거나(_silent) 대리 보고 쓰기가 실패했다(_write_failed.
-    hc 에는 마지막 대리 상태가 남는다). info 가 없으면(hc 실패) False 다(지금처럼 확인 불가). hc 로 갈리면 horch 를 부르지
-    않는다."""
-    if info is None:
+def unreported(p, e: dict, info: dict | None) -> bool:
+    """entry e 의 작업 터미널이 대리 보고도 없는 세션(설계 5.9.9 의 2): hc get 정보로 보고가 없거나(_silent) 대리 보고 쓰기가
+    실패했다(_write_failed. hc 에는 마지막 대리 상태가 남는다). Claude 고정 에이전트만 대상이다: Codex 는 False(설계 8.14 의 1.
+    지금의 no_status 처리. horch relay-status 도 부르지 않는다, 최종 리뷰 M1). info 가 없으면(hc 실패) False 다(지금처럼 확인
+    불가). hc 로 갈리면 horch 를 부르지 않는다."""
+    if info is None or e["agent"] != "claude":
         return False
-    return _silent(info) or _write_failed(p, terminal)
+    return _silent(info) or _write_failed(p, e["terminal"])
 
 
 def _closed_fields() -> dict:
@@ -839,9 +840,12 @@ def _reset_done(d, name: str, text: str, **fields) -> None:
     d.log(f"{name} 리셋: {text}")
 
 
-def _unreported_now(p, terminal: str) -> bool:
-    """clear 단계의 바쁨 판정: 그 작업 터미널이 대리 보고도 없는 세션(5.9.9 의 2)인가. 대리 보고 쓰기 실패면 hc 를 부르지
-    않고 True, 아니면 hc get(3초)의 _silent. hc 실패면 False(지금처럼 바쁨)."""
+def _unreported_now(p, e: dict) -> bool:
+    """clear 단계의 바쁨 판정: entry e 의 작업 터미널이 대리 보고도 없는 세션(5.9.9 의 2)인가. Codex 는 False(unreported 와
+    같다). 대리 보고 쓰기 실패면 hc 를 부르지 않고 True, 아니면 hc get(3초)의 _silent. hc 실패면 False(지금처럼 바쁨)."""
+    if e["agent"] != "claude":
+        return False
+    terminal = e["terminal"]
     if _write_failed(p, terminal):
         return True
     try:
@@ -901,7 +905,7 @@ def _clear(d, name: str) -> None:
             return _reset_done(d, name, f"reset(turn {data.get('turn')}, {data.get('seconds')}초)")
         reason = (data.get("error") or {}).get("code") or f"exit_{code}"
         w = data.get("status")
-        if reason == "terminal_not_ready" and w in ("working", "blocked") and not _unreported_now(p, terminal):
+        if reason == "terminal_not_ready" and w in ("working", "blocked") and not _unreported_now(p, e):
             # 12단계: 대리 보고도 없는 세션(인수인계 done 뒤 Stop 쓰기 실패로 옛 working 이 남았다 등)은 상태가 바뀌지 않으므로
             # 바쁨으로 기다리지 않고 아래 닫기로 간다(인수인계 파일은 그대로다)
             # 에이전트는 done 명령을 턴 안에서 부른다(6단계 실환경): 아무것도 치지 않았으니 세션을 닫지 않고 2 의 바쁨처럼
@@ -1091,7 +1095,7 @@ def not_started(d, tid: str, did: str) -> bool:
     w = word(info)
     if abandon and _started(row, rd, info, w):
         return _went_in(d, tid, did)
-    if w not in READY or unreported(p, e["terminal"], info):
+    if w not in READY or unreported(p, e, info):
         # blocked·error·보고 없음은 resend 를 두어 다음 재확인이 다시 본다. 대리 보고도 없는 세션(5.9.9 의 2. 쓰기 실패면 hc 에
         # 옛 done 이 남는다)은 넣은 입력이 들어갔는지 알 수 없어 다시 넣지 않는다(이 태스크를 맡은 세션이라 닫지도 않는다)
         return False
