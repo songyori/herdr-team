@@ -119,6 +119,7 @@ class PreambleTest(unittest.TestCase):
                        "H --home /h escalate --dispatch dsp-1",
                        "H --home /h done --dispatch dsp-1 --outcome", "AskUserQuestion", "다른 워커를 띄우지 않는다",
                        "horch 는 셸 명령으로 실행한다",
+                       "done 전에 내가 띄운 백그라운드 서버·모니터(개발 서버, Monitor 등)를 끈다(남으면 계속 일하는 것으로 보인다)",
                        "도구 시간 초과 등으로 horch 출력을 못 받았으면 같은 명령을 그대로 다시 실행한다(ask·check·done 은 재호출 안전. escalate 는 다시 보내면 같은 보고가 한 번 더 간다)",
                        "같은 질문을 새로 하려면 다른 `--key` 를 준다(같은 key·같은 본문은 이전 답을 돌려준다)"):
             self.assertIn(needle, text)

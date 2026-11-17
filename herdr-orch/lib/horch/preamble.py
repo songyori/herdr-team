@@ -24,6 +24,7 @@ def render(*, task_id: str, dispatch_id: str, spec_path: str, horch: str, contin
 5. 끝나면 다음으로 보고한다. 실패도 --outcome failed 로 보고한다(문장으로만 쓰지 않는다).
    {horch} done --dispatch {d} --outcome succeeded|failed --summary "<세 문장 요약>" [--report-path <경로>] [--files-modified <경로>](파일마다 반복)
    출력을 못 받았으면 같은 인자로 다시 실행한다. done 뒤에는 새 일을 시작하지 않고 기다린다.
+   done 전에 내가 띄운 백그라운드 서버·모니터(개발 서버, Monitor 등)를 끈다(남으면 계속 일하는 것으로 보인다). 일하는 동안 긴 시험을 백그라운드로 돌리는 것은 괜찮다.
 6. horch 는 셸 명령으로 실행한다(다른 도구에는 $HC_TERMINAL_ID 가 없어 거부된다). horch 로 다른 워커를 띄우지 않는다.
    도구 시간 초과 등으로 horch 출력을 못 받았으면 같은 명령을 그대로 다시 실행한다(ask·check·done 은 재호출 안전. escalate 는 다시 보내면 같은 보고가 한 번 더 간다).
 """

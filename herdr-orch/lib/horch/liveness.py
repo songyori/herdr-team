@@ -114,14 +114,16 @@ def idle_hold(home, row, turn: int) -> str | None:
     """그 turn 의 idle 을 내지 않을 까닭(설계 16.7). observe_one 과 worker-list 가 같이 쓴다.
 
     "background": 그 turn 을 끝낸 Stop 기록(turn 이 같은 마지막 것)이 그 Dispatch 의 created_at 과 같거나 뒤이고 그
-    background 가 비지 않았다. 백그라운드 일을 기다리는 워커다(내지 않는다).
+    background 에 끝나지 않은 일(relay.running_background: status 가 없거나 running·pending)이 있다. 백그라운드 일을 기다리는
+    워커다(내지 않는다). 끝난 일(completed·failed·killed 등)만 남은 기록은 붙잡지 않는다(최종 리뷰 I1).
     "no_record": 그 기록이 없고(turn 이 null 인 기록·앞 Dispatch 의 기록은 없는 것과 같다) 그 터미널에 세션 기록이 있는 Claude
     Dispatch 다. Stop 훅이 아직 기록을 남기지 않았을 수 있다(observe_one 은 기다리고 목록은 낸다).
-    None: 낸다(기록의 background 가 비었거나, 세션 기록이 없는 워커: Codex, 0.5.0 전 Claude, 훅이 돌지 않은 세션)."""
+    None: 낸다(기록에 끝나지 않은 백그라운드 일이 없거나, 세션 기록이 없는 워커: Codex, 0.5.0 전 Claude, 훅이 돌지 않은
+    세션)."""
     terminal = row["terminal"]
     stop = relay.stop_for_turn(home, terminal, turn)
     if stop is not None and isinstance(stop.get("at"), str) and stop["at"] >= row["created_at"]:
-        return "background" if stop["background"] else None
+        return "background" if relay.running_background(stop["background"]) else None
     if row["agent"] == "claude" and relay.record(home, terminal) is not None:
         return "no_record"
     return None

@@ -44,6 +44,7 @@ WRITE_PAUSE_S = 0.1  # 그 간격
 FAIL_LIMIT = 3  # 이어진 쓰기 실패가 이만큼이면 write_failed
 STOPS_KEEP = 20  # Stop 기록(stops)을 남기는 수
 DESC_MAX = 80  # 백그라운드 일 description 글자 수
+RUNNING_STATUSES = ("running", "pending")  # 끝나지 않은 백그라운드 일의 status(대소문자 무시). 없는 status 도 끝나지 않은 일로 본다
 REVERIFY_SLACK_MS = 1000  # 다시 확인: 마지막 대리 쓰기 시도보다 이만큼 넘게 뒤인 상태 변화만 Claude 의 보고로 본다
 HC_TIMEOUT = 3.0  # hc get 시간 제한(초)
 PS_TIMEOUT = 3.0  # ps 시간 제한(초)
@@ -412,8 +413,7 @@ def _apply(rec: dict, event: str | None, payload: dict, role: str) -> str | None
         return "working"
     if event == "Stop":
         _clear(rec)
-        tasks = payload.get("background_tasks")
-        return "working" if role == "worker" and isinstance(tasks, list) and tasks else "done"
+        return "working" if role == "worker" and running_background(payload.get("background_tasks")) else "done"
     if event == "StopFailure":
         _clear(rec)
         return "error"
@@ -556,7 +556,8 @@ def _step(home, rec: dict, event: str | None, payload: dict, role: str, info: di
 def _add_stop(home, terminal: str, pid: int, info: dict | None, payload: dict) -> None:
     """워커 Stop 기록(16.7): stops 끝에 {pid, turn, at, background} 를 더하고 STOPS_KEEP 개만 남긴다. turn 은 그 턴 끝의
     idle 사건이 가질 turn 이다(hc 상태가 working 이면 turn+1, 아니면 turn. turn 은 상태가 working 을 벗어날 때 오른다).
-    hc 가 실패했으면 None. at 은 ids.now. 지금 Claude(pid)를 확인한 Stop 만 터미널 잠금 안에서 부른다."""
+    hc 가 실패했으면 None. at 은 ids.now. 지금 Claude(pid)를 확인한 Stop 만 터미널 잠금 안에서 부른다. background 에는 끝난
+    일도 status 와 함께 그대로 남긴다(무엇이 남는지 볼 수 있게). 백그라운드가 있는지는 읽는 쪽이 running_background 로 가른다."""
     turn = None
     if info is not None and _int(info.get("turn")) is not None:
         status = info.get("status") if isinstance(info.get("status"), dict) else {}
@@ -754,6 +755,22 @@ def check(home, terminal: str, pid: int, started_ms: int) -> None:
 
 
 # --- 읽기(observe_one·worker-list·relay-status) ---
+def running_background(tasks) -> list[dict]:
+    """끝나지 않은 백그라운드 일만(최종 리뷰 I1). Stop 입력의 background_tasks 와 Stop 기록의 background 를 같이 받는다.
+    사전인 항목 가운데 status 가 없거나(빈 문자열 포함) running·pending(대소문자 무시)인 것만 남긴다. 끝난 일(completed·failed·
+    killed·stopped 등)은 세지 않는다: 목록에 끝난 일이 남는 판에서도 워커가 영영 "백그라운드 있음" 이 되지 않는다. 목록이
+    아니면 빈 목록. _apply(대리 보고 Stop)와 liveness.idle_hold(observed idle·worker-list)가 같이 쓴다."""
+    if not isinstance(tasks, list):
+        return []
+    return [t for t in tasks if isinstance(t, dict) and _unfinished(t.get("status"))]
+
+
+def _unfinished(status) -> bool:
+    if status is None or status == "":
+        return True
+    return isinstance(status, str) and status.strip().lower() in RUNNING_STATUSES
+
+
 def stops(home, terminal: str) -> list[dict]:
     """<home>/relay/<terminal>.stops.json 의 stops(사전인 항목만, 오래된 것부터). 없거나 읽지 못하면 빈 목록."""
     if not valid_terminal(terminal):

@@ -452,6 +452,26 @@ class WriteTest(RelayCase):
                 self.assertEqual(self.read_tty(), want)
         self.assertEqual(self.rec()["write_failures"], 0)
 
+    def test_only_unfinished_background_holds_the_worker(self):
+        """끝난 백그라운드 일(completed·failed·killed·stopped)만 남은 Stop 은 done 이다. 끝나지 않은 일(status 가 없거나
+        running·pending, 대소문자 무시)이 하나라도 섞이면 working 그대로다(최종 리뷰 I1)."""
+        done = [{"type": "shell", "status": s} for s in ("completed", "failed", "killed", "stopped", "Completed")]
+        steps = (("UserPromptSubmit", {}, W),
+                 ("Stop", {"background_tasks": done}, D),
+                 ("UserPromptSubmit", {}, W),
+                 ("Stop", {"background_tasks": [*done, {"type": "monitor", "status": "RUNNING"}]}, b""),
+                 ("Stop", {"background_tasks": [*done, {"type": "subagent", "status": "pending"}]}, b""),
+                 ("Stop", {"background_tasks": [*done, {"type": "shell"}]}, b""))  # status 가 없으면 도는 일로 본다
+        for event, payload, want in steps:
+            with self.subTest(event=event, payload=payload):
+                self.handle(event, payload)
+                self.assertEqual(self.read_tty(), want)
+        # Stop 기록은 끝난 일도 status 와 함께 남긴다(가르는 것은 읽는 쪽)
+        self.assertEqual([t["status"] for t in self.stops()[0]["background"]],
+                         ["completed", "failed", "killed", "stopped", "Completed"])
+        self.assertEqual(relay.running_background([*done, "깨짐", {"status": ""}, {"status": 3}]), [{"status": ""}])
+        self.assertEqual(relay.running_background("x"), [])
+
     def test_subagent_events_are_ignored(self):
         self.handle("PreToolUse", {"tool_name": "AskUserQuestion", "tool_use_id": "q1"}, role="main")
         self.assertEqual(self.read_tty(), Q)

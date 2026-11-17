@@ -458,7 +458,7 @@ def _attention(home, r, verdict: str | None, info: dict | None) -> tuple[str | N
         turn = liveness.idle_turn(info, r["start_turn"]) if verdict == "live" else None
         if turn is not None:
             if liveness.idle_hold(home, r, turn) == "background":
-                return None, None  # 그 턴을 끝낸 Stop 에 백그라운드 일이 있다(설계 16.7). 목록은 기록을 기다리지 않는다
+                return None, None  # 그 턴을 끝낸 Stop 에 끝나지 않은 백그라운드 일이 있다(설계 16.7). 목록은 기록을 기다리지 않는다
             # done 없이 턴을 마쳤다(설계 10장). 화면을 보고 이어가게 하거나 사용자에게 알린다
             return "idle", [*base, "worker-show", "--dispatch", d, "--lines", "40"]
         if verdict == "live" and word is None:

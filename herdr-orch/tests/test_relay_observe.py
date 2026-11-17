@@ -13,6 +13,8 @@ from horch.store import Store
 CREATED = "2026-11-17T00:00:00Z"  # 시험 Dispatch 의 created_at
 AFTER = "2026-11-17T00:00:10Z"  # 그 뒤의 Stop
 BG = [{"type": "shell", "status": "running", "description": "전체 시험"}]
+DONE = [{"type": "shell", "status": "completed"}, {"type": "shell", "status": "failed"},
+        {"type": "subagent", "status": "killed"}]  # 끝난 백그라운드 일
 
 
 class RelayFiles:
@@ -68,6 +70,17 @@ class ObserveRelayTest(RelayFiles, HorchCase):
         self.assertEqual(self.kinds(), [])
         self.assertEqual(self.store.all("SELECT * FROM observations"), [])  # 넘긴 turn 은 observations 에 넣지 않는다
         self.stop(3, [], at="2026-11-17T00:01:00Z")  # 같은 turn 의 마지막 기록이 빈 목록이 됐다(백그라운드 뒤 시스템 턴)
+        self.observe()
+        self.assertEqual(self.kinds(), [("idle", "3")])
+
+    def test_finished_background_does_not_hold_and_mixed_does(self):
+        """끝난 백그라운드 일(completed·failed·killed 등)만 남은 기록은 idle 을 붙잡지 않는다. 끝나지 않은 일이 섞이면
+        붙잡는다(최종 리뷰 I1)."""
+        self.stop(3, DONE + [{"type": "monitor", "status": "Running"}])
+        self.update_terminal("t9", status="idle", turn=3)
+        self.observe()
+        self.assertEqual(self.kinds(), [])
+        self.stop(3, DONE, at="2026-11-17T00:01:00Z")  # 남은 일이 모두 끝났다
         self.observe()
         self.assertEqual(self.kinds(), [("idle", "3")])
 
@@ -210,6 +223,14 @@ class AttentionRelayTest(RelayFiles, HorchCase):
         self.stop(2, BG)
         self.assertEqual(self.row(), (None, None))
         self.stop(2, [], at="2026-11-17T00:01:00Z")
+        self.assertEqual(self.row()[0], "idle")
+
+    def test_finished_background_does_not_hide_idle(self):
+        self.session()
+        self.update_terminal("t9", status="idle", turn=2)
+        self.stop(2, DONE + [{"type": "shell", "status": "pending"}])
+        self.assertEqual(self.row(), (None, None))
+        self.stop(2, DONE, at="2026-11-17T00:01:00Z")  # 끝난 일만 남았다(최종 리뷰 I1)
         self.assertEqual(self.row()[0], "idle")
 
 
