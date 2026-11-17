@@ -2,10 +2,11 @@
 프롬프트가 가리키고, 메인 규칙이 그 파일에 쓰라고 한다. upgrade 옮기기는 test_setup.UpgradeTest(9.7 의 1)."""
 from __future__ import annotations
 
+import subprocess
 import unittest
 
 from tests.helpers import ROOT, TeamCase
-from hteam import compose, config, specs, state
+from hteam import compose, config, setup, specs, state
 from hteam.errors import HteamError
 from hteam.paths import Project
 
@@ -89,6 +90,46 @@ class ProjectRulesReviewTest(TeamCase):
         text = self.prompt()
         self.assertIn("- 직무 문서: `.herdr-team/roles/developer.md`\n"
                       "- 프로젝트 규칙: `.herdr-team/project-rules/developer.md`\n- 워커 보고서:", text)
+
+
+class SectionsTest(unittest.TestCase):
+    TEMPLATE = "# developer\n\n## 책임\n- 하나\n\n## 하지 않는 것\n- 둘\n"
+
+    def test_split_ignores_fenced_headings(self):
+        head, sections = setup.split_sections("# 제목\n머리\n\n## 가\n```\n## 펜스 안\n```\n## 나\n~~~~\n## 물결 펜스\n~~~~\n")
+        self.assertEqual(head, "# 제목\n머리\n\n")
+        self.assertEqual(sections, [("## 가", "## 가\n```\n## 펜스 안\n```\n"), ("## 나", "## 나\n~~~~\n## 물결 펜스\n~~~~\n")])
+
+    def test_project_sections_are_those_unknown_to_the_template(self):
+        text = self.TEMPLATE + "\n## 이 프로젝트 규칙\n- 폰 금지\n\n## 옛 제목\n- 옛 템플릿 글\n"
+        self.assertEqual(setup.project_sections("developer", self.TEMPLATE, self.TEMPLATE), [])
+        self.assertEqual([h for h, _ in setup.project_sections("developer", text, self.TEMPLATE)],
+                         ["## 이 프로젝트 규칙", "## 옛 제목"])
+        self.assertEqual([h for h, _ in setup.project_sections("developer", text, self.TEMPLATE, retired=("## 옛 제목",))],
+                         ["## 이 프로젝트 규칙"])
+        self.assertEqual(setup.ROLE_NAMES, ("planner", "director", "designer", "developer", "tester"))
+        self.assertEqual(set(setup.RETIRED_HEADINGS), set(setup.ROLE_NAMES))
+
+
+class RetiredHeadingTest(unittest.TestCase):
+    """템플릿 직무 문서의 `## ` 제목을 바꾸거나 지우면 옛 제목을 setup.RETIRED_HEADINGS 에 넣는다(설계 9.7 의 1). git 기록의
+    모든 판을 본다. 저장소 밖(설치본)에서는 건너뛴다."""
+
+    def test_removed_template_headings_are_retired(self):
+        repo = ROOT.parent
+        for role in setup.ROLE_NAMES:
+            rel = f"herdr-team/templates/roles/{role}.md"
+            log = subprocess.run(["git", "-C", str(repo), "log", "--format=%H", "--", rel], capture_output=True, text=True)
+            if log.returncode != 0 or not log.stdout.strip():
+                self.skipTest("git 기록이 없다")
+            now = {h for h, _ in setup.split_sections((ROOT / "templates" / "roles" / f"{role}.md").read_text(
+                encoding="utf-8"))[1]}
+            seen = set()
+            for sha in log.stdout.split():
+                old = subprocess.run(["git", "-C", str(repo), "show", f"{sha}:{rel}"], capture_output=True, text=True)
+                if old.returncode == 0:
+                    seen |= {h for h, _ in setup.split_sections(old.stdout)[1]}
+            self.assertEqual(seen - now - set(setup.RETIRED_HEADINGS[role]), set(), role)
 
 
 class MainRuleTest(unittest.TestCase):

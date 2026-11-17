@@ -234,6 +234,97 @@ class UpgradeTest(TeamCase):
         code, again = self.upgrade()
         self.assertEqual((code, again["updated"], again["created"]), (0, [], []), again)
 
+    MOVED_NEXT = " moved 의 절은 직무 문서에서 .herdr-team/project-rules/ 로 옮겼다. 두 파일을 함께 커밋한다."
+
+    def test_project_sections_move_to_project_rules(self):  # 설계 9.7 의 1(13단계)
+        doc = ".herdr-team/roles/developer.md"
+        extra = ("## 이 프로젝트 규칙\n- 제품 책임자의 개인 폰은 쓰지 않는다.\n\n```text\n## 코드 블록 안 제목은 절이 아니다\n"
+                 "```\n")
+        self.edit_commit(doc, self.template("roles/developer.md") + "\n" + extra)
+        head = self.head()
+        code, out = self.upgrade()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["updated"], [doc])
+        self.assertEqual(out["moved"], [{"path": doc, "to": ".herdr-team/project-rules/developer.md",
+                                         "sections": ["## 이 프로젝트 규칙"]}])
+        self.assertEqual((self.proj / doc).read_text(encoding="utf-8"), self.template("roles/developer.md"))
+        self.assertEqual((self.team / "project-rules/developer.md").read_text(encoding="utf-8"), extra)
+        self.assertTrue(out["next"].endswith(self.MOVED_NEXT), out["next"])
+        self.assertEqual(self.head(), head)  # 커밋하지 않는다
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "upgrade")
+        code, again = self.upgrade()
+        self.assertEqual((code, again["updated"], again["moved"]), (0, [], []), again)
+        self.assertFalse(again["next"].endswith(self.MOVED_NEXT))
+
+    def test_existing_rules_are_not_duplicated(self):
+        doc, rules = ".herdr-team/roles/tester.md", ".herdr-team/project-rules/tester.md"
+        extra = "## 이 프로젝트 규칙\n- 에뮬레이터만 쓴다.\n"
+        self.edit_commit(doc, self.template("roles/tester.md") + "\n" + extra)
+        self.edit_commit(rules, "## 다른 규칙\n- 하나\n\n" + extra)  # 앞 upgrade 가 옮긴 뒤 커밋했다(직무 문서는 못 바꿨다)
+        code, out = self.upgrade()
+        self.assertEqual((code, out["moved"]), (0, [{"path": doc, "to": rules, "sections": ["## 이 프로젝트 규칙"]}]), out)
+        self.assertEqual((self.proj / rules).read_text(encoding="utf-8"), "## 다른 규칙\n- 하나\n\n" + extra)
+        self.assertEqual((self.proj / doc).read_text(encoding="utf-8"), self.template("roles/tester.md"))
+
+    def test_dirty_or_untracked_rules_skip_the_role_doc(self):
+        doc, rules = ".herdr-team/roles/tester.md", ".herdr-team/project-rules/tester.md"
+        body = self.template("roles/tester.md") + "\n## 이 프로젝트 규칙\n- 에뮬레이터만 쓴다.\n"
+        self.edit_commit(doc, body)
+        reason = ("project-rules/tester.md 를 쓸 수 없다: {}. 앞 upgrade 가 옮기다 멈췄으면 그 파일에 이미 옮긴 절이 있다. "
+                  "확인해 커밋한 뒤 다시 한다(같은 글은 다시 덧붙이지 않는다)")
+        (self.proj / rules).parent.mkdir(parents=True)
+        (self.proj / rules).write_text("추적하지 않는 파일\n", encoding="utf-8")
+        code, out = self.upgrade()
+        self.assertEqual((code, out["moved"], out["skipped"]),
+                         (0, [], [{"path": doc, "reason": reason.format("git 에 추적되지 않는다")}]), out)
+        self.assertEqual((self.proj / doc).read_text(encoding="utf-8"), body)
+        self.edit_commit(rules, "커밋한 파일\n")
+        (self.proj / rules).write_text("커밋 안 한 수정\n", encoding="utf-8")
+        code, out = self.upgrade()
+        self.assertEqual(out["skipped"], [{"path": doc, "reason": reason.format("커밋 안 된 변경이 있다(지운 것 포함)")}])
+        self.assertEqual(((self.proj / doc).read_text(encoding="utf-8"), (self.proj / rules).read_text(encoding="utf-8")),
+                         (body, "커밋 안 한 수정\n"))
+
+    def test_similar_rule_is_not_taken_for_a_duplicate(self):
+        doc, rules = ".herdr-team/roles/developer.md", ".herdr-team/project-rules/developer.md"
+        self.edit_commit(doc, self.template("roles/developer.md") + "\n## 이 프로젝트 규칙\n- 개인 폰 사용 금지\n")
+        self.edit_commit(rules, "## 이 프로젝트 규칙\n- 개인 폰 사용 금지 해제\n")  # 부분 문자열로는 같아 보인다
+        code, out = self.upgrade()
+        self.assertEqual((code, len(out["moved"])), (0, 1), out)
+        self.assertEqual((self.proj / rules).read_text(encoding="utf-8"),
+                         "## 이 프로젝트 규칙\n- 개인 폰 사용 금지 해제\n\n## 이 프로젝트 규칙\n- 개인 폰 사용 금지\n")
+
+    def test_write_failure_skips_and_a_crash_resumes(self):
+        doc, rules = ".herdr-team/roles/developer.md", ".herdr-team/project-rules/developer.md"
+        extra = "## 이 프로젝트 규칙\n- 개인 폰은 쓰지 않는다.\n"
+        body = self.template("roles/developer.md") + "\n" + extra
+        self.edit_commit(doc, body)
+        self.edit_commit(".herdr-team/project-rules/other.md", "다른 직무\n")
+        folder = self.team / "project-rules"
+        folder.chmod(0o555)  # 쓰지 못한다
+        try:
+            code, out = self.upgrade()
+        finally:
+            folder.chmod(0o755)
+        self.assertEqual((code, out["moved"]), (0, []), out)
+        self.assertEqual(out["skipped"][0]["path"], doc)
+        self.assertIn("project-rules/developer.md 를 쓸 수 없다: 쓰지 못했다(PermissionError)", out["skipped"][0]["reason"])
+        self.assertEqual((self.proj / doc).read_text(encoding="utf-8"), body)
+        # 덧붙인 직후 죽으면: 직무 문서는 그대로, project-rules 는 커밋 안 된 새 파일
+        code, _ = self.hteam("upgrade", as_=None, env={"HTEAM_TEST_DIE_AT": "after_project_rules"})
+        self.assertEqual(code, 137)
+        self.assertEqual(((self.proj / doc).read_text(encoding="utf-8"), (self.proj / rules).read_text(encoding="utf-8")),
+                         (body, extra))
+        code, out = self.upgrade()  # 추적하지 않는 project-rules: 건너뛴다
+        self.assertEqual((out["moved"], out["skipped"][0]["path"]), ([], doc), out)
+        self.git("add", "--", rules)
+        self.git("commit", "-q", "-m", "옮긴 규칙", "--", rules)
+        code, out = self.upgrade()  # 같은 절은 다시 덧붙이지 않고 끝난다
+        self.assertEqual((code, out["moved"]), (0, [{"path": doc, "to": rules, "sections": ["## 이 프로젝트 규칙"]}]), out)
+        self.assertEqual(((self.proj / doc).read_text(encoding="utf-8"), (self.proj / rules).read_text(encoding="utf-8")),
+                         (self.template("roles/developer.md"), extra))
+
     def test_uncommitted_deletions_are_not_restored(self):
         (self.team / "roles/planner.md").unlink()  # 작업 트리 삭제( D)
         self.git("rm", "-q", "--", ".herdr-team/roles/tester.md")  # 스테이징한 삭제(D )

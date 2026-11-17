@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import secrets
 import shutil
 import stat
@@ -38,6 +39,13 @@ FILES = {
 # upgrade 가 템플릿으로 바꾸는 복사한 규칙 파일(설계 9.6): config.toml 은 사용자 설정이라 뺀다(출력에도 없다)
 UPGRADE = {src: rel for src, rel in FILES.items() if src != "config.toml"}
 SECTIONS = (("CLAUDE.md", "CLAUDE.section.md"), ("AGENTS.md", "AGENTS.section.md"))  # 덧붙인 절은 바꾸지 않고 알린다
+ROLE_NAMES = ("planner", "director", "designer", "developer", "tester")
+ROLE_DOCS = {f"roles/{role}.md": role for role in ROLE_NAMES}  # upgrade 가 프로젝트 절을 옮기는 템플릿(설계 9.7 의 1)
+# 템플릿에서 바꾸거나 지운 직무 문서 `## ` 제목. 옛 템플릿 절을 프로젝트 규칙으로 옮기지 않게 한다. 제목을 바꾸는 커밋이
+# 옛 제목을 여기 넣는다(tests/test_project_rules.RetiredHeadingTest 가 git 기록으로 지킨다)
+RETIRED_HEADINGS: dict[str, tuple[str, ...]] = {role: () for role in ROLE_NAMES}
+MOVED_NEXT = "moved 의 절은 직무 문서에서 .herdr-team/project-rules/ 로 옮겼다. 두 파일을 함께 커밋한다."
+_FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
 UPGRADE_NEXT = ("바뀐 파일을 확인하고(git diff -- .herdr-team) 커밋한다. manual 의 절은 템플릿과 견줘 직접 고친다. 직무 문서는 "
                 "워커 사양에 라운드마다 들어가므로 커밋하면 다음 라운드부터 적용된다. 테스트 관문을 쓰려면 "
                 "docs/planning/tasks.toml 에 [test] 를 넣고 커밋한다(README \"묶음 검증\"). "
@@ -334,11 +342,93 @@ def _section_manual(root: Path) -> list[dict]:
     return found
 
 
+def split_sections(text: str) -> tuple[str, list[tuple[str, str]]]:
+    """마크다운을 머리(첫 `## ` 제목 줄 앞)와 `## ` 절 [(제목 줄(끝 공백 뗌), 절 글)] 로 나눈다(설계 9.7 의 1). 펜스 코드 블록
+    (``` · ~~~, 같은 문자로 같은 길이 이상인 줄이 닫는다) 안의 줄은 제목이 아니다. 절 글은 제목 줄부터 다음 제목 줄 앞까지다."""
+    head: list[str] = []
+    sections: list[list] = []
+    fence = None
+    for line in text.splitlines(keepends=True):
+        m = _FENCE.match(line)
+        if m:
+            mark = m.group(1)
+            if fence is None:
+                fence = mark
+            elif re.fullmatch(re.escape(fence[0]) + "{" + str(len(fence)) + ",}", line.strip()):
+                fence = None
+        elif fence is None and line.startswith("## "):
+            sections.append([line.rstrip("\n").rstrip(), [line]])
+            continue
+        (sections[-1][1] if sections else head).append(line)
+    return "".join(head), [(title, "".join(body)) for title, body in sections]
+
+
+def project_sections(role: str, text: str, template: str, retired: tuple[str, ...] | None = None) -> list[tuple[str, str]]:
+    """직무 문서 text 의 절 가운데 제목이 지금 템플릿에도 옛 제목(retired, 없으면 RETIRED_HEADINGS[role])에도 없는 절."""
+    known = {title for title, _ in split_sections(template)[1]}
+    known |= set(RETIRED_HEADINGS.get(role, ()) if retired is None else retired)
+    return [(title, body) for title, body in split_sections(text)[1] if title not in known]
+
+
+def _rules_rel(role: str) -> str:
+    return f".herdr-team/project-rules/{role}.md"
+
+
+def _section_key(body: str) -> str:
+    """절 글의 비교 열쇠: 앞뒤 빈 줄과 줄 끝 공백을 뗀 것."""
+    return "\n".join(line.rstrip() for line in body.strip("\n").splitlines())
+
+
+def _move_reason(role: str, why: str) -> str:
+    return (f"project-rules/{role}.md 를 쓸 수 없다: {why}. 앞 upgrade 가 옮기다 멈췄으면 그 파일에 이미 옮긴 절이 있다. "
+            "확인해 커밋한 뒤 다시 한다(같은 글은 다시 덧붙이지 않는다)")
+
+
+def _move_sections(root: Path, role: str, found: list[tuple[str, str]], hidden: set, prefix: str) -> str | None:
+    """프로젝트 절을 project-rules/<직무>.md 끝에 덧붙인다(설계 9.7 의 1). 그 파일에 같은 절(절로 나눠 _section_key 가 같은
+    것. 부분 문자열이 아니다)이 이미 있으면 그 절은 덧붙이지 않는다. 쓸 수 없으면 까닭을 돌려준다(그 직무 문서는 건너뛴다).
+    파일이 없는 것은 괜찮다."""
+    rel = _rules_rel(role)
+    path = root / rel
+    parts = Path(rel).parts
+    why = None
+    if any(root.joinpath(*parts[:i]).is_symlink() for i in range(1, len(parts) + 1)):
+        why = "경로에 심볼릭 링크가 있다"
+    elif prefix + rel in hidden:
+        why = "git 숨김 플래그(assume-unchanged·skip-worktree)가 있다"
+    else:
+        try:
+            if any(code != "??" for code in gitio.status_codes(root, rel)):
+                why = "커밋 안 된 변경이 있다(지운 것 포함)"
+            elif path.exists() and not gitio.tracked(root, rel):
+                why = "git 에 추적되지 않는다"
+        except HteamError as exc:
+            why = f"git 상태를 읽지 못했다: {exc.message}"
+    old = ""
+    if why is None and path.exists():
+        try:
+            old = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            why = f"읽지 못했다({exc.__class__.__name__})"
+    if why is not None:
+        return _move_reason(role, why)
+    have = {_section_key(body) for _, body in split_sections(old)[1]}
+    add = [body.strip("\n") for _, body in found if _section_key(body) not in have]
+    if add:
+        try:
+            write_atomic(path, (old.rstrip("\n") + "\n\n" if old.strip() else "") + "\n\n".join(add) + "\n")
+        except OSError as exc:
+            return _move_reason(role, f"쓰지 못했다({exc.__class__.__name__})")
+        die_at("after_project_rules")  # 시험: 덧붙인 뒤 직무 문서를 덮어쓰기 전에 죽는다
+    return None
+
+
 def upgrade(root: Path) -> dict:
     """복사한 규칙 파일을 템플릿으로 바꾼다(설계 9.6). 파일마다 git 상태를 먼저 본다: 커밋하지 않은 변경·삭제가 있으면 건너뛰고,
     없으면(삭제를 커밋했거나 처음부터 없다) 만들고, 추적하지 않으면 건너뛰고, 다르면 덮어쓴다. 커밋하지 않는다(git 이 백업이다).
-    역할을 확인하지 않고 config.toml 을 읽지 않는다."""
-    updated, created, skipped = [], [], []
+    역할을 확인하지 않고 config.toml 을 읽지 않는다. 직무 문서를 덮어쓰기 전에 템플릿에 없는 제목의 절을
+    project-rules/<직무>.md 로 옮긴다(13단계 9.7 의 1, 출력 moved)."""
+    updated, created, skipped, moved = [], [], [], []
     try:  # 숨김 플래그가 붙은 파일은 git status 가 작업 트리 변경을 보지 않는다(경로는 저장소 최상위 기준)
         hidden, prefix, hidden_error = gitio.index_read(root)[1], gitio.top_prefix(root), None
     except HteamError as exc:
@@ -369,6 +459,17 @@ def upgrade(root: Path) -> dict:
                 skipped.append({"path": rel, "reason": "git 에 추적되지 않는다. 템플릿과 직접 비교해 바꾼다"})
                 continue
             elif dst.read_bytes() != want.encode("utf-8"):
+                role = ROLE_DOCS.get(src)
+                try:
+                    found = project_sections(role, dst.read_text(encoding="utf-8"), want) if role else []
+                except UnicodeDecodeError:
+                    found = []  # UTF-8 이 아닌 직무 문서는 지금처럼 덮어쓴다(git 이 백업이다)
+                if found:
+                    problem = _move_sections(root, role, found, hidden, prefix)
+                    if problem is not None:
+                        skipped.append({"path": rel, "reason": problem})
+                        continue
+                    moved.append({"path": rel, "to": _rules_rel(role), "sections": [title for title, _ in found]})
                 write_atomic(dst, want)  # 같은 폴더 임시 파일 + os.replace
                 updated.append(rel)
         except HteamError as exc:
@@ -377,11 +478,12 @@ def upgrade(root: Path) -> dict:
         if rel.endswith("bin/hteam"):
             dst.chmod(0o755)
     try:
-        stat = gitio.diff_stat(root, updated + created)  # 바꾸거나 만든 파일만(건너뛴 파일의 사용자 변경이 섞이지 않게)
+        # 바꾸거나 만든 파일과 옮긴 곳만(건너뛴 파일의 사용자 변경이 섞이지 않게)
+        stat = gitio.diff_stat(root, updated + created + list(dict.fromkeys(m["to"] for m in moved)))
     except HteamError:
         stat = ""
-    return {"updated": updated, "created": created, "skipped": skipped, "manual": _section_manual(root),
-            "diff_stat": stat, "next": UPGRADE_NEXT}
+    return {"updated": updated, "created": created, "skipped": skipped, "moved": moved, "manual": _section_manual(root),
+            "diff_stat": stat, "next": UPGRADE_NEXT + (" " + MOVED_NEXT if moved else "")}
 
 
 def _ignore_pattern(line: str) -> str:
