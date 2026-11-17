@@ -297,8 +297,9 @@ scripts/codex-review.sh commit "$(git rev-parse HEAD)"
 """규칙 참조 시험(설계 11.9, 13단계): 템플릿·코드 글의 §N 인용이 규칙 파일의 절·항목을 가리킨다.
 
 대상 규칙 파일은 인용 앞(같은 줄)에 나온 마지막 규칙 파일 이름(design-rules·text-rules·web-rules)이다. 없으면 파일마다
-기본 대상이다: text-rules.md·review-text.md 는 text-rules, web-rules.md 는 web-rules, 그 밖의 템플릿은 design-rules.
-코드(.py)는 이름이 붙은 인용만 본다(`orca §17` 같은 다른 문서 인용이 있다). 규칙 파일의 `## §N` 제목 줄은 인용이 아니다.
+기본 대상이다: text-rules.md·review-text.md·textlint.py 는 text-rules, web-rules.md 는 web-rules, 그 밖은 design-rules.
+바로 앞에 `orca` 가 붙은 인용(`orca §17`, orca-team 설계의 절)은 다른 문서라 보지 않는다. 범위(`§2–§6`)는 그 사이 절을
+모두 본다. 규칙 파일의 `## §N` 제목 줄은 인용이 아니다.
 """
 from __future__ import annotations
 
@@ -312,14 +313,13 @@ from tests.helpers import ROOT
 RULES = {"design-rules": "design-rules.md", "text-rules": "text-rules.md", "web-rules": "web-rules.md"}
 CITE = re.compile(r"§(\d+)(?:\.(\d+))?(?:\s*[–-]\s*§?(\d+))?(?:\s*의\s*(\d+)번?)?")
 NAME = re.compile(r"(design-rules|text-rules|web-rules)")
+OTHER_DOC = re.compile(r"orca\s*$")  # 다른 문서의 절 번호(orca-team 설계)
 FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
 
 
-def default_target(rel: str) -> str | None:
+def default_target(rel: str) -> str:
     name = rel.rsplit("/", 1)[-1]
-    if name.endswith(".py"):
-        return None
-    if name in ("text-rules.md", "review-text.md"):
+    if name in ("text-rules.md", "review-text.md", "textlint.py"):
         return "text-rules"
     if name == "web-rules.md":
         return "web-rules"
@@ -366,18 +366,19 @@ def problems(root: Path) -> list[str]:
             if line.startswith("## §"):
                 continue
             for m in CITE.finditer(line):
-                names = NAME.findall(line[:m.start()])
-                target = names[-1] if names else default_target(rel)
-                if target is None:
+                before = line[:m.start()]
+                if OTHER_DOC.search(before):
                     continue
+                names = NAME.findall(before)
+                target = names[-1] if names else default_target(rel)
                 sec = rules.get(target)
                 if sec is None:
                     found.append(f"{rel}:{n}: {RULES[target]} 가 없다: {m.group(0)}")
                     continue
                 a, dot, b, item = (int(x) if x else None for x in m.groups())
                 item = item if item is not None else dot
-                for s in (a, b):
-                    if s is not None and s not in sec:
+                for s in range(a, (b if b is not None else a) + 1):
+                    if s not in sec:
                         found.append(f"{rel}:{n}: {RULES[target]} 에 §{s} 가 없다: {m.group(0)}")
                 if item is not None and a in sec and item not in sec[a]:
                     found.append(f"{rel}:{n}: {RULES[target]} §{a} 에 {item}번이 없다: {m.group(0)}")
@@ -395,19 +396,23 @@ class RuleRefTest(unittest.TestCase):
             (root / "lib" / "hteam").mkdir(parents=True)
             (root / "hooks").mkdir()
             (root / "templates" / "design-rules.md").write_text(
-                "# 디자인 규칙\n\n## §1 금지\n1. 하나\n2. 둘\n\n```\n3. 펜스 안은 항목이 아니다\n```\n\n## §2 접근성\n1. 하나\n",
+                "# 디자인 규칙\n\n## §1 금지\n1. 하나\n2. 둘\n\n```\n3. 펜스 안은 항목이 아니다\n```\n\n## §2 접근성\n1. 하나\n"
+                "\n## §4 글자\n1. 하나\n",
                 encoding="utf-8")
             (root / "templates" / "text-rules.md").write_text("# 문구\n\n## §1 보존\n1. 하나\n", encoding="utf-8")
             (root / "templates" / "roles" / "designer.md").write_text(
                 "- §1 의 2번, §2 의 1번, §1–§2 는 있다\n- §1 의 3번은 없다\n- §9 는 없다\n- text-rules §1 의 4번은 없다\n"
-                "- §1.2 는 있다\n",
+                "- §1.2 는 있다\n- §2–§4 는 가운데 §3 이 빠졌다\n",
                 encoding="utf-8")
-            (root / "lib" / "hteam" / "x.py").write_text('"""orca §17 은 다른 문서다. design-rules §5 는 없다."""\n',
-                                                      encoding="utf-8")
+            (root / "lib" / "hteam" / "x.py").write_text(
+                '"""orca §17 은 다른 문서다. 이름 없는 §9 도 본다. design-rules §5 는 없다."""\n', encoding="utf-8")
             self.assertEqual(problems(root), [
                 "templates/roles/designer.md:2: design-rules.md §1 에 3번이 없다: §1 의 3번",
                 "templates/roles/designer.md:3: design-rules.md 에 §9 가 없다: §9",
                 "templates/roles/designer.md:4: text-rules.md §1 에 4번이 없다: §1 의 4번",
+                "templates/roles/designer.md:6: design-rules.md 에 §3 가 없다: §2–§4",
+                "templates/roles/designer.md:6: design-rules.md 에 §3 가 없다: §3",
+                "lib/hteam/x.py:1: design-rules.md 에 §9 가 없다: §9",
                 "lib/hteam/x.py:1: design-rules.md 에 §5 가 없다: §5",
             ])
 ```
@@ -749,6 +754,45 @@ scripts/codex-review.sh commit "$(git rev-parse HEAD)"
         self.assertEqual(out["skipped"], [{"path": doc, "reason": reason.format("커밋 안 된 변경이 있다(지운 것 포함)")}])
         self.assertEqual(((self.proj / doc).read_text(encoding="utf-8"), (self.proj / rules).read_text(encoding="utf-8")),
                          (body, "커밋 안 한 수정\n"))
+
+    def test_similar_rule_is_not_taken_for_a_duplicate(self):
+        doc, rules = ".herdr-team/roles/developer.md", ".herdr-team/project-rules/developer.md"
+        self.edit_commit(doc, self.template("roles/developer.md") + "\n## 이 프로젝트 규칙\n- 개인 폰 사용 금지\n")
+        self.edit_commit(rules, "## 이 프로젝트 규칙\n- 개인 폰 사용 금지 해제\n")  # 부분 문자열로는 같아 보인다
+        code, out = self.upgrade()
+        self.assertEqual((code, len(out["moved"])), (0, 1), out)
+        self.assertEqual((self.proj / rules).read_text(encoding="utf-8"),
+                         "## 이 프로젝트 규칙\n- 개인 폰 사용 금지 해제\n\n## 이 프로젝트 규칙\n- 개인 폰 사용 금지\n")
+
+    def test_write_failure_skips_and_a_crash_resumes(self):
+        doc, rules = ".herdr-team/roles/developer.md", ".herdr-team/project-rules/developer.md"
+        extra = "## 이 프로젝트 규칙\n- 개인 폰은 쓰지 않는다.\n"
+        body = self.template("roles/developer.md") + "\n" + extra
+        self.edit_commit(doc, body)
+        self.edit_commit(".herdr-team/project-rules/other.md", "다른 직무\n")
+        folder = self.team / "project-rules"
+        folder.chmod(0o555)  # 쓰지 못한다
+        try:
+            code, out = self.upgrade()
+        finally:
+            folder.chmod(0o755)
+        self.assertEqual((code, out["moved"]), (0, []), out)
+        self.assertEqual(out["skipped"][0]["path"], doc)
+        self.assertIn("project-rules/developer.md 를 쓸 수 없다: 쓰지 못했다(PermissionError)", out["skipped"][0]["reason"])
+        self.assertEqual((self.proj / doc).read_text(encoding="utf-8"), body)
+        # 덧붙인 직후 죽으면: 직무 문서는 그대로, project-rules 는 커밋 안 된 새 파일
+        code, _ = self.hteam("upgrade", as_=None, env={"HTEAM_TEST_DIE_AT": "after_project_rules"})
+        self.assertEqual(code, 137)
+        self.assertEqual(((self.proj / doc).read_text(encoding="utf-8"), (self.proj / rules).read_text(encoding="utf-8")),
+                         (body, extra))
+        code, out = self.upgrade()  # 추적하지 않는 project-rules: 건너뛴다
+        self.assertEqual((out["moved"], out["skipped"][0]["path"]), ([], doc), out)
+        self.git("add", "--", rules)
+        self.git("commit", "-q", "-m", "옮긴 규칙", "--", rules)
+        code, out = self.upgrade()  # 같은 절은 다시 덧붙이지 않고 끝난다
+        self.assertEqual((code, out["moved"]), (0, [{"path": doc, "to": rules, "sections": ["## 이 프로젝트 규칙"]}]), out)
+        self.assertEqual(((self.proj / doc).read_text(encoding="utf-8"), (self.proj / rules).read_text(encoding="utf-8")),
+                         (self.template("roles/developer.md"), extra))
 ```
 
 **Edit** `herdr-team/tests/test_project_rules.py`
@@ -882,9 +926,20 @@ def _rules_rel(role: str) -> str:
     return f".herdr-team/project-rules/{role}.md"
 
 
+def _section_key(body: str) -> str:
+    """절 글의 비교 열쇠: 앞뒤 빈 줄과 줄 끝 공백을 뗀 것."""
+    return "\n".join(line.rstrip() for line in body.strip("\n").splitlines())
+
+
+def _move_reason(role: str, why: str) -> str:
+    return (f"project-rules/{role}.md 를 쓸 수 없다: {why}. 앞 upgrade 가 옮기다 멈췄으면 그 파일에 이미 옮긴 절이 있다. "
+            "확인해 커밋한 뒤 다시 한다(같은 글은 다시 덧붙이지 않는다)")
+
+
 def _move_sections(root: Path, role: str, found: list[tuple[str, str]], hidden: set, prefix: str) -> str | None:
-    """프로젝트 절을 project-rules/<직무>.md 끝에 덧붙인다(설계 9.7 의 1). 같은 절 글(앞뒤 빈 줄을 뗀 것)이 이미 있으면 그
-    절은 덧붙이지 않는다. 쓸 수 없으면 까닭을 돌려준다(그 직무 문서는 건너뛴다). 파일이 없는 것은 괜찮다."""
+    """프로젝트 절을 project-rules/<직무>.md 끝에 덧붙인다(설계 9.7 의 1). 그 파일에 같은 절(절로 나눠 _section_key 가 같은
+    것. 부분 문자열이 아니다)이 이미 있으면 그 절은 덧붙이지 않는다. 쓸 수 없으면 까닭을 돌려준다(그 직무 문서는 건너뛴다).
+    파일이 없는 것은 괜찮다."""
     rel = _rules_rel(role)
     path = root / rel
     parts = Path(rel).parts
@@ -908,11 +963,15 @@ def _move_sections(root: Path, role: str, found: list[tuple[str, str]], hidden: 
         except (OSError, UnicodeDecodeError) as exc:
             why = f"읽지 못했다({exc.__class__.__name__})"
     if why is not None:
-        return (f"project-rules/{role}.md 를 쓸 수 없다: {why}. 앞 upgrade 가 옮기다 멈췄으면 그 파일에 이미 옮긴 절이 있다. "
-                "확인해 커밋한 뒤 다시 한다(같은 글은 다시 덧붙이지 않는다)")
-    add = [body.strip("\n") for _, body in found if body.strip("\n") not in old]
+        return _move_reason(role, why)
+    have = {_section_key(body) for _, body in split_sections(old)[1]}
+    add = [body.strip("\n") for _, body in found if _section_key(body) not in have]
     if add:
-        write_atomic(path, (old.rstrip("\n") + "\n\n" if old.strip() else "") + "\n\n".join(add) + "\n")
+        try:
+            write_atomic(path, (old.rstrip("\n") + "\n\n" if old.strip() else "") + "\n\n".join(add) + "\n")
+        except OSError as exc:
+            return _move_reason(role, f"쓰지 못했다({exc.__class__.__name__})")
+        die_at("after_project_rules")  # 시험: 덧붙인 뒤 직무 문서를 덮어쓰기 전에 죽는다
     return None
 
 
@@ -1040,6 +1099,10 @@ class HeredocRuleTest(unittest.TestCase):
         ("drive", "cat <<EOF\n$(hteam drive)\nEOF"),
         ("horch", "cat <<'EOF'\nx\nEOF\nhorch worker-list"),
         ("horch", "python3 - <<'EOF'\nhorch\nEOF"),
+        ("horch", "cat <<EOF-X\n본문\nEOF-X\nhorch run-create --objective demo"),  # 끝 표시를 다 읽지 못한다: 원문
+        ("horch", "cat <<'EOF'x\n본문\nEOFx\nhorch run-create --objective demo"),
+        ("horch", "cat <<'EOF' > >(bash)\nhorch run-create --objective demo\nEOF"),  # 프로세스 치환으로 셸에 간다
+        ("watch", "cat <<EOF \\\n| bash\nhteam watch\nEOF"),  # 줄 이음: 원문
     )
 
     def judge(self, hook, name, cmd):
@@ -1078,12 +1141,14 @@ def horch_denied(cmd: str) -> bool:
 HEREDOC_RE = re.compile(r"<<(-?)[ \t]*(?:'([^'\n]*)'|\"([^\"\n]*)\"|(\\)?([A-Za-z_][A-Za-z0-9_]*))")
 TEXT_SINKS = ("cat", "tee")  # 본문을 글로 옮기기만 하는 명령
 _SEGMENT = re.compile(r";|&&|\|\||\||\(|\{|!|\bthen\b|\bdo\b|\belse\b")
+_RISKY = ("$(", "`", "<(", ">(")  # 명령 치환·프로세스 치환: 본문이 실행으로 이어질 수 있다
+_DELIM_END = " \t;&|<>)"  # 끝 표시 낱말 바로 뒤에 올 수 있는 글자
 
 
 def _text_only(before: str, after: str) -> bool:
-    """heredoc 이 든 단순 명령이 글을 옮기기만 하는가: 첫 낱말(앞의 이름=값 을 건너뛴 것)의 basename 이 cat·tee 이고, 앞에
-    명령 치환·프로세스 치환이 없고, 끝 표시 뒤에 파이프가 없다."""
-    if "$(" in before or "`" in before or "<(" in before or "|" in after:
+    """heredoc 이 든 단순 명령이 글을 옮기기만 하는가: 첫 낱말(앞의 이름=값 을 건너뛴 것)의 basename 이 cat·tee 이고, 그 줄의
+    heredoc 앞뒤에 명령 치환·프로세스 치환(`> >(bash)` 포함)이 없고, 끝 표시 뒤에 파이프가 없다."""
+    if any(x in before for x in _RISKY) or any(x in after for x in _RISKY + ("|",)):
         return False
     words = [w for w in _SEGMENT.split(before)[-1].split() if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=\S*", w)]
     return bool(words) and os.path.basename(words[0]) in TEXT_SINKS
@@ -1091,7 +1156,8 @@ def _text_only(before: str, after: str) -> bool:
 
 def _heredoc_ops(line: str) -> list[tuple[bool, str, bool, bool]] | None:
     """한 줄에서 셸 따옴표·주석 밖의 heredoc 시작을 찾는다: [(앞 탭 떼기, 끝 표시, 따옴표 있음, 글만 옮김)]. here-string
-    (`<<<`)은 아니다. 줄 끝에서 따옴표가 닫히지 않으면 None(해석하지 못한다)."""
+    (`<<<`)은 아니다. 해석하지 못하면 None 이다: 줄 끝에서 따옴표가 닫히지 않는다, 끝 표시 낱말을 다 읽지 못했다
+    (`<<EOF-X`, `<<'EOF'X`), heredoc 이 있는 줄이 역슬래시로 다음 줄에 이어진다."""
     ops, i, quote = [], 0, None
     while i < len(line):
         ch = line[i]
@@ -1114,6 +1180,8 @@ def _heredoc_ops(line: str) -> list[tuple[bool, str, bool, bool]] | None:
         elif line.startswith("<<", i):
             m = HEREDOC_RE.match(line, i)
             if m:
+                if m.end() < len(line) and line[m.end()] not in _DELIM_END:
+                    return None
                 quoted = m.group(2) is not None or m.group(3) is not None or m.group(4) is not None
                 delim = next(g for g in (m.group(2), m.group(3), m.group(5)) if g is not None)
                 ops.append((m.group(1) == "-", delim, quoted, _text_only(line[:i], line[m.end():])))
@@ -1122,7 +1190,9 @@ def _heredoc_ops(line: str) -> list[tuple[bool, str, bool, bool]] | None:
             i += 2
             continue
         i += 1
-    return None if quote else ops
+    if quote or (ops and line.rstrip().endswith("\\")):
+        return None
+    return ops
 
 
 def strip_heredocs(cmd: str) -> str:
@@ -1227,6 +1297,7 @@ from __future__ import annotations
 
 import unittest
 
+import tests.helpers  # noqa: F401  (lib 를 sys.path 에 넣는다)
 from hteam import color
 
 RED = (0.62796, 0.25768, 29.2339)
@@ -1259,7 +1330,8 @@ class ColorTest(unittest.TestCase):
         self.close(color.parse("OKLCH(0.7 50% 400deg)"), (0.7, 0.2, 40.0))  # C 100% = 0.4, hue 는 360 으로 나눈 나머지
 
     def test_unreadable(self):
-        for text in ("blue", "#12", "#12345", "rgb(x y z)", "oklch(1 2)", "hsl()", ""):
+        for text in ("blue", "#12", "#12345", "rgb(x y z)", "oklch(1 2)", "hsl()", "", "oklch(0.6 0.15 nan)",
+                     "oklch(inf 0.1 30)", "rgb(nan 0 0)", "hsl(nan 100% 50%)"):
             self.assertIsNone(color.parse(text), text)
 
     def test_distances(self):
@@ -1336,12 +1408,25 @@ def _parts(args: str) -> list[str]:
     return [x for x in re.split(r"[\s,/]+", args.strip()) if x]
 
 
+def _num(text: str) -> float:
+    """수 글 하나. NaN·무한대는 ValueError(색으로 받지 않는다)."""
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError(text)
+    return value
+
+
 def _angle(text: str) -> float:
-    return float(text.lower().removesuffix("deg"))
+    return _num(text.lower().removesuffix("deg"))
 
 
 def parse(text: str) -> LCH | None:
-    """색 글 하나(hex, `rgb()`·`rgba()`, `hsl()`·`hsla()`, `oklch()`)의 OKLCH. 못 읽으면 None."""
+    """색 글 하나(hex, `rgb()`·`rgba()`, `hsl()`·`hsla()`, `oklch()`)의 OKLCH. 못 읽거나 NaN·무한대가 섞이면 None."""
+    lch = _parse(text)
+    return lch if lch is not None and all(math.isfinite(x) for x in lch) else None
+
+
+def _parse(text: str) -> LCH | None:
     t = text.strip()
     if t.startswith("#"):
         return from_hex(t)
@@ -1353,12 +1438,12 @@ def parse(text: str) -> LCH | None:
         return None
     try:
         if name.startswith("rgb"):
-            return from_srgb(*(float(x[:-1]) / 100 if x.endswith("%") else float(x) / 255 for x in args[:3]))
+            return from_srgb(*(_num(x[:-1]) / 100 if x.endswith("%") else _num(x) / 255 for x in args[:3]))
         if name.startswith("hsl"):
-            h, s, l = _angle(args[0]), float(args[1].rstrip("%")) / 100, float(args[2].rstrip("%")) / 100
+            h, s, l = _angle(args[0]), _num(args[1].rstrip("%")) / 100, _num(args[2].rstrip("%")) / 100
             return from_srgb(*colorsys.hls_to_rgb((h % 360) / 360, l, s))
-        lightness = float(args[0][:-1]) / 100 if args[0].endswith("%") else float(args[0])
-        chroma = float(args[1][:-1]) / 100 * 0.4 if args[1].endswith("%") else float(args[1])
+        lightness = _num(args[0][:-1]) / 100 if args[0].endswith("%") else _num(args[0])
+        chroma = _num(args[1][:-1]) / 100 * 0.4 if args[1].endswith("%") else _num(args[1])
         h = 0.0 if args[2].lower() == "none" else _angle(args[2])
         return (lightness, chroma, _hue(chroma, h))
     except ValueError:
@@ -1519,8 +1604,21 @@ class EvalTest(unittest.TestCase):
         self.assertEqual(m["targets"], {"blue_violet_le_20": False, "spread_ge_60_ge_90": False,
                                         "overused_body_le_40": False, "cluster_zero": True})
         hit = run("#1e3a8a", "oklch(0.6 0.15 120)", "oklch(0.6 0.15 210)")
-        hit["output"]["A"]["accent"] = "#1e3a8a"
         self.assertEqual(ev.metrics([hit], OVERUSED)["overused_color_hits"], 1)
+
+    def test_judge_prompt_tolerates_missing_optional_fields(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            r = run("oklch(0.6 0.15 30)", "oklch(0.6 0.15 120)", "oklch(0.6 0.15 210)")
+            del r["output"]["A"]["idea"]  # 유효 조건에 들지 않는 필드
+            r["output"]["B"]["mood"] = "가|나"  # 표를 깨는 글자
+            (folder / "budget-1.json").write_text(json.dumps({"brief": "budget", "rep": 1, **r}, ensure_ascii=False),
+                                                  encoding="utf-8")
+            text = ev.judge_prompt(folder).read_text(encoding="utf-8")
+        self.assertIn("| budget | 1 | A |", text)
+        self.assertIn("| 봄 시장 좌판의 종이 간판 | - |", text)
+        self.assertIn("가/나", text)
 ```
 
 - [ ] **Step 2: 시험이 실패하는지 본다**
@@ -1786,8 +1884,11 @@ def judge_prompt(folder: Path) -> Path:
             continue
         for k in "ABC":
             o = r["output"][k]
-            rows.append(f"| {r['brief']} | {r['rep']} | {k} | {o['bg']} / {o['ink']} / {o['accent']} | {o['heading_font']}"
-                        f"({o['heading_class']}) / {o['body_font']} | {o['posture']} | {o['mood']} | {o['idea']} |")
+            cell = {name: str(o.get(name) or "-").replace("|", "/") for name in
+                    ("bg", "ink", "accent", "heading_font", "heading_class", "body_font", "posture", "mood", "idea")}
+            rows.append(f"| {r['brief']} | {r['rep']} | {k} | {cell['bg']} / {cell['ink']} / {cell['accent']} | "
+                        f"{cell['heading_font']}({cell['heading_class']}) / {cell['body_font']} | {cell['posture']} | "
+                        f"{cell['mood']} | {cell['idea']} |")
     text = "\n".join([
         "너는 디자인 리뷰어다. 읽기만 한다. 아래 표는 같은 지시를 받은 디자인 디렉터가 서비스 브리프 다섯에 낸 톤 시안이다"
         f"(판 `{folder.name}`). 브리프는 `scripts/design-eval/briefs.json` 이다.",
@@ -1847,7 +1948,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: 시험이 통과하는지 본다**
 
 Run: `python3 -m unittest discover -s scripts/design-eval -p 'test_*.py' -v`
-Expected: OK(다섯).
+Expected: OK(여섯).
 
 - [ ] **Step 5: claude 호출 한 번으로 플래그를 확인한다(사용자 터미널·시험 프로젝트를 건드리지 않는다)**
 
