@@ -954,3 +954,38 @@ class RehomeResetTest(ResetCase):
         self.assertEqual(self.keys(), [])
         self.assertTrue(any("production 리셋: new_terminal(parent_changed)" in x for x in self.log_lines()),
                         self.log_lines())
+
+
+RELAY_HANDOFF = "production 에이전트 인수인계 중 상태를 Herdr 에 보낼 수 없어(대리 보고 쓰기 실패) 인수인계를 멈췄다"
+
+
+class RelayHandoffTest(ResetCase):
+    """12단계 인수인계 Dispatch 의 대리 보고 쓰기 실패(설계 8.6 표·8.7 의 2a·8.14 의 5): observed relay_failed 메시지나
+    재확인의 attention relay_failed 로 그 자리에서 끝나지 않은 인수인계 정리(5.9.7 의 4 의 실패 갈래)와 decide 를 한다.
+    정리한 Dispatch 는 진행 중이 아니므로 한 번이다. horch 신호는 흉내 낸다."""
+
+    def setUp(self):
+        super().setUp()
+        self.mark()
+        self.step()
+        self.did = self.handoff_did()
+
+    def stopped(self) -> None:
+        self.assertEqual(self.dispatch_row(self.did)["state"], "released")  # abandon --keep-terminal 뒤 release
+        e = self.entry()
+        self.assertEqual((e["resetting"], e["reset_pending"], e["terminal"]), (None, False, self.t))
+        (x,) = self.decides()
+        self.assertEqual((x["kind"], x["task"], x["summary"], x["commands"]),
+                         ("escalation", None, RELAY_HANDOFF, ["hteam agent reset production"]))
+
+    def test_message_stops_the_handoff(self):
+        self.handle("observed", self.did, self.observed(self.did, "relay_failed", "4242"), sender="horch")
+        self.stopped()
+
+    def test_reconcile_stops_it_from_the_attention(self):
+        with self.in_drive():
+            d = self.make_drive()
+            for _ in range(2):  # 정리한 Dispatch 는 진행 중이 아니다: 다시 하지 않는다
+                d.relay_failed([dict(r, attention="relay_failed") if r["id"] == self.did else r
+                                for r in d.write_workers()])
+        self.stopped()

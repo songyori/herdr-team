@@ -51,6 +51,8 @@ HANDOFF_GONE = "{name} 에이전트가 인수인계 중 끝났다"
 IDLE_TWICE = "done 없이 턴을 두 번 마쳤다"  # 인수인계 두 번째 idle 의 요약
 ENDED_NO_DONE = "done 없이 끝났다"  # 재확인이 본 끝난 인수인계(outcome 없음)의 요약
 NOT_STARTED_LIMIT = "작업자 시작을 {n}번 확인하지 못했다"
+# 인수인계 중 대리 보고 쓰기 실패(설계 8.6 표·8.14 의 5, 12단계): 끝나지 않은 인수인계 정리의 실패 갈래(_handoff_failed)로 멈춘다
+RELAY_HANDOFF = "{name} 에이전트 인수인계 중 상태를 Herdr 에 보낼 수 없어(대리 보고 쓰기 실패) 인수인계를 멈췄다"
 
 
 def blank(name: str) -> dict:
@@ -729,6 +731,19 @@ def _handoff_holder(p, did: str | None) -> str | None:
                  if isinstance(e, dict) and (e.get("resetting") or {}).get("dispatch") == did), None)
 
 
+def handoff_relay_failed(d, did: str | None) -> bool:
+    """재확인의 쓰기 실패 보조(설계 8.7 의 2a): did 가 인수인계 Dispatch 면 True(태스크 Dispatch 로 보지 않는다). handoff
+    단계면 그 자리에서 끝나지 않은 인수인계 정리(5.9.7 의 4, RESET_STUCK_S 갈래와 같은 _handoff_failed: abandon
+    --keep-terminal → release → 리셋 지우기 → decide)를 한다. 그 세션은 상태를 보낼 수 없어 인수인계 끝을 알 수 없고
+    비우기 확인(turn·idle)도 오지 않는다. 메시지 길은 handoff_message 의 relay_failed 갈래다."""
+    name = _handoff_holder(d.p, did)
+    if name is None:
+        return False
+    if (entry(d.p, name)["resetting"] or {}).get("step") == "handoff":
+        _handoff_failed(d, name, did, RELAY_HANDOFF.format(name=name))
+    return True
+
+
 def handoff_message(d, m: dict) -> bool:
     """인수인계 Dispatch 의 메시지면 처리하고 True(8.6). 아니면 False(태스크 메시지로 간다)."""
     from .coord import _body  # coord 가 이 모듈을 쓴다
@@ -756,6 +771,9 @@ def handoff_message(d, m: dict) -> bool:
     elif kind == "observed" and what in ("blocked", "error"):
         msg = str(d.hc_status(did).get("msg") or "")  # observed 본문에는 상태 낱말만 있다(작업 _stuck 과 같다)
         d.decide("escalation", None, HANDOFF_PAUSED.format(name=name, word=what, msg=msg[:120]))
+    elif kind == "observed" and what == "relay_failed":
+        # 12단계(설계 8.6 표): 상태를 보낼 수 없어 인수인계 끝·비우기 확인을 알 수 없다. 그 자리에서 정리하고 decide
+        _handoff_failed(d, name, did, RELAY_HANDOFF.format(name=name))
     elif kind == "observed" and what in ("exited", "lost"):
         forget(d.p, name)  # terminal-close --abandon 으로 남은 기록 정리. 다음 세션은 새로 뜬다
         _set(d.p, name, resetting=None, reset_pending=False, reset_failures=0, since_reset=0, reset_tasks=[])

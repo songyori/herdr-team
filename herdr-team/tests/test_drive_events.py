@@ -24,6 +24,14 @@ FIX_FORCE_ROUND = 'hteam fix T-001 --force-round --note "<지시>"'
 BLOCKED_TAIL = (". 사용자에게 그 탭(고정 에이전트면 에이전트 탭, 아니면 관제 탭)을 보고 승인하거나 거절해 달라고 한다. "
                 "그 뒤 작업자가 이어 가면 worker_done 이 와서 리뷰로 간다")
 NO_STATUS = "T-001 작업자가 상태를 보고하지 않는다(시작 확인 창일 수 있다). 사용자에게 그 탭을 보고 넘겨 달라고 한다"
+# 12단계(설계 8.14 의 5·6, 8.6 표의 observed relay_failed)
+NO_STATUS_CLAUDE = ("T-001 작업자가 상태를 보고하지 않는다(대리 보고도 없다. 시작 확인 창이거나 업그레이드 전에 뜬 세션일 수 "
+                    "있다). 사용자에게 그 탭을 보고 넘겨 달라고 한다")
+RELAY_FAILED = ("T-001 작업자의 상태를 Herdr 에 보낼 수 없다(대리 보고 쓰기 실패). Herdr 에 보이는 상태가 실제와 다를 수 "
+                "있다. 사용자에게 그 탭을 보게 한다. done 을 보내면 관제가 이어 간다")
+RELAY_REVIEW = "T-001 리뷰어 상태를 Herdr 에 보낼 수 없어(대리 보고 쓰기 실패) 다시 띄운다"
+CODEX_WORKER = BASE_CONFIG.replace('worker = "claude"', 'worker = "codex"')  # 작업 Codex, 리뷰어 Claude
+DEAF = {"CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1"}  # HTEAM_FAKE_DEAF 가 더하는 Dispatch env(설계 8.14 의 7)
 # horch 를 부를 때마다 인자를 한 줄씩 남기고 진짜 horch 로 넘기는 감싸개(status 가 horch 를 부르지 않는지 본다, 설계 8.3)
 RECORD_HORCH = """#!/usr/bin/env python3
 import json, os, sys
@@ -343,6 +351,248 @@ class IdleTest(EventCase):
         st = self.task_state("T-001")
         self.assertEqual((st["status"], self.attempt("T-001")["attempt"]), ("reviewing", 2))  # 시도 실패, 자동 재시도
         self.assertEqual(self.decides(), [])
+
+
+def dispatch_env(case: TeamCase, did: str) -> dict | None:
+    """horch 가 기록한 그 Dispatch 의 env(worker-start --env). 없으면 None."""
+    raw = case.dispatch_row(did)["env"]
+    return json.loads(raw) if raw else None
+
+
+def flagged(d, *dids: str):
+    """horch worker-list 에서 그 Dispatch 행들의 attention 이 relay_failed 다(herdr-orch 16.8: 그 터미널의 대리 보고 기록이
+    write_failed). 관제의 목록 받기(write_workers)만 바꾼다. with 블록으로 쓴다."""
+    real = d.write_workers
+
+    def rows():
+        out = [dict(r, attention="relay_failed") if r["id"] in dids else r for r in real()]
+        d.rows = out
+        return out
+    return mock.patch.object(d, "write_workers", side_effect=rows)
+
+
+class BackgroundIdleTest(EventCase):
+    """백그라운드 회귀(설계 15.1 의 12단계, 8.6): 관제는 Stop 기록을 읽지 않는다. 메시지를 손으로 만들지 않고 관제의
+    check_mail(horch check --wait 의 관찰)이 실제 horch 판정을 거친다. 워커가 idle 이고 그 turn 의 Stop 기록
+    (<horch 홈>/relay/<터미널>.stops.json, Task 1 의 relay.py 꼴)에 백그라운드 일이 있으면 horch 가 observed idle 을 내지
+    않아 done 요청·escalation 이 없다. 기록의 background 가 비면 지금처럼 done 요청 글이 간다."""
+
+    BG = {"type": "local_bash", "status": "running", "description": "전체 시험(15분)"}  # Stop 훅 background_tasks 한 항목
+
+    def setUp(self):
+        super().setUp()
+        self.env["HTEAM_DRIVE_WAIT_MS"] = "300"  # check --wait 한 번을 짧게(관찰은 그 사이 sweep 이 한다)
+        self.rearm()
+
+    def stops(self, term: str, *items: tuple) -> None:
+        """그 터미널의 Stop 기록(herdr-orch 훅이 쓴다). items 는 (turn, background). 시각은 지금(그 Dispatch 뒤)이다."""
+        path = self.horch_home / "relay" / f"{term}.stops.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"stops": [{"pid": 4242, "turn": turn, "at": ago(0), "background": list(bg)}
+                                              for turn, bg in items]}, ensure_ascii=False), encoding="utf-8")
+
+    def observed_kinds(self, did: str) -> list[str]:
+        """horch 가 Run 메일함에 쓴 그 Dispatch 의 observed 사건 종류(본문의 kind)."""
+        conn = sqlite3.connect(self.horch_home / "orch.db")
+        try:
+            rows = conn.execute("SELECT body FROM messages WHERE type='observed' AND dispatch_id=? ORDER BY id",
+                                (did,)).fetchall()
+        finally:
+            conn.close()
+        return [json.loads(r[0])["kind"] for r in rows]
+
+    def mail(self, n: int = 3) -> None:
+        for _ in range(n):
+            self.d.check_mail()
+
+    def test_background_turn_gets_no_done_request_until_an_empty_turn(self):
+        self.start()
+        did, term = self.work_dispatch("T-001"), self.work_terminal()
+        self.stops(term, (1, [self.BG]))
+        self.update_terminal(term, status="idle", turn=1)
+        self.mail()
+        self.assertEqual(self.observed_kinds(did), [])  # horch 가 idle 을 내지 않았다
+        self.assertEqual(self.dispatch_messages(did), [])
+        self.assertEqual(self.decides(), [])
+        self.assertNotIn("idle_nudged", self.task_state("T-001")["rounds"][-1]["work"])
+        # 백그라운드 일이 끝나 다음 턴의 Stop 기록은 비었다: 지금처럼 done 요청
+        self.stops(term, (1, [self.BG]), (2, []))
+        self.update_terminal(term, status="idle", turn=2)
+        self.mail()
+        self.assertEqual(self.observed_kinds(did), ["idle"])
+        self.assertEqual(self.dispatch_messages(did), [{"subject": "done 요청", "body": IDLE_TEXT}])
+        self.assertEqual(self.decides(), [])
+
+    def test_empty_background_turn_gets_the_done_request(self):
+        self.start()
+        did, term = self.work_dispatch("T-001"), self.work_terminal()
+        self.stops(term, (1, []))
+        self.update_terminal(term, status="idle", turn=1)
+        self.mail()
+        self.assertEqual(self.observed_kinds(did), ["idle"])
+        self.assertEqual(self.dispatch_messages(did), [{"subject": "done 요청", "body": IDLE_TEXT}])
+        self.assertEqual(self.decides(), [])
+
+
+class CodexNoStatusTest(EventCase):
+    """Codex 작업자는 Claude 훅이 없어 대리 보고가 없다: no_status 문구가 지금 그대로다(설계 8.6 의 12단계)."""
+
+    config = CODEX_WORKER
+
+    def test_codex_worker_keeps_the_old_text(self):
+        self.start()
+        did, term = self.work_dispatch("T-001"), self.work_terminal()
+        self.assertEqual(self.dispatch_row(did)["agent"], "codex")
+        self.update_terminal(term, status=None)
+        conn = sqlite3.connect(self.horch_home / "orch.db")
+        conn.execute("UPDATE dispatches SET created_at=? WHERE id=?", (ago(120), did))
+        conn.commit()
+        conn.close()
+        self.d.reconcile()
+        (e,) = self.decides()
+        self.assertEqual((e["kind"], e["task"], e["summary"]), ("escalation", "T-001", NO_STATUS))
+
+
+class RelayFailedTest(EventCase):
+    """대리 보고 쓰기 실패(설계 8.6 표의 observed relay_failed, 8.7 의 2a, 8.14 의 5, 15.1): horch 의 observed relay_failed
+    메시지(주 경로)나 재확인의 워커 목록 attention relay_failed(보조)로 작업 Dispatch 에는 escalation 을 한 번, 리뷰
+    Dispatch 에는 decide 없이 리뷰어를 끝내고 다시 띄운다(한 번). horch 신호는 흉내 낸다. 인수인계는 test_crew_reset 의
+    RelayHandoffTest, 고정 에이전트 라운드의 명령은 test_crew 의 RelayCrewTest."""
+
+    def failed(self, did: str, mid: int = 1) -> None:
+        """horch 의 observed relay_failed 메시지(herdr-orch 16.8: key 는 그 Claude pid)를 관제가 처리한다."""
+        self.d.handle(self.observed(did, "relay_failed", key="4242", mid=mid))
+
+    def test_work_message_raises_once(self):
+        self.start()
+        did = self.work_dispatch("T-001")
+        self.failed(did)
+        self.failed(did, mid=2)
+        with flagged(self.d, did):
+            self.d.reconcile()  # 재확인 보조도 relay_handled 를 보고 다시 올리지 않는다
+        (e,) = self.decides()
+        self.assertEqual((e["kind"], e["task"], e["summary"], e["commands"]),
+                         ("escalation", "T-001", RELAY_FAILED, [FIX, "hteam drop T-001 --force"]))
+        self.assertEqual(self.task_state("T-001")["rounds"][-1]["work"]["relay_handled"], did)
+        self.rearm()  # 관제가 다시 떠도 되풀이하지 않는다
+        with flagged(self.d, did):
+            self.d.reconcile()
+        self.assertEqual(len(self.decides()), 1)
+
+    def test_missed_message_is_raised_by_the_reconcile(self):
+        self.start()
+        did = self.work_dispatch("T-001")
+        with flagged(self.d, did):
+            self.d.reconcile()
+            self.d.reconcile()
+        (e,) = self.decides()
+        self.assertEqual((e["summary"], e["commands"]), (RELAY_FAILED, [FIX, "hteam drop T-001 --force"]))
+        self.assertEqual(self.task_state("T-001")["rounds"][-1]["work"]["relay_handled"], did)
+
+    def offered(self, did: str, n: int) -> tuple[int, dict]:
+        """쓰기 실패 escalation 의 n 번째 명령을 그 상태(작업 Dispatch 가 아직 active)에서 그대로 부른다(앞의 hteam 을 뺀다)."""
+        import shlex
+        self.failed(did)
+        (e,) = self.decides()
+        self.assertEqual(self.dispatch_row(did)["state"], "active")  # 쓰기 실패만으로 Dispatch 는 끝나지 않는다
+        return self.hteam(*shlex.split(e["commands"][n])[1:])
+
+    def test_offered_drop_is_not_refused(self):
+        self.start()
+        did = self.work_dispatch("T-001")
+        code, res = self.hteam("drop", "T-001")  # 비강제 drop 은 active Dispatch 를 거부한다: 그래서 --force 를 낸다
+        self.assertEqual((code, res["error"]["code"]), (3, "worker_active"), res)
+        code, res = self.offered(did, 1)
+        self.assertEqual((code, res["status"]), (0, "dropped"), res)
+        self.assertEqual(self.dispatch_row(did)["state"], "released")  # abandon --kill 뒤 release
+        self.assertEqual(self.task_state("T-001")["status"], "dropped")
+
+    def test_offered_fix_is_not_refused(self):
+        self.start()
+        did = self.work_dispatch("T-001")
+        code, res = self.offered(did, 0)  # 임시 워커 fix 는 active 워커를 abandon --kill 로 끝내고 새 라운드를 띄운다
+        self.assertEqual(code, 0, res)
+        self.assertEqual(self.dispatch_row(did)["state"], "released")
+        self.assertEqual(self.task_state("T-001")["round"], 2)
+        self.assertNotEqual(self.work_dispatch("T-001"), did)
+
+    def test_review_message_kills_and_retries_the_reviewer_once(self):
+        self.start()
+        self.worked()
+        first = self.attempt("T-001")
+        self.failed(first["dispatch"])
+        self.assertEqual(self.dispatch_row(first["dispatch"])["state"], "released")  # --kill 뒤 review-finish 가 정리
+        st = self.task_state("T-001")
+        self.assertEqual((st["status"], self.attempt("T-001")["attempt"]), ("reviewing", first["attempt"] + 1))
+        self.assertEqual(st["rounds"][-1]["reviews"][0]["relay_handled"], first["dispatch"])
+        self.failed(first["dispatch"], mid=2)  # 늦게 온 같은 메시지: 지난 시도다
+        self.assertEqual(self.decides(), [])  # 진행 중 리뷰에는 review --retry·drop 이 거부되므로 decide 를 올리지 않는다
+        self.assertEqual(self.logged(RELAY_REVIEW), 1)
+
+    def test_reviewer_kill_failure_is_retried_by_the_reconcile(self):
+        self.start()
+        self.worked()
+        first = self.attempt("T-001")
+        did = first["dispatch"]
+        self.fail_hc("kill", "timeout")  # abandon --kill 이 거부된다(일시 hc 실패)
+        self.failed(did)
+        self.assertEqual(self.dispatch_row(did)["state"], "active")
+        self.assertNotIn("relay_handled", self.attempt("T-001"))  # 표시를 남기지 않는다
+        self.assertEqual(self.logged(RELAY_REVIEW), 0)
+        self.assertTrue(any("T-001 리뷰어를 끝내지 못했다(" in x for x in self.log_lines()), self.log_lines())
+        with self._hc_locked() as st:
+            st["fail"] = {}
+        with flagged(self.d, did):
+            self.d.reconcile()  # 재확인이 attention 으로 다시 끝내고 review-finish 한다
+        self.assertEqual(self.dispatch_row(did)["state"], "released")
+        self.assertEqual((self.task_state("T-001")["status"], self.attempt("T-001")["attempt"]),
+                         ("reviewing", first["attempt"] + 1))
+        self.assertEqual((self.logged(RELAY_REVIEW), self.decides()), (1, []))
+
+    def test_ended_dispatch_is_not_handled(self):
+        self.start()
+        did = self.work_dispatch("T-001")
+        code, out = self.act_work("T-001")  # 작업자가 done 했다(settled): 진행 중이 아니다
+        self.assertEqual(code, 0, out)
+        self.failed(did)
+        self.assertTrue(any(x.endswith(f"T-001 끝난 디스패치의 observed 무시: {did}") for x in self.log_lines()),
+                        self.log_lines())
+        with flagged(self.d, did):
+            self.d.reconcile()
+        self.wait_jobs()
+        self.assertEqual([e for e in self.decides() if "대리 보고 쓰기 실패" in e["summary"]], [])
+        self.assertNotIn("relay_handled", self.task_state("T-001")["rounds"][-1]["work"])
+
+
+class FakeDeafTest(EventCase):
+    """시험 장치 HTEAM_FAKE_DEAF(설계 8.14 의 7, 15.2): 관제 환경에 있으면 관제가 띄우는 Claude 새 세션에만 더한다."""
+
+    def setUp(self):
+        super().setUp()
+        self.env.pop("HTEAM_FAKE_DEAF", None)  # 바깥 셸의 시험 장치 값을 물려받지 않는다
+        self.rearm()
+
+    def test_claude_worker_gets_the_env_only_with_the_switch(self):
+        self.start()
+        self.assertIsNone(dispatch_env(self, self.work_dispatch("T-001")))
+        self.write_spec("T-002", "tester", owns="tests/t2/**")
+        code, out = self.hteam("start", "T-002", env={"HTEAM_FAKE_DEAF": "1"})
+        self.assertEqual(code, 0, out)
+        self.assertEqual(dispatch_env(self, self.work_dispatch("T-002")), DEAF)
+
+
+class FakeDeafReviewerTest(EventCase):
+    config = CODEX_WORKER
+
+    def test_codex_worker_has_no_env_and_claude_reviewer_has_it(self):
+        self.env["HTEAM_FAKE_DEAF"] = "1"
+        self.rearm()  # 관제가 띄우는 리뷰 자식도 이 환경을 물려받는다
+        self.start()
+        self.assertIsNone(dispatch_env(self, self.work_dispatch("T-001")))
+        self.worked()
+        att = self.attempt("T-001")
+        self.assertEqual(att["agent"], "claude")
+        self.assertEqual(dispatch_env(self, att["dispatch"]), DEAF)
 
 
 class BlockedErrorTest(EventCase):
@@ -932,7 +1182,7 @@ class ReconcileTest(EventCase):
         self.d.reconcile()
         self.d.reconcile()
         (e,) = self.decides()
-        self.assertEqual((e["kind"], e["task"], e["summary"]), ("escalation", "T-001", NO_STATUS))
+        self.assertEqual((e["kind"], e["task"], e["summary"]), ("escalation", "T-001", NO_STATUS_CLAUDE))  # 12단계
 
     def test_exited_worker_starts_fix(self):
         self.start()

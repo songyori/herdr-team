@@ -173,7 +173,9 @@ def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str |
     5.10.4). 같은 터미널에 넣기(--terminal)에는 넣지 않는다(작업 공간 직무는 고정 에이전트가 없다).
     결과에 horch 의 placement·start_turn·delivery 를 더한다. 실행 기록에는 horch Task·Dispatch 와 함께 그 터미널을 쓴다.
     11단계(설계 3.2·5.4): 새로 띄우기·같은 Task 다시 띄우기에 run.json 의 main_terminal 이 있으면 `--parent` 를 더한다
-    (hidden 이면 넣지 않는다). horch 의 parent_missing 경고는 결과 warnings 에 그대로 남는다."""
+    (hidden 이면 넣지 않는다). horch 의 parent_missing 경고는 결과 warnings 에 그대로 남는다.
+    12단계 시험 장치(설계 8.14 의 7, 15.2): 관제 환경에 HTEAM_FAKE_DEAF=1 이면 Claude 새로 띄우기·같은 Task 다시 띄우기의
+    env 에 CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 을 더한다(같은 터미널에 넣기·이어 붙이기·Codex 는 아니다)."""
     slot = pick(state.require(p, tid))
     mode, row, warnings = existing(h, slot)
     if mode == "adopt":
@@ -213,6 +215,9 @@ def launch(p, h, tid: str, pick, *, agent: str, model: str | None, effort: str |
     # 값을 준다). 숨은 리뷰어는 pane 이 없어 메인 pane·탭을 닫으면 함께 끝나므로 묶지 않는다(설계 3.2)
     main = None if hidden else outbox.main_parent(p)
     parent = ["--parent", main] if main else []
+    if agent == "claude" and os.environ.get("HTEAM_FAKE_DEAF") == "1":
+        # 시험 장치(README 에 적지 않는다): Herdr 에 상태를 보고하지 않는 Claude 세션을 일부러 만든다
+        env = {**(env or {}), "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1"}
     where = ["--cwd", str(cwd or p.root), *workspace.env_args(env or {})]
     if mode == "retry":
         argv = h.argv("worker-start", "--task", row["task"], "--retry", "--agent", agent, *where,

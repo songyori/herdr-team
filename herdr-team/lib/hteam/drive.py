@@ -68,6 +68,15 @@ GONE_NOTE = "이전 작업자가 중간에 끝났다. 보고서와 [{tid}] 커�
 BLOCKED_TAIL = (". 사용자에게 그 탭(고정 에이전트면 에이전트 탭, 아니면 관제 탭)을 보고 승인하거나 거절해 달라고 한다. "
                 "그 뒤 작업자가 이어 가면 worker_done 이 와서 리뷰로 간다")
 NO_STATUS_TEXT = "{tid} 작업자가 상태를 보고하지 않는다(시작 확인 창일 수 있다). 사용자에게 그 탭을 보고 넘겨 달라고 한다"
+# 12단계(설계 8.14 의 6): Claude 작업자는 herdr-orch 훅이 대신 보고하므로 no_status 에 걸리는 것은 대리 보고도 없는 세션이다
+NO_STATUS_CLAUDE = ("{tid} 작업자가 상태를 보고하지 않는다(대리 보고도 없다. 시작 확인 창이거나 업그레이드 전에 뜬 세션일 수 "
+                    "있다). 사용자에게 그 탭을 보고 넘겨 달라고 한다")
+# 대리 보고 쓰기 실패(설계 8.6 표의 observed relay_failed, 8.14 의 5): 작업은 decide, 리뷰는 관제가 리뷰어를 다시 띄운다(로그).
+# 인수인계는 crew.RELAY_HANDOFF
+RELAY_FAILED_TEXT = ("{tid} 작업자의 상태를 Herdr 에 보낼 수 없다(대리 보고 쓰기 실패). Herdr 에 보이는 상태가 실제와 다를 수 "
+                     "있다. 사용자에게 그 탭을 보게 한다. done 을 보내면 관제가 이어 간다")
+RELAY_REVIEW_LOG = "{tid} 리뷰어 상태를 Herdr 에 보낼 수 없어(대리 보고 쓰기 실패) 다시 띄운다"
+RELAY_REVIEW_RETRY = "{tid} 리뷰어를 끝내지 못했다({error}). 다음 재확인에서 다시 한다"
 UNKNOWN_TEXT = ("작업자 생존을 {minutes}분 넘게 확인하지 못했다({word}). 끝났는지 알 수 없어 그대로 둔다. 작업자 탭이 멈췄으면 "
                 "다시 보내거나 중단한다")
 LIFTED_TEXT = "{tid}: {oid} 은 작업자가 이어 가서 닫아도 된다(worker_done 이 와서 리뷰로 간다)"
@@ -388,7 +397,9 @@ class Drive:
         if loc["canceled"] or not loc["current"]:
             self.log(f"{tid} 지난 디스패치의 {kind} 무시: {did}")
             return
-        if kind == "question" or (held and kind == "escalation"):
+        # 12단계(설계 8.6 표): observed relay_failed 도 끝난 워커면 알릴 것이 없다(horch 가 쓴 뒤 그 워커가 done 했을 수 있다)
+        relay = kind == "observed" and body.get("kind") == "relay_failed"
+        if kind == "question" or (held and kind == "escalation") or relay:
             row = dispatch.row_by_id(self.rows if fresh else self.write_workers(), did)
             if row is None or row.get("state") not in LIVE:  # 끝난 워커의 질문: 답할 곳이 없다. 종료 메시지가 마무리한다
                 self.log(f"{tid} 끝난 디스패치의 {kind} 무시: {did}")
@@ -419,6 +430,8 @@ class Drive:
                     self.finish_review(tid)
             elif word == "not_started":
                 self.on_not_started(tid, did, body)
+            elif word == "relay_failed":
+                self._relay_failed(tid, did, loc)
 
     def on_work_done(self, tid: str, did: str, body: dict) -> None:
         """작업 worker_done(8.6, 재확인의 settled 도 같다): 고정 에이전트 정리 → 확인 창 표시 풀기 → 생존 모름 표시 지우기 →
@@ -1204,6 +1217,7 @@ class Drive:
         from . import coord
         rows = self.write_workers()
         self.crew_check()
+        self.isolated("relay", lambda: self.relay_failed(rows))  # 8.7 의 2a(12단계): 대리 보고 쓰기 실패의 보조
         self.handoff_check()
         for tid in sorted(self.retry_reviews):
             if self.start_review(tid, self._retry_args.get(tid)):
@@ -1213,7 +1227,9 @@ class Drive:
         quiet = [s for s in states if not outbox.open_decide(self.p, s) and not self.running(f"review:{s['id']}")]
         for item in coord.attention(self.p, rows, NO_STATUS_GRACE_S, states=quiet):
             if item.get("attention") == "no_status":  # attention.json 이 한 번만 알린다
-                self.decide("escalation", item["task"], NO_STATUS_TEXT.format(tid=item["task"]))
+                agent = (dispatch.row_by_id(rows, item["dispatch"]) or {}).get("agent")
+                text = NO_STATUS_CLAUDE if agent == "claude" else NO_STATUS_TEXT  # 12단계(8.14 의 6)
+                self.decide("escalation", item["task"], text.format(tid=item["task"]))
         for st in states:
             self.heartbeat()
             self.isolated(f"reconcile:{st['id']}", lambda st=st: self.reconcile_task(st))
@@ -1223,6 +1239,56 @@ class Drive:
         self.isolated("design", self.design_step)
         self.isolated("decisions", self.resume_decisions)
         self.isolated("finish", self.finish_step)
+
+    def relay_failed(self, rows: list[dict]) -> None:
+        """재확인의 쓰기 실패 보조(설계 8.7 의 2a): 워커 목록에서 attention 이 relay_failed 인 진행 중(launching·active)
+        Dispatch 마다 _relay_row(relay:<D> 격리). 주 경로는 observed relay_failed 메시지(handle)이고, 이것은 메시지 처리가
+        실패했거나 리뷰어 끝내기가 거부된 것을 다시 한다. 한 번은 실행 기록의 relay_handled 로 센다."""
+        for row in rows:
+            if row.get("attention") == "relay_failed" and row.get("state") in LIVE:
+                self.isolated(f"relay:{row.get('id')}", lambda row=row: self._relay_row(row, rows))
+
+    def _relay_row(self, row: dict, rows: list[dict]) -> None:
+        """attention relay_failed 인 Dispatch 하나. 인수인계 Dispatch 는 crew.handoff_relay_failed. 태스크 Dispatch 는
+        모르거나 끝난 태스크·닫는 중·지난 Dispatch 가 아니면 _relay_failed."""
+        from . import coord, crew  # 둘 다 이 모듈을 쓴다
+        did = row["id"]
+        if crew.handoff_relay_failed(self, did):
+            return
+        loc = coord.locate(self.p, did, rows)
+        if loc is None or loc["status"] in state.CLOSED or loc["canceled"] or not loc["current"]:
+            return
+        self._relay_failed(loc["task"], did, loc)
+
+    def _relay_failed(self, tid: str, did: str, loc: dict) -> None:
+        """대리 보고 쓰기 실패(설계 8.6 표, 8.14 의 5): hc 에 마지막 대리 상태가 남아 no_status 로도 잡히지 않는다. 그 실행
+        기록(지금 라운드 작업·지금 리뷰 시도)의 relay_handled 로 Dispatch 마다 한 번. 결과가 있는 리뷰 시도는 보지 않는다.
+        작업은 decide escalation. drop 은 늘 --force 다(쓰기 실패만으로 Dispatch 가 끝나지 않아 비강제 drop 은 active 로
+        거부된다). 고정 에이전트 라운드면 fix 도 --force 다(그 세션은 hc 에 옛 working 이 남아 비강제 fix 가 거부된다. 임시
+        워커 fix 는 active 워커를 스스로 끝낸다). 리뷰는 decide 없이 8.6 의 두 번째 idle 과 같이 리뷰어를 끝내고(--kill) review-finish(시도 실패, 자동
+        재시도. 진행 중 리뷰에는 review --retry·drop 이 거부된다). 끝내기가 거부되면 표시 없이 로그만 남겨 다음 재확인이
+        attention 으로 다시 한다."""
+        from . import crew  # crew 가 이 모듈을 쓴다
+        work = loc["kind"] == "work"
+        st = state.require(self.p, tid)
+        if loc["finished"] or (self._slot(st, loc["round"], work) or {}).get("relay_handled") == did:
+            return
+        if work:
+            crewed = bool(crew.round_crew(state.current_round(st) or {}))
+            commands = [self._fix_cmd(st, force=crewed), f"hteam drop {tid} --force"]
+            self.decide("escalation", tid, RELAY_FAILED_TEXT.format(tid=tid), commands=commands)
+            self._mark(tid, loc["round"], work, relay_handled=did)
+            return
+        try:
+            self.horch().ok("worker-abandon", "--dispatch", did, "--kill")
+        except HteamError as exc:
+            if exc.exit_code == MISSING:
+                raise
+            self.log(RELAY_REVIEW_RETRY.format(tid=tid, error=exc.message[:120]))
+            return  # 표시를 남기지 않는다: 그 Dispatch 는 아직 진행 중이라 다음 재확인이 다시 한다
+        self._mark(tid, loc["round"], work, relay_handled=did)
+        self.log(RELAY_REVIEW_LOG.format(tid=tid))
+        self.finish_review(tid)  # 잇지 못하면 끝난 리뷰어는 재확인의 _check_review(review_ended)가 review-finish 로 잇는다
 
     def reconcile_task(self, st: dict) -> None:
         """메시지 없이 끝난 일을 태스크 상태별로 맞춘다(설계 8.7 표). 열린 decide 가 지금 라운드면(메인이 답하지 않았다)·

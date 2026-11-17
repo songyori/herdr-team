@@ -1005,6 +1005,62 @@ class TerminalCheckTest(CrewCase):
         self.assertEqual(sum("production 작업 터미널이 닫혀 잊음" in line for line in self.log_lines()), 1)
 
 
+class FakeDeafCrewTest(CrewCase):
+    """시험 장치 HTEAM_FAKE_DEAF(설계 8.14 의 7, 15.2): 고정 에이전트 새 세션에는 더하고 같은 세션에 넣기에는 주지 않는다."""
+
+    def env_of(self, did: str):
+        raw = self.dispatch_row(did)["env"]
+        return json.loads(raw) if raw else None
+
+    def test_new_session_gets_the_env_and_insert_keeps_the_session(self):
+        self.env["HTEAM_FAKE_DEAF"] = "1"
+        t = self.first("T-001")
+        deaf = {"CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1"}
+        self.assertEqual(self.env_of(self.work_dispatch("T-001")), deaf)
+        out = self.started("T-002")  # horch 는 --terminal 과 --env 를 함께 주면 usage 로 거부한다: env 없이 넣었다
+        self.assertEqual(out["terminal"], t)  # 같은 세션에 넣었다
+        self.assertEqual(self.env_of(out["dispatch"]), deaf)  # horch 가 앞 고정 Dispatch 의 env(그 세션의 환경)를 물려 적는다
+
+
+class RelayCrewTest(CrewCase):
+    """대리 보고 쓰기 실패(설계 8.14 의 5): 고정 에이전트가 태스크를 맡은 채 쓰기가 실패해 hc 에 working 이 남으면 비강제
+    fix·drop 이 거부되므로 escalation 은 --force 명령을 낸다. 그 명령은 그 상태에서 세션을 닫고 새로 띄우거나 닫고
+    버린다(5.9.6). horch 의 observed relay_failed 메시지는 흉내 낸다."""
+
+    FORCE = ['hteam fix T-001 --force --note "<지시>"', "hteam drop T-001 --force"]
+
+    def setUp(self):
+        super().setUp()
+        out = self.started("T-001")
+        self.t, did = out["terminal"], out["dispatch"]
+        self.ready(self.t, status="working")  # 마지막 대리 상태(working)가 hc 에 남았다
+        body = {"dispatch": did, "kind": "relay_failed", "key": "4242", "terminal": self.t}
+        with self.in_drive():
+            self.make_drive().handle(self.message("observed", did, body, sender="horch"))
+
+    def test_escalation_offers_force_commands_because_plain_ones_are_refused(self):
+        (x,) = [d for d in self.decides() if "대리 보고 쓰기 실패" in d["summary"]]
+        self.assertEqual((x["task"], x["commands"]), ("T-001", self.FORCE))
+        code, res = self.hteam("fix", "T-001", "--note=x")
+        self.assertEqual((code, res["error"]["code"]), (3, "worker_active"), res)
+        code, res = self.hteam("drop", "T-001")
+        self.assertEqual((code, res["error"]["code"]), (3, "worker_active"), res)
+
+    def test_fix_force_closes_the_session_and_launches_a_new_one(self):
+        code, res = self.hteam("fix", "T-001", "--force", "--note=다시")
+        self.assertEqual(code, 0, res)
+        self.assertNotEqual(res["terminal"], self.t)
+        self.assertNotIn(self.t, self.terminals())  # terminal-close --abandon 이 끄고 지웠다
+        self.assertEqual((self.entry()["terminal"], self.entry()["task"], self.rnd("T-001")["round"]),
+                         (res["terminal"], "T-001", 2))
+
+    def test_drop_force_closes_the_session(self):
+        code, res = self.hteam("drop", "T-001", "--force")
+        self.assertEqual((code, res["status"]), (0, "dropped"), res)
+        self.assertNotIn(self.t, self.terminals())
+        self.assertEqual((self.entry()["terminal"], self.entry()["task"]), (None, None))
+
+
 class StatusCrewTest(CrewCase):
     def test_status_lists_agents(self):
         t = self.first("T-001")
