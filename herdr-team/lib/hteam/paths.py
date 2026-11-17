@@ -63,6 +63,7 @@ class Project:
         self.hook_errors = self.state / "hook-errors.log"
         self.lock = self.state / "lock"
         self.watch_pid = self.state / "watch.pid"
+        self.reminded = self.state / "reminded.json"  # watch idle 로 알린 decide id(12단계, 설계 7.3)
         self.attention = self.state / "attention.json"
         self.design_review = self.state / "design-review.json"
         self.text_rules = self.team / "text-rules.md"

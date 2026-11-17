@@ -20,7 +20,8 @@ from . import herdr, procs, state, testgate
 from .errors import CONFLICT, DENIED, FAIL, MISSING, USAGE, HteamError
 from .horch import Horch
 from .paths import find_project
-from .util import bad_side_file, die_at, env_float, flock, now, read_json, read_json_strict, write_atomic, write_json
+from .util import (age_seconds, bad_side_file, die_at, env_float, flock, now, read_json, read_json_strict, write_atomic,
+                   write_json)
 
 TYPES = ("progress", "ask", "question", "approval", "decide", "result", "done")  # 설계 7.2
 RENDER_KEYS = {"header", "question", "context", "options", "multiSelect"}
@@ -28,6 +29,9 @@ OPTION_KEYS = {"label", "description"}
 DESCRIPTION_MAX = 300  # 질문 줄과 같은 상한. 선택지 설명으로 context(4000자) 상한을 돌아가지 못하게 한다
 PARENT_DEPTH = 10  # require_main 이 따라가는 hc parent 단계 상한
 MAIN_PARENT_RE = re.compile(r"[A-Za-z0-9_.:-]{1,64}")  # main_terminal 을 parent 로 줄 수 있는 꼴(horch --parent 와 같다)
+REMIND_S = 1800  # watch 가 열린 decide 로 끝나기까지(초. 설계 7.3·8.5 의 12단계, 시험은 HTEAM_REMIND_S)
+REMIND_CHECK_S = 60.0  # watch 가 열린 decide 를 보는 간격(첫 확인 포함. 시험은 HTEAM_REMIND_CHECK)
+SUMMARY_MAX = 120  # idle 의 open 에 담는 summary 길이
 
 
 def _bad_chars(text: str, allow: str = "") -> bool:
@@ -266,6 +270,30 @@ def open_questions(p, warnings: list | None = None) -> list[dict]:
     return [q for _, q in _open(p, items, sink)]
 
 
+def _reminded(p) -> list[str]:
+    """watch idle 로 이미 알린 decide id(state/reminded.json 의 ids, 설계 7.3 12단계). 없거나 읽지 못하거나 꼴이 다르면
+    빈 목록이다(다음 기록이 다시 쓴다)."""
+    data = read_json(p.reminded, None)
+    ids = data.get("ids") if isinstance(data, dict) else None
+    return [i for i in ids if isinstance(i, str)] if isinstance(ids, list) else []
+
+
+def _stale_decides(p, items: list[tuple[int, dict]], limit: float) -> list[dict]:
+    """열린 decide(답 파일이 없거나 읽지 못한 decide, open_questions 와 같은 기준) 가운데 at 에서 limit 초가 지난 것을
+    outbox 차례로 idle 의 open 꼴({id, task, kind, age_min, summary 120자})로 돌려준다. at 을 읽지 못하면 뺀다."""
+    found = []
+    for _, e in items:
+        if e["type"] != "decide" or answer_of(p, e["id"]):
+            continue
+        at = e.get("at")
+        age = age_seconds(at) if isinstance(at, str) else None
+        if age is None or age < limit:
+            continue
+        found.append({"id": e["id"], "task": e.get("task"), "kind": e.get("kind"), "age_min": int(age // 60),
+                      "summary": str(e.get("summary") or "")[:SUMMARY_MAX]})
+    return found
+
+
 def _bad_run(why: str) -> HteamError:
     return HteamError("bad_run_file", f"run.json 을 읽지 못했다: {why}", FAIL,
                       "파일을 직접 고치거나 치운 뒤 hteam up 으로 다시 만든다")
@@ -433,7 +461,12 @@ def watch(p, main: str | None = None) -> dict:
     떠서 같은 항목을 다시 주지 않게 한다. watch.pid 는 생사 확인(watch_alive)용 기록일 뿐이다.
 
     main(require_main 이 확인한 메인 주소)을 주면 잠금을 잡은 뒤 run.json 의 main_terminal 로 쓴다(설계 7.3 11단계: 메인을
-    넘겨받는 것은 실제로 감시하는 watch 뿐이다. watch_running 으로 끝나는 호출은 쓰지 않는다)."""
+    넘겨받는 것은 실제로 감시하는 watch 뿐이다. watch_running 으로 끝나는 호출은 쓰지 않는다).
+
+    12단계 idle(설계 7.3): 새 줄이 없을 때 REMIND_CHECK_S 마다(첫 확인 포함, 관제 꺼짐 확인 뒤) 열린 decide 를 본다. at 에서
+    REMIND_S 가 지났고 reminded.json 에 없는 것이 하나라도 있으면 {status: idle, messages: [], count: 0, open} 으로 끝난다
+    (open 은 그 시각에 지난 것 모두). 출력한 뒤(_after) 같은 watch 잠금 안에서 그 id 들을 reminded.json 에 더한다(커서와
+    같다. 적어도 한 번 알린다). 열린 decide 가 없으면 끝나지 않는다."""
     p.ensure_state()
     fh = _lock_watch(p)
     handed = False
@@ -442,7 +475,8 @@ def watch(p, main: str | None = None) -> dict:
         if main:
             set_main_terminal(p, main)  # 잠금 순서: watch 잠금 → run.lock
         poll, every = env_float("HTEAM_POLL", 2.0), env_float("HTEAM_ORPHAN_CHECK", 10.0)
-        last = 0.0
+        remind, remind_every = env_float("HTEAM_REMIND_S", REMIND_S), env_float("HTEAM_REMIND_CHECK", REMIND_CHECK_S)
+        last, last_remind = 0.0, None
         while True:
             count, items, bad = _scan(p)
             cur = cursor(p)
@@ -466,6 +500,22 @@ def watch(p, main: str | None = None) -> dict:
                 last = time.monotonic()
                 if _orphaned(p):
                     return {"status": "orphaned", "messages": [], "count": 0}
+            if last_remind is None or time.monotonic() - last_remind >= remind_every:
+                last_remind = time.monotonic()
+                stale = _stale_decides(p, items, remind)
+                known = _reminded(p)
+                if any(d["id"] not in known for d in stale):
+
+                    def remember() -> None:
+                        try:
+                            die_at("watch_before_reminded")
+                            ids = _reminded(p)  # 잠금 안에서 다시 읽는다. 읽지 못하면 빈 것으로 보고 다시 쓴다
+                            write_json(p.reminded, {"ids": ids + [d["id"] for d in stale if d["id"] not in ids]})
+                        finally:
+                            _unlock_watch(p, fh)
+
+                    handed = True
+                    return {"status": "idle", "messages": [], "count": 0, "open": stale, "_after": remember}
             time.sleep(poll)
     finally:
         if not handed:

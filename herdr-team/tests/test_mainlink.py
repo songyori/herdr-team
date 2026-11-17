@@ -843,6 +843,128 @@ class RehomeWatchTest(LinkCase):
         self.assertEqual((code, out.get("status")), (0, "orphaned"), out)
 
 
+class WatchIdleTest(LinkCase):
+    """12단계(설계 7.3 의 idle): 새 줄이 없을 때 60초마다(첫 확인 포함) 열린 decide(답 파일이 없는 decide)를 본다. at 에서
+    REMIND_S 가 지났고 state/reminded.json 에 없는 것이 있으면 status: idle 과 open 으로 끝난다. 출력한 뒤 같은 watch 잠금
+    안에서 그 id 들을 reminded.json 에 더한다(decide 하나에 한 번). 새 outbox 줄과 orphaned 가 먼저다."""
+
+    def setUp(self):
+        super().setUp()
+        self.env["HTEAM_REMIND_S"] = "60"
+
+    def old(self, type_: str = "decide", age_s: float = 120, **fields) -> str:
+        """age_s 초 전에 올린 항목(관제가 쓰는 꼴에서 at 만 앞당긴다. append 는 fields 의 at 을 그대로 쓴다)."""
+        from datetime import datetime, timedelta, timezone
+        at = (datetime.now(timezone.utc) - timedelta(seconds=age_s)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        base = ({"type": "decide", "from": "drive", "kind": "escalation", "task": "T-001", "summary": "요약",
+                 "files": [], "commands": [], "body": "[escalation] T-001: 요약"} if type_ == "decide"
+                else {"type": type_, "from": "T-001" if type_ == "ask" else "drive", "body": "질문"})
+        return outbox.append(self.p, {**base, **fields, "at": at})["id"]
+
+    def delivered(self) -> None:
+        """지금까지의 줄을 메인에 전했다(커서). idle 은 새 줄이 없을 때만 본다."""
+        (self.state_dir / "outbox.cursor").write_text(f"{outbox._scan(self.p)[0]}\n")
+
+    def reminded(self):
+        path = self.state_dir / "reminded.json"
+        return json.loads(path.read_text()) if path.exists() else None
+
+    def answered(self, oid: str, text: str = '{"answer": "처리했다"}') -> None:
+        (self.state_dir / "answers").mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "answers" / f"{oid}.json").write_text(text)
+
+    def still_watching(self, proc) -> None:
+        time.sleep(0.5)
+        self.assertIsNone(proc.poll())
+
+    def test_constants(self):
+        # 설계 8.5 의 표(watch 쪽 상수)와 7.3 의 확인 간격, 알린 decide 기록 파일
+        self.assertEqual((outbox.REMIND_S, outbox.REMIND_CHECK_S, outbox.SUMMARY_MAX), (1800, 60.0, 120))
+        self.assertEqual(self.p.reminded, self.state_dir / "reminded.json")
+
+    def test_old_open_decide_ends_watch_once(self):
+        first = self.old(age_s=125, task="T-002", kind="worker_failed", summary="가" * 200)
+        self.old(age_s=10)  # 아직 60초가 안 됐다
+        self.delivered()
+        code, out = self.hteam("watch", as_="main", timeout=10)
+        self.assertEqual((code, out["status"], out["messages"], out["count"]), (0, "idle", [], 0), out)
+        self.assertEqual(out["open"], [{"id": first, "task": "T-002", "kind": "worker_failed", "age_min": 2,
+                                        "summary": "가" * 120}])
+        self.assertEqual(self.reminded(), {"ids": [first]})
+        self.assertFalse((self.state_dir / "watch.pid").exists())  # 잠금과 pid 를 놓았다
+        proc = self.hteam_bg("watch", as_="main")  # 같은 decide 로 다시 끝나지 않는다
+        self.still_watching(proc)
+        self.progress("둘")
+        code, out = self.finish(proc, timeout=10)
+        self.assertEqual((code, [m["body"] for m in out["messages"]]), (0, ["둘"]), out)
+
+    def test_new_reminder_lists_every_old_open_decide(self):
+        first = self.old(age_s=200)
+        self.delivered()
+        self.assertEqual(self.hteam("watch", as_="main", timeout=10)[1]["status"], "idle")
+        second = self.old(age_s=100)
+        self.delivered()
+        code, out = self.hteam("watch", as_="main", timeout=10)
+        self.assertEqual((code, out["status"], [o["id"] for o in out["open"]]), (0, "idle", [first, second]), out)
+        self.assertEqual(self.reminded(), {"ids": [first, second]})
+
+    def test_answered_decides_and_other_questions_do_not_wake(self):
+        oid = self.old(age_s=120)
+        self.answered(oid)
+        for type_ in ("ask", "question", "approval"):
+            self.old(type_, age_s=120)  # 사용자의 답을 기다리는 것이다
+        self.delivered()
+        proc = self.hteam_bg("watch", as_="main")
+        self.still_watching(proc)  # 열린 decide 가 없으면 끝나지 않는다
+        self.assertIsNone(self.reminded())
+
+    def test_unreadable_answer_is_open_and_bad_reminded_file_is_rewritten(self):
+        oid = self.old(age_s=120)
+        self.answered(oid, "{깨진")
+        (self.state_dir / "reminded.json").write_text(f'["{oid}"]')  # JSON 객체가 아니다: 빈 것으로 본다
+        self.delivered()
+        code, out = self.hteam("watch", as_="main", timeout=10)
+        self.assertEqual((code, out["status"], [o["id"] for o in out["open"]]), (0, "idle", [oid]), out)
+        self.assertEqual(self.reminded(), {"ids": [oid]})
+
+    def test_new_lines_and_orphaned_come_first(self):
+        oid = self.old(age_s=120)
+        self.delivered()
+        self.progress("새 줄")
+        code, out = self.hteam("watch", as_="main", timeout=10)
+        self.assertEqual((code, [m["body"] for m in out["messages"]], out.get("status")), (0, ["새 줄"], None), out)
+        (self.drive_dir / "drive.pid").unlink()  # 관제가 꺼졌다
+        code, out = self.hteam("watch", as_="main", timeout=10)
+        self.assertEqual((code, out["status"]), (0, "orphaned"), out)
+        self.assertIsNone(self.reminded())
+        self.write_drive_pid()
+        code, out = self.hteam("watch", as_="main", timeout=10)
+        self.assertEqual((code, out["status"], [o["id"] for o in out["open"]]), (0, "idle", [oid]), out)
+
+    def test_exclusive_until_reminded_is_written(self):
+        oid = self.old(age_s=120)
+        self.delivered()
+        gate = self.tmp / "gate"
+        proc = self.hteam_bg("watch", as_="main", env={"HTEAM_TEST_PAUSE_AT": "watch_before_reminded",
+                                                        "HTEAM_TEST_PAUSE_FILE": str(gate)})
+        self.wait_until(gate.with_name("gate.reached").exists, "출력 뒤 reminded.json 전에 멈춘다")
+        code, out = self.hteam("watch", as_="main", timeout=5)  # 출력했지만 기록하기 전이다
+        self.assertEqual((code, out["error"]["code"]), (3, "watch_running"), out)
+        self.assertIsNone(self.reminded())
+        gate.touch()
+        code, out = self.finish(proc, timeout=10)
+        self.assertEqual((code, out["status"]), (0, "idle"), out)
+        self.assertEqual(self.reminded(), {"ids": [oid]})
+
+    def test_decide_aging_while_watching_is_caught_at_a_later_check(self):
+        oid = self.old(age_s=0)
+        self.delivered()
+        proc = self.hteam_bg("watch", as_="main", env={"HTEAM_REMIND_S": "3", "HTEAM_REMIND_CHECK": "0.2"})
+        self.still_watching(proc)  # 첫 확인에는 3초가 안 됐다
+        code, out = self.finish(proc, timeout=15)
+        self.assertEqual((code, out["status"], [o["id"] for o in out["open"]]), (0, "idle", [oid]), out)
+
+
 class RenderGuardTest(unittest.TestCase):
     def errors(self, obj):
         with self.assertRaises(HteamError) as ctx:
