@@ -885,7 +885,7 @@ idle 넘기기(`liveness.observe_one`, 9장 observed): idle 사건(key 는 turn)
 - observed `relay_failed`(Codex 설계 리뷰 r1 의 5, 2026-11-17): 메일을 기다리는 감독(`check --wait`)은 목록을 정기적으로 읽지 않는다. 그래서 `observe_one` 이 `active` 이고 판정 `live` 인 Dispatch 터미널의 세션 기록이 `decided: "write_failed"` 인 것을 처음 보면 observed 메시지(kind `relay_failed`, key `relay_failed`)를 Run 메일함에 한 번 쓴다(observations 로 중복을 막는다. body 는 다른 observed 와 같은 꼴에 기록의 `pid`·`last`·`write_failures` 를 더한다). 그 Dispatch 의 이번 판정에서는 `blocked`·`error`·`idle`·`not_started` 를 내지 않는다(hc 상태가 옛것이다). `exited`·`lost` 는 그대로 낸다. 고정 터미널에서 다음 Dispatch 가 같은 세션을 쓰면 그 Dispatch 에 다시 한 번 낸다(observations 는 Dispatch 마다다). 9장 observed 표에 이 행을 더한다.
 
 - `worker-list`·`worker-show` 의 `attention` 에 `relay_failed` 를 더한다. 조건은 `active` 이고 판정 `live` 이고 그 Dispatch 터미널의 세션 기록이 `decided: "write_failed"` 인 것이다. 차례는 `exited`·`lost`·`unverifiable` 다음, `blocked`·`error`·`idle`·`no_status` 앞이다(hc 상태가 옛것이라 그 낱말을 믿을 수 없다). `next` 는 `worker-show --dispatch D --lines 40` 이다. 감독이 화면을 보고 이어 가게 하거나, 사용자에게 그 탭을 보게 하거나, `worker-abandon --kill` 뒤 다시 띄운다. horch 는 스스로 아무것도 하지 않는다. herdr-team 관제가 하는 일은 그 설계 8.6·8.14 다.
-- `horch relay-status --terminal <t>`: 그 터미널의 세션 기록을 JSON 으로 준다. 결과 `{terminal, relay}` 이고 `relay` 는 기록 파일의 내용 그대로다(없거나 읽지 못하면 null). `--terminal` 형식은 16.3 과 같고 틀리면 exit 2 `usage` 다. 읽기 명령이라 누구나 부른다(Run 이 없어도 된다). herdr-team 의 메인 알림·`main_unreported`, 맡은 일 없는 고정 터미널의 판정(그 설계 8.14, 5.9.9)이 쓴다.
+- `horch relay-status --terminal <t>`: 그 터미널의 세션 기록을 JSON 으로 준다. 결과 `{terminal, record}` 이고 `record` 는 기록 파일의 내용 그대로다(없거나 읽지 못하면 null). `--terminal` 형식은 16.3 과 같고 틀리면 exit 2 `usage` 다. 읽기 명령이라 누구나 부른다(Run 이 없어도 된다). herdr-team 의 메인 알림·`main_unreported`, 맡은 일 없는 고정 터미널의 판정(그 설계 8.14, 5.9.9)이 쓴다.
 
 ### 16.9 명령·문서 정리
 
@@ -893,7 +893,7 @@ idle 넘기기(`liveness.observe_one`, 9장 observed): idle 사건(key 는 turn)
 
 | 명령 | 인자 | 결과 |
 |---|---|---|
-| `relay-status` | `--terminal` | `{terminal, relay}`(16.8) |
+| `relay-status` | `--terminal` | `{terminal, record}`(16.8) |
 
 - 6장 권한 표: `relay-status` 는 누구나다(`status` 와 같다).
 - `worker-list`·`worker-show` 의 `attention` 값에 `relay_failed` 를 더한다(16.8). `idle` 은 백그라운드 일을 기다리는 turn 에 나오지 않는다(16.7). 행의 다른 필드는 그대로다.
@@ -922,7 +922,7 @@ Herdr·Claude 를 부르지 않는다. 가짜 hc(`tests/fakes/hc`)의 `get` 에 
 - launch-guard(`test_guard`): exec 한 프로세스의 환경에 `HORCH_HOME`(홈 절대 경로)이 있다. Codex argv 에 `-c shell_environment_policy.set.HORCH_HOME=…` 가 있다. `--env` 값과 함께 된다.
 - idle 넘기기(`test_liveness`·`test_check`): idle turn 과 같은 turn 이고 Dispatch `created_at` 뒤인 마지막 Stop 기록의 `background` 가 비지 않으면 observed idle 이 없고 observations 에도 들지 않는다. 기록이 없거나 비었거나 Dispatch 앞이면 지금처럼 낸다. 같은 turn 에 기록이 둘이면(대리 보고 세션의 백그라운드 Stop 뒤 빈 Stop) 마지막 것을 쓴다. 넘긴 뒤 같은 turn 에 빈 기록이 더해지면 다음 판정이 idle 을 낸다. 세션 기록이 있는 워커에서 그 turn 의 Stop 기록이 없으면 첫 판정은 idle 을 내지 않고 `idle_wait` 만 남긴다. 다음 판정 전에 백그라운드가 든 기록이 생기면 내지 않고, 빈 기록이 생기면 내며, 10초(시험은 줄인다)가 지나도 없으면 낸다. `turn: null` 기록은 없는 것과 같다. 세션 기록이 없는 워커(Codex, 0.5.0 전 Claude)는 첫 판정에 바로 낸다. `worker-list` 의 `attention` 은 기다리지 않고 같은 백그라운드 기준만 쓴다.
 - `relay_failed`(`test_workers`·`test_liveness`): 세션 기록이 `write_failed` 인 live `active` Dispatch 의 `attention` 이 `relay_failed` 이고 `next` 가 `worker-show --lines 40` 이다. `exited`·`lost` 가 앞선다. `on`·`off`·`no_tty` 는 지금 attention 그대로다. `observe_one` 은 같은 Dispatch 에 observed `relay_failed` 를 한 번만 쓰고(두 번째 판정은 쓰지 않는다), 가짜 hc 가 `done` 이어도 그 판정에서 idle·blocked 를 내지 않는다. 같은 고정 터미널의 다음 Dispatch 에는 다시 한 번 쓴다.
-- `relay-status`(`test_cli`): 기록이 있으면 그 내용, 없거나 깨졌으면 `relay: null`, 형식이 틀린 터미널은 exit 2. Run 없이 부를 수 있다.
+- `relay-status`(`test_cli`): 기록이 있으면 그 내용, 없거나 깨졌으면 `record: null`, 형식이 틀린 터미널은 exit 2. Run 없이 부를 수 있다.
 - 버전(`test_meta`): 세 곳이 0.5.0.
 
 ### 16.12 버전·한계
