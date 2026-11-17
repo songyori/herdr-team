@@ -350,6 +350,8 @@ def split_sections(text: str) -> tuple[str, list[tuple[str, str]]]:
     fence = None
     for line in text.splitlines(keepends=True):
         m = _FENCE.match(line)
+        if m and fence is None and m.group(1)[0] == "`" and "`" in line[m.end():]:
+            m = None  # 백틱 펜스의 정보 문자열에는 백틱이 없다(CommonMark): ```인라인``` 코드 는 펜스가 아니다
         if m:
             mark = m.group(1)
             if fence is None:
@@ -402,6 +404,8 @@ def _move_sections(root: Path, role: str, found: list[tuple[str, str]], hidden: 
                 why = "커밋 안 된 변경이 있다(지운 것 포함)"
             elif path.exists() and not gitio.tracked(root, rel):
                 why = "git 에 추적되지 않는다"
+            elif not path.exists() and gitio.ignored(root, rel):
+                why = "git 이 무시하는 경로다(.gitignore)"  # 새로 쓴 파일이 커밋에서 빠져 직무 문서의 삭제만 남는다
         except HteamError as exc:
             why = f"git 상태를 읽지 못했다: {exc.message}"
     old = ""
@@ -463,7 +467,9 @@ def upgrade(root: Path) -> dict:
                 try:
                     found = project_sections(role, dst.read_text(encoding="utf-8"), want) if role else []
                 except UnicodeDecodeError:
-                    found = []  # UTF-8 이 아닌 직무 문서는 지금처럼 덮어쓴다(git 이 백업이다)
+                    skipped.append({"path": rel, "reason": "UTF-8 로 읽지 못했다. 프로젝트 절을 옮길 수 없어 바꾸지 않는다. "
+                                    "템플릿과 직접 견줘 바꾼다"})  # 읽지 못한 직무 문서의 프로젝트 절은 git 에만 남게 된다
+                    continue
                 if found:
                     problem = _move_sections(root, role, found, hidden, prefix)
                     if problem is not None:

@@ -100,6 +100,10 @@ class SectionsTest(unittest.TestCase):
         self.assertEqual(head, "# 제목\n머리\n\n")
         self.assertEqual(sections, [("## 가", "## 가\n```\n## 펜스 안\n```\n"), ("## 나", "## 나\n~~~~\n## 물결 펜스\n~~~~\n")])
 
+    def test_inline_triple_backticks_do_not_open_a_fence(self):
+        _, sections = setup.split_sections("## 가\n```인라인``` 코드\n## 나\n- 둘\n")
+        self.assertEqual(sections, [("## 가", "## 가\n```인라인``` 코드\n"), ("## 나", "## 나\n- 둘\n")])
+
     def test_project_sections_are_those_unknown_to_the_template(self):
         text = self.TEMPLATE + "\n## 이 프로젝트 규칙\n- 폰 금지\n\n## 옛 제목\n- 옛 템플릿 글\n"
         self.assertEqual(setup.project_sections("developer", self.TEMPLATE, self.TEMPLATE), [])

@@ -390,6 +390,13 @@ def is_ancestor(root, a: str, b: str) -> bool:
     return _yes_no(run(root, *args, check=False), args)
 
 
+def ignored(root, path: str) -> bool:
+    """root 기준 path 를 .gitignore 류가 무시하나(git check-ignore). check-ignore 는 pathspec magic(`:(literal)`)을 받지 않아
+    경로를 그대로 넘긴다. exit 1 은 무시하지 않음, 그 밖(128 등)은 오류다."""
+    args = ("check-ignore", "-q", "--", path)
+    return _yes_no(run(root, *args, check=False), args)
+
+
 def _lock_deadline() -> float:
     return time.monotonic() + env_float("HTEAM_GIT_LOCK_WAIT", 10.0)
 

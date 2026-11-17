@@ -286,6 +286,38 @@ class UpgradeTest(TeamCase):
         self.assertEqual(((self.proj / doc).read_text(encoding="utf-8"), (self.proj / rules).read_text(encoding="utf-8")),
                          (body, "커밋 안 한 수정\n"))
 
+    def test_ignored_destination_skips_the_role_doc(self):  # .gitignore 가 project-rules 를 무시하면 옮긴 글이 커밋에서 빠진다
+        doc, rules = ".herdr-team/roles/developer.md", ".herdr-team/project-rules/developer.md"
+        self.edit_commit(".gitignore", ".herdr-team/project-rules/\n")
+        body = self.template("roles/developer.md") + "\n## 이 프로젝트 규칙\n- 개인 폰은 쓰지 않는다.\n"
+        self.edit_commit(doc, body)
+        code, out = self.upgrade()
+        self.assertEqual((code, out["moved"], [s["path"] for s in out["skipped"]]), (0, [], [doc]), out)
+        self.assertIn("git 이 무시하는 경로다(.gitignore)", out["skipped"][0]["reason"])
+        self.assertEqual((self.proj / doc).read_text(encoding="utf-8"), body)
+        self.assertFalse((self.proj / rules).exists())
+
+    def test_inline_triple_backticks_are_not_a_fence(self):
+        doc, rules = ".herdr-team/roles/developer.md", ".herdr-team/project-rules/developer.md"
+        extra = "## 이 프로젝트 규칙\n- 예: ```cat x``` 는 쓰지 않는다\n\n## 두 번째 규칙\n- 둘\n"
+        self.edit_commit(doc, self.template("roles/developer.md") + "\n" + extra)
+        code, out = self.upgrade()
+        self.assertEqual((code, out["moved"]), (0, [{"path": doc, "to": rules,
+                                                     "sections": ["## 이 프로젝트 규칙", "## 두 번째 규칙"]}]), out)
+        self.assertEqual((self.proj / doc).read_text(encoding="utf-8"), self.template("roles/developer.md"))
+        self.assertEqual((self.proj / rules).read_text(encoding="utf-8"), extra)
+
+    def test_non_utf8_role_doc_is_skipped(self):
+        doc = ".herdr-team/roles/developer.md"
+        raw = "## 이 프로젝트 규칙\n- 폰 금지\n".encode("cp949")
+        (self.proj / doc).write_bytes(raw)
+        self.git("add", "--", doc)
+        self.git("commit", "-q", "-m", "cp949 직무 문서", "--", doc)
+        code, out = self.upgrade()
+        self.assertEqual((code, out["moved"], out["skipped"]), (0, [], [{"path": doc, "reason":
+                         "UTF-8 로 읽지 못했다. 프로젝트 절을 옮길 수 없어 바꾸지 않는다. 템플릿과 직접 견줘 바꾼다"}]), out)
+        self.assertEqual((self.proj / doc).read_bytes(), raw)
+
     def test_similar_rule_is_not_taken_for_a_duplicate(self):
         doc, rules = ".herdr-team/roles/developer.md", ".herdr-team/project-rules/developer.md"
         self.edit_commit(doc, self.template("roles/developer.md") + "\n## 이 프로젝트 규칙\n- 개인 폰 사용 금지\n")
