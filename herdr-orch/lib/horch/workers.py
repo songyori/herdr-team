@@ -9,7 +9,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from . import agents, auth, hcio, liveness, mailbox, preamble, procs
+from . import agents, auth, hcio, liveness, mailbox, preamble, procs, relay
 from .errors import CONFLICT, DENIED, FAIL, MISSING, USAGE, HorchError
 from .ids import new_id, now
 from .paths import horch_argv, horch_cmd
@@ -449,9 +449,16 @@ def _attention(home, r, verdict: str | None, info: dict | None) -> tuple[str | N
             return f"{verdict}_without_done", [*base, "worker-abandon", "--dispatch", d]
         if verdict == "unverifiable":
             return "unverifiable", [*base, "worker-show", "--dispatch", d]
+        if verdict == "live" and relay.write_failed(home, r["terminal"]):
+            # 대리 보고 쓰기가 실패했다(설계 16.8). hc 상태는 옛것이라 아래 낱말을 믿을 수 없다. 화면을 보고 사용자에게
+            # 그 탭을 보게 하거나 abandon 뒤 다시 띄운다
+            return "relay_failed", [*base, "worker-show", "--dispatch", d, "--lines", "40"]
         if word in ("blocked", "error"):
             return word, [*base, "worker-show", "--dispatch", d, "--lines", "80"]
-        if verdict == "live" and liveness.idle_turn(info, r["start_turn"]) is not None:
+        turn = liveness.idle_turn(info, r["start_turn"]) if verdict == "live" else None
+        if turn is not None:
+            if liveness.idle_hold(home, r, turn) == "background":
+                return None, None  # 그 턴을 끝낸 Stop 에 백그라운드 일이 있다(설계 16.7). 목록은 기록을 기다리지 않는다
             # done 없이 턴을 마쳤다(설계 10장). 화면을 보고 이어가게 하거나 사용자에게 알린다
             return "idle", [*base, "worker-show", "--dispatch", d, "--lines", "40"]
         if verdict == "live" and word is None:

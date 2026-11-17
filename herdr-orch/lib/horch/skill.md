@@ -33,9 +33,11 @@
      - `idle`: 워커가 done 없이 턴을 끝냈다. `horch worker-show --dispatch <d> --lines 40` 으로 화면을 보고, 남은 일이 있으면 `horch send --to dispatch:<d> --body "<지시>"` 로 이어가게 하고(깨우기가 입력을 보낸다), 일을 끝냈는데 done 을 잊었으면 done 하라고 보내고, 막혔으면 사용자에게 알린다.
      - `blocked`: 사람의 결정(권한 등)이 필요하다. `horch worker-show --dispatch <d> --lines 80` 으로 화면을 보고 사용자에게 알린다. horch 는 키를 누르지 않는다.
      - `error`: 화면을 읽고 이어갈 수 있으면 `send --to dispatch:<d>` 로 지시하고, 아니면 `worker-abandon --kill` 뒤 다시 띄운다(abandon 한 Dispatch 는 나중에 `worker-release` 한다). 고정 Dispatch 는 `--kill` 대신 `terminal-close --terminal <t> --abandon` 이 성공한 뒤(`closed: true`, 터미널이 이미 없으면 `closed: false`) 새로 띄운다(고정 Dispatch 에 `--kill` 은 exit 2).
+     - `relay_failed`: 그 워커의 상태가 Herdr 에 가지 않는다(훅의 대리 보고 쓰기가 실패했다). hc 상태가 옛것이라 그 Dispatch 의 `blocked`·`error`·`idle` 은 오지 않는다. `horch worker-show --dispatch <d> --lines 40` 으로 화면을 보고 이어 가게 하거나, 사용자에게 그 탭을 보게 하거나, `worker-abandon --kill`(고정 Dispatch 는 `terminal-close --terminal <t> --abandon`) 뒤 다시 띄운다(abandon 한 Dispatch 는 나중에 `worker-release` 한다).
    - `status`: 참고한다.
 7. 상황이 불분명하면 `horch worker-list` 의 `attention` 과 `next`(다음에 실행할 argv)를 본다. `horch status` 는 읽지 않은 메시지 수와 답 없는 질문을 보여 준다.
    `attention: "no_status"` 가 1분 넘게 이어지면 워커가 시작 확인 창(Claude 폴더 신뢰, Codex hook 검토)에서 멈춘 것일 수 있다. `next` 로 화면을 보고 사용자에게 알린다. 키를 대신 누르지 않는다. Codex 워커는 사용자가 허락하면 `--agent-arg=--disable=hooks` 로 띄워 hook 검토 창을 없앤다. `--dangerously-bypass-hook-trust` 는 검토하지 않은 hook 을 실행해, 깨진 hook(예: Node 버전이 맞지 않는 hook)이 워커의 셸 명령을 모두 막을 수 있다. `--disable=hooks` 는 hook 을 끄고 확인 창도 없앤다(codex-cli 0.166 에서 확인). 처음 보는 폴더의 Codex 폴더 신뢰 창은 이 인자로도 사라지지 않는다.
+   `attention: "relay_failed"` 는 그 워커의 대리 보고 쓰기가 실패했다는 뜻이다(hc 상태를 믿을 수 없다). 위 6 의 `relay_failed` 처럼 한다.
    `launch_failed` 의 `next` 는 그 Task 의 최신 시도일 때만 나오며 `--model`·`--effort`·`--agent-arg` 를 그대로 넘긴다. `worker-release` 가 exit 1 `terminal_mismatch` 면 주소가 다른 터미널을 가리킨다: 아무것도 지우지 말고 사용자에게 알린다.
 8. `launching`·`active` Dispatch 가 없고 `settled`·`abandoned` Dispatch 를 모두 `worker-release` 로 정리했을 때 끝낸다. `abandoned` 도 `worker-release` 해야 정리된 것이다. 과거의 `launch_failed` 는 끝내는 것을 막지 않는다. `retained` 는 사용자가 남기라고 한 것만 둔다. 사용자에게 Task 마다 최종 결과, 근거, 재시도 여부, 남은 문제를 보고한다.
 
@@ -60,6 +62,14 @@
 - 닫기: `horch terminal-close --terminal <t> [--abandon]`(진행 중 Dispatch 가 있으면 `--abandon` 이 있어야 한다). 끄고 지운 뒤에만 `closed: true` 다.
 - 같은 메시지를 한 번만: `horch send --to dispatch:<d> --body=<글> --key <요청 id>`. 같은 key 를 다시 보내면 Dispatch 상태와 상관없이 `duplicate: true` 와 처음 메시지를 돌려준다.
 
+## 상태 대리 보고(0.5.0)
+
+- Claude 워커의 상태(working·blocked·idle 등)는 그 세션이 Herdr 에 보고하지 않아도 herdr-orch 훅이 대신 보낸다. 가드가 워커 환경에 넣는 `HORCH_HOME` 으로 대상을 안다(0.4.0 이하에서 띄운 워커는 대상이 아니다. Codex 워커는 Claude 훅이 없다).
+- 백그라운드 일(Bash `run_in_background`, 백그라운드 서브에이전트 등)을 남기고 턴을 마친 워커에는 observed `idle` 이 나지 않고 `worker-list` 의 `attention` 도 `idle` 이 아니다. 백그라운드 일이 끝난 뒤의 턴이 끝나면 그때 판정한다. 그 사이 감독은 따로 할 일이 없다.
+- 대리 보고의 쓰기가 실패하면 observed `relay_failed` 와 `attention: "relay_failed"` 가 온다(위 6 의 처리).
+- 감독 메인(사람이 보는 Claude 세션)의 Needs you 도 Herdr 에 보이게 하려면 그 프로젝트 `.claude/settings.local.json` 의 `env` 에 `"HORCH_RELAY_HOME": "<위 HORCH: 줄의 --home 값>"` 을 넣고(개인 절대 경로라 git 에 넣지 않는다) 그 세션을 다시 연다. 환경 변수는 세션을 시작할 때 읽힌다. 옵트인한 메인이 스스로 보고하지도 못하고 대신 보낼 수도 없으면(tty 없음·대리 쓰기 실패) 그 세션의 Stop 이 한 번 막히며 다시 여는 법을 알린다(`/exit` 뒤 같은 터미널에서 `claude --resume`).
+- `horch relay-status --terminal <t>` 은 그 터미널의 대리 보고 기록을 준다(`record.decided`: `on` 대리 보고 중, `off` 스스로 보고한다, `no_tty`·`write_failed` 상태가 가지 않는다. 기록이 없으면 `record: null`).
+
 ## 워커 의무
 
 프리앰블이 우선한다. 요약: spec 의 일만 한다. 막히면 `ask` 로 묻고 기다린다(대화형 질문 도구 금지). horch 는 셸 명령으로 실행한다. 체크포인트마다 `check --dispatch` 와 `--ack`. 범위 밖이면 `escalate`. 끝나면 `done` 을 보내고(출력을 못 받았으면 같은 인자로 다시), 그 뒤에는 기다린다. 다른 워커를 띄우지 않는다.
@@ -79,7 +89,7 @@
 | `worker-start --keep-open` / `worker-start --terminal <t>` | 코디네이터 | 고정 터미널 띄우기 / 같은 터미널에 다시 넣기 |
 | `terminal-reset --terminal [--name] [--timeout-ms]` / `terminal-close --terminal [--abandon]` | 코디네이터 | 고정 터미널 세션 비우기 / 닫기 |
 | `ask` / `check --dispatch` / `escalate` / `done` | 워커 | 프리앰블 참고 |
-| `status` / `doctor` / `skill` | 누구나 | 상태, 점검, 이 문서 |
+| `status` / `doctor` / `skill` / `relay-status --terminal` | 누구나 | 상태, 점검, 이 문서, 대리 보고 기록 |
 
 ## exit 코드
 

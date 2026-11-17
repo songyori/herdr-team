@@ -1,11 +1,17 @@
-"""생존 판정(설계 10장)과 observed 감시(설계 9장: blocked·error·idle·exited·lost, 13.6: not_started)."""
+"""생존 판정(설계 10장)과 observed 감시(설계 9장: blocked·error·idle·exited·lost, 13.6: not_started, 16.7·16.8: Stop 기록의
+백그라운드 일로 idle 넘기기, relay_failed)."""
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import datetime, timezone
 
-from . import hcio
+from . import hcio, relay
+
+# 세션 기록이 있는 Claude 워커의 idle 을 그 turn 의 Stop 기록이 올 때까지 미루는 상한(초, 설계 16.7). 시험은
+# HORCH_TEST_IDLE_RECORD_GRACE_S 로 줄인다
+IDLE_RECORD_GRACE_S = 10
 
 
 def status_word(info: dict | None) -> str | None:
@@ -97,8 +103,44 @@ def not_started(store, row, info: dict | None, now_ts: float | None = None) -> b
     return cur["seen_at"] is None and not cur["sent"]
 
 
+def idle_record_grace_s() -> float:
+    try:
+        return float(os.environ.get("HORCH_TEST_IDLE_RECORD_GRACE_S", IDLE_RECORD_GRACE_S))
+    except ValueError:
+        return float(IDLE_RECORD_GRACE_S)
+
+
+def idle_hold(home, row, turn: int) -> str | None:
+    """그 turn 의 idle 을 내지 않을 까닭(설계 16.7). observe_one 과 worker-list 가 같이 쓴다.
+
+    "background": 그 turn 을 끝낸 Stop 기록(turn 이 같은 마지막 것)이 그 Dispatch 의 created_at 과 같거나 뒤이고 그
+    background 가 비지 않았다. 백그라운드 일을 기다리는 워커다(내지 않는다).
+    "no_record": 그 기록이 없고(turn 이 null 인 기록·앞 Dispatch 의 기록은 없는 것과 같다) 그 터미널에 세션 기록이 있는 Claude
+    Dispatch 다. Stop 훅이 아직 기록을 남기지 않았을 수 있다(observe_one 은 기다리고 목록은 낸다).
+    None: 낸다(기록의 background 가 비었거나, 세션 기록이 없는 워커: Codex, 0.5.0 전 Claude, 훅이 돌지 않은 세션)."""
+    terminal = row["terminal"]
+    stop = relay.stop_for_turn(home, terminal, turn)
+    if stop is not None and isinstance(stop.get("at"), str) and stop["at"] >= row["created_at"]:
+        return "background" if stop["background"] else None
+    if row["agent"] == "claude" and relay.record(home, terminal) is not None:
+        return "no_record"
+    return None
+
+
+def _waited(store, dispatch_id: str, turn: int) -> bool:
+    """그 turn 의 Stop 기록을 처음 기다리기 시작한 때(observations 의 idle_wait)부터 idle_record_grace_s 가 지났다."""
+    seen = store.one("SELECT created_at FROM observations WHERE dispatch_id=? AND kind='idle_wait' AND key=?",
+                     (dispatch_id, str(turn)))
+    return seen is not None and time.time() - _epoch(seen["created_at"]) >= idle_record_grace_s()
+
+
 def observe_one(store, run_id: str, dispatch_id: str, timeout: float | None = None) -> list[int]:
-    """active Dispatch 하나를 판정해 새 사건이면 observed 메시지를 Run 메일함에 쓴다(설계 9장)."""
+    """active Dispatch 하나를 판정해 새 사건이면 observed 메시지를 Run 메일함에 쓴다(설계 9장).
+
+    0.5.0(설계 16.7·16.8): 판정 live 이고 그 터미널의 세션 기록이 write_failed 면 relay_failed(key 는 그 Claude pid)를 한 번
+    내고, hc 상태에서 나오는 사건(blocked·error·idle·not_started)은 내지 않는다(hc 상태가 옛것이다). idle 은 idle_hold 가
+    background 면 내지 않고 observations 에도 넣지 않는다(다음 판정이 다시 본다). no_record 면 observations 에 idle_wait(처음
+    본 시각, 메시지 없음)를 남기고 IDLE_RECORD_GRACE_S 가 지난 뒤에 낸다."""
     from . import mailbox  # mailbox 가 이 모듈을 import 하므로 여기서 가져온다
     from .ids import now
     row = store.one("SELECT * FROM dispatches WHERE id=?", (dispatch_id,))
@@ -107,17 +149,29 @@ def observe_one(store, run_id: str, dispatch_id: str, timeout: float | None = No
     verdict_, info = probe(row["terminal"], expected_argv(row), timeout)
     word = status_word(info)
     events = []
-    if verdict_ == "live" and word in ("blocked", "error"):
-        turn = info.get("turn")
-        if turn is not None:  # turn 이 없으면 같은 사건을 가를 key 가 없다. 모름이므로 보내지 않는다
-            events.append((word, str(turn)))
-    idle_at = idle_turn(info, row["start_turn"]) if verdict_ == "live" else None
-    if idle_at is not None:
-        # done 없이 턴을 마쳤다. key 가 turn 이라 턴마다 한 번만 보낸다(같은 턴의 idle·done 은 한 사건)
-        events.append(("idle", str(idle_at)))
-    if verdict_ == "live" and not_started(store, row, info):
-        # 넣은 입력이 시작되지 않았다(설계 13.6). horch 는 다시 보내지 않는다. 호출자가 정한다
-        events.append(("not_started", str(row["start_turn"])))
+    failed = relay.record(store.home, row["terminal"]) if verdict_ == "live" else None
+    if failed is not None and failed["decided"] != "write_failed":
+        failed = None
+    if failed is not None:
+        # 대리 보고 쓰기가 실패했다(설계 16.8): hc 에 남은 상태는 옛것이라 그 낱말로 사건을 내지 않는다
+        events.append(("relay_failed", str(failed["pid"])))
+    elif verdict_ == "live":
+        if word in ("blocked", "error"):
+            turn = info.get("turn")
+            if turn is not None:  # turn 이 없으면 같은 사건을 가를 key 가 없다. 모름이므로 보내지 않는다
+                events.append((word, str(turn)))
+        idle_at = idle_turn(info, row["start_turn"])
+        if idle_at is not None:
+            # done 없이 턴을 마쳤다. key 가 turn 이라 턴마다 한 번만 보낸다(같은 턴의 idle·done 은 한 사건).
+            # 그 턴을 끝낸 Stop 에 백그라운드 일이 있으면 내지 않고, 그 기록을 기다리는 동안은 idle_wait 만 남긴다(16.7)
+            hold = idle_hold(store.home, row, idle_at)
+            if hold is None or (hold == "no_record" and _waited(store, dispatch_id, idle_at)):
+                events.append(("idle", str(idle_at)))
+            elif hold == "no_record":
+                events.append(("idle_wait", str(idle_at)))
+        if not_started(store, row, info):
+            # 넣은 입력이 시작되지 않았다(설계 13.6). horch 는 다시 보내지 않는다. 호출자가 정한다
+            events.append(("not_started", str(row["start_turn"])))
     if verdict_ in ("exited", "lost"):
         events.append((verdict_, verdict_))
     created: list[int] = []
@@ -129,11 +183,13 @@ def observe_one(store, run_id: str, dispatch_id: str, timeout: float | None = No
                 return created
             ins = store.run("INSERT OR IGNORE INTO observations(dispatch_id, kind, key, created_at) VALUES (?,?,?,?)",
                             (dispatch_id, kind, key, now()))
-            if ins.rowcount:
+            if ins.rowcount and kind != "idle_wait":  # idle_wait 은 처음 본 시각만 남긴다(메시지 없음, 설계 16.7)
                 fields = {"dispatch": dispatch_id, "kind": kind, "key": key, "terminal": row["terminal"], "status": word}
                 if kind == "not_started":
                     fields.update(start_turn=row["start_turn"], turn=info.get("turn"),
                                   delivery=json.loads(row["delivery"]) if row["delivery"] else None)
+                if kind == "relay_failed":  # 설계 16.8: 세션 기록의 pid·last·write_failures
+                    fields.update(pid=failed["pid"], last=failed.get("last"), write_failures=failed["write_failures"])
                 body = json.dumps(fields, ensure_ascii=False)
                 created.append(mailbox.post(store, run_id=run_id, mailbox=f"run:{run_id}", sender="horch",
                                             type="observed", subject=f"{kind} {dispatch_id}", body=body,

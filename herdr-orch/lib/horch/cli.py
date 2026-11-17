@@ -9,7 +9,7 @@ import signal
 import sys
 from pathlib import Path
 
-from . import agents, auth, comms, doctor, guard, persist, runs, workers
+from . import agents, auth, comms, doctor, guard, persist, relay, runs, workers
 from .errors import FAIL, USAGE, HorchError
 from .paths import VERSION, horch_cmd, resolve_home
 from .store import Store
@@ -100,6 +100,8 @@ def build_parser() -> Parser:
     s.add_argument("--timeout-ms", type=int, default=10000)
     sub.add_parser("doctor")
     sub.add_parser("skill")
+    s = sub.add_parser("relay-status")  # 설계 16.8: 그 터미널의 대리 보고 기록(누구나, Run 없이)
+    s.add_argument("--terminal", required=True)
     # --- 명령 파서 끝 ---
     return p
 
@@ -143,6 +145,11 @@ def _dispatch(args) -> dict:
         return {"version": VERSION}
     if args.cmd == "doctor":
         return doctor.run(home)
+    if args.cmd == "relay-status":
+        # 읽기만 한다(홈·DB 를 만들지 않는다). 주소 형식은 기록 파일 이름과 같다(설계 16.3)
+        if not relay.valid_terminal(args.terminal):
+            raise HorchError("usage", "--terminal 은 영문자·숫자·_·.·:·- 로 된 1–64자다", USAGE)
+        return {"terminal": args.terminal, "record": relay.record(home, args.terminal)}
     # --- 저장소 없는 명령 끝 ---
     store = Store(home)
     try:

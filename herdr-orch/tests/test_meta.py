@@ -18,7 +18,7 @@ class MetaTest(HorchCase):
         market = json.loads((REPO / ".claude-plugin" / "marketplace.json").read_text())
         entry = [p for p in market["plugins"] if p["name"] == "herdr-orch"][0]
         self.assertEqual({VERSION, plugin["version"], entry["version"]}, {VERSION})
-        self.assertEqual(VERSION, "0.4.0")  # 부모 터미널 worker-start --parent(herdr-orch 설계 15장)
+        self.assertEqual(VERSION, "0.5.0")  # Claude 상태 대리 보고와 백그라운드 일(herdr-orch 설계 16장)
 
     def test_skill_output(self):
         proc = subprocess.run([sys.executable, str(BIN), "--home", str(self.home), "skill"],
@@ -75,6 +75,19 @@ class MetaTest(HorchCase):
                        "observed `not_started`", "--keep-terminal", "terminal-reset --terminal <t>",
                        "terminal-close --terminal <t> [--abandon]", "--key <요청 id>", "`duplicate: true`",
                        "`reset_timeout`", "고정 Dispatch 는 `--kill` 대신 `terminal-close --terminal <t> --abandon`"):
+            self.assertIn(needle, proc.stdout)
+
+    def test_skill_covers_relay(self):
+        """설계 16.9: 대리 보고, 백그라운드 일의 idle, relay_failed 처리, 메인 옵트인, relay-status."""
+        proc = subprocess.run([sys.executable, str(BIN), "--home", str(self.home), "skill"],
+                              capture_output=True, text=True, env=self.env, timeout=30)
+        for needle in ("## 상태 대리 보고(0.5.0)", "herdr-orch 훅이 대신 보낸다",
+                       "observed `idle` 이 나지 않고 `worker-list` 의 `attention` 도 `idle` 이 아니다",
+                       "- `relay_failed`: 그 워커의 상태가 Herdr 에 가지 않는다",
+                       "`worker-abandon --kill`(고정 Dispatch 는 `terminal-close --terminal <t> --abandon`)",
+                       '`attention: "relay_failed"`', '"HORCH_RELAY_HOME"', "그 세션을 다시 연다",
+                       "그 세션의 Stop 이 한 번 막히며 다시 여는 법을 알린다",
+                       "`horch relay-status --terminal <t>`", "`relay-status --terminal`"):
             self.assertIn(needle, proc.stdout)
 
     def test_skill_stub(self):
