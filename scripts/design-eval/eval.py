@@ -6,7 +6,7 @@
   python3 scripts/design-eval/eval.py report <before 폴더> <after 폴더>
   python3 scripts/design-eval/eval.py judge-prompt <결과 폴더>
 
-run 은 claude -p(opus, 도구 없음, 사용자 설정·플러그인 없음)를 빈 임시 폴더에서 부른다. 결과는 저장소 .design-eval/ 아래다
+run 은 claude -p(opus, 도구 없음, --safe-mode 라 CLAUDE.md·스킬·플러그인·훅·MCP 가 없어 개인 지침이 두 판 어디에도 들어가지 않는다)를 빈 임시 폴더에서 부른다. 결과는 저장소 .design-eval/ 아래다
 (git 제외). before 판은 0.7.2(커밋 8cd549c)의 director.md·design-rules.md 를 git 에서 읽고, after 판은 작업 트리의 템플릿과
 palette.deal 의 배정을 쓴다. 정성 판정은 judge-prompt 가 만든 프롬프트를 scripts/codex-review.sh doc 으로 돌린다.
 """
@@ -35,7 +35,7 @@ BRIEFS = Path(__file__).with_name("briefs.json")
 OVERUSED = LIB / "hteam" / "data" / "overused.json"
 CLASSES = ("돋움", "부리", "표시")
 CLAUDE = ["claude", "-p", "--model", "opus", "--tools", "", "--output-format", "json", "--no-session-persistence",
-          "--strict-mcp-config", "--setting-sources", "project"]
+          "--strict-mcp-config", "--setting-sources", "project", "--safe-mode"]
 SCHEMA = ('JSON 객체 하나만 낸다(코드 블록·설명 없이). 키는 "A"·"B"·"C" 이고 값마다 다음 키를 둔다: "bg"·"ink"·"accent"'
           '(색, oklch(L C H) 글), "neutral"("순회색" 또는 "틴트"), "heading_font"·"body_font"(글꼴 이름), "heading_class"'
           '("돋움"·"부리"·"표시" 가운데 하나), "posture"(색 자세 낱말), "radius"(px 수), "mood"(무드 문장), "idea"(이 서비스만의 '
@@ -51,6 +51,11 @@ def stage2(director: str) -> str:
 
 
 def sources(variant: str) -> dict[str, str]:
+    if variant == "after":
+        try:
+            from hteam import palette  # noqa: F401  p13b 가 만든다. 실행 폴더를 만들기 전에 없으면 멈춘다
+        except ImportError:
+            raise SystemExit("after 판에는 hteam/palette.py 가 필요하다(p13b 뒤에 잰다)")
     tpl = REPO / "herdr-team" / "templates"
     if variant == "before":
         def show(rel: str) -> str:
@@ -157,7 +162,17 @@ def run(variant: str, reps: int, only: list[str]) -> Path:
 
 
 def _font(name: str) -> str:
-    return re.sub(r"[\s\"']", "", name.split(",")[0]).lower()
+    """글꼴 이름 하나를 비교용으로 고른다: 소문자, 공백·따옴표 없음, 끝의 variable/vf 제거."""
+    return re.sub(r"(variable|vf)$", "", re.sub(r"[\s\"']", "", name).lower())
+
+
+def hangul_font(body_font: str, latin: set[str]) -> str | None:
+    """CSS 글꼴 스택에서 한글을 그리는 글꼴. 라틴 전용이 아닌 첫 항목이고 없으면 시스템 글꼴(None)이다."""
+    for entry in body_font.split(","):
+        f = _font(entry)
+        if f and f not in latin:
+            return f
+    return None
 
 
 def is_cluster(opt: dict) -> bool:
@@ -183,7 +198,8 @@ def metrics(runs: list[dict], overused: dict) -> dict:
         hs = [color.parse(r["output"][k]["accent"])[2] for k in "ABC"]
         return min(color.hue_distance(a, b) for i, a in enumerate(hs) for b in hs[i + 1:])
 
-    fonts = {_font(f) for f in overused.get("fonts", [])}
+    fonts_ko = {_font(f) for f in overused.get("fonts_ko", [])}
+    fonts_latin = {_font(f) for f in overused.get("fonts_latin", [])}
     pool = [color.parse(c["hex"]) for c in overused.get("colors", [])]
     ramp = [color.parse(h) for h in overused.get("tailwind_ramp", [])]
 
@@ -197,8 +213,8 @@ def metrics(runs: list[dict], overused: dict) -> dict:
         "entropy": round(-sum(s * math.log2(s) for s in shares), 3),
         "blue_violet": round((sum(1 for h in hues if 240 <= h < 300) + failed * 3) / slots, 3),
         "spread_ge_60": round(sum(1 for r in valid if spread(r) >= 60) / max(total, 1), 3),
-        "overused_body": round((sum(1 for o in options if any(_font(o["body_font"]).startswith(f) for f in fonts))
-                                + failed * 3) / slots, 3),  # 'Pretendard Variable' 같은 표기 변형도 센다
+        "overused_body": round((sum(1 for o in options if (lambda h: h is None or h in fonts_ko)(hangul_font(o["body_font"], fonts_latin)))
+                                + failed * 3) / slots, 3),  # 한글을 그리는 글꼴만 본다(없으면 시스템 글꼴 = 과용)
         "overused_color_hits": hits(pool), "tailwind_ramp_hits": hits(ramp),
         "cluster": sum(1 for o in options if is_cluster(o)),
         "postures": dict(Counter(o["posture"] for o in options)),
@@ -237,7 +253,12 @@ def report(before: Path, after: Path) -> Path:
     lines = [f"# 획일도 측정 {dt.date.today()}", "", f"- before: `{before.name}`", f"- after: `{after.name}`", "",
              "| 지표 | before | after | 목표 |", "|---|---|---|---|"]
     lines += [f"| {r[0]} | {r[1]} | {r[2]} | {r[3]} |" for r in rows]
-    lines += ["", f"- after 목표: {json.dumps(b['targets'], ensure_ascii=False)}",
+    def mark(m: dict) -> str:
+        return f"{'유효' if m['measured'] else '무효'} ({m['valid']}/{m['runs']})"
+
+    targets = (json.dumps(b["targets"], ensure_ascii=False) if b["measured"]
+               else "무효(유효 실행이 80% 보다 적다. 다시 잰다)")
+    lines += ["", f"- before 측정: {mark(a)}", f"- after 측정: {mark(b)}", f"- after 목표: {targets}",
               f"- before hue 칸: {a['buckets']}", f"- after hue 칸: {b['buckets']}",
               f"- before 자세: {a['postures']}", f"- after 자세: {b['postures']}"]
     path = OUT / f"report-{dt.datetime.now():%Y%m%d-%H%M%S}.md"

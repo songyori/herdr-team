@@ -26,7 +26,10 @@ def run(*accents, valid=True, **kw):
 
 
 OVERUSED = {"colors": [{"hex": "#1e3a8a", "name": "Tailwind blue-900"}], "tailwind_ramp": ["#fb923c"],
-            "fonts": ["Pretendard", "Noto Sans KR"]}
+            "fonts_ko": ["Pretendard", "Noto Sans KR", "Nanum Gothic", "Apple SD Gothic Neo", "Malgun Gothic",
+                         "맑은 고딕", "system-ui", "-apple-system"],
+            "fonts_latin": ["Inter", "Roboto", "Open Sans", "Poppins", "Montserrat", "DM Sans", "Plus Jakarta Sans",
+                            "Space Grotesk", "Geist", "Fraunces"]}
 
 
 class EvalTest(unittest.TestCase):
@@ -84,6 +87,33 @@ class EvalTest(unittest.TestCase):
         self.assertEqual(ev.metrics([hit], OVERUSED)["overused_color_hits"], 1)
         variant = run("oklch(0.6 0.15 30)", "oklch(0.6 0.15 120)", "oklch(0.6 0.15 210)", body_font="Pretendard Variable")
         self.assertEqual(ev.metrics([variant], OVERUSED)["overused_body"], 1.0)
+
+    def test_overused_body_measures_korean_font(self):
+        cases = {"Inter, SUIT": 0.0, "Pretendard Variable": 1.0, "Inter": 1.0, "SUIT": 0.0, "Interop, Pretendard": 0.0,
+                 "'Noto Sans KR', sans-serif": 1.0, "Inter, \"Pretendard\" VF": 1.0, "Pretendard Display": 0.0}
+        for font, want in cases.items():
+            r = run("oklch(0.6 0.15 30)", "oklch(0.6 0.15 120)", "oklch(0.6 0.15 210)", body_font=font)
+            self.assertEqual(ev.metrics([r], OVERUSED)["overused_body"], want, font)
+
+    def test_report_marks_unmeasured_variant_void(self):
+        import tempfile
+        from unittest import mock
+        good = run("oklch(0.6 0.15 30)", "oklch(0.6 0.15 120)", "oklch(0.6 0.15 210)")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            before, after = root / "before", root / "after"
+            before.mkdir(), after.mkdir()
+            for i in range(1, 3):
+                (before / f"budget-{i}.json").write_text(json.dumps({"brief": "budget", "rep": i, **good}), encoding="utf-8")
+            (after / "budget-1.json").write_text(json.dumps({"brief": "budget", "rep": 1, **good}), encoding="utf-8")
+            (after / "budget-2.json").write_text(json.dumps({"brief": "budget", "rep": 2, **run(valid=False)}),
+                                                 encoding="utf-8")
+            with mock.patch.object(ev, "OUT", root), mock.patch.object(ev, "load_overused", lambda: OVERUSED):
+                text = ev.report(before, after).read_text(encoding="utf-8")
+        self.assertIn("- before 측정: 유효 (2/2)", text)
+        self.assertIn("- after 측정: 무효 (1/2)", text)
+        self.assertIn("- after 목표: 무효(유효 실행이 80% 보다 적다. 다시 잰다)", text)
+        self.assertNotIn("blue_violet_le_20", text)
 
     def test_judge_prompt_tolerates_missing_optional_fields(self):
         import tempfile
