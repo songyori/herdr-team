@@ -2697,6 +2697,12 @@ orca-team 0.5.0 을 옮긴다(실환경 뒤 고친 오탐 E1–E5 를 넣은 판
   - watch idle 은 decide 만 본다. 메인이 머릿속에 둔 다른 계획은 깨우지 않는다. 같은 decide 는 한 번만 알린다. 메인이 그때 처리하지 않으면 다시 알리지 않는다(Stop 훅·`up` 의 열린 질문 수로만 보인다).
   - 0.7.2 전 entry(`assigned_since_reset` 없음)는 `since_reset` 과 라운드 기록으로 넣은 태스크를 짐작한다. 마지막 리셋 뒤 넣은 태스크가 재투입(5.9.8)으로 Dispatch 가 바뀌었고 done 없이 drop 됐으면 그 대화를 놓쳐 인수인계 없이 닫을 수 있다(업그레이드 직후 옛 entry 에만 있다, Codex 계획 리뷰 r2, 기록만).
   - 다시 묶기 앞당기기는 같은 메인 주소로 한 번만 한다. 그 리셋이 실패·취소되면 다음 묶음 끝 리셋이나 사용자 요청 리셋까지 따로 보인다.
+  - 계획 리뷰(plan2 r2)의 드문 경우(기록만. 기본 경로가 아니라 고치지 않는다):
+    - `plugin.json` 이 없는 horch(`HERDR_ORCH_BIN` 감싸개, 수동 사본)는 버전을 확인하지 못해도 진행한다. `worker-start` 를 장벽 자식으로 띄우는 길은 앞선 `call()` 없이 갈 수 있어 낮은 버전을 놓칠 수 있다(지적 2). 기본 설치는 `plugin.json` 으로 확인한다.
+    - 옛 판이 고정 워커를 띄우고 `after_launch` 전에 죽은 뒤 업그레이드해 Dispatch 복구가 그 워커를 채택하면, `HORCH_HOME` 이 없는 세션에 `relay_ready` 가 붙어 옛 세션 바꾸기(5.9.9 의 4)를 건너뛴다(지적 3).
+    - 프로젝트 `.claude` 가 심볼릭 링크면 메인 옵트인 env 를 링크 너머의 `settings.local.json` 에 쓴다(지적 5).
+    - `git ls-files` 가 실패하면(인덱스 손상 등) 추적하지 않는 파일로 보고 `settings.local.json` 에 쓴다(지적 6).
+    - `.gitignore` 에 뒤따르는 `!.claude/settings.local.json` 부정 줄이 있으면, 제외 줄이 있다고 보고 실제로는 git 에서 빠지지 않은 파일에 쓴다(지적 7).
 
 ## 14. 보안
 
