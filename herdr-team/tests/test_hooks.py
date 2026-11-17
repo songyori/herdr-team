@@ -530,6 +530,55 @@ class HorchRuleTest(unittest.TestCase):
         self.assertEqual([c for c in self.ALLOW if denied(c)], [])
 
 
+class HeredocRuleTest(unittest.TestCase):
+    """13단계(설계 9.7 의 2): 명령 전체가 cat·tee 한 번과 따옴표 있는 끝 표시이고 마지막 줄이 끝 표시인 heredoc 은 본문의
+    낱말을 거부하지 않는다. 그 밖의 꼴은 지금처럼 원문으로 본다."""
+
+    ALLOW = (  # (판정 이름, 명령)
+        ("watch", "cat >> notes.md <<'EOF'\nhteam watch 는 run_in_background 로 띄운다\nEOF"),
+        ("watch", "cat >> notes.md <<-'EOF'\n\thteam watch\n\tEOF"),
+        ("watch", "cat > m/a.md <<\"END\"\nhteam watch &\nEND"),
+        ("watch", "tee -a notes.md >/dev/null <<'EOF'\nhteam watch\nEOF"),
+        ("watch", "cat <<'EOF' >> 메모.md\nhteam watch\nEOF\n"),
+        ("drive", "cat >> notes.md <<'EOF'\nhteam drive 는 직접 부르지 않는다\nEOF"),
+        ("horch", "cat >> notes.md <<'EOF'\nhorch worker-list 는 관제가 쓴다\nEOF"),
+    )
+    DENY = (
+        ("watch", "cat >> notes.md <<EOF\nhteam watch\nEOF"),  # 따옴표 없는 끝 표시
+        ("watch", "cat <<'EOF'\nx\nEOF\nhteam watch &"),  # 끝 표시 뒤의 줄
+        ("watch", "cat <<'EOF'\nEOF\nhteam watch &\nEOF"),  # 끝 표시가 먼저 나온다
+        ("watch", "cat >> a <<'EOF'\nhteam watch\n"),  # 끝 표시 없음
+        ("watch", "mkdir -p m && cat > m/a.md <<'EOF'\nhteam watch\nEOF"),  # 앞에 다른 명령
+        ("watch", "cat <<'EOF' | sh\nhteam watch\nEOF"),
+        ("watch", "cat <<'EOF' > >(bash)\nhteam watch\nEOF"),
+        ("watch", "bash <<'EOF'\nhteam watch\nEOF"),
+        ("watch", "bash < <(\ncat <<'EOF'\nhteam watch\nEOF\n)"),
+        ("watch", "cat <<1\ncat <<'EOF'\n1\nhteam watch &"),
+        ("watch", "printf '%s\\n' '<<EOF'\nhteam watch &"),
+        ("watch", "cat <<<'hteam watch'"),
+        ("drive", "cat <<EOF\n$(hteam drive)\nEOF"),
+        ("horch", "cat <<'EOF'\nx\nEOF\nhorch worker-list"),
+        ("horch", "python3 - <<'EOF'\nhorch\nEOF"),
+        ("horch", "cat <<EOF-X\n본문\nEOF-X\nhorch run-create --objective demo"),
+    )
+
+    def judge(self, hook, name, cmd):
+        if name == "watch":
+            return hook.watch_denied(cmd, False)
+        return hook.drive_denied(cmd) if name == "drive" else hook.horch_denied(cmd)
+
+    def test_rule(self):
+        hook = load_hook()
+        self.assertEqual([c for n, c in self.ALLOW if self.judge(hook, n, c)], [])
+        self.assertEqual([c for n, c in self.DENY if not self.judge(hook, n, c)], [])
+
+    def test_strip_only_the_simple_form(self):
+        hook = load_hook()
+        self.assertEqual(hook.strip_heredocs("cat > a <<'EOF'\n본문\n둘째\nEOF"), "cat > a <<'EOF'\nEOF")
+        for cmd in ("cat > a <<'EOF'\n본문\nEOF\nls", "bash <<'EOF'\n본문\nEOF", "cat > a <<EOF\n본문\nEOF", "ls"):
+            self.assertEqual(hook.strip_heredocs(cmd), cmd)
+
+
 class HookImportTest(TeamCase):
     def test_import_failure_is_logged_and_allowed(self):
         """hteam 모듈은 herdr-team 프로젝트에서만 가져온다. 가져오지 못하면 오류 기록을 남기고 통과한다."""

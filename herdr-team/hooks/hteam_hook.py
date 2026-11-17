@@ -207,10 +207,35 @@ def hteam_only(cmd: str) -> bool:
     return bool(words) and os.path.basename(words[0]) == "hteam"
 
 
+# 본문을 지워 보는 heredoc(설계 9.7 의 2): 명령 전체가 cat·tee 한 번으로 글을 파일에 옮기는 꼴이고, 끝 표시에 따옴표가 있고
+# (본문이 확장되지 않는다), 마지막 줄이 끝 표시다. 그 밖은 원문으로 본다(heredoc 을 해석하는 일반 규칙은 두지 않는다)
+_PATH = r"[\w./~-]+"
+_SIMPLE_HEREDOC = re.compile(
+    rf"\s*(?:cat|tee)(?:\s+(?:>>?\s*{_PATH}|{_PATH}))*\s+<<(-?)\s*(['\"])([A-Za-z_][A-Za-z0-9_]*)\2(?:\s+>>?\s*{_PATH})*\s*")
+
+
+def strip_heredocs(cmd: str) -> str:
+    """판정 셋이 보는 명령(설계 9.7 의 2). 명령 전체가 `cat`·`tee` 한 번(선택지·공백 없는 경로·그 경로로의 `>`·`>>`)과 따옴표
+    있는 끝 표시이고 마지막 줄만 끝 표시면 본문을 지운 `<첫 줄>\n<끝 표시 줄>` 이다. 아니면 원문 그대로다. 순수 함수다."""
+    lines = cmd.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    if len(lines) < 2:
+        return cmd
+    m = _SIMPLE_HEREDOC.fullmatch(lines[0])
+    if not m:
+        return cmd
+    tabs, delim = m.group(1) == "-", m.group(3)
+    ends = [i for i, line in enumerate(lines[1:], 1) if (line.lstrip("\t") if tabs else line) == delim]
+    if ends != [len(lines) - 1]:
+        return cmd
+    return f"{lines[0]}\n{lines[-1]}"
+
+
 def horch_denied(cmd: str) -> bool:
     """메인 Bash 명령을 horch 직접 호출로 보고 거부하는가(설계 9.4). 셸 문법을 따라가지 않는다: hteam 한 번 호출만
     허용 목록이고, 나머지는 horch 낱말이 나오면 거부한다(닫힌 쪽. `ls …/horch`·`grep horch` 도 거부된다)."""
-    return not hteam_only(cmd) and bool(HORCH_RE.search(cmd))
+    return not hteam_only(cmd) and bool(HORCH_RE.search(strip_heredocs(cmd)))
 
 
 def drive_denied(cmd: str) -> bool:
@@ -223,7 +248,7 @@ def drive_denied(cmd: str) -> bool:
         while i < len(words) and words[i].startswith("-"):
             i += 2 if words[i] == "--root" else 1
         return i < len(words) and words[i] == "drive"
-    return bool(DRIVE_RE.search(cmd))
+    return bool(DRIVE_RE.search(strip_heredocs(cmd)))
 
 
 def watch_denied(cmd: str, background: bool) -> bool:
@@ -237,7 +262,7 @@ def watch_denied(cmd: str, background: bool) -> bool:
         while i < len(words) and words[i].startswith("-"):
             i += 2 if words[i] == "--root" else 1
         return i < len(words) and words[i] == "watch" and not background
-    return bool(WATCH_RE.search(cmd))
+    return bool(WATCH_RE.search(strip_heredocs(cmd)))
 
 
 def deny(reason: str) -> dict:
