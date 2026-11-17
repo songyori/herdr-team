@@ -5,7 +5,7 @@
 | 플러그인 | 버전 | 하는 일 |
 |---|---|---|
 | `herdr-orch` | 0.5.0 | Claude·Codex 워커를 Herdr pane 으로 띄우고 메일함으로 질문·보고를 주고받는 `horch` CLI 와 스킬 |
-| `herdr-team` | 0.7.1 | `herdr-orch` 위의 직무 팀. 사용자는 메인 Claude 세션과 대화하고, 기획·디자인·개발·테스트는 직무 에이전트가 맡고, 산출물은 반대쪽 모델(Claude ↔ Codex)이 리뷰한다 |
+| `herdr-team` | 0.7.2 | `herdr-orch` 위의 직무 팀. 사용자는 메인 Claude 세션과 대화하고, 기획·디자인·개발·테스트는 직무 에이전트가 맡고, 산출물은 반대쪽 모델(Claude ↔ Codex)이 리뷰한다 |
 
 - 문서, 명령 출력, 에이전트끼리 주고받는 글은 한국어다.
 - 개인 프로젝트이고 0.x 버전이다. 버전이 바뀌면 설정과 동작이 바뀔 수 있다(아래 "이미 세팅한 프로젝트 업그레이드").
@@ -118,6 +118,7 @@ claude plugin marketplace remove herdr-team
 - 기록:
   - 관제: `.herdr-team/state/drive/drive.log`
   - 관제 자동 부활: `.herdr-team/state/auto-up.log`
+  - 상태 대리 보고: `.herdr-team/state/horch/relay.log`(기록은 그 옆 `relay/`. herdr-orch 0.5.0 이 쓴다)
   - 작업 공간 setup·teardown: `.herdr-team/state/slots/logs/`
   - Redmine 전송 실패: `.herdr-team/state/redmine/failed/`(`hteam status` 의 `redmine`)
 - 버그와 제안은 [Issues](https://github.com/songyori/herdr-team/issues) 에 남긴다. `doctor` 출력과 사용한 버전을 같이 적는다.
@@ -131,9 +132,10 @@ claude plugin marketplace remove herdr-team
 
 ## herdr-orch
 
-Run 소유자가 Claude·Codex 워커를 Herdr pane 으로 띄우고, SQLite 메일함으로 질문·보고를 주고받는 `horch` CLI 와 스킬 `herdr-orchestration`. 0.2.0 부터 고정 터미널(`worker-start --keep-open`·`--terminal`: 같은 세션에 다음 Dispatch 를 넣는다), 세션 비우기(`terminal-reset`), 고정 터미널 닫기(`terminal-close`)가 있다. 0.3.0 부터 워커 환경 변수(`worker-start --env KEY=VALUE`, 되풀이)를 받는다. `launch-guard` 가 에이전트를 실행하기 바로 전에 그 환경에 넣는다(`hc run` 으로 띄운 터미널은 부른 셸의 환경을 물려받지 않는다). 값은 저장소와 `worker-show` 출력에 남으므로 비밀값을 넘기지 않는다. Codex 워커에는 `-c shell_environment_policy.set.<이름>=<값>` 인자로도 넘긴다(사용자 Codex 설정의 `inherit` 가 값을 빼지 않게. `include_only` 를 쓰면 그래도 빠진다). 0.4.0 부터 `worker-start --parent <터미널>` 로 새 워커 터미널의 hc parent 를 고른다(hc 에 `--parent <터미널> --outlive-parent --no-notify` 로 넘긴다. Herdr 앱 Agents 목록에서 그 터미널 아래에 보이고, 부모가 끝나도 워커는 산다). 저장하지 않으므로 `--task --retry` 때 다시 준다. `--hidden`·`--terminal` 과는 같이 쓸 수 없다. 그 터미널이 hc 에 없으면 parent 없이 한 번 더 띄우고 `warnings` 에 `parent_missing` 을 남긴다.
+Run 소유자가 Claude·Codex 워커를 Herdr pane 으로 띄우고, SQLite 메일함으로 질문·보고를 주고받는 `horch` CLI 와 스킬 `herdr-orchestration`. 0.2.0 부터 고정 터미널(`worker-start --keep-open`·`--terminal`: 같은 세션에 다음 Dispatch 를 넣는다), 세션 비우기(`terminal-reset`), 고정 터미널 닫기(`terminal-close`)가 있다. 0.3.0 부터 워커 환경 변수(`worker-start --env KEY=VALUE`, 되풀이)를 받는다. `launch-guard` 가 에이전트를 실행하기 바로 전에 그 환경에 넣는다(`hc run` 으로 띄운 터미널은 부른 셸의 환경을 물려받지 않는다). 값은 저장소와 `worker-show` 출력에 남으므로 비밀값을 넘기지 않는다. Codex 워커에는 `-c shell_environment_policy.set.<이름>=<값>` 인자로도 넘긴다(사용자 Codex 설정의 `inherit` 가 값을 빼지 않게. `include_only` 를 쓰면 그래도 빠진다). 0.4.0 부터 `worker-start --parent <터미널>` 로 새 워커 터미널의 hc parent 를 고른다(hc 에 `--parent <터미널> --outlive-parent --no-notify` 로 넘긴다. Herdr 앱 Agents 목록에서 그 터미널 아래에 보이고, 부모가 끝나도 워커는 산다). 저장하지 않으므로 `--task --retry` 때 다시 준다. `--hidden`·`--terminal` 과는 같이 쓸 수 없다. 그 터미널이 hc 에 없으면 parent 없이 한 번 더 띄우고 `warnings` 에 `parent_missing` 을 남긴다. 0.5.0 부터 Claude 상태 대리 보고가 있다. Claude 세션이 시작 때 Herdr 에 상태를 보고하지 못하면 그 세션 내내 보고하지 않는다(Claude Code 가 한 번만 묻는다). herdr-orch 의 Claude 훅이 그런 세션의 tty 에 Claude 와 같은 상태 글(OSC 7501)을 대신 쓴다. 대상은 horch 가 띄운 Claude 워커(`launch-guard` 가 `HORCH_HOME` 을 넣는다)와 옵트인한 사람용 세션(세션 환경의 `HORCH_RELAY_HOME`)이다. 옵트인한 메인이 대리 보고도 못 하면(tty 를 찾지 못했거나 쓰지 못함) 그 Claude 마다 한 번 Stop 에서 같은 터미널에서 다시 열라고 알린다. 백그라운드 일(Bash `run_in_background`·서브에이전트·모니터)을 남기고 턴을 마친 워커에는 observed idle 을 내지 않는다. 대리 쓰기가 실패하면 observed `relay_failed` 와 `worker-list` 의 attention `relay_failed` 로 알린다. `horch relay-status --terminal <t>` 가 그 터미널의 기록을 보여 준다. 기록은 `<홈>/relay/`, 로그는 `<홈>/relay.log` 다. Codex 워커는 대리 보고가 없다.
 
 - 요구사항·설치: 위 "요구사항"·"설치". herdr-orch 만 쓰면 herdr-team 은 설치하지 않아도 된다.
+- 감독 메인 대리 보고(0.5.0, 선택): herdr-team 없이 herdr-orch 만 쓰는 프로젝트에서 감독 메인의 질문도 Herdr "Needs you" 로 받으려면 프로젝트 `.claude/settings.local.json` 에 `{"env": {"HORCH_RELAY_HOME": "<horch 홈 절대 경로>"}}` 를 넣고 메인 세션을 다시 연다(설정은 세션을 시작할 때 읽힌다). 홈은 horch 를 부르는 `--home`(없으면 `HERDR_ORCH_HOME`, 기본 `~/.local/state/herdr-orch`)이다. 개인 절대 경로라 그 파일을 `.gitignore` 에 넣는다. herdr-team 은 init·`hteam up` 이 이 줄을 쓴다.
 - 쓰는 법: Herdr 터미널에서 연 Claude Code 세션에 Codex·Claude 워커로 일을 맡기고 결과를 받아 오라고 하면, 스킬 `herdr-orchestration` 이 `horch` 사용법을 읽고 워커를 띄운다.
 - 점검: `herdr-orch/bin/horch doctor`(저장소 기준 경로. 설치했으면 플러그인 폴더의 `bin/horch`)
 - 사용법: `herdr-orch/bin/horch skill`
@@ -159,11 +161,15 @@ Run 소유자가 Claude·Codex 워커를 Herdr pane 으로 띄우고, SQLite 메
   - 메인은 사용자에게 언제나 선택 창(AskUserQuestion)으로 묻는다. 평문 질문은 Stop 훅이 한 번 막는다.
   - 관제·기획자·디렉터 질문의 표(`render.context`)는 메인이 질문 전에 답변 글로 그린다. 짧은 표(접어서 15줄 이하)는 훅이 선택 창 오른쪽 미리보기에도 넣는다. 훅은 질문을 거부하지 않는다. 메인은 줄글보다 표로 구분하기 좋은 데이터를 표로 쓴다. 긴 표가 화면에 없으면(모델이 생각 블록에만 두는 일이 있다) 메인에게 "표 보여 줘" 라고 한다.
   - 작업 공간 태스크가 기준의 새 커밋을 받아야 하면 `hteam fix T-xxx --base-merge` 로 기준 병합 라운드를 연다(메인에 부탁한다).
+  - 다른 태스크가 끝난 뒤에 할 fix 는 `hteam fix T-xxx --after T-yyy` 로 관제에 맡긴다(메인에 부탁한다). 관제는 선행 태스크가 done 이 되면(작업 공간이면 병합까지) 실행하고 결과를 메인에 알린다. 기다리는 요청은 `hteam status` 의 `deferred` 에 보이고 `hteam cancel <요청 id>` 로 거둔다.
+  - 메인이 답하지 않은 decide 가 30분을 넘기면 watch 가 `idle` 로 끝나 메인을 깨운다(decide 하나에 한 번. 열린 decide 가 없으면 깨우지 않는다). watch 는 Bash 백그라운드로 혼자 띄운다(다른 명령과 잇거나 `&` 를 붙이면 훅이 거부한다).
 - 관제(`hteam drive`): 관제 탭(`herdr-team 관제`)에서 도는 Python 프로그램(Claude 가 아니다). horch Run 을 갖고 디스패치, 리뷰, accept·fix, 묶음 후속, 마무리, 디자인 보강, 세션 리셋, 복구를 정해진 절차로 돌린다. 판단이 필요한 일(워커 질문, 실패, 최대 라운드, 회귀의 원인 등)만 outbox `decide` 로 메인에 올린다. 기록은 `.herdr-team/state/drive/drive.log`.
 - 요청 큐: horch 를 건드리는 메인 명령(`start`, `start-ready`, `fix`, `accept`, `drop`, `review --retry`, `design-decide`, `scope`, `agent reset`, `test-confirm`, `slot reset`)은 파일 큐(`.herdr-team/state/drive/queue/`)로 관제에 넘어간다. 관제가 90초 안에 실행하면 그 결과를, 아니면 `status: queued` 를 돌려주고 결과는 watch 의 `result` 로 온다. 관제가 꺼져 있으면 큐에 넣지 않고 `drive_down` 으로 거부한다.
 - 고정 에이전트: `config.toml` 의 `[crew.<이름>]`(직무 목록, `agent` claude·codex, 모델)마다 하나씩 있는 오래 사는 작업 세션. 같은 세션이 그 직무 태스크와 수정 라운드를 이어 맡는다(에이전트 탭 `herdr-team <제목>` 의 왼쪽 pane). 묶음이 끝나면 인수인계 `docs/handoff/<이름>.md` 를 쓰고 제자리에서 `/clear` 로 비운다(Codex 는 `/clear <이름>`). 비웠다는 신호가 10초 안에 없으면 새 터미널로 띄운다. 상태는 `.herdr-team/state/crew.json`.
 - 임시 워커: 맡을 고정 에이전트가 없거나, 바쁘거나(`[overflow] enabled = true` 일 때), 태스크의 작업 에이전트가 그 고정 에이전트와 다르면 라운드마다 관제 탭 pane 에 새로 띄운다.
-- Herdr 묶음(0.7.1): Herdr 앱 Agents 목록에서 관제, 고정 에이전트 작업 터미널, 임시 워커, 관제 탭 리뷰어(임시 워커 태스크), 리뷰 보기 pane 이 메인 세션 아래 한 단계로 보인다(hc parent). 메인 주소는 `hteam up`·`hteam watch` 가 `.herdr-team/state/run.json` 의 `main_terminal` 에 쓰고, 관제는 터미널을 띄울 때마다 그 값을 읽는다. 메인 세션을 새 터미널로 옮기면 그 세션의 첫 watch 뒤에 띄우는 터미널부터 새 메인 아래에 든다. 이미 떠 있던 관제는 Run 에 묶인 지 10분이 지났고 한가하고 새 메인의 watch 가 돌 때 스스로 끝나 새 메인 아래 다시 뜬다(메인이 `/herdr-team:up` 으로 띄운다. 그사이 잠깐 관제가 꺼져 있다). 고정 에이전트 작업 터미널은 다음 리셋 때 비우지 않고 새 터미널로 뜬다(바로 묶으려면 `hteam agent reset <이름>`). 도는 임시 워커·리뷰어·리뷰 보기 pane 은 끝날 때까지 앞 메인 아래에 남는다. 같은 폴더에서 Claude 세션을 둘 열면 나중에 watch 를 띄운 세션이 메인이 된다(메인 세션은 하나만 연다). 묶인 터미널은 모두 pane 이 있어 메인 세션이 끝나거나 메인 pane·탭을 닫아도 산다(`--outlive-parent`). 숨은 리뷰어(고정 에이전트 태스크)는 pane 이 없어 메인 pane·탭을 닫으면 함께 끝나므로 묶지 않는다(리뷰 보기 pane 으로 보인다). 이미 떠 있는 터미널의 parent 는 바꿀 수 없다. 워커 pane 을 앱에서 park 하면 pane 없는 자식이 되어 메인 pane·탭을 닫을 때 함께 끝난다(관제가 lost 로 보고 복구한다).
+- Herdr 묶음(0.7.1): Herdr 앱 Agents 목록에서 관제, 고정 에이전트 작업 터미널, 임시 워커, 관제 탭 리뷰어(임시 워커 태스크), 리뷰 보기 pane 이 메인 세션 아래 한 단계로 보인다(hc parent). 메인 주소는 `hteam up`·`hteam watch` 가 `.herdr-team/state/run.json` 의 `main_terminal` 에 쓰고, 관제는 터미널을 띄울 때마다 그 값을 읽는다. 메인 세션을 새 터미널로 옮기면 그 세션의 첫 watch 뒤에 띄우는 터미널부터 새 메인 아래에 든다. 이미 떠 있던 관제는 Run 에 묶인 지 10분이 지났고 한가하고 새 메인의 watch 가 돌 때 스스로 끝나 새 메인 아래 다시 뜬다(메인이 `/herdr-team:up` 으로 띄운다. 그사이 잠깐 관제가 꺼져 있다). 고정 에이전트 작업 터미널은 다음 리셋 때 비우지 않고 새 터미널로 뜬다(바로 묶으려면 `hteam agent reset <이름>`). 0.7.2 부터는 맡은 태스크가 없으면 관제가 그 리셋을 앞당긴다(같은 메인으로는 한 번. 그 세션에 넣은 태스크가 없으면 인수인계 없이 닫는다). 도는 임시 워커·리뷰어·리뷰 보기 pane 은 끝날 때까지 앞 메인 아래에 남는다. 같은 폴더에서 Claude 세션을 둘 열면 나중에 watch 를 띄운 세션이 메인이 된다(메인 세션은 하나만 연다). 묶인 터미널은 모두 pane 이 있어 메인 세션이 끝나거나 메인 pane·탭을 닫아도 산다(`--outlive-parent`). 숨은 리뷰어(고정 에이전트 태스크)는 pane 이 없어 메인 pane·탭을 닫으면 함께 끝나므로 묶지 않는다(리뷰 보기 pane 으로 보인다). 이미 떠 있는 터미널의 parent 는 바꿀 수 없다. 워커 pane 을 앱에서 park 하면 pane 없는 자식이 되어 메인 pane·탭을 닫을 때 함께 끝난다(관제가 lost 로 보고 복구한다).
+- 상태 대리 보고(0.7.2, herdr-orch 0.5.0): Claude 세션이 시작 때 Herdr 에 상태를 보고하지 못하면 그 세션 내내 보고하지 않는다(Claude Code 가 한 번만 묻는다). 그런 세션이면 herdr-orch 의 훅이 그 세션의 tty 에 Claude 와 같은 상태 글(OSC 7501)을 대신 쓴다(위 "herdr-orch"). 관제가 띄우는 Claude 세션(임시 워커·고정 에이전트·Claude 리뷰어)은 저절로 대상이다. 메인은 init 과 `hteam up` 이 프로젝트 `.claude/settings.local.json` 에 `HORCH_RELAY_HOME` 을 써서 옵트인한다(개인 절대 경로라 `.gitignore` 에 그 파일 줄을 더한다. git 이 그 파일을 이미 추적하면 쓰지 않고 `relay_env_tracked` 로 알린다). 설정은 세션을 시작할 때 읽히므로 쓴 뒤 메인을 한 번 다시 열어야 켜진다(`up` 의 `relay_env_new` 경고와 메인 훅의 안내가 알린다). 그러면 메인 질문이 Herdr "Needs you" 로 뜨고, 관제가 워커를 "보고 없음" 으로 잘못 올리지 않는다. 대리 보고도 못 하는 메인(tty 를 찾지 못했거나 쓰지 못함)은 herdr-orch 의 Stop 훅이 그 Claude 마다 한 번, `/herdr-team:up` 이 `main_unreported` 경고로 알린다: 일이 덜 몰린 때 `/exit` 뒤 같은 터미널에서 `claude --resume` 으로 다시 연다. 워커의 대리 보고 쓰기가 실패하면 관제가 decide 로 알리거나(작업·인수인계) 리뷰어를 다시 띄운다. 대리 보고도 없는 고정 에이전트 세션과 업그레이드 전에 띄운 고정 에이전트 세션은 맡은 태스크가 없을 때 닫거나 리셋하고 다음 태스크를 새 세션으로 띄운다. 기록은 `.herdr-team/state/horch/relay/`, 로그는 `.herdr-team/state/horch/relay.log` 다. Codex 는 대리 보고가 없다.
+- 백그라운드 일(0.7.2, herdr-orch 0.5.0): Claude 워커가 Bash 백그라운드·서브에이전트·모니터로 일을 돌리며 턴을 마치면(Claude Stop 훅의 `background_tasks`) herdr-orch 가 그 턴의 idle 을 알리지 않아 관제는 done 요청도 escalation 도 하지 않는다. 백그라운드 일이 끝난 뒤의 턴부터 센다.
 - 한계: 고정 에이전트 컨텍스트는 한 묶음 동안 쌓인다. 에이전트마다 모델이 하나라 designer 태스크도 생산 에이전트 모델로 돈다. 넣은 입력이 사라졌는지는 60초가 지나야 안다. hc core 재시작 뒤 이어지는지는 확인하지 않았다.
 
 ### 리뷰 보기 pane
@@ -292,6 +298,32 @@ Run 소유자가 Claude·Codex 워커를 Herdr pane 으로 띄우고, SQLite 메
 ### 이미 세팅한 프로젝트 업그레이드
 
 scaffold 는 있는 파일을 덮어쓰지 않는다. 앞 버전에서 세팅한 프로젝트는 새 기능을 손으로 옮겨야 하고, 옮기지 않으면 조용히 빠진다(예: `[roles.director]` 가 없으면 디자인 디렉터 단계와 시스템 보강이 없다).
+
+#### 0.7.1 → 0.7.2
+
+herdr-orch 도 0.5.0 으로 올린다. Claude 세션이 Herdr 에 상태를 보고하지 않으면 herdr-orch 훅이 대신 보고하고, 백그라운드 일을 기다리는 워커를 멈춘 것으로 보지 않는다(위 "관제와 고정 에이전트" 의 상태 대리 보고·백그라운드 일). herdr-team 은 메인 대리 보고 옵트인, 미룬 fix(`hteam fix T-xxx --after T-yyy`), watch 의 `idle`(답하지 않은 decide 30분), 메인의 watch 잘못 부르기 막기를 더했다. 순서는 0.5.0 → 0.6.0 과 같다. 2 는 메인 세션에 맡겨도 되고, 3–6 은 프로젝트를 쓰는 사람이 직접 한다(이유는 0.5.0 → 0.6.0 과 같다).
+
+1. 플러그인 둘을 올린다(`claude plugin marketplace update herdr-team`, `claude plugin update herdr-orch@herdr-team`, `claude plugin update herdr-team@herdr-team`). herdr-orch 를 올리지 않으면 hteam 이 0.5.0 아래 horch 를 고르지 않아 exit 12 로 멈춘다. 대리 보고·백그라운드 인식은 herdr-orch 쪽이다.
+2. 프로젝트 루트에서 `.herdr-team/bin/hteam upgrade` 를 실행한다.
+   - 바꾸는 복사 파일은 없다(직무 문서·규칙 파일이 바뀌지 않았다).
+   - `manual` 에 `CLAUDE.md` 가 나온다. `<!-- herdr-team -->` 절을 `herdr-team/templates/CLAUDE.section.md` 와 견줘 고친다. 바뀐 곳은 넷이다.
+     - 메인 규칙의 watch 줄: watch 를 다른 명령과 잇지 않고 혼자 띄운다(훅이 다른 꼴을 거부한다). `status: idle` 이면 `open` 의 decide 를 처리하고 watch 를 다시 띄운다.
+     - 메인 규칙의 새 줄("decide 가 열린 동안" 줄 뒤): 다른 태스크가 끝나기를 기다렸다가 할 fix 는 `--after` 로 관제에 맡기고 decide 를 닫는다.
+     - decide 처리 기준의 `escalation` 줄 끝: 작업자가 상태를 보고하지 않는다는 escalation 이면 사용자에게 그 탭을 보게 한다.
+     - 메인 규칙의 새 마지막 줄: 훅(herdr-orch)이나 `/herdr-team:up` 이 이 세션의 상태를 Herdr 에 보낼 수 없다거나 메인 대리 보고 설정이 아직 없다고 알리면 사용자에게 그대로 전한다.
+   - 바꾼 파일을 경로를 지정해 커밋한다(`git add -- CLAUDE.md && git commit -m "chore: herdr-team 0.7.2" -- CLAUDE.md`).
+3. 지금 메인 세션을 끝낸다(`/exit`).
+4. 관제를 끈다(0.5.0 → 0.6.0 의 4). 미룬 요청·쓰기 실패 처리·고정 에이전트 바꾸기와 다시 묶기 앞당기기는 관제 쪽이고, 관제와 그 자식은 관제가 뜰 때의 플러그인 경로로 돈다.
+5. 같은 터미널에서 메인 세션을 새로 열고 메시지를 하나 보낸다. 새 세션의 훅이 관제를 0.7.2 로 다시 띄운다. 관제가 뜨지 않으면 `/herdr-team:up` 을 실행한다. 훅은 세션을 시작할 때 읽힌다: 메인 Stop 알림·watch 막기·`--after`·watch 의 `idle` 은 새 세션부터다. 이 `up` 이 `.claude/settings.local.json` 에 `HORCH_RELAY_HOME` 을 쓰고 `.gitignore` 에 그 파일 줄을 더한다. `.gitignore` 가 바뀌었으면 경로를 지정해 커밋한다(`git add -- .gitignore && git commit -m "chore: herdr-team 0.7.2" -- .gitignore`).
+6. 메인 대리 보고를 켠다: 설정은 세션을 시작할 때 읽히므로 5 의 세션은 받지 못했다(`/herdr-team:up` 의 `relay_env_new` 경고와 메인 훅의 안내가 알린다). 일이 덜 몰린 때 `/exit` 뒤 같은 터미널에서 `claude --resume` 으로 한 번 더 연다. 메인 세션을 새로 열면 그 세션이 보고하지 않던 문제도 함께 풀린다.
+7. 확인한다: `.herdr-team/bin/hteam version` 이 `0.7.2` 이고, `hc get <관제 터미널>` 의 `argv` 가 `…/herdr-team/0.7.2/bin/hteam` 이다. `/herdr-team:up` 에 `relay_env_new` 경고가 없다.
+
+올린 뒤 달라지는 것:
+
+- 워커의 대리 보고와 백그라운드 인식은 herdr-orch 0.5.0 의 launch-guard 가 `HORCH_HOME` 을 넣은 세션부터다(환경 변수는 프로세스마다라 리셋의 `/clear` 뒤에도 옛 세션에는 없다). 이미 떠 있던 워커는 대리 보고가 없다. 도는 임시 워커는 끝날 때까지 그대로다.
+- 업그레이드 전에 띄운 Claude 고정 에이전트 세션은 스스로 보고하더라도 새 관제가 맡은 태스크가 없을 때 바꾼다: 그 세션에 넣은 태스크가 있으면 리셋(인수인계 뒤 닫고 다음 태스크를 새 세션으로), 없으면 인수인계 없이 닫는다(한 번만). 그 뒤 리셋도 옛 세션은 `/clear` 대신 닫는다. 바로 바꾸려면 맡은 태스크가 없을 때 메인에게 `hteam agent reset <이름>` 을 부탁한다.
+- 메인이 `hteam watch` 를 다른 명령과 잇거나 `&` 를 붙이거나 Bash 백그라운드 없이 부르면 훅이 거부한다.
+- herdr-team 없이 herdr-orch 만 쓰는 프로젝트도 herdr-orch 를 0.5.0 으로 올리면 그 뒤 띄운 Claude 워커가 대리 보고를 받는다. 감독 메인도 받으려면 같은 `HORCH_RELAY_HOME` 줄(위 "herdr-orch")을 넣고 메인 세션을 다시 연다.
 
 #### 0.7.0 → 0.7.1
 

@@ -143,7 +143,7 @@ class ScaffoldTest(TeamCase):
         shim = str(self.proj / ".herdr-team/bin/hteam")
         env = dict(self.env, HERDR_TEAM_PLUGIN_ROOT=str(ROOT))
         out = subprocess.run([sys.executable, shim, "version"], capture_output=True, text=True, env=env)
-        self.assertEqual(json.loads(out.stdout)["version"], "0.7.1")
+        self.assertEqual(json.loads(out.stdout)["version"], "0.7.2")
         registry = self.tmp / "installed.json"
         registry.write_text(json.dumps({"plugins": {"herdr-team@herdr-team": [{"installPath": str(ROOT)}]}}))
         env = dict(self.env, HTEAM_PLUGINS_JSON=str(registry))
@@ -393,12 +393,34 @@ class TemplateContractTest(unittest.TestCase):
                        "맨 위에 남는다", "`hteam agent reset <이름>`", "10분", "`/herdr-team:up`",
                        "다음 리셋 때 새 터미널로 뜬다", "나중에 watch 를 띄운 세션이 메인이 된다"):  # (4)·(5): 11단계 보강
             self.assertIn(needle, p11)
+        # 12단계(0.7.2): 플러그인 둘, upgrade 는 복사 파일 없음·CLAUDE.md 네 곳, 같은 터미널에서 새 메인 세션, 옵트인 env 와
+        # 한 번 더 다시 열기, 옛 세션(설계 9.6)
+        self.assertLess(readme.index("#### 0.7.1 → 0.7.2"), readme.index("#### 0.7.0 → 0.7.1"))
+        p12 = readme[readme.index("#### 0.7.1 → 0.7.2"):readme.index("#### 0.7.0 → 0.7.1")]
+        for needle in ("herdr-orch 도 0.5.0 으로 올린다", "`claude plugin update herdr-orch@herdr-team`", "exit 12",
+                       "바꾸는 복사 파일은 없다", "바뀐 곳은 넷이다", "`--after`", "`status: idle`", "관제를 끈다",
+                       "같은 터미널에서 메인 세션을 새로 열고", "훅은 세션을 시작할 때 읽힌다", "`HORCH_RELAY_HOME`",
+                       "`.gitignore`", "`relay_env_new`", "한 번 더 연다", "`…/herdr-team/0.7.2/bin/hteam`",
+                       "`HORCH_HOME` 을 넣은 세션부터다", "맡은 태스크가 없을 때", "`hteam agent reset <이름>`",
+                       "도는 임시 워커는 끝날 때까지 그대로다", "herdr-orch 만 쓰는 프로젝트"):
+            self.assertIn(needle, p12)
         team = readme[readme.index("## herdr-team\n"):readme.index("### 이미 세팅한 프로젝트 업그레이드")]
         self.assertNotIn("질문 보기", team)
         for needle in ("메인 세션 아래 한 단계로 보인다", "`main_terminal`", "`--outlive-parent`", "숨은 리뷰어",
                        "스스로 끝나 새 메인 아래 다시 뜬다", "다음 리셋 때 비우지 않고 새 터미널로 뜬다",
                        "다시 묶기로 끝난 것은 새 관제가 지운다"):  # 11단계 보강(설계 8.13·5.9.7)
             self.assertIn(needle, team)
+        for needle in ("상태 대리 보고(0.7.2, herdr-orch 0.5.0)", "`.herdr-team/state/horch/relay.log`",
+                       "`.claude/settings.local.json`", "`HORCH_RELAY_HOME`", "`relay_env_new`", "`main_unreported`",
+                       "`claude --resume`", "`background_tasks`", "`hteam fix T-xxx --after T-yyy`",
+                       "`hteam cancel <요청 id>`", "`deferred`", "`idle`",
+                       "맡은 태스크가 없으면 관제가 그 리셋을 앞당긴다"):  # 12단계(설계 8.14·7.1·7.3·5.9.9)
+            self.assertIn(needle, team)
+        self.assertIn("  - 상태 대리 보고: `.herdr-team/state/horch/relay.log`", readme)
+        orch = readme[readme.index("## herdr-orch\n"):readme.index("## herdr-team\n")]
+        for needle in ("0.5.0 부터 Claude 상태 대리 보고가 있다", "`HORCH_HOME`", "`HORCH_RELAY_HOME`", "`relay_failed`",
+                       "`horch relay-status --terminal <t>`", "`.claude/settings.local.json`"):  # herdr-orch 설계 16.9
+            self.assertIn(needle, orch)
         self.assertIn("메인이 질문 전에 답변 글로 그린다", team)
         start = readme.index("### 디자인 아티팩트와 댓글")
         design = readme[start:readme.index("\n### ", start + 1)]

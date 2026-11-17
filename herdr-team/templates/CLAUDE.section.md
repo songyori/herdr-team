@@ -29,7 +29,7 @@
 -->
 - 큐 명령(`start`, `start-ready`, `fix`, `accept`, `drop`, `review --retry`, `design-decide`, `scope`, `agent reset`, `test-confirm`, `slot reset`)은 관제 큐를 거친다. "관제가 꺼져 있다"(`drive_down`) 면 `/herdr-team:up` 뒤 다시 한다. "관제가 처리 중"(`status: queued`) 이면 결과가 watch 의 `result` 로 온다.
 - `horch` 와 `hteam drive` 를 직접 부르지 않는다(훅이 막는다). 메인 터미널이 Run 에 묶이거나 관제가 되면 horch 깨우기 글이 사용자 입력란에 들어온다.
-- `.herdr-team/bin/hteam watch` 를 늘 Bash `run_in_background: true` 로 하나 띄워 둔다. 끝나면(메시지 도착) 출력의 `messages` 를 아래대로 처리하고 바로 다시 띄운다. `status: orphaned` 면 `/herdr-team:up` 을 한다.
+- `.herdr-team/bin/hteam watch` 를 늘 Bash `run_in_background: true` 로, 다른 명령과 잇지 않고(`;`·`&&`·`|`·`&` 없이) 하나 띄워 둔다(훅이 다른 꼴을 거부한다). 끝나면(메시지 도착) 출력의 `messages` 를 아래대로 처리하고 바로 다시 띄운다. `status: orphaned` 면 `/herdr-team:up` 을 한다. `status: idle` 이면 `open` 의 decide 마다 답하거나(`hteam answer`), 선행 태스크를 기다릴 fix 면 `--after` 로 맡기고 닫거나, 사용자에게 묻는다. 그다음 watch 를 다시 띄운다.
   - `progress`: 한두 줄로 전한다. `done`: 결과, 태스크별 리뷰 판정과 라운드 수, 마지막 전체 테스트(full) 결과를 요약해 전한다.
   - `ask`(기획자·디렉터 질문), `question`(관제의 `[test]` 확정 질문): 아래 "질문 표시 규칙"대로 묻고 답을 `.herdr-team/bin/hteam answer <id> "<답>"` 으로 돌려준다. `-` 로 시작하는 답은 `hteam answer <id> -- "<답>"`.
   - `question` 의 답이 `확정한다 (추천)` 이 아니면 답을 돌려준 뒤 사용자가 정한 대로 한다. `고친다` 면 `[test]` 를 고치는 기획 태스크(`plan: append`)를 위 순서대로 만들어 시작한다(답만으로는 아무 일도 일어나지 않고 관제는 같은 명령을 다시 묻지 않는다. 고친 `[test]` 가 커밋되면 관제가 다시 묻는다).
@@ -37,8 +37,10 @@
   - `decide`: 아래 "decide 처리 기준"대로 처리하고 `.herdr-team/bin/hteam answer <id> "<처리 내용>"` 으로 닫는다.
   - `result`(메인이 기다리지 않은 큐 요청의 결과): 실패면 다시 판단한다.
 - decide 가 열린 동안 관제는 그 태스크를 자동으로 다루지 않는다. 처리했으면 명령이 적히지 않은 escalation 도 반드시 `hteam answer <id> "<처리 내용>"` 으로 닫는다.
+- 다른 태스크가 끝나기를 기다렸다가 할 fix 는 머릿속에 두지 않고 `.herdr-team/bin/hteam fix T-xxx [플래그] --after T-yyy` 로 관제에 맡긴 뒤 그 decide 를 닫는다(결과는 watch 의 `result` 로 온다. 거두려면 `.herdr-team/bin/hteam cancel <요청 id>`). 그 밖의 조건을 기다려야 하면 decide 를 열어 둔 채 기다리지 말고 사용자에게 알린다.
 - 플러그인을 올린 뒤 사용자가 업그레이드를 부탁하면 `.herdr-team/bin/hteam upgrade` 를 실행해 바꾼 것·건너뛴 것·`manual` 을 보여 주고, 사용자가 확인하면 바뀐 파일을 경로 지정 커밋한다(README "업그레이드"). `CLAUDE.md` 절이 바뀌었으면 사용자에게 메인 세션을 새로 열라고 알린다(메인 규칙은 세션을 시작할 때 읽힌다).
 - 관제는 훅이 확인하고 꺼져 있으면 자동으로 다시 띄운다(config.toml `[drive] auto_up`). 훅 안내가 없는데 관제 상태가 의심되면 `/herdr-team:up` 을 실행한다. 메인을 다시 열었는데 답하지 않은 질문이 있으면 `/herdr-team:up` 이 다시 묻는다.
+- 훅(herdr-orch)이 이 세션의 상태를 Herdr 에 보낼 수 없다고 알리면(대리 보고도 못 하는 드문 경우) 사용자에게 그대로 전한다. `/herdr-team:up` 의 `main_unreported` 경고와 메인 대리 보고 설정이 이 세션에 아직 없다는 안내(`relay_env_new`)도 같다. 사용자가 일이 덜 몰린 때 `/exit` 뒤 같은 터미널에서 `claude --resume` 으로 다시 열면 풀린다. 메인이 스스로 세션을 끝내지 않는다.
 
 ### decide 처리 기준
 decide 에 적힌 `files` 만 읽고 `commands` 가운데 하나로 처리한다. 사용자에게 물을 때는 AskUserQuestion 을 직접 쓴다(질문 하나, 선택지 2–4개, 추천 하나). 아래 `hteam` 은 `.herdr-team/bin/hteam` 이다.
@@ -47,7 +49,7 @@ decide 에 적힌 `files` 만 읽고 `commands` 가운데 하나로 처리한다
 |---|---|
 | `worker_failed` | 보고서를 읽고 지시로 풀 수 있으면 `hteam fix T-xxx --note "<원인과 지시>"`. 아니면 사용자에게 묻고 결과대로 fix 하거나 `hteam drop T-xxx` |
 | `worker_question` | `docs/planning/spec.md`, `contracts.md`, `interview.md`, `voice.md`, 태스크 사양, 직무 문서, `.herdr-team/project.md` 로 먼저 답한다. 문서가 다루지 않는 제품 결정이거나 문서끼리 모순될 때만 사용자에게 묻는다. 코드에 아직 없는 디자인 토큰을 물으면 토큰을 반영한 태스크가 done 이 된 뒤 그 토큰 이름으로 답한다. owns 밖 파일을 고쳐야 한다는 질문이면 새 태스크로 나눌지 정해 답한다 |
-| `escalation` | 내용을 정리해 지시로 풀거나 사용자에게 묻는다. 확인 창에서 멈춘 작업자면 사용자에게 그 탭을 보고 넘겨 달라고 한다 |
+| `escalation` | 내용을 정리해 지시로 풀거나 사용자에게 묻는다. 확인 창에서 멈춘 작업자면 사용자에게 그 탭을 보고 넘겨 달라고 한다. 작업자가 상태를 보고하지 않는다는 escalation(`상태를 보고하지 않는다`·`상태를 Herdr 에 보낼 수 없다`)이면 사용자에게 그 탭을 보게 한다. 확인 창이면 넘겨 달라고 하고, 일하고 있으면 그대로 두고(done 이 오면 관제가 이어 간다) decide 를 `기다림` 으로 닫는다 |
 | `max_rounds` | 리뷰 요약과 함께 "한 번 더 / 중단" 을 묻는다. 한 번 더면 `hteam fix T-xxx --force-round --note "<지시>"`, 중단이면 `hteam drop T-xxx` |
 | `repeat_test_failure` | 실패가 그 태스크 탓이 아닐 수 있다(소유 경로 밖 코드, 다른 워커의 커밋 안 된 파일). 리뷰 파일의 quick 출력 끝을 보고 사용자에게 묻는다 |
 | `test_config` | 사용자가 직접 넣은 `[test]` 면 사용자에게 묻는다. 아니면 `[test]` 를 고치는 기획 태스크(`plan: append`)를 만들어 시작한다 |

@@ -127,6 +127,55 @@ class MainRulesTest(unittest.TestCase):
             self.assertIn(needle, where)
 
 
+P12_WATCH = ("- `.herdr-team/bin/hteam watch` 를 늘 Bash `run_in_background: true` 로, 다른 명령과 잇지 않고(`;`·`&&`·`|`·`&` "
+             "없이) 하나 띄워 둔다(훅이 다른 꼴을 거부한다). 끝나면(메시지 도착) 출력의 `messages` 를 아래대로 처리하고 바로 "
+             "다시 띄운다. `status: orphaned` 면 `/herdr-team:up` 을 한다. `status: idle` 이면 `open` 의 decide 마다 "
+             "답하거나(`hteam answer`), 선행 태스크를 기다릴 fix 면 `--after` 로 맡기고 닫거나, 사용자에게 묻는다. 그다음 "
+             "watch 를 다시 띄운다.")
+P12_AFTER = ("- 다른 태스크가 끝나기를 기다렸다가 할 fix 는 머릿속에 두지 않고 `.herdr-team/bin/hteam fix T-xxx [플래그] --after "
+             "T-yyy` 로 관제에 맡긴 뒤 그 decide 를 닫는다(결과는 watch 의 `result` 로 온다. 거두려면 "
+             "`.herdr-team/bin/hteam cancel <요청 id>`). 그 밖의 조건을 기다려야 하면 decide 를 열어 둔 채 기다리지 말고 "
+             "사용자에게 알린다.")
+P12_UNREPORTED = ("- 훅(herdr-orch)이 이 세션의 상태를 Herdr 에 보낼 수 없다고 알리면(대리 보고도 못 하는 드문 경우) 사용자에게 "
+                  "그대로 전한다. `/herdr-team:up` 의 `main_unreported` 경고와 메인 대리 보고 설정이 이 세션에 아직 없다는 안내"
+                  "(`relay_env_new`)도 같다. 사용자가 일이 덜 몰린 때 `/exit` 뒤 같은 터미널에서 `claude --resume` 으로 다시 열면 "
+                  "풀린다. 메인이 스스로 세션을 끝내지 않는다.")
+P12_ESCALATION = ("| `escalation` | 내용을 정리해 지시로 풀거나 사용자에게 묻는다. 확인 창에서 멈춘 작업자면 사용자에게 그 탭을 "
+                  "보고 넘겨 달라고 한다. 작업자가 상태를 보고하지 않는다는 escalation(`상태를 보고하지 않는다`·`상태를 Herdr "
+                  "에 보낼 수 없다`)이면 사용자에게 그 탭을 보게 한다. 확인 창이면 넘겨 달라고 하고, 일하고 있으면 그대로 "
+                  "두고(done 이 오면 관제가 이어 간다) decide 를 `기다림` 으로 닫는다 |")
+
+
+class MainRulesP12Test(unittest.TestCase):
+    """12단계 메인 규칙(설계 7.7 의 12단계, 15.1): watch 줄의 잇지 않기·idle 처리, --after 줄, 미보고 escalation 기준,
+    미보고(herdr-orch 훅·main_unreported)·다시 열기 알림 전하기 줄."""
+
+    def setUp(self):
+        self.main = read("templates/CLAUDE.section.md")
+        self.rules = self.main[self.main.index("### 메인 규칙\n"):self.main.index("### decide 처리 기준\n")]
+
+    def test_watch_line(self):
+        self.assertIn(P12_WATCH + "\n  - `progress`", self.rules)
+        self.assertNotIn("로 하나 띄워 둔다. 끝나면", self.main)
+
+    def test_after_line_follows_the_open_decide_line(self):
+        self.assertIn("반드시 `hteam answer <id> \"<처리 내용>\"` 으로 닫는다.\n" + P12_AFTER + "\n", self.rules)
+
+    def test_unreported_lines(self):
+        self.assertIn("`/herdr-team:up` 이 다시 묻는다.\n" + P12_UNREPORTED + "\n", self.rules)
+        table = self.main[self.main.index("### decide 처리 기준\n"):self.main.index("### 질문 표시 규칙\n")]
+        self.assertIn(P12_ESCALATION + "\n", table)
+
+    def test_hook_and_up_texts_match_the_rules(self):
+        # 메인 규칙이 말하는 herdr-team 훅·up 글(설계 9.3 의 8·9.4 12단계, Task 3). 미보고 알림 글은 herdr-orch 의 것이다
+        hook = read("hooks/hteam_hook.py")
+        for needle in ("watch 는 Bash run_in_background: true 로 혼자 띄운다", "claude --resume 으로 다시 열면 켜진다"):
+            self.assertIn(needle, hook)
+        setup = read("lib/hteam/setup.py")
+        self.assertIn("(main_unreported)", setup)
+        self.assertIn("(relay_env_new)", setup)
+
+
 class SkillWordingTest(unittest.TestCase):
     def test_up_skill(self):
         up = read("skills/up/SKILL.md")
