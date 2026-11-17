@@ -4,7 +4,7 @@
 
 | 플러그인 | 버전 | 하는 일 |
 |---|---|---|
-| `herdr-orch` | 0.4.0 | Claude·Codex 워커를 Herdr pane 으로 띄우고 메일함으로 질문·보고를 주고받는 `horch` CLI 와 스킬 |
+| `herdr-orch` | 0.5.0 | Claude·Codex 워커를 Herdr pane 으로 띄우고 메일함으로 질문·보고를 주고받는 `horch` CLI 와 스킬 |
 | `herdr-team` | 0.7.1 | `herdr-orch` 위의 직무 팀. 사용자는 메인 Claude 세션과 대화하고, 기획·디자인·개발·테스트는 직무 에이전트가 맡고, 산출물은 반대쪽 모델(Claude ↔ Codex)이 리뷰한다 |
 
 - 문서, 명령 출력, 에이전트끼리 주고받는 글은 한국어다.
@@ -23,7 +23,7 @@
 | git | 태스크 사양과 산출물 커밋. 작업 공간(worktree 모드)은 2.23 이상 | |
 | Node/npx | Codex 리뷰어 브라우저 `hteam-browser`(첫 실행에 `chrome-devtools-mcp@1.10.1` 을 내려받는다) | |
 
-- herdr-team 을 쓰려면 herdr-orch 0.4.0 이상도 함께 설치한다.
+- herdr-team 을 쓰려면 herdr-orch 0.5.0 이상도 함께 설치한다.
 - 선택 항목이 둘 있다. 없어도 나머지는 돈다.
   - Codex `image_generation` 기능: designer 의 래스터 에셋(`hteam image`)을 만든다. `codex features enable image_generation` 으로 켠다.
   - Chrome DevTools MCP: 디자인 디렉터가 레퍼런스 화면을 캡처한다. 없으면 링크만 남긴다.

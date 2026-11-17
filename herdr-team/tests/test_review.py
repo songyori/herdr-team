@@ -1099,8 +1099,11 @@ class RecoveryTest(ReviewCase):
         with state.edit(self.p, "T-001") as st:
             state.move(st, "working", "test")
         fake = self.tmp / "horch-fails"
-        fake.write_text('import json\nprint(json.dumps({"ok": False, "error": {"code": "not_owner", "message": "x", '
-                        '"hint": ""}}))\nraise SystemExit(1)\n')
+        # 12단계: 대역 horch 도 version 에 답한다(hteam 은 plugin.json 이 없는 horch 의 버전을 첫 호출 전에 본다)
+        fake.write_text('import json, sys\nif sys.argv[-1] == "version":\n'
+                        '    print(json.dumps({"ok": True, "version": "0.5.0"}))\n    raise SystemExit(0)\n'
+                        'print(json.dumps({"ok": False, "error": {"code": "not_owner", "message": "x", "hint": ""}}))\n'
+                        'raise SystemExit(1)\n')
         code, out = self.hteam("review", "T-001", env={"HERDR_ORCH_BIN": str(fake)})
         self.assertEqual((code, out.get("status"), out.get("next")), (0, "reviewing", None), out)  # 멈추지 않는다
         self.assertIn("상태를 읽지 못했다", out["warnings"][0])
@@ -1112,7 +1115,9 @@ class RecoveryTest(ReviewCase):
         with state.edit(self.p, "T-001") as st:
             state.move(st, "working", "test")
         fake = self.tmp / "horch-empty"
-        fake.write_text('import json\nprint(json.dumps({"ok": True, "workers": []}))\n')
+        fake.write_text('import json, sys\nif sys.argv[-1] == "version":\n'  # 12단계: 대역 horch 도 version 에 답한다
+                        '    print(json.dumps({"ok": True, "version": "0.5.0"}))\n    raise SystemExit(0)\n'
+                        'print(json.dumps({"ok": True, "workers": []}))\n')
         code, out = self.hteam("review", "T-001", env={"HERDR_ORCH_BIN": str(fake)})
         self.assertEqual((code, out.get("status"), out.get("next")), (0, "reviewing", None), out)
         self.assertIn("상태를 읽지 못했다", out["warnings"][0])

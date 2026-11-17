@@ -7,6 +7,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from .errors import FAIL, MISSING, HteamError
@@ -18,7 +19,9 @@ def _registry() -> Path:
                 or Path.home() / ".claude" / "plugins" / "installed_plugins.json")
 
 
-HORCH_MIN = "0.4.0"  # hteam 이 받는 가장 낮은 herdr-orch 버전(부모 터미널 worker-start --parent, 0.4.0)
+# hteam 이 받는 가장 낮은 herdr-orch 버전(12단계: Claude 상태 대리 보고·relay-status·launch-guard 의 HORCH_HOME, 0.5.0).
+# 설치 기록에서 고를 때 거르고, HERDR_ORCH_BIN·형제 경로로 고른 horch 도 본다(설계 3.3 12단계)
+HORCH_MIN = "0.5.0"
 SCOPE_RANK = {"local": 0, "project": 1, "user": 2}  # Claude Code 처럼 좁은 범위가 앞선다
 
 
@@ -118,20 +121,84 @@ def _from_registry(project: Path | None) -> tuple[Path | None, list[str]]:
     return min(found, key=lambda x: x[0])[1], skipped
 
 
+VERSION_PROBE_S = 10.0  # plugin.json 이 없는 horch 의 `horch version` 조회 상한(호출의 timeout 이 더 짧으면 그만큼)
+# 버전을 확인한 horch(경로 → 버전. 설치 기록에서 고른 것은 HORCH_MIN 이상만 안다). 확인하지 못한 것은 두지 않는다(다음
+# 호출이 다시 본다, 계획 리뷰 plan2-r1 의 8). 이 프로세스 동안 둔다
+_VERSIONS: dict[str, tuple[int, ...]] = {}
+
+
+def _plugin_version(binary: Path) -> tuple[int, ...] | None:
+    """horch 가 든 플러그인 폴더(`<플러그인>/bin/horch` 의 `<플러그인>/.claude-plugin/plugin.json`)의 version."""
+    try:
+        return version_tuple(json.loads((binary.parent.parent / ".claude-plugin" / "plugin.json")
+                                        .read_text(encoding="utf-8")).get("version"))
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def _too_old(binary: Path, version: tuple[int, ...]) -> HteamError:
+    return HteamError("horch_missing", f"고른 herdr-orch(horch)가 {'.'.join(map(str, version))}({HORCH_MIN} 보다 낮다)"
+                      f"이다: {binary}", MISSING, f"herdr-orch 를 {HORCH_MIN} 이상으로 올리거나(/plugin update "
+                      "herdr-orch@herdr-team) HERDR_ORCH_BIN 을 고친다")
+
+
+def _checked(binary: Path) -> Path:
+    """HERDR_ORCH_BIN·형제 경로로 고른 horch 의 버전(12단계, 설계 3.3). 같은 플러그인의 plugin.json 으로 알면 여기서
+    HORCH_MIN 아래를 exit 12 로 멈추고 기억한다. 모르면 첫 호출(Horch.call)이 `horch version` 으로 본다(_probe)."""
+    version = _plugin_version(binary)
+    if version is not None:
+        if version < version_tuple(HORCH_MIN):
+            raise _too_old(binary, version)
+        _VERSIONS[str(binary)] = version
+    return binary
+
+
+def _probe(binary: Path, timeout: float) -> tuple[int, ...] | None:
+    """binary 의 버전. 이미 알면 그것이고, 모르면 timeout 초 안에서 `horch version` 을 한 번 부른다. 답하면 기억하고 돌려준다.
+    시간 초과·실행 오류·잘못된 출력이면 None 이고 기억하지 않는다(다음 호출이 다시 본다)."""
+    key = str(binary)
+    if key in _VERSIONS:
+        return _VERSIONS[key]
+    if timeout <= 0:
+        return None
+    try:
+        proc = subprocess.run([sys.executable, key, "version"], capture_output=True, text=True, timeout=timeout)
+        version = version_tuple(parse(proc.stdout, proc.stderr).get("version"))
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+    if version is not None:
+        _VERSIONS[key] = version
+    return version
+
+
+def version_confirmed(home: Path, timeout: float = VERSION_PROBE_S) -> bool:
+    """홈 home 으로 부를 horch 의 버전이 HORCH_MIN 이상으로 확인됐는가(12단계, 설계 3.3. 고정 에이전트 새 세션 entry 의
+    relay_ready 를 적을지 crew 가 본다). 이미 알면 다시 부르지 않고, 모르면 timeout 안에서 한 번 더 본다. horch 를 찾지
+    못했거나 낮거나 확인하지 못하면 False 다. 예외를 내지 않는다."""
+    try:
+        binary = Horch(home).bin
+    except HteamError:
+        return False
+    version = _probe(binary, timeout)
+    return version is not None and version >= version_tuple(HORCH_MIN)
+
+
 def find_horch(project: Path | None = None) -> Path:
     """HERDR_ORCH_BIN → 형제 ../herdr-orch/bin/horch → installed_plugins.json 의 herdr-orch(이 프로젝트에 맞는 범위와
-    HORCH_MIN 이상, _from_registry). project 는 프로젝트 루트(project·local 범위 설치를 고를 때 본다). 없으면 exit 12."""
+    HORCH_MIN 이상, _from_registry). project 는 프로젝트 루트(project·local 범위 설치를 고를 때 본다). 없으면 exit 12.
+    12단계: HERDR_ORCH_BIN·형제 경로로 고른 horch 도 HORCH_MIN 아래면 exit 12 다(_checked, 첫 호출의 _probe)."""
     env = os.environ.get("HERDR_ORCH_BIN")
     if env:
         path = Path(env).expanduser()
         if path.is_file():
-            return path.resolve()
+            return _checked(path.resolve())
         raise HteamError("horch_missing", f"HERDR_ORCH_BIN 이 가리키는 파일이 없다: {path}", MISSING)
     sibling = PLUGIN_ROOT.parent / "herdr-orch" / "bin" / "horch"
     if sibling.is_file():
-        return sibling.resolve()
+        return _checked(sibling.resolve())
     path, skipped = _from_registry(project)
     if path is not None:
+        _VERSIONS.setdefault(str(path), version_tuple(HORCH_MIN))  # 설치 기록에서 HORCH_MIN 이상만 골랐다
         return path
     why = f". 쓰지 않은 설치: {', '.join(skipped)}" if skipped else ""
     raise HteamError("horch_missing", f"herdr-orch(horch)를 찾지 못했다{why}", MISSING,
@@ -185,8 +252,17 @@ class Horch:
         return " ".join(shlex.quote(a) for a in self.argv())
 
     def call(self, *args: str, timeout: float = 120) -> tuple[int, dict]:
+        start = time.monotonic()
+        # 12단계(설계 3.3): 버전을 아직 모르는 horch 는 같은 시간 예산 안에서 먼저 본다(계획 리뷰 plan2-r1 의 6).
+        # 확인하지 못하면 이 호출은 그대로 하고 다음 호출이 다시 본다
+        version = _probe(self.bin, min(VERSION_PROBE_S, timeout))
+        if version is not None and version < version_tuple(HORCH_MIN):
+            return MISSING, _too_old(self.bin, version).to_json()
+        left = timeout - (time.monotonic() - start)
         try:
-            proc = subprocess.run(self.argv(*args), capture_output=True, text=True, timeout=timeout)
+            if left <= 0:
+                raise subprocess.TimeoutExpired(self.argv(*args), timeout)
+            proc = subprocess.run(self.argv(*args), capture_output=True, text=True, timeout=left)
         except subprocess.TimeoutExpired:
             return FAIL, {"ok": False, "error": {"code": "horch_timeout",
                                                  "message": f"horch {args[0]} 가 {timeout:g}초 안에 끝나지 않았다",

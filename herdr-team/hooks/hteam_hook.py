@@ -41,6 +41,9 @@ HORCH_RE = re.compile(r"(^|[\s;&|(`'\"/<>])horch(?=$|[\s;&|)`'\"<>])")
 # 하위 명령이 정확히 drive 일 때
 DRIVE_RE = re.compile(r"(^|[\s;&|(`'\"/<>])hteam['\"]?(?:\s+--root(?:=\S+|\s+\S+))*\s+['\"]?drive['\"]?"
                       r"(?=$|[\s;&|)`'\"<>])")
+# 메인 Bash 의 hteam watch 규칙(watch_denied, 설계 9.4 12단계): DRIVE_RE 와 같은 경계, 하위 명령이 정확히 watch
+WATCH_RE = re.compile(r"(^|[\s;&|(`'\"/<>])hteam['\"]?(?:\s+--root(?:=\S+|\s+\S+))*\s+['\"]?watch['\"]?"
+                      r"(?=$|[\s;&|)`'\"<>])")
 
 
 def _load() -> None:
@@ -223,6 +226,20 @@ def drive_denied(cmd: str) -> bool:
     return bool(DRIVE_RE.search(cmd))
 
 
+def watch_denied(cmd: str, background: bool) -> bool:
+    """메인 Bash 명령의 watch 규칙(설계 9.4 12단계). hteam 한 번 호출이면 앞 옵션(drive_denied 와 같다)을 건너뛴 하위 명령이
+    정확히 watch 이고 Bash `run_in_background: true`(background)가 아닐 때만 거부한다. hteam 한 번 호출이 아니면 WATCH_RE 가
+    어디서든 맞을 때 거부한다(`… hteam watch &`, `cd x && hteam watch`. 닫힌 쪽, drive 규칙과 같다). 글 안의 낱말
+    (`hteam answer out-1 "watch …"`)은 하위 명령이 answer 라 통과한다. 순수 함수다."""
+    if hteam_only(cmd):
+        words = shlex.split(cmd)
+        i = 1
+        while i < len(words) and words[i].startswith("-"):
+            i += 2 if words[i] == "--root" else 1
+        return i < len(words) and words[i] == "watch" and not background
+    return bool(WATCH_RE.search(cmd))
+
+
 def deny(reason: str) -> dict:
     return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                    "permissionDecisionReason": reason}}
@@ -343,6 +360,9 @@ def guard(p, payload: dict):
     if drive_denied(command):
         return deny("hteam drive 는 관제 탭에서만 돈다. 메인 터미널이 관제가 되면 horch 깨우기 글이 사용자 입력란에 들어온다. "
                     "관제를 띄우려면 /herdr-team:up 을 쓴다")
+    if watch_denied(command, tool_input.get("run_in_background") is True):  # 12단계(설계 9.4)
+        return deny(f"watch 는 Bash run_in_background: true 로 혼자 띄운다: {SHIM} watch. 다른 명령과 잇거나 & 를 붙이지 "
+                    "않는다")
     return None
 
 
@@ -358,6 +378,37 @@ def auto_up(p, force: bool) -> str | None:
     except Exception:  # noqa: BLE001
         log_error(p.root, "auto-up\n" + traceback.format_exc())
         return None
+
+
+RELAY_ENV_NOTICE = ("herdr-team: 메인 대리 보고 설정(HORCH_RELAY_HOME)이 프로젝트 설정에 있지만 이 세션은 그 전에 열려 받지 "
+                    "못했다. 이 세션의 질문은 Herdr \"Needs you\" 로 뜨지 않을 수 있다. 사용자에게 알린다: 일이 덜 몰린 때 "
+                    "/exit 뒤 같은 터미널에서 claude --resume 으로 다시 열면 켜진다.")
+
+
+def relay_env_notice(p, payload: dict) -> str | None:
+    """12단계 메인 다시 열기 안내(설계 9.4, 8.14 의 2). 메인 SessionStart·UserPromptSubmit 만 부른다. session id 가 있고
+    setup-mode 가 아니고 Herdr 터미널 안이고, 이 세션 환경의 HORCH_RELAY_HOME 이 이 프로젝트 홈이 아니고(이면 파일을
+    읽지 않는다), 프로젝트 .claude/settings.local.json 에 이 프로젝트 값이 있으면(setup.relay_env_new) 세션마다 한 번
+    RELAY_ENV_NOTICE 를 준다. 한 번은 state/sessions/<session id>.relay-env 표시로 세고 표시를 먼저 쓴다(쓰지 못하면 주지
+    않는다). 파일을 읽지 못하면 주지 않는다(up 의 relay_env_unreadable 이 알린다). 예외는 relay-env 로 남긴다."""
+    sid = _session(payload)
+    if sid is None or p.setup_mode.exists() or not os.environ.get("HC_TERMINAL_ID", "").strip():
+        return None
+    if os.environ.get("HORCH_RELAY_HOME") == str(p.horch_home):
+        return None
+    mark = p.sessions / f"{sid}.relay-env"
+    try:
+        if mark.exists():
+            return None
+        from hteam import setup  # 옵트인 전 메인 세션에서만 가져온다
+        if not setup.relay_env_new(p.root):
+            return None
+        p.ensure_state()
+        write_atomic(mark, "\n")
+    except Exception:  # noqa: BLE001  안내 하나로 훅 출력 전체를 잃지 않게 한다
+        log_error(p.root, "relay-env\n" + traceback.format_exc())
+        return None
+    return RELAY_ENV_NOTICE
 
 
 def session_start(p, payload: dict):
@@ -380,6 +431,9 @@ def session_start(p, payload: dict):
     asked = len(outbox.open_questions(p))
     if asked:
         lines.append(f"- 답하지 않은 질문이 {asked}건 있다(decide 포함). `/herdr-team:up` 이 `hteam reask` 로 다시 보여 준다.")
+    relay = relay_env_notice(p, payload)  # 12단계: 메인 다시 열기 안내(설계 9.4)
+    if relay:
+        lines.append(relay)
     return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "\n".join(lines)}}
 
 
@@ -396,7 +450,8 @@ def role_mark(p, payload: dict):
             log_error(p.root, f"역할 판별: {exc.code}: {exc.message}")
     if role_of(p, payload, fresh=fresh) != "main":
         return None
-    notice = auto_up(p, force=False)
+    # 12단계: 자동 부활 문구 뒤에 메인 다시 열기 안내(설계 9.4. 자동 부활의 up 이 env 를 쓴 뒤 다음 프롬프트에서 알게 된다)
+    notice = "\n".join(t for t in (auto_up(p, force=False), relay_env_notice(p, payload)) if t)
     if not notice:
         return None
     return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": notice}}

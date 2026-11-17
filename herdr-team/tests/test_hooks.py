@@ -680,6 +680,119 @@ class DriveGuardTest(HookCase):
                          "워커는 사용자에게 직접 묻지 않는다. 프리앰블의 ask 명령(horch ask)으로 묻는다(메인이 답한다).")
 
 
+WATCH_DENY_TEXT = ("watch 는 Bash run_in_background: true 로 혼자 띄운다: .herdr-team/bin/hteam watch. 다른 명령과 잇거나 & 를 "
+                   "붙이지 않는다")
+# (명령, run_in_background). 12단계(설계 9.4): 메인 Bash 의 hteam watch 규칙
+WATCH_DENY = ((".herdr-team/bin/hteam watch", False), ("hteam --root /x watch", False), ("'hteam' watch", False),
+              ("hteam watch &", True), ("cd x && hteam watch", True), ("hteam watch; echo", True),
+              ('bash -c "hteam watch"', True), ("nohup .herdr-team/bin/hteam watch", True),
+              ("hteam --root /x watch | cat", True))
+WATCH_ALLOW = ((".herdr-team/bin/hteam watch", True), ('"/abs/x/.herdr-team/bin/hteam" watch', True),
+               ("hteam --root /x watch", True), ("hteam --root=/x watch", True),
+               ('.herdr-team/bin/hteam answer out-0001 "watch 를 다시 띄운다"', False),
+               ('hteam answer out-0001 "hteam watch & 는 막힌다"', False), ("hteam watch-x", False),
+               ("hteam status", False), ("echo watch", False), ("ls watch/", False))
+RELAY_ENV_NOTICE = ("herdr-team: 메인 대리 보고 설정(HORCH_RELAY_HOME)이 프로젝트 설정에 있지만 이 세션은 그 전에 열려 받지 "
+                    "못했다. 이 세션의 질문은 Herdr \"Needs you\" 로 뜨지 않을 수 있다. 사용자에게 알린다: 일이 덜 몰린 때 "
+                    "/exit 뒤 같은 터미널에서 claude --resume 으로 다시 열면 켜진다.")
+
+
+class WatchRuleTest(unittest.TestCase):
+    """12단계(설계 9.4): 메인의 hteam watch 는 hteam 한 번 호출이고 Bash run_in_background: true 일 때만이다. hteam 한 번
+    호출이 아니면 WATCH_RE(drive 와 같은 경계, 앞 옵션 --root 를 건너뛴 하위 명령 watch)가 맞을 때 거부한다. 글 안의 낱말은
+    실행이 아니다."""
+
+    def test_rule(self):
+        hook = load_hook()
+        for cmd, bg in WATCH_DENY:
+            self.assertTrue(hook.watch_denied(cmd, bg), (cmd, bg))
+        for cmd, bg in WATCH_ALLOW:
+            self.assertFalse(hook.watch_denied(cmd, bg), (cmd, bg))
+        for cmd in DRIVE_DENY + DRIVE_ALLOW:  # drive 규칙과 섞이지 않는다
+            self.assertFalse(hook.watch_denied(cmd, False), cmd)
+
+    def test_hook_events_are_unchanged(self):
+        # 대리 보고는 herdr-orch 훅이 한다(설계 9.4 12단계). herdr-team 훅의 사건은 그대로다
+        events = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+        self.assertEqual(set(events), {"SessionStart", "UserPromptSubmit", "PreToolUse", "Stop"})
+
+
+class WatchGuardTest(HookCase):
+    def bash(self, cmd, bg=None, **kw):
+        tool_input = {"command": cmd} if bg is None else {"command": cmd, "run_in_background": bg}
+        return self.hook("guard", {"tool_name": "Bash", "tool_input": tool_input}, **kw)
+
+    def test_main_watch_runs_alone_in_background(self):
+        self.assertIsNone(self.bash(".herdr-team/bin/hteam watch", True, terminal=MAIN))
+        for cmd, bg in ((".herdr-team/bin/hteam watch", None), (".herdr-team/bin/hteam watch", False),
+                        (".herdr-team/bin/hteam watch", "true"), ("hteam watch &", True), ("cd x && hteam watch", True)):
+            out = self.bash(cmd, bg, terminal=MAIN)
+            self.assertEqual(self.decision(out), "deny", (cmd, bg))
+            self.assertEqual(out["hookSpecificOutput"]["permissionDecisionReason"], WATCH_DENY_TEXT)
+        self.assertIsNone(self.bash('.herdr-team/bin/hteam answer out-0001 "watch 를 다시 띄운다"', terminal=MAIN))
+        # 워커는 보지 않는다(메인 규칙이다)
+        self.assertIsNone(self.hook("guard", {"session_id": "w", "tool_name": "Bash",
+                                              "tool_input": {"command": "hteam watch &"}}, terminal=self.worker()))
+
+
+class RelayEnvNoticeTest(HookCase):
+    """12단계(설계 9.4, 8.14 의 2): 프로젝트 .claude/settings.local.json 에 이 프로젝트의 HORCH_RELAY_HOME 이 있는데 훅
+    환경에 없거나 다르면 메인 SessionStart·UserPromptSubmit 이 세션마다 한 번 additionalContext 에 다시 열기 안내를 넣는다.
+    시험 환경은 기본으로 옵트인한 메인과 같은 값을 갖는다(helpers). 여기서는 뺀다."""
+
+    def setUp(self):
+        super().setUp()
+        self.env.pop("HORCH_RELAY_HOME")
+        self.home = str(Project(self.proj).horch_home)
+
+    def settings(self, text):
+        (self.proj / ".claude").mkdir(exist_ok=True)
+        (self.proj / ".claude" / "settings.local.json").write_text(text)
+
+    def context(self, out):
+        return out["hookSpecificOutput"]["additionalContext"] if out else ""
+
+    def test_once_per_session(self):
+        self.settings(json.dumps({"env": {"HORCH_RELAY_HOME": self.home}}))
+        ctx = self.context(self.hook("session-start", terminal=MAIN))
+        self.assertTrue(ctx.endswith("\n" + RELAY_ENV_NOTICE), ctx)
+        self.assertTrue((self.state_dir / "sessions" / "s1.relay-env").exists())
+        self.assertIsNone(self.hook("role-mark", terminal=MAIN))  # 같은 세션의 다음 프롬프트는 없다
+        self.assertEqual(self.context(self.hook("role-mark", {"session_id": "s2"}, terminal=MAIN)), RELAY_ENV_NOTICE)
+        self.assertIsNone(self.hook("role-mark", {"session_id": "s2"}, terminal=MAIN))
+        # 환경 값이 다른 세션도 같다
+        out = self.hook("role-mark", {"session_id": "s3"}, terminal=MAIN, env={"HORCH_RELAY_HOME": "/elsewhere"})
+        self.assertEqual(self.context(out), RELAY_ENV_NOTICE)
+
+    def test_no_notice_cases(self):
+        self.settings(json.dumps({"env": {"HORCH_RELAY_HOME": self.home}}))
+        self.assertIsNone(self.hook("role-mark", terminal=MAIN, env={"HORCH_RELAY_HOME": self.home}))  # 이미 받았다
+        self.assertIsNone(self.hook("role-mark", {"session_id": "w"}, terminal=self.worker()))  # 워커
+        (self.state_dir / "setup-mode").write_text("x")
+        self.assertIsNone(self.hook("role-mark", {"session_id": "m1"}, terminal=MAIN))
+        (self.state_dir / "setup-mode").unlink()
+        self.assertNotIn(RELAY_ENV_NOTICE, self.context(self.hook("session-start", {"session_id": "o1"})))  # Herdr 밖
+        for n, text in enumerate(('{"env": {"HORCH_RELAY_HOME": "/elsewhere"}}', "{깨진", '{"env": []}')):
+            self.settings(text)  # 다른 프로젝트 값, 읽지 못하는 파일(up 의 relay_env_unreadable 이 알린다)
+            self.assertIsNone(self.hook("role-mark", {"session_id": f"m2{n}"}, terminal=MAIN), text)
+        (self.proj / ".claude" / "settings.local.json").unlink()
+        self.assertIsNone(self.hook("role-mark", {"session_id": "m3"}, terminal=MAIN))
+        self.assertEqual(self.hook_log(), "")
+
+    def test_unwritable_mark_gives_no_notice(self):
+        # 한 번을 셀 표시를 쓰지 못하면 넣지 않는다(프롬프트마다 되풀이되지 않게). 오류는 relay-env 로 남는다
+        self.settings(json.dumps({"env": {"HORCH_RELAY_HOME": self.home}}))
+        sessions = self.state_dir / "sessions"
+        sessions.mkdir(parents=True, exist_ok=True)
+        (sessions / "s1").write_text("main\n")  # 역할 캐시(쓰지 않고 읽는다)
+        os.chmod(sessions, 0o500)
+        try:
+            self.assertIsNone(self.hook("role-mark", terminal=MAIN))
+        finally:
+            os.chmod(sessions, 0o700)  # tearDown 의 임시 폴더 지우기 전에 되돌린다
+        self.assertIn("relay-env", self.hook_log())
+
+
 class StopRunTest(HookCase):
     """Stop(설계 9.4): 메인이고 run.json 에 run_id 가 있고 관제가 꺼지지 않았는데(8.2 의 alive·hung·starting) watch 가
     없으면 막는다. 관제가 꺼졌으면 watch 가 곧바로 orphaned 로 끝나므로 막지 않는다(최종 리뷰 I1: watch → orphaned → up 실패

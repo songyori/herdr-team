@@ -568,7 +568,9 @@ class ReviewFixScaffoldTest(SetupCase):
         (self.proj / "AGENTS.md").write_bytes(agents)
         code, out = self.scaffold()
         self.assertEqual(code, 0, out)
-        self.assertEqual((self.proj / ".gitignore").read_bytes(), ignore + b"\r\n.herdr-team/state/\r\n")
+        # 12단계: 메인 옵트인 env 의 .claude/settings.local.json 줄도 같은 줄 끝으로 붙는다(설계 8.14 의 2)
+        self.assertEqual((self.proj / ".gitignore").read_bytes(),
+                         ignore + b"\r\n.herdr-team/state/\r\n.claude/settings.local.json\r\n")
         after = (self.proj / "AGENTS.md").read_bytes()
         self.assertTrue(after.startswith(agents + b"\r\n<!-- herdr-team -->\r\n"), after[:80])
         self.assertNotIn(b"\n", after.replace(b"\r\n", b""))  # 기존 줄 끝(CRLF)을 따른다
@@ -725,7 +727,8 @@ class ReviewFix2Test(SetupCase):
         code, out = self.scaffold()
         self.assertEqual(code, 0, out)
         self.assertIn(".gitignore", out["created"])
-        self.assertEqual((self.proj / ".gitignore").read_text(), " .herdr-team/state/\n.herdr-team/state/\n")
+        self.assertEqual((self.proj / ".gitignore").read_text(),
+                         " .herdr-team/state/\n.herdr-team/state/\n.claude/settings.local.json\n")
         self.git("check-ignore", "-q", ".herdr-team/state/setup-mode")
 
     def test_gitignore_trailing_spaces_follow_git(self):
@@ -1055,6 +1058,190 @@ class UpDriveTest(SetupCase):
         self.assertEqual((code, out["error"]["code"]), (1, "hc_failed"), out)
         self.assertEqual(len(self.run_calls()), 1)
         self.assertEqual(self.run_json(), {**before, "main_terminal": MAIN})
+
+
+# 12단계 up 경고(설계 9.3 의 8, 8.14 의 2). 끝 괄호는 경고 이름이다(parent_missing 과 같은 꼴)
+RELAY_ENV_NEW = ("메인 대리 보고 설정(.claude/settings.local.json 의 HORCH_RELAY_HOME)이 이 세션에 아직 없다. 설정은 세션을 "
+                 "시작할 때 읽히므로 메인을 다시 열어야 켜진다: 일이 덜 몰린 때 /exit 뒤 같은 터미널에서 claude --resume"
+                 "(relay_env_new)")
+RELAY_ENV_UNREADABLE = (".claude/settings.local.json 을 읽지 못해 메인 대리 보고 설정(HORCH_RELAY_HOME)을 쓰지 않았다. 파일을 "
+                        "고친 뒤 /herdr-team:up 을 다시 한다(relay_env_unreadable)")
+RELAY_ENV_TRACKED = (".claude/settings.local.json 이 git 에 들어 있어 메인 대리 보고 설정(HORCH_RELAY_HOME, 개인 절대 경로)을 "
+                     "쓰지 않았다. 파일을 git 에서 빼거나(git rm --cached) 직접 넣는다(relay_env_tracked)")
+MAIN_UNREPORTED = ("이 메인 세션의 상태가 Herdr 에 가지 않는다. 질문이 Herdr \"Needs you\" 로 뜨지 않는다. 일이 덜 몰린 때 "
+                   "/exit 뒤 같은 터미널에서 claude --resume 으로 다시 연다(main_unreported)")
+
+
+class RelayEnvTest(SetupCase):
+    """12단계(설계 8.14 의 2, 9.1 의 3a, 9.3 의 8): scaffold·up 이 .claude/settings.local.json 의 env.HORCH_RELAY_HOME 을 이
+    프로젝트의 horch 홈으로 쓴다. relay_env_new 는 쓰기와 상관없이 파일에 그 값이 있고 이 세션(시험) 환경에 없거나 다를 때
+    든다. 시험 환경은 기본으로 옵트인한 메인과 같은 값을 갖는다(helpers). 여기서는 뺀다."""
+
+    def setUp(self):
+        super().setUp()
+        self.env.pop("HORCH_RELAY_HOME")
+        self.home = str(Project(self.proj).horch_home)
+        self.path = self.proj / ".claude" / "settings.local.json"
+
+    def scaffold(self):
+        desc = self.tmp / "desc.txt"
+        desc.write_text("할 일 앱\n")
+        return self.hteam("scaffold", "--description-file", str(desc), as_="main")
+
+    def started(self):
+        self.init_project()
+        self.setup_run()
+
+    def saved(self):
+        return json.loads(self.path.read_text(encoding="utf-8"))
+
+    def test_scaffold_writes_once_and_ignores_the_file(self):
+        code, out = self.scaffold()
+        self.assertEqual((code, out["relay_env"]), (0, "new"), out)
+        self.assertEqual(self.saved(), {"env": {"HORCH_RELAY_HOME": self.home}})
+        self.assertNotIn(".claude/settings.local.json", out["created"])
+        before = self.path.stat().st_mtime_ns
+        code, out = self.scaffold()
+        self.assertEqual((code, out["relay_env"]), (0, "same"), out)
+        self.assertEqual(self.path.stat().st_mtime_ns, before)  # 같은 값이면 쓰지 않는다
+        ignore = (self.proj / ".gitignore").read_text()
+        self.assertEqual((ignore.count(".herdr-team/state/"), ignore.count(".claude/settings.local.json")), (1, 1))
+        self.git("check-ignore", "-q", ".claude/settings.local.json")
+
+    def test_up_merges_other_keys_and_warns_until_reopened(self):
+        self.started()
+        self.path.parent.mkdir()
+        self.path.write_text(json.dumps({"permissions": {"allow": ["Bash(ls)"]},
+                                         "env": {"FOO": "1", "HORCH_RELAY_HOME": "/old"}}))
+        code, out = self.hteam("up", as_="main")
+        self.assertEqual((code, out["status"], out.get("warnings")), (0, "running", [RELAY_ENV_NEW]), out)
+        self.assertEqual(self.saved(), {"permissions": {"allow": ["Bash(ls)"]},
+                                        "env": {"FOO": "1", "HORCH_RELAY_HOME": self.home}})
+        self.assertEqual(list(self.saved()), ["permissions", "env"])  # 키 차례도 그대로다
+        self.assertEqual((self.proj / ".gitignore").read_text(), ".herdr-team/state/\n.claude/settings.local.json\n")
+        # 쓰기와 상관없이 상태로 본다: 값이 같아 쓰지 않는 다음 up 에도 든다(자동 부활의 up 이 먼저 쓴 경우)
+        code, out = self.hteam("up", as_="main")
+        self.assertEqual((code, out.get("warnings")), (0, [RELAY_ENV_NEW]), out)
+        code, out = self.hteam("up", as_="main", env={"HORCH_RELAY_HOME": "/elsewhere"})
+        self.assertEqual((code, out.get("warnings")), (0, [RELAY_ENV_NEW]), out)
+        code, out = self.hteam("up", as_="main", env={"HORCH_RELAY_HOME": self.home})  # 다시 연 세션
+        self.assertEqual((code, out["status"]), (0, "running"), out)
+        self.assertNotIn("warnings", out)
+
+    def test_hung_launched_and_starting_results_also_write(self):
+        self.started()
+        self.write_heartbeat(age_s=200)
+        code, out = self.hteam("up", as_="main")
+        self.assertEqual((code, out["status"], out.get("warnings")), (0, "hung", [RELAY_ENV_NEW]), out)
+        self.assertEqual(self.saved(), {"env": {"HORCH_RELAY_HOME": self.home}})
+        (self.drive_dir / "drive.pid").unlink()
+        code, out = self.hteam("up", as_="main")
+        self.assertEqual((code, out["status"], out.get("warnings")), (0, "launched", [RELAY_ENV_NEW]), out)
+        code, out = self.hteam("up", as_="main")
+        self.assertEqual((code, out["status"], out.get("warnings")), (0, "starting", [RELAY_ENV_NEW]), out)
+
+    def test_unreadable_settings_are_left_alone(self):
+        self.started()
+        self.path.parent.mkdir()
+        for text in ("{깨진", "[]", '{"env": []}', '{"env": null}'):
+            with self.subTest(text=text):
+                self.path.write_text(text)
+                code, out = self.hteam("up", as_="main")
+                self.assertEqual((code, out["status"], out.get("warnings")), (0, "running", [RELAY_ENV_UNREADABLE]), out)
+                self.assertEqual(self.path.read_text(), text)
+        self.assertNotIn(".claude/settings.local.json", (self.proj / ".gitignore").read_text())
+        code, out = self.scaffold()
+        self.assertEqual((code, out["relay_env"]), (0, "unreadable"), out)
+
+    def test_tracked_settings_file_is_not_written(self):
+        self.started()
+        self.path.parent.mkdir()
+        self.path.write_text('{"env": {}}\n')
+        self.git("add", "--", ".claude/settings.local.json")
+        self.git("commit", "-q", "-m", "설정", "--", ".claude/settings.local.json")
+        code, out = self.hteam("up", as_="main")
+        self.assertEqual((code, out["status"], out.get("warnings")), (0, "running", [RELAY_ENV_TRACKED]), out)
+        self.assertEqual(self.path.read_text(), '{"env": {}}\n')
+        self.assertNotIn(".claude/settings.local.json", (self.proj / ".gitignore").read_text())
+
+    def test_main_unreported_comes_after_relay_env_new(self):
+        self.started()
+        relay = self.fake_relay(MAIN, {"terminal": MAIN, "pid": 4242, "started_ms": 1, "decided": "no_tty"})
+        code, out = self.hteam("up", as_="main", env=relay)
+        self.assertEqual((code, out.get("warnings")), (0, [RELAY_ENV_NEW, MAIN_UNREPORTED]), out)
+
+
+class UpMainUnreportedTest(SetupCase):
+    """12단계(설계 9.3 의 8, 8.14 의 4): up 결과의 warnings 에 main_unreported. horch relay-status 의 decided 가 no_tty·
+    write_failed 이거나, 기록이 없는데 hc get 의 status_ms 가 null 이면 든다. relay-status 는 감싸개(helpers.fake_relay)가
+    답한다. test_reads_the_record_through_horch 만 herdr-orch 의 실제 relay-status(Task 2)를 거친다."""
+
+    def setUp(self):
+        super().setUp()
+        self.init_project()
+        self.setup_run()
+        self.relay = self.fake_relay()
+
+    def record(self, decided):
+        self.fake_relay(MAIN, {"terminal": MAIN, "pid": 4242, "tty": None, "started_ms": 1, "decided": decided})
+
+    def up(self, *args):
+        return self.hteam("up", *args, as_="main", env=self.relay)
+
+    def test_record_decides_the_warning(self):
+        self.update_terminal(MAIN, status=None, status_ms=None)  # 기록이 있으면 hc 의 status_ms 를 보지 않는다
+        for decided, warned in (("no_tty", True), ("write_failed", True), ("on", False), ("off", False), (None, False)):
+            with self.subTest(decided=decided):
+                self.record(decided)
+                code, out = self.up()
+                self.assertEqual((code, out["status"]), (0, "running"), out)
+                self.assertEqual(out.get("warnings"), [MAIN_UNREPORTED] if warned else None, out)
+
+    def test_session_without_record_uses_hc_status_ms(self):
+        self.update_terminal(MAIN, status=None, status_ms=None)  # 옵트인 전에 연 세션: Herdr 에 보고한 적이 없다
+        code, out = self.up()
+        self.assertEqual((code, out.get("warnings")), (0, [MAIN_UNREPORTED]), out)
+        self.update_terminal(MAIN, status="idle")  # 보고하는 세션(status_ms 가 생긴다)
+        code, out = self.up()
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("warnings", out)
+
+    def test_horch_failure_gives_no_warning(self):
+        self.update_terminal(MAIN, status=None, status_ms=None)
+        code, out = self.hteam("up", as_="main", env=self.fake_relay(fail=True))
+        self.assertEqual((code, out["status"]), (0, "running"), out)
+        self.assertNotIn("warnings", out)
+
+    def test_hung_launched_and_timeout_carry_the_warning(self):
+        self.record("no_tty")
+        self.write_heartbeat(age_s=200)
+        code, out = self.up()
+        self.assertEqual((code, out["status"], out.get("warnings")), (0, "hung", [MAIN_UNREPORTED]), out)
+        (self.drive_dir / "drive.pid").unlink()
+        code, out = self.up()
+        self.assertEqual((code, out["status"], out.get("warnings")), (0, "launched", [MAIN_UNREPORTED]), out)
+        code, out = self.up("--wait-run", "0.3")  # 시작 중: 시간 초과 오류에도 경고가 든다
+        self.assertEqual((code, out["error"]["code"], out.get("warnings")), (4, "timeout", [MAIN_UNREPORTED]), out)
+
+    def test_reads_the_record_through_horch(self):
+        # Task 2 의 horch relay-status 를 거친다(기록 파일 <horch 홈>/relay/<터미널>.json, 출력 키 record)
+        folder = self.horch_home / "relay"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"{MAIN}.json").write_text(json.dumps({"terminal": MAIN, "pid": 4242, "tty": None, "started_ms": 1,
+                                                         "decided": "write_failed"}))
+        code, out = self.hteam("up", as_="main")
+        self.assertEqual((code, out.get("warnings")), (0, [MAIN_UNREPORTED]), out)
+        (folder / f"{MAIN}.json").unlink()
+        code, out = self.hteam("up", as_="main")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("warnings", out)
+
+    def test_up_skill_always_calls_up_and_relays_warnings(self):
+        up = (ROOT / "skills/up/SKILL.md").read_text(encoding="utf-8")
+        for needle in ("`hteam up`(`--wait-run` 없이)을 한 번 실행한다", "`warnings` 가 있으면 사용자에게 그대로 전한다",
+                       "`relay_env_new`", "`main_unreported`", "`relay_env_unreadable`·`relay_env_tracked`",
+                       "`claude --resume`", "메인이 스스로 세션을 끝내지 않는다"):
+            self.assertIn(needle, up)
 
 
 class HerdrRunTest(TeamCase):

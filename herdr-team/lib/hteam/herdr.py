@@ -1,6 +1,7 @@
 """hc·herdr-app 직접 호출(설계 3.3). 관제 실행·생존 확인, 탭 이름 붙이기, 고정 에이전트 작업 터미널 상태와 pane 배치(5.9.2),
 리뷰 보기 pane(6.5: hc run 의 hc attach(11단계), pane.close, 보기 터미널 hc rm), 11단계 보강의 다시 묶기(8.13·5.9.7: parent·메인
-확인의 get, 다시 묶기로 끝난 관제 터미널의 pane.close·hc rm)뿐이다. 워커 실행은 늘 horch 를 거친다."""
+확인의 get, 다시 묶기로 끝난 관제 터미널의 pane.close·hc rm)뿐이다. 워커 실행은 늘 horch 를 거친다. 12단계: 대리 보고 기록 읽기
+(relay_status. 기록 파일을 직접 읽지 않고 Horch 로 `horch relay-status` 를 부른다, 설계 8.14 의 1)."""
 from __future__ import annotations
 
 import json
@@ -10,6 +11,7 @@ import subprocess
 import time
 
 from .errors import FAIL, MISSING, HteamError
+from .horch import Horch
 
 
 def _hc(args: list[str], tail: list[str] | None = None, timeout: float = 30) -> dict:
@@ -48,6 +50,20 @@ def _hc(args: list[str], tail: list[str] | None = None, timeout: float = 30) -> 
 
 def get(terminal: str, timeout: float = 10) -> dict:
     return _hc(["get", terminal], timeout=timeout)
+
+
+def relay_status(p, terminal: str, *, strict: bool = False, timeout: float = 5) -> dict | None:
+    """그 터미널의 대리 보고 기록(12단계, 설계 8.14 의 1·herdr-orch 설계 16.8): `horch relay-status --terminal <t>` 출력의
+    record. 기록이 없으면 None. horch 를 찾지 못했거나 실패하면 strict 면 HteamError 를 올리고(판정할 수 없음을 가려야 하는
+    up 의 main_unreported), 아니면 None 이다(고정 에이전트 판정은 실패를 "기록 없음" 과 같이 다룬다)."""
+    try:
+        data = Horch(p.horch_home).ok("relay-status", "--terminal", terminal, timeout=timeout)
+    except HteamError:
+        if strict:
+            raise
+        return None
+    record = data.get("record")
+    return record if isinstance(record, dict) else None
 
 
 def rm(terminal: str, timeout: float = 10) -> None:

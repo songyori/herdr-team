@@ -476,7 +476,8 @@ class HerdrVerdictTest(unittest.TestCase):
         from hteam import herdr
         src = (REPO / "herdr-orch/lib/horch/liveness.py").read_text()  # horch 의 판정 함수를 그대로 실행해 비교한다
         ns = {}
-        exec(compile(src.replace("from . import hcio", "hcio = None"), "liveness", "exec"), ns)
+        # herdr-orch 0.5.0(Task 2)의 liveness 는 relay 도 가져온다. 판정 함수만 쓰므로 둘 다 비운다
+        exec(compile(src.replace("from . import hcio, relay", "hcio = relay = None"), "liveness", "exec"), ns)
         argv = ["claude"]
         cases = [None, {"state": "finished"}, {"state": "live", "argv": argv}, {"state": "live", "argv": ["x"]},
                  {"state": "live"}, {"state": "live", "argv": None}, {"state": "live", "reason": "stopped_by_restart"},

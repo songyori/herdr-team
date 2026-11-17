@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -119,15 +120,15 @@ class HorchClientTest(TeamCase):
         return path
 
     def test_registry_picks_scope_project_and_version(self):
-        old = self.install("old", "0.3.0")  # 11단계: HORCH_MIN 0.4.0 아래(--parent 가 없다)
-        user = self.install("user", "0.4.0")
-        other = self.install("other", "0.4.9")
-        mine = self.install("mine", "0.4.0")
-        local = self.install("local", "0.4.1")
+        old = self.install("old", "0.4.0")  # 12단계: HORCH_MIN 0.5.0 아래(대리 보고·relay-status 가 없다)
+        user = self.install("user", "0.5.0")
+        other = self.install("other", "0.5.9")
+        mine = self.install("mine", "0.5.0")
+        local = self.install("local", "0.5.1")
         env = {k: v for k, v in os.environ.items() if k != "HERDR_ORCH_BIN"}
         with mock.patch.dict(os.environ, env, clear=True), \
                 mock.patch.object(horch_mod, "PLUGIN_ROOT", self.tmp / "x" / "herdr-team"):
-            entries = [{"scope": "user", "installPath": str(old), "version": "0.3.0"},
+            entries = [{"scope": "user", "installPath": str(old), "version": "0.4.0"},
                        {"scope": "project", "projectPath": str(self.tmp / "elsewhere"), "installPath": str(other)},
                        {"scope": "user", "installPath": str(user)}]
             os.environ["HTEAM_PLUGINS_JSON"] = str(self.registry(entries))
@@ -145,12 +146,12 @@ class HorchClientTest(TeamCase):
             with self.assertRaises(HteamError) as ctx:
                 horch_mod.find_horch(self.proj)
             self.assertEqual(ctx.exception.exit_code, 12)
-            self.assertIn("쓰지 않은 설치: herdr-orch@herdr-team user 0.3.0(0.4.0 보다 낮다)", ctx.exception.message)
+            self.assertIn("쓰지 않은 설치: herdr-orch@herdr-team user 0.4.0(0.5.0 보다 낮다)", ctx.exception.message)
 
     def test_corrupt_registry_entries_are_skipped(self):
         # 손상된 설치 기록 하나(자료형이 틀린 scope·projectPath·version·installPath)가 TypeError 로 고르기를 멈추지 않는다.
         # 그 항목만 이유와 함께 빼고 뒤의 정상 후보를 고른다
-        good = self.install("good", "0.4.0")
+        good = self.install("good", "0.5.0")
         env = {k: v for k, v in os.environ.items() if k != "HERDR_ORCH_BIN"}
         with mock.patch.dict(os.environ, env, clear=True), \
                 mock.patch.object(horch_mod, "PLUGIN_ROOT", self.tmp / "x" / "herdr-team"):
@@ -172,7 +173,7 @@ class HorchClientTest(TeamCase):
     def test_bad_values_in_registry_entries_are_skipped(self):
         # Codex 계획 r2: 자료형은 맞지만 값이 손상된 항목("1.2.²" 는 isdigit 가 참이라 int() 가 실패, 없는 사용자의 ~경로는
         # expanduser 가 RuntimeError)도 그 항목만 까닭과 함께 빼고 뒤의 정상 후보를 고른다
-        good = self.install("good", "0.4.0")
+        good = self.install("good", "0.5.0")
         odd = self.install("odd", "1.2.²")
         env = {k: v for k, v in os.environ.items() if k != "HERDR_ORCH_BIN"}
         with mock.patch.dict(os.environ, env, clear=True), \
@@ -201,10 +202,113 @@ class HorchClientTest(TeamCase):
         self.assertIsNone(horch_mod.version_tuple("０.1.2"))  # 전각 숫자
         self.assertEqual(horch_mod.version_tuple(" 0.1.12 "), (0, 1, 12))
 
+    def test_env_and_sibling_horch_below_min_stop(self):
+        # 12단계(설계 3.3): HERDR_ORCH_BIN·형제 경로로 고른 horch 도 같은 플러그인의 plugin.json 버전을 본다. HORCH_MIN 아래면
+        # exit 12(0.4.0 horch 로 새 세션에 relay_ready 를 적지 않게, Codex 설계 리뷰 r2)
+        self.assertEqual(horch_mod.HORCH_MIN, "0.5.0")
+        low, good = self.install("low", "0.4.0"), self.install("good", "0.5.0")
+        with mock.patch.dict(os.environ, {"HERDR_ORCH_BIN": str(low / "bin/horch")}):
+            with self.assertRaises(HteamError) as ctx:
+                horch_mod.find_horch()
+        self.assertEqual((ctx.exception.code, ctx.exception.exit_code), ("horch_missing", 12))
+        self.assertIn("0.4.0(0.5.0 보다 낮다)", ctx.exception.message)
+        with mock.patch.dict(os.environ, {"HERDR_ORCH_BIN": str(good / "bin/horch")}):
+            self.assertEqual(horch_mod.find_horch(), (good / "bin/horch").resolve())
+        env = {k: v for k, v in os.environ.items() if k != "HERDR_ORCH_BIN"}
+        for version, fine in (("0.4.0", False), ("0.5.0", True)):
+            orch = self.tmp / f"sib-{version}" / "herdr-orch"
+            (orch / "bin").mkdir(parents=True)
+            (orch / "bin" / "horch").write_text("")
+            (orch / ".claude-plugin").mkdir()
+            (orch / ".claude-plugin" / "plugin.json").write_text(json.dumps({"version": version}))
+            with mock.patch.dict(os.environ, env, clear=True), \
+                    mock.patch.object(horch_mod, "PLUGIN_ROOT", orch.parent / "herdr-team"):
+                if fine:
+                    self.assertEqual(horch_mod.find_horch(), (orch / "bin/horch").resolve())
+                else:
+                    with self.assertRaises(HteamError) as ctx:
+                        horch_mod.find_horch()
+                    self.assertEqual(ctx.exception.exit_code, 12)
+
+    def solo(self, name: str, answer: str, delay: float = 0) -> Path:
+        """plugin.json 이 곁에 없는 대역 horch. `version` 에는 delay 초 뒤 answer 를 답하고(부른 횟수를 <이름>.n 에 센다),
+        다른 명령에는 {"ok": true, "seen": 1} 을 답한다."""
+        script = self.tmp / name
+        script.write_text("import sys, time\nfrom pathlib import Path\n"
+                          "if sys.argv[-1] == 'version':\n"
+                          f"    n = Path({str(script) + '.n'!r})\n"
+                          "    n.write_text(str(int(n.read_text()) + 1) if n.exists() else '1')\n"
+                          f"    time.sleep({delay})\n"
+                          f"    print({answer!r})\n"
+                          "else:\n"
+                          "    print('{\"ok\": true, \"seen\": 1}')\n")
+        return script
+
+    def probes(self, script: Path) -> int:
+        n = Path(str(script) + ".n")
+        return int(n.read_text()) if n.exists() else 0
+
+    def test_horch_without_plugin_json_is_checked_before_the_first_call(self):
+        # plugin.json 이 곁에 없는 horch(감싼 스크립트 등)는 첫 호출 전에 `horch version` 으로 본다(생성자는 부르지 않는다).
+        # 낮으면 그 호출이 exit 12 오류 모양으로 끝난다. 확인한 버전은 이 프로세스 동안 기억한다(다시 묻지 않는다)
+        home = self.proj / ".herdr-team" / "state" / "horch"
+        low = self.solo("solo-low", '{"ok": true, "version": "0.4.0"}')
+        good = self.solo("solo-good", '{"ok": true, "version": "0.5.0"}')
+        with mock.patch.dict(os.environ, {"HERDR_ORCH_BIN": str(low)}):
+            h = horch_mod.Horch(home)
+            self.assertEqual(self.probes(low), 0)
+            code, data = h.call("status")
+            self.assertEqual((code, data["error"]["code"]), (12, "horch_missing"), data)
+            self.assertIn("0.4.0(0.5.0 보다 낮다)", data["error"]["message"])
+            with self.assertRaises(HteamError) as ctx:
+                h.ok("status")
+            self.assertEqual(ctx.exception.exit_code, 12)
+            self.assertFalse(horch_mod.version_confirmed(home))
+        with mock.patch.dict(os.environ, {"HERDR_ORCH_BIN": str(good)}):
+            h = horch_mod.Horch(home)
+            self.assertEqual(h.call("status"), (0, {"ok": True, "seen": 1}))
+            self.assertEqual(h.call("status"), (0, {"ok": True, "seen": 1}))
+            self.assertTrue(horch_mod.version_confirmed(home))
+        self.assertEqual((self.probes(low), self.probes(good)), (1, 1))
+
+    def test_unconfirmed_version_is_not_remembered(self):
+        # 계획 리뷰 plan2-r1 의 8: 버전을 확인하지 못하면(잘못된 출력) 통과로 기억하지 않는다. 그 호출은 지금처럼 하고 다음
+        # 호출이 다시 본다. 고정 에이전트의 relay_ready 는 version_confirmed 가 참일 때만 쓴다(Task 5)
+        home = self.proj / ".herdr-team" / "state" / "horch"
+        bad = self.solo("solo-bad", '{"ok": true}')
+        with mock.patch.dict(os.environ, {"HERDR_ORCH_BIN": str(bad)}):
+            h = horch_mod.Horch(home)
+            self.assertEqual(h.call("status"), (0, {"ok": True, "seen": 1}))
+            self.assertEqual(h.call("status"), (0, {"ok": True, "seen": 1}))
+            self.assertFalse(horch_mod.version_confirmed(home))
+        self.assertEqual(self.probes(bad), 3)  # 호출마다, version_confirmed 도 한 번 더 묻는다
+        with mock.patch.dict(os.environ, {"HERDR_ORCH_BIN": str(self.tmp / "none")}):
+            self.assertFalse(horch_mod.version_confirmed(home))  # horch 를 찾지 못했다
+        with mock.patch.dict(os.environ, {"HERDR_ORCH_BIN": str(HORCH_BIN)}):
+            self.assertTrue(horch_mod.version_confirmed(home))  # 함께 배포하는 herdr-orch: plugin.json 으로 안다
+
+    def test_version_probe_stays_within_the_call_budget(self):
+        # 계획 리뷰 plan2-r1 의 6: 버전 조회도 그 호출의 timeout 안이다(상한 min(10, timeout), 걸린 시간은 본 명령에서 뺀다).
+        # 시간 초과는 기억하지 않는다
+        home = self.proj / ".herdr-team" / "state" / "horch"
+        slow = self.solo("solo-slow", '{"ok": true, "version": "0.5.0"}', delay=2)
+        with mock.patch.dict(os.environ, {"HERDR_ORCH_BIN": str(slow)}):
+            h = horch_mod.Horch(home)
+            t0 = time.monotonic()
+            code, data = h.call("status", timeout=0.5)
+            self.assertLess(time.monotonic() - t0, 1.5)
+            self.assertEqual((code, data["error"]["code"]), (1, "horch_timeout"), data)
+            self.assertEqual(data["error"]["message"], "horch status 가 0.5초 안에 끝나지 않았다")
+            self.assertEqual(h.call("status", timeout=8), (0, {"ok": True, "seen": 1}))  # 다시 묻고 기억한다
+            t0 = time.monotonic()
+            self.assertEqual(h.call("status", timeout=8), (0, {"ok": True, "seen": 1}))
+            self.assertLess(time.monotonic() - t0, 1.5)  # 확인한 뒤에는 묻지 않는다
+        self.assertEqual(self.probes(slow), 2)
+
     def test_call_ok_and_failure(self):
         with mock.patch.dict(os.environ, self.env, clear=True):
             h = horch_mod.Horch(self.horch_home)
-            self.assertEqual(h.ok("version")["version"][:4], "0.4.")  # 함께 배포하는 herdr-orch 0.4.0
+            self.assertEqual(h.ok("version")["version"][:4], "0.5.")  # 함께 배포하는 herdr-orch 0.5.0
             code, data = h.call("worker-list")
             self.assertEqual(code, 5)
             with self.assertRaises(HteamError) as ctx:

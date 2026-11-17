@@ -17,6 +17,8 @@ description: >
    - exit 3 `launch_raced` 면 다른 `hteam up` 이 동시에 관제를 띄웠거나 관제가 Run 에 묶였다. `hteam up --wait-run 180` 을 한 번 더 실행한다(살아 있으면 다시 띄우지 않는다).
    - exit 1 `launch_uncertain` 이면 관제가 떴는지 확인하지 못했다. 사용자에게 관제 탭에 `name` pane(`hteam-drive-…`)이 있는지 보라고 알린다. 떴다면 스스로 Run 에 묶인다. 아니면 180초 뒤 `hteam up` 이 새로 띄운다.
    - exit 1 `bad_run_file` 이면 `.herdr-team/state/run.json` 이 손상됐다. 고치지 말고 사용자에게 알린다(hint 를 그대로 전한다).
+   - 1 에서 `drive.alive`·`drive.hung`·`drive.starting` 가운데 하나가 true 였어도 `hteam up`(`--wait-run` 없이)을 한 번 실행한다. 관제를 다시 띄우지 않고(`running`·`hung`·`starting`) 메인 대리 보고 설정을 쓰고 아래 경고를 준다.
+   - 출력(exit 4 오류에도 들어 있다)에 `warnings` 가 있으면 사용자에게 그대로 전한다. `relay_env_new` 는 메인 대리 보고 설정(`.claude/settings.local.json` 의 `HORCH_RELAY_HOME`)이 이 세션에 아직 없다는 경고, `main_unreported` 는 이 메인 세션의 상태가 Herdr 에 가지 않는다는 경고다(질문이 Herdr "Needs you" 로 뜨지 않는다). 둘 다 사용자가 일이 덜 몰린 때 `/exit` 뒤 같은 터미널에서 `claude --resume` 으로 다시 열면 풀린다. 메인이 스스로 세션을 끝내지 않는다. `relay_env_unreadable`·`relay_env_tracked` 는 경고 글대로 사용자가 그 파일을 고치게 한다.
 4. `watch_alive` 가 false 일 때:
    - 관제가 꺼지지 않았으면(1 에서 `drive.alive`·`drive.hung`·`drive.starting` 가운데 하나가 true 였거나, 3 이 `running`·`hung`·`starting`·`launched` 로 끝났으면) Bash `run_in_background: true` 로 `hteam watch` 를 띄운다. `unread_outbox` 가 0 보다 크면 watch 가 바로 끝나며 밀린 메시지를 준다.
    - 3 이 관제를 띄우지 못했으면(exit 4·1, 그 밖의 오류) 사용자에게 알리고, `unread_outbox` 가 0 이면 watch 를 띄우지 않는다. 꺼진 관제의 watch 는 곧바로 `orphaned` 로 끝나므로 띄워도 소용이 없다(Stop 훅도 그때는 막지 않는다).

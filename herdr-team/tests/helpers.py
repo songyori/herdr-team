@@ -13,6 +13,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -103,9 +104,30 @@ hello 를 출력한다.
 """
 
 
+# horch relay-status 만 시험이 준 기록으로 답하고 나머지 명령은 실제 horch 로 넘기는 감싸개(12단계, 설계 8.14 의 1).
+# HERDR_ORCH_BIN 으로 쓴다(TeamCase.fake_relay). 답의 꼴은 herdr-orch 0.5.0 의 relay-status 와 같다({terminal, record}).
+# $RELAY_FAKE_DIR/<터미널>.json 이 기록이고(없으면 null), $RELAY_FAKE_DIR/fail 이 있으면 relay-status 가 실패한다
+RELAY_HORCH = """#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+if "relay-status" in args:
+    folder = Path(os.environ["RELAY_FAKE_DIR"])
+    term = args[args.index("--terminal") + 1]
+    if (folder / "fail").exists():
+        print(json.dumps({"ok": False, "error": {"code": "internal", "message": "시험 실패", "hint": ""}}))
+        sys.exit(1)
+    path = folder / f"{term}.json"
+    record = json.loads(path.read_text()) if path.exists() else None
+    print(json.dumps({"ok": True, "terminal": term, "record": record}))
+    sys.exit(0)
+os.execv(sys.executable, [sys.executable, os.environ["RELAY_REAL"], *args])
+"""
+
 # 테스트가 물려받지 않는 환경 변수: 바깥 세션의 역할·Herdr·horch 값과 git 의 저장소·설정 위치, 죽음·멈춤 재현 지점,
 # 캐시 폴더(hteam image 의 실행 폴더가 사용자 캐시에 쌓이지 않게. HOME 은 임시 폴더다)
 DROP_ENV = ("HC_TERMINAL_ID", "CODEX_SANDBOX", "HERDR_ORCH_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "HTEAM_ROLE",
+            "HORCH_HOME", "HORCH_RELAY_HOME",
             "HTEAM_LAUNCH", "HERDR_ORCH_BIN", "HERDR_TEAM_PLUGIN_ROOT", "CLAUDE_PROJECT_DIR", "HTEAM_TEST_DIE_AT",
             "HORCH_TEST_DIE_AT", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
             "GIT_CONFIG_GLOBAL", "HTEAM_TEST_PAUSE_AT", "HTEAM_TEST_PAUSE_FILE", "CLAUDECODE", "HTEAM_DRIVE_TICKS",
@@ -138,6 +160,9 @@ class TeamCase(unittest.TestCase):
             "HORCH_REWAKE_INTERVAL": "0.3",
             "HTEAM_POLL": "0.05",
             "PYTHONDONTWRITEBYTECODE": "1",
+            # 옵트인한 메인 세션의 환경(12단계, 설계 8.14 의 2). up 이 쓰는 .claude/settings.local.json 값과 같아
+            # relay_env_new·다시 열기 안내가 지금 시험에 끼지 않는다. 12단계 시험만 빼거나 바꾼다
+            "HORCH_RELAY_HOME": str(self.proj / ".herdr-team" / "state" / "horch"),
             "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
             "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com",
         })
@@ -208,6 +233,8 @@ class TeamCase(unittest.TestCase):
                 "argv": argv or ["sh"], "labels": labels or {}, "reason": reason, "turn": turn,
                 "cwd": str(self.proj), "exit_code": None if state == "live" else 0,
             }
+            if status:  # 보고한 세션: 마지막 상태가 바뀐 시각(hc get 의 status_ms, 12단계 설계 9.3 의 8·5.9.9 의 2)
+                st["terminals"][address]["status_ms"] = int(time.time() * 1000)
 
     def update_terminal(self, address: str, **fields) -> None:
         with self._hc_locked() as st:
@@ -215,7 +242,31 @@ class TeamCase(unittest.TestCase):
             if "status" in fields:
                 word = fields.pop("status")
                 t["status"] = {"app": "claude-code", "state": word, "msg": ""} if word else None
+                if word and "status_ms" not in fields:  # 보고한 세션의 status_ms(12단계). 시험이 주면 그 값
+                    t["status_ms"] = int(time.time() * 1000)
             t.update(fields)
+
+    def fake_relay(self, terminal: str | None = None, record: dict | None = None, *, fail: bool = False) -> dict:
+        """horch relay-status 를 대신 답하는 감싸개(RELAY_HORCH)의 환경. terminal 을 주면 그 터미널의 기록을 record 로
+        쓰고(None 이면 지운다), fail 이면 relay-status 가 실패한다(다음 호출이 fail 없이 부르면 풀린다). 같은 시험에서
+        여러 번 불러도 같은 폴더를 쓴다. hteam(..., env=…) 에 넘긴다."""
+        folder = self.tmp / "relay-fake"
+        folder.mkdir(exist_ok=True)
+        wrap = self.tmp / "relay-horch"
+        if not wrap.exists():
+            wrap.write_text(RELAY_HORCH, encoding="utf-8")
+            wrap.chmod(0o755)
+        if terminal is not None:
+            path = folder / f"{terminal}.json"
+            if record is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_text(json.dumps(record), encoding="utf-8")
+        if fail:
+            (folder / "fail").write_text("x", encoding="utf-8")
+        else:
+            (folder / "fail").unlink(missing_ok=True)
+        return {"HERDR_ORCH_BIN": str(wrap), "RELAY_REAL": str(HORCH_BIN), "RELAY_FAKE_DIR": str(folder)}
 
     def fail_hc(self, command: str, kind: str, code: int = 1) -> None:
         with self._hc_locked() as st:

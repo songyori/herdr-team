@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import platform
 import secrets
@@ -310,7 +311,9 @@ def scaffold(root: Path, description: str) -> dict:
     if setup_mode:
         p.setup_mode.write_text(now() + "\n", encoding="utf-8")
     p.plugin_root_file.write_text(str(PLUGIN_ROOT) + "\n", encoding="utf-8")
-    return {"root": str(root), "created": created, "skipped": skipped, "setup_mode": setup_mode}
+    # 12단계(설계 9.1 의 3a): 메인 옵트인 env. 지금 세션은 받지 못한다(init 보고의 "메인 세션을 새로 연다" 가 켠다)
+    return {"root": str(root), "created": created, "skipped": skipped, "setup_mode": setup_mode,
+            "relay_env": write_relay_env(root)}
 
 
 def _section_manual(root: Path) -> list[dict]:
@@ -387,6 +390,94 @@ def _ignore_pattern(line: str) -> str:
     return line
 
 
+SETTINGS_LOCAL = ".claude/settings.local.json"  # 메인 옵트인 env 를 쓰는 프로젝트 설정(개인 절대 경로라 git 에서 뺀다)
+RELAY_KEY = "HORCH_RELAY_HOME"  # herdr-orch 훅이 옵트인 메인을 가르는 환경 변수(herdr-orch 설계 16.2)
+
+
+def _relay_settings(root: Path) -> dict | None:
+    """프로젝트 .claude/settings.local.json 의 내용. 없으면 {}. 읽지 못하거나(UTF-8·JSON 이 아님) 최상위·env 가 객체가
+    아니면 None."""
+    try:
+        data = json.loads((Path(root) / SETTINGS_LOCAL).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError, RecursionError):  # UnicodeDecodeError 는 ValueError 다
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("env", {}), dict):
+        return None
+    return data
+
+
+def write_relay_env(root: Path) -> str:
+    """메인 옵트인 env 를 쓴다(12단계, 설계 8.14 의 2·9.1 의 3a·9.3 의 8): .claude/settings.local.json 의 env.HORCH_RELAY_HOME
+    을 이 프로젝트의 horch 홈(hteam 이 horch 를 부르는 --home)으로. 결과:
+    - same: 이미 그 값이다(아무것도 쓰지 않는다).
+    - tracked: 그 파일을 git 이 이미 추적한다(ignore 줄로 막히지 않는다). 쓰지 않는다.
+    - new: .gitignore 에 .claude/settings.local.json 줄이 없으면 먼저 덧붙이고, 다른 키는 그대로 둔 채 최상위 env 의 이
+      키 하나만 바꿔 임시 파일과 rename 으로 쓴다(파일이 없으면 만든다).
+    - unreadable: 파일을 읽지 못하거나 최상위·env 가 객체가 아니다(고치지 않는다). .gitignore·설정 쓰기가 실패해도 같다.
+    root 는 상태 루트다(작업 공간 슬롯에는 쓰지 않는다)."""
+    root = Path(root)
+    home = str(Project(root).horch_home)
+    data = _relay_settings(root)
+    if data is None:
+        return "unreadable"
+    env = data.get("env", {})
+    if env.get(RELAY_KEY) == home:
+        return "same"
+    try:
+        if gitio.tracked(root, SETTINGS_LOCAL):
+            return "tracked"
+    except HteamError:
+        pass  # git 이 없다: 추적되지 않는다(저장소가 아니면 tracked 가 거짓이다)
+    try:
+        old = _read_existing(root / ".gitignore")
+        if SETTINGS_LOCAL not in [_ignore_pattern(ln) for ln in (old or "").splitlines()]:
+            _append(root / ".gitignore", old, SETTINGS_LOCAL, blank=False)
+        write_atomic(root / SETTINGS_LOCAL,
+                     json.dumps({**data, "env": {**env, RELAY_KEY: home}}, ensure_ascii=False, indent=2) + "\n")
+    except (OSError, HteamError):
+        return "unreadable"
+    return "new"
+
+
+def relay_env_new(root: Path) -> bool | None:
+    """다시 열기 안내의 판정(12단계, 설계 8.14 의 2): .claude/settings.local.json 의 env.HORCH_RELAY_HOME 이 이 프로젝트의
+    horch 홈인데 이 프로세스 환경(up·훅은 메인 Claude 의 환경을 물려받는다)의 HORCH_RELAY_HOME 이 없거나 다르면 True.
+    파일이 없거나 다른 값이면 False, 읽지 못하면 None. 쓴 때와 상관없이 상태로 본다(자동 부활의 up 이 먼저 썼어도 든다)."""
+    data = _relay_settings(root)
+    if data is None:
+        return None
+    home = str(Project(root).horch_home)
+    return data.get("env", {}).get(RELAY_KEY) == home and os.environ.get(RELAY_KEY) != home
+
+
+def _main_unreported(p, main: str) -> bool:
+    """up 의 main_unreported 판정(12단계, 설계 9.3 의 8·8.14 의 4). horch relay-status 의 decided 가 no_tty·write_failed 면
+    True, 다른 판정(on·off·판정 전)이면 False. 기록이 없으면(옵트인 전에 연 세션) hc get(3초) 응답에 status_ms 키가 있고
+    null 일 때 True(키가 없는 hc 는 가르지 않는다). horch·hc 가 실패하면 판정할 수 없어 False."""
+    try:
+        record = herdr.relay_status(p, main, strict=True)
+        if record is not None:
+            return record.get("decided") in ("no_tty", "write_failed")
+        info = herdr.get(main, timeout=3)
+    except HteamError:
+        return False
+    return "status_ms" in info and info["status_ms"] is None
+
+
+def _relay_notes(p, main: str) -> list[str]:
+    """up 결과의 12단계 경고(설계 9.3 의 8): 옵트인 env 를 쓴 결과(relay_env_unreadable·relay_env_tracked), 다시 열기
+    안내(relay_env_new), main_unreported 차례다(다시 열면 relay_env_new 와 main_unreported 가 함께 풀린다)."""
+    written = write_relay_env(p.root)
+    notes = {"unreadable": [RELAY_ENV_UNREADABLE], "tracked": [RELAY_ENV_TRACKED]}.get(written, [])
+    if written != "unreadable" and relay_env_new(p.root):
+        notes.append(RELAY_ENV_NEW)
+    if _main_unreported(p, main):
+        notes.append(MAIN_UNREPORTED)
+    return notes
+
+
 def _setup_done_file(p) -> Path:
     """setup-done 이 남기는 표시. 있으면 scaffold 가 setup-mode 를 다시 켜지 않는다."""
     return p.state / "setup-done"
@@ -457,6 +548,16 @@ def _wait_bound(p, nonce: str, wait: float | None) -> str | None:
 
 HUNG_MESSAGE = "관제 프로세스가 살아 있지만 응답이 없다. 관제 탭을 확인한다"
 STARTING_MESSAGE = "관제가 아직 시작 중이다(180초 안에 다시 띄우지 않는다). hteam status 로 확인한다"
+# 12단계 up 경고(설계 9.3 의 8, 8.14 의 2). 끝 괄호는 경고 이름이다(parent_missing 과 같은 꼴)
+RELAY_ENV_NEW = ("메인 대리 보고 설정(.claude/settings.local.json 의 HORCH_RELAY_HOME)이 이 세션에 아직 없다. 설정은 세션을 "
+                 "시작할 때 읽히므로 메인을 다시 열어야 켜진다: 일이 덜 몰린 때 /exit 뒤 같은 터미널에서 claude --resume"
+                 "(relay_env_new)")
+RELAY_ENV_UNREADABLE = (".claude/settings.local.json 을 읽지 못해 메인 대리 보고 설정(HORCH_RELAY_HOME)을 쓰지 않았다. 파일을 "
+                        "고친 뒤 /herdr-team:up 을 다시 한다(relay_env_unreadable)")
+RELAY_ENV_TRACKED = (".claude/settings.local.json 이 git 에 들어 있어 메인 대리 보고 설정(HORCH_RELAY_HOME, 개인 절대 경로)을 "
+                     "쓰지 않았다. 파일을 git 에서 빼거나(git rm --cached) 직접 넣는다(relay_env_tracked)")
+MAIN_UNREPORTED = ("이 메인 세션의 상태가 Herdr 에 가지 않는다. 질문이 Herdr \"Needs you\" 로 뜨지 않는다. 일이 덜 몰린 때 "
+                   "/exit 뒤 같은 터미널에서 claude --resume 으로 다시 연다(main_unreported)")
 
 
 def up(p, wait_run: float | None) -> dict:
@@ -470,16 +571,24 @@ def up(p, wait_run: float | None) -> dict:
     launch_uncertain(떴다면 관제가 스스로 Run 에 묶인다. 아니면 180초 뒤 다음 up 이 새로 띄운다).
 
     11단계(설계 9.3): 판정 전에 run.json 의 main_terminal 을 메인 주소로 쓰고(outbox.set_main_terminal), 관제를 그 메인
-    아래에 띄운다(--parent <메인> --outlive-parent). 그 사이 메인이 지워졌으면 parent 없이 한 번 더 띄우고 warnings 에 남긴다."""
+    아래에 띄운다(--parent <메인> --outlive-parent). 그 사이 메인이 지워졌으면 parent 없이 한 번 더 띄우고 warnings 에 남긴다.
+
+    12단계(설계 9.3 의 8): 관제 판정과 상관없이 메인 옵트인 env 를 쓰고(write_relay_env), 모든 결과(hung 포함)의 warnings
+    맨 앞에 relay_env_unreadable·relay_env_tracked, relay_env_new, main_unreported 를 그 차례로 넣는다(_relay_notes)."""
     config.load(p)
     main = outbox.require_main(p)
     # 판정 전에 쓴다(값이 같으면 쓰지 않는다). running·starting·hung 으로 돌아가는 길도 쓰므로 메인을 새 터미널로 옮기면
     # 따라간다. RACE_KEYS·LAUNCH_KEYS 가 아니다(띄우기 판정·되돌리기와 상관없다)
     outbox.set_main_terminal(p, main)
+    # 12단계: run.json 판정(seen) 전에 한다(horch relay-status·hc get 3초가 띄우기 경합 창에 들지 않게)
+    notes = _relay_notes(p, main)
     seen = _read_run(p)
     view = drive.view(p, seen)
     if view["hung"]:
-        return {"status": "hung", "terminal": view["terminal"], "launched": False, "message": HUNG_MESSAGE}
+        hung = {"status": "hung", "terminal": view["terminal"], "launched": False, "message": HUNG_MESSAGE}
+        if notes:
+            hung["warnings"] = notes
+        return hung
     if view["alive"]:
         result = {"status": "running", "terminal": view["terminal"], "launched": False}
     elif view["starting"]:
@@ -556,6 +665,8 @@ def up(p, wait_run: float | None) -> dict:
             result["warnings"] = warnings
         if recovered:
             result["recovered"] = True  # hc 가 실패를 알렸지만 이름으로 찾았거나 그 nonce 로 관제가 묶였다
+    if notes:  # 12단계: parent_missing 보다 앞이다. --wait-run 시간 초과(exit 4)의 오류 JSON 에도 든다(data=result)
+        result["warnings"] = [*notes, *result.get("warnings", [])]
     if wait_run:
         deadline = time.monotonic() + wait_run
         while not _bound(_read_run(p)):
