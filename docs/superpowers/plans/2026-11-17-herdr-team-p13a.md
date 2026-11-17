@@ -12,7 +12,7 @@
 
 **코드가 기준이다.** 수정은 모두 브랜치 `herdr-team-p13` 의 지금 HEAD 에 대한 부분 수정이다(코드는 main 8cd549c 와 같다). 새 모듈은 `lib/hteam/color.py` 하나, 새 시험 파일은 `tests/test_rule_refs.py`·`tests/test_project_rules.py`·`tests/test_color.py`, 새 개발 스크립트는 `scripts/design-eval/` 이다.
 
-**편집 표기:** `**Edit** \`경로\`` 다음 두 코드 블록은 "찾을 내용"과 "바꿀 내용"이다. 찾을 내용은 적용하는 그 시점의 파일에서 정확히 한 번 나온다(태스크 순서대로 적용한다). 새 파일은 `**Create** \`경로\`` 다음 블록 하나다.
+**편집 표기:** `**Edit** \`경로\`` 다음 두 코드 블록은 "찾을 내용"과 "바꿀 내용"이다. 찾을 내용은 적용하는 그 시점의 파일에서 정확히 한 번 나오는 부분 문자열이다(블록 끝 개행은 넣지 않는다. README·skill 처럼 긴 줄의 일부만 바꾸는 블록이 있다). 태스크 순서대로 적용한다. 새 파일은 `**Create** \`경로\`` 다음 블록 하나다.
 
 ## Global Constraints
 
@@ -50,7 +50,7 @@ def split_sections(text: str) -> tuple[str, list[tuple[str, str]]]   # (머리, 
 def project_sections(role: str, text: str, template: str, retired: tuple[str, ...] | None = None) -> list[tuple[str, str]]
 
 # herdr-team/hooks/hteam_hook.py (Task 5)
-def strip_heredocs(cmd: str) -> str                  # cat·tee 로 옮기는 heredoc 의 본문을 지운 명령
+def strip_heredocs(cmd: str) -> str                  # 명령 전체가 cat·tee + 따옴표 끝 표시 꼴이면 본문을 지운 명령
 
 # herdr-team/lib/hteam/color.py (Task 6)
 LCH = tuple[float, float, float]                     # (L 0–1, C, h 0–360). C < ACHROMATIC_C 면 h 는 0.0
@@ -298,7 +298,8 @@ scripts/codex-review.sh commit "$(git rev-parse HEAD)"
 
 대상 규칙 파일은 인용 앞(같은 줄)에 나온 마지막 규칙 파일 이름(design-rules·text-rules·web-rules)이다. 없으면 파일마다
 기본 대상이다: text-rules.md·review-text.md·textlint.py 는 text-rules, web-rules.md 는 web-rules, 그 밖은 design-rules.
-바로 앞에 `orca` 가 붙은 인용(`orca §17`, orca-team 설계의 절)은 다른 문서라 보지 않는다. 범위(`§2–§6`)는 그 사이 절을
+앞에 이름이 없고 인용 바로 뒤 괄호에 규칙 파일 이름이 있으면(`§1 의 8번(text-rules.md)`) 그 파일이다. 바로 앞에 `orca` 가 붙은
+인용(`orca §17`, orca-team 설계의 절)은 다른 문서라 보지 않는다. 범위(`§2–§6`)는 그 사이 절을
 모두 본다. 규칙 파일의 `## §N` 제목 줄은 인용이 아니다.
 """
 from __future__ import annotations
@@ -314,6 +315,7 @@ RULES = {"design-rules": "design-rules.md", "text-rules": "text-rules.md", "web-
 CITE = re.compile(r"§(\d+)(?:\.(\d+))?(?:\s*[–-]\s*§?(\d+))?(?:\s*의\s*(\d+)번?)?")
 NAME = re.compile(r"(design-rules|text-rules|web-rules)")
 OTHER_DOC = re.compile(r"orca\s*$")  # 다른 문서의 절 번호(orca-team 설계)
+LATER = re.compile(r"\s*\(\s*`?\.?(?:herdr-team/)?(design-rules|text-rules|web-rules)")  # 인용 바로 뒤 괄호의 파일 이름
 FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
 
 
@@ -370,7 +372,8 @@ def problems(root: Path) -> list[str]:
                 if OTHER_DOC.search(before):
                     continue
                 names = NAME.findall(before)
-                target = names[-1] if names else default_target(rel)
+                later = LATER.match(line[m.end():])
+                target = names[-1] if names else (later.group(1) if later else default_target(rel))
                 sec = rules.get(target)
                 if sec is None:
                     found.append(f"{rel}:{n}: {RULES[target]} 가 없다: {m.group(0)}")
@@ -402,7 +405,7 @@ class RuleRefTest(unittest.TestCase):
             (root / "templates" / "text-rules.md").write_text("# 문구\n\n## §1 보존\n1. 하나\n", encoding="utf-8")
             (root / "templates" / "roles" / "designer.md").write_text(
                 "- §1 의 2번, §2 의 1번, §1–§2 는 있다\n- §1 의 3번은 없다\n- §9 는 없다\n- text-rules §1 의 4번은 없다\n"
-                "- §1.2 는 있다\n- §2–§4 는 가운데 §3 이 빠졌다\n",
+                "- §1.2 는 있다\n- §2–§4 는 가운데 §3 이 빠졌다\n- §1 의 8번(text-rules.md) 은 없다\n",
                 encoding="utf-8")
             (root / "lib" / "hteam" / "x.py").write_text(
                 '"""orca §17 은 다른 문서다. 이름 없는 §9 도 본다. design-rules §5 는 없다."""\n', encoding="utf-8")
@@ -412,6 +415,7 @@ class RuleRefTest(unittest.TestCase):
                 "templates/roles/designer.md:4: text-rules.md §1 에 4번이 없다: §1 의 4번",
                 "templates/roles/designer.md:6: design-rules.md 에 §3 가 없다: §2–§4",
                 "templates/roles/designer.md:6: design-rules.md 에 §3 가 없다: §3",
+                "templates/roles/designer.md:7: text-rules.md §1 에 8번이 없다: §1 의 8번",
                 "lib/hteam/x.py:1: design-rules.md 에 §9 가 없다: §9",
                 "lib/hteam/x.py:1: design-rules.md 에 §5 가 없다: §5",
             ])
@@ -1056,10 +1060,10 @@ scripts/codex-review.sh commit "$(git rev-parse HEAD)"
 
 ### Task 5: 훅 명령 판정의 heredoc(설계 9.7 의 2)
 
-`cat`·`tee` 로 글을 옮기는 heredoc 의 본문만 지우고 판정한다. 기존 `HorchRuleTest` 의 거부 사례(`bash <<'EOF'`, 따옴표 안 `<<EOF`, `hteam tell x <<EOF`)는 그대로 거부된다.
+명령 전체가 `cat`·`tee` 한 번과 따옴표 있는 끝 표시이고 마지막 줄이 끝 표시인 꼴만 본문을 지우고 판정한다(heredoc 해석기는 두지 않는다). 기존 `HorchRuleTest` 의 거부 사례는 그대로 거부된다.
 
 **Files:**
-- Modify: `herdr-team/hooks/hteam_hook.py`(`strip_heredocs` 와 도우미, 판정 셋)
+- Modify: `herdr-team/hooks/hteam_hook.py`(`_SIMPLE_HEREDOC`, `strip_heredocs`, 판정 셋)
 - Modify: `herdr-team/tests/test_hooks.py`(새 시험 클래스)
 
 **Interfaces:**
@@ -1072,37 +1076,35 @@ scripts/codex-review.sh commit "$(git rev-parse HEAD)"
 
 ```python
 class HeredocRuleTest(unittest.TestCase):
-    """13단계(설계 9.7 의 2): cat·tee 로 글을 옮기는 heredoc 본문의 낱말은 거부하지 않는다. 따옴표 없는 본문의 명령 치환,
-    셸·다른 명령에 넘기는 heredoc, 따옴표·주석 안의 `<<`, heredoc 밖의 명령은 지금처럼 본다."""
+    """13단계(설계 9.7 의 2): 명령 전체가 cat·tee 한 번과 따옴표 있는 끝 표시이고 마지막 줄이 끝 표시인 heredoc 은 본문의
+    낱말을 거부하지 않는다. 그 밖의 꼴은 지금처럼 원문으로 본다."""
 
     ALLOW = (  # (판정 이름, 명령)
         ("watch", "cat >> notes.md <<'EOF'\nhteam watch 는 run_in_background 로 띄운다\nEOF"),
-        ("watch", "cat >> notes.md <<EOF\nhteam watch &\nEOF"),
-        ("watch", "cat >> notes.md <<-EOF\n\thteam watch\n\tEOF"),
-        ("watch", "mkdir -p m && cat > m/a.md <<\"END\"\nhteam watch\nEND"),
+        ("watch", "cat >> notes.md <<-'EOF'\n\thteam watch\n\tEOF"),
+        ("watch", "cat > m/a.md <<\"END\"\nhteam watch &\nEND"),
         ("watch", "tee -a notes.md >/dev/null <<'EOF'\nhteam watch\nEOF"),
-        ("watch", "LANG=C cat >> notes.md <<'EOF'\nhteam watch\n"),  # 끝 표시 없음: 끝까지 본문
+        ("watch", "cat <<'EOF' >> 메모.md\nhteam watch\nEOF\n"),
         ("drive", "cat >> notes.md <<'EOF'\nhteam drive 는 직접 부르지 않는다\nEOF"),
         ("horch", "cat >> notes.md <<'EOF'\nhorch worker-list 는 관제가 쓴다\nEOF"),
     )
     DENY = (
-        ("watch", "cat <<EOF\n$(hteam watch)\nEOF"),
-        ("watch", "cat <<EOF\n`hteam watch`\nEOF"),
-        ("watch", "cat <<'EOF'\nx\nEOF\nhteam watch &"),
-        ("watch", "printf '%s\\n' '<<EOF'\nhteam watch &"),
-        ("watch", "echo hi # <<EOF\nhteam watch &"),
-        ("watch", "echo \"열린 따옴표\nhteam watch &"),
+        ("watch", "cat >> notes.md <<EOF\nhteam watch\nEOF"),  # 따옴표 없는 끝 표시
+        ("watch", "cat <<'EOF'\nx\nEOF\nhteam watch &"),  # 끝 표시 뒤의 줄
+        ("watch", "cat <<'EOF'\nEOF\nhteam watch &\nEOF"),  # 끝 표시가 먼저 나온다
+        ("watch", "cat >> a <<'EOF'\nhteam watch\n"),  # 끝 표시 없음
+        ("watch", "mkdir -p m && cat > m/a.md <<'EOF'\nhteam watch\nEOF"),  # 앞에 다른 명령
         ("watch", "cat <<'EOF' | sh\nhteam watch\nEOF"),
+        ("watch", "cat <<'EOF' > >(bash)\nhteam watch\nEOF"),
         ("watch", "bash <<'EOF'\nhteam watch\nEOF"),
-        ("watch", "eval \"$(cat <<'EOF'\nhteam watch\nEOF\n)\""),
+        ("watch", "bash < <(\ncat <<'EOF'\nhteam watch\nEOF\n)"),
+        ("watch", "cat <<1\ncat <<'EOF'\n1\nhteam watch &"),
+        ("watch", "printf '%s\\n' '<<EOF'\nhteam watch &"),
         ("watch", "cat <<<'hteam watch'"),
         ("drive", "cat <<EOF\n$(hteam drive)\nEOF"),
         ("horch", "cat <<'EOF'\nx\nEOF\nhorch worker-list"),
         ("horch", "python3 - <<'EOF'\nhorch\nEOF"),
-        ("horch", "cat <<EOF-X\n본문\nEOF-X\nhorch run-create --objective demo"),  # 끝 표시를 다 읽지 못한다: 원문
-        ("horch", "cat <<'EOF'x\n본문\nEOFx\nhorch run-create --objective demo"),
-        ("horch", "cat <<'EOF' > >(bash)\nhorch run-create --objective demo\nEOF"),  # 프로세스 치환으로 셸에 간다
-        ("watch", "cat <<EOF \\\n| bash\nhteam watch\nEOF"),  # 줄 이음: 원문
+        ("horch", "cat <<EOF-X\n본문\nEOF-X\nhorch run-create --objective demo"),
     )
 
     def judge(self, hook, name, cmd):
@@ -1115,12 +1117,11 @@ class HeredocRuleTest(unittest.TestCase):
         self.assertEqual([c for n, c in self.ALLOW if self.judge(hook, n, c)], [])
         self.assertEqual([c for n, c in self.DENY if not self.judge(hook, n, c)], [])
 
-    def test_strip_keeps_lines_outside_bodies(self):
+    def test_strip_only_the_simple_form(self):
         hook = load_hook()
-        self.assertEqual(hook.strip_heredocs("cat > a <<'EOF'\n본문\nEOF\nls"), "cat > a <<'EOF'\nEOF\nls")
-        self.assertEqual(hook.strip_heredocs("bash <<'EOF'\n본문\nEOF"), "bash <<'EOF'\n본문\nEOF")
-        cmd = "echo \"열린\nhteam watch"
-        self.assertEqual(hook.strip_heredocs(cmd), cmd)  # 해석하지 못하면 원문
+        self.assertEqual(hook.strip_heredocs("cat > a <<'EOF'\n본문\n둘째\nEOF"), "cat > a <<'EOF'\nEOF")
+        for cmd in ("cat > a <<'EOF'\n본문\nEOF\nls", "bash <<'EOF'\n본문\nEOF", "cat > a <<EOF\n본문\nEOF", "ls"):
+            self.assertEqual(hook.strip_heredocs(cmd), cmd)
 ```
 
 - [ ] **Step 2: 시험이 실패하는지 본다**
@@ -1137,87 +1138,29 @@ def horch_denied(cmd: str) -> bool:
 ```
 
 ```python
-# heredoc 시작(설계 9.7 의 2): 끝 표시는 작은따옴표·큰따옴표·역슬래시가 붙으면 따옴표 있는 것(본문이 확장되지 않는다)
-HEREDOC_RE = re.compile(r"<<(-?)[ \t]*(?:'([^'\n]*)'|\"([^\"\n]*)\"|(\\)?([A-Za-z_][A-Za-z0-9_]*))")
-TEXT_SINKS = ("cat", "tee")  # 본문을 글로 옮기기만 하는 명령
-_SEGMENT = re.compile(r";|&&|\|\||\||\(|\{|!|\bthen\b|\bdo\b|\belse\b")
-_RISKY = ("$(", "`", "<(", ">(")  # 명령 치환·프로세스 치환: 본문이 실행으로 이어질 수 있다
-_DELIM_END = " \t;&|<>)"  # 끝 표시 낱말 바로 뒤에 올 수 있는 글자
-
-
-def _text_only(before: str, after: str) -> bool:
-    """heredoc 이 든 단순 명령이 글을 옮기기만 하는가: 첫 낱말(앞의 이름=값 을 건너뛴 것)의 basename 이 cat·tee 이고, 그 줄의
-    heredoc 앞뒤에 명령 치환·프로세스 치환(`> >(bash)` 포함)이 없고, 끝 표시 뒤에 파이프가 없다."""
-    if any(x in before for x in _RISKY) or any(x in after for x in _RISKY + ("|",)):
-        return False
-    words = [w for w in _SEGMENT.split(before)[-1].split() if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=\S*", w)]
-    return bool(words) and os.path.basename(words[0]) in TEXT_SINKS
-
-
-def _heredoc_ops(line: str) -> list[tuple[bool, str, bool, bool]] | None:
-    """한 줄에서 셸 따옴표·주석 밖의 heredoc 시작을 찾는다: [(앞 탭 떼기, 끝 표시, 따옴표 있음, 글만 옮김)]. here-string
-    (`<<<`)은 아니다. 해석하지 못하면 None 이다: 줄 끝에서 따옴표가 닫히지 않는다, 끝 표시 낱말을 다 읽지 못했다
-    (`<<EOF-X`, `<<'EOF'X`), heredoc 이 있는 줄이 역슬래시로 다음 줄에 이어진다."""
-    ops, i, quote = [], 0, None
-    while i < len(line):
-        ch = line[i]
-        if quote == "'":
-            quote = None if ch == "'" else quote
-        elif quote == '"':
-            if ch == "\\":
-                i += 1
-            elif ch == '"':
-                quote = None
-        elif ch == "\\":
-            i += 1
-        elif ch in "'\"":
-            quote = ch
-        elif ch == "#" and (i == 0 or line[i - 1] in " \t;&|("):
-            break
-        elif line.startswith("<<<", i):
-            i += 3
-            continue
-        elif line.startswith("<<", i):
-            m = HEREDOC_RE.match(line, i)
-            if m:
-                if m.end() < len(line) and line[m.end()] not in _DELIM_END:
-                    return None
-                quoted = m.group(2) is not None or m.group(3) is not None or m.group(4) is not None
-                delim = next(g for g in (m.group(2), m.group(3), m.group(5)) if g is not None)
-                ops.append((m.group(1) == "-", delim, quoted, _text_only(line[:i], line[m.end():])))
-                i = m.end()
-                continue
-            i += 2
-            continue
-        i += 1
-    if quote or (ops and line.rstrip().endswith("\\")):
-        return None
-    return ops
+# 본문을 지워 보는 heredoc(설계 9.7 의 2): 명령 전체가 cat·tee 한 번으로 글을 파일에 옮기는 꼴이고, 끝 표시에 따옴표가 있고
+# (본문이 확장되지 않는다), 마지막 줄이 끝 표시다. 그 밖은 원문으로 본다(heredoc 을 해석하는 일반 규칙은 두지 않는다)
+_PATH = r"[\w./~-]+"
+_SIMPLE_HEREDOC = re.compile(
+    rf"\s*(?:cat|tee)(?:\s+(?:>>?\s*{_PATH}|{_PATH}))*\s+<<(-?)\s*(['\"])([A-Za-z_][A-Za-z0-9_]*)\2(?:\s+>>?\s*{_PATH})*\s*")
 
 
 def strip_heredocs(cmd: str) -> str:
-    """판정 셋이 보는 명령(설계 9.7 의 2): cat·tee 로 글을 옮기는 heredoc 의 본문을 지운다. 끝 표시에 따옴표가 없고 본문에
-    `$(`·백틱이 있으면 그 본문은 남긴다(실행된다). 다른 명령의 heredoc 본문도 남긴다. 해석하지 못하면 원문이다. 순수 함수다."""
+    """판정 셋이 보는 명령(설계 9.7 의 2). 명령 전체가 `cat`·`tee` 한 번(선택지·공백 없는 경로·그 경로로의 `>`·`>>`)과 따옴표
+    있는 끝 표시이고 마지막 줄만 끝 표시면 본문을 지운 `<첫 줄>\n<끝 표시 줄>` 이다. 아니면 원문 그대로다. 순수 함수다."""
     lines = cmd.split("\n")
-    out, i = [], 0
-    while i < len(lines):
-        line = lines[i]
-        out.append(line)
-        i += 1
-        ops = _heredoc_ops(line)
-        if ops is None:
-            return cmd
-        for tabs, delim, quoted, text_only in ops:
-            body = []
-            while i < len(lines) and (lines[i].lstrip("\t") if tabs else lines[i]) != delim:
-                body.append(lines[i])
-                i += 1
-            if not text_only or (not quoted and any("$(" in b or "`" in b for b in body)):
-                out.extend(body)
-            if i < len(lines):
-                out.append(lines[i])  # 끝 표시 줄
-                i += 1
-    return "\n".join(out)
+    if lines and lines[-1] == "":
+        lines.pop()
+    if len(lines) < 2:
+        return cmd
+    m = _SIMPLE_HEREDOC.fullmatch(lines[0])
+    if not m:
+        return cmd
+    tabs, delim = m.group(1) == "-", m.group(3)
+    ends = [i for i, line in enumerate(lines[1:], 1) if (line.lstrip("\t") if tabs else line) == delim]
+    if ends != [len(lines) - 1]:
+        return cmd
+    return f"{lines[0]}\n{lines[-1]}"
 
 
 def horch_denied(cmd: str) -> bool:
@@ -1605,6 +1548,8 @@ class EvalTest(unittest.TestCase):
                                         "overused_body_le_40": False, "cluster_zero": True})
         hit = run("#1e3a8a", "oklch(0.6 0.15 120)", "oklch(0.6 0.15 210)")
         self.assertEqual(ev.metrics([hit], OVERUSED)["overused_color_hits"], 1)
+        variant = run("oklch(0.6 0.15 30)", "oklch(0.6 0.15 120)", "oklch(0.6 0.15 210)", body_font="Pretendard Variable")
+        self.assertEqual(ev.metrics([variant], OVERUSED)["overused_body"], 1.0)
 
     def test_judge_prompt_tolerates_missing_optional_fields(self):
         import tempfile
@@ -1612,13 +1557,13 @@ class EvalTest(unittest.TestCase):
             folder = Path(tmp)
             r = run("oklch(0.6 0.15 30)", "oklch(0.6 0.15 120)", "oklch(0.6 0.15 210)")
             del r["output"]["A"]["idea"]  # 유효 조건에 들지 않는 필드
-            r["output"]["B"]["mood"] = "가|나"  # 표를 깨는 글자
+            r["output"]["B"]["mood"] = "가|나\n둘째 줄"  # 표를 깨는 글자와 개행
             (folder / "budget-1.json").write_text(json.dumps({"brief": "budget", "rep": 1, **r}, ensure_ascii=False),
                                                   encoding="utf-8")
             text = ev.judge_prompt(folder).read_text(encoding="utf-8")
         self.assertIn("| budget | 1 | A |", text)
         self.assertIn("| 봄 시장 좌판의 종이 간판 | - |", text)
-        self.assertIn("가/나", text)
+        self.assertIn("| 가/나 둘째 줄 |", text)
 ```
 
 - [ ] **Step 2: 시험이 실패하는지 본다**
@@ -1830,7 +1775,8 @@ def metrics(runs: list[dict], overused: dict) -> dict:
         "entropy": round(-sum(s * math.log2(s) for s in shares), 3),
         "blue_violet": round((sum(1 for h in hues if 240 <= h < 300) + failed * 3) / slots, 3),
         "spread_ge_60": round(sum(1 for r in valid if spread(r) >= 60) / max(total, 1), 3),
-        "overused_body": round((sum(1 for o in options if _font(o["body_font"]) in fonts) + failed * 3) / slots, 3),
+        "overused_body": round((sum(1 for o in options if any(_font(o["body_font"]).startswith(f) for f in fonts))
+                                + failed * 3) / slots, 3),  # 'Pretendard Variable' 같은 표기 변형도 센다
         "overused_color_hits": hits(pool), "tailwind_ramp_hits": hits(ramp),
         "cluster": sum(1 for o in options if is_cluster(o)),
         "postures": dict(Counter(o["posture"] for o in options)),
@@ -1884,7 +1830,7 @@ def judge_prompt(folder: Path) -> Path:
             continue
         for k in "ABC":
             o = r["output"][k]
-            cell = {name: str(o.get(name) or "-").replace("|", "/") for name in
+            cell = {name: " ".join(str(o.get(name) or "-").replace("|", "/").split()) for name in
                     ("bg", "ink", "accent", "heading_font", "heading_class", "body_font", "posture", "mood", "idea")}
             rows.append(f"| {r['brief']} | {r['rep']} | {k} | {cell['bg']} / {cell['ink']} / {cell['accent']} | "
                         f"{cell['heading_font']}({cell['heading_class']}) / {cell['body_font']} | {cell['posture']} | "
