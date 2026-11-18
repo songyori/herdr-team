@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tests.helpers import BASE_CONFIG, ROOT, TeamCase
+from tests.helpers import BASE_CONFIG, ROOT, VALID_BODY, TeamCase
 from hteam import compose, designdiff, gitio, lint, state, testgate, textlint
 from hteam.errors import HteamError
 from hteam.paths import Project
@@ -393,6 +393,68 @@ class TextSectionTest(ReviewCase):
         self.assertIn("판단한다):\n- 자동 검사 실패: RuntimeError: 대상 판정 실패\n\n## REVIEW_FILE 형식", text)
 
 
+REPRO_LINE = "- 재현 시험: 고치기 전에 실패하는 시험을 먼저 쓴다(보고서 ### 재현 시험)"
+
+
+class GuardSectionTest(ReviewCase):
+    """검사 약화 의심 절과 리뷰 기준 더하기(설계 6.6 의 1·2): 직무와 관계없이 붙고, 없으면 절이 없고, 실패해도 리뷰가 계속된다.
+    재현 시험 태스크면 기준 끝에 한 줄."""
+
+    def prompt(self, files, report=None, **kw):
+        self.started("T-001", "developer", **kw)
+        self.assertEqual(self.act_work("T-001", files, report=report)[0], 0)
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual((code, out.get("status")), (0, "reviewing"), out)
+        return (self.state_dir / "tasks/T-001/r1-review-a1.md").read_text(encoding="utf-8")
+
+    def test_guard_section_lists_added_suppressions(self):
+        text = self.prompt({"src/app.ts": "// @ts-ignore\nconst a: number = 'x';\n"})
+        self.assertIn("## 검사 약화 의심\n자동 검사(`hteam review`, 이 태스크의 대상 커밋.", text)
+        self.assertIn('- src/app.ts:1: 억제 주석 "@ts-ignore"(// @ts-ignore)\n\n## REVIEW_FILE 형식', text)
+
+    def test_no_section_without_findings(self):
+        text = self.prompt({"src/app.py": "print('x')\n"})
+        self.assertNotIn("## 검사 약화 의심", text)
+        self.assertNotIn("{{", text)
+        self.assertNotIn("\n\n\n", text)
+
+    def test_check_failure_is_one_line_and_review_goes_on(self):
+        from hteam import guardlint, review
+        self.started("T-001", "developer")
+        self.assertEqual(self.act_work("T-001", {"src/app.py": "x = 1\n"})[0], 0)
+        with mock.patch.dict(os.environ, self._env("drive", None, None), clear=True), \
+                mock.patch.object(guardlint, "guard_lint", side_effect=RuntimeError("터졌다\n둘째")):
+            out = review.review(self.p, "T-001")
+        self.assertEqual(out["status"], "reviewing", out)
+        text = (self.state_dir / "tasks/T-001/r1-review-a1.md").read_text(encoding="utf-8")
+        self.assertIn("판단한다):\n- 자동 검사 실패: RuntimeError: 터졌다 둘째\n\n## REVIEW_FILE 형식", text)
+
+    def test_criteria_sentences(self):
+        text = self.prompt({"src/app.py": "print('x')\n"})
+        self.assertIn("hteam 테스트 실패, 이 태스크가 더한 억제 주석·시험 건너뛰기·지운 시험·약해진 단언 가운데 보고서에 이유가 "
+                      "없거나 이유가 타당하지 않은 것, 아래 디자인·문구 기준이 P1 으로 정한 것.", text)
+        self.assertIn("3. 버그, 보안, 회귀 위험. 태스크 범위를 넘는 변경(무관한 이름 바꾸기, 주석 지우기, 리팩터링)은 P2 로 "
+                      "`## 후속` 에 적는다. 보고서 `### 건드리지 않고 본 것` 의 항목은 지적하지 않는다.\n", text)
+        self.assertIn("2. 직무 문서와 프로젝트 규칙(위에 있으면)의 규칙과 품질 기준을 지키는가.\n", text)
+        self.assertNotIn("재현 시험을 요구한다", text)
+
+    def test_repro_task_adds_the_last_criterion(self):
+        body = VALID_BODY.replace("표준 라이브러리만.", "표준 라이브러리만.\n" + REPRO_LINE)
+        text = self.prompt({"src/app.py": "print('x')\n"}, report="## r1\n### 재현 시험\n- 실패 뒤 통과\n", body=body)
+        self.assertIn("4. 수정 라운드면 이전 리뷰의 P1 지적이 모두 반영됐는가.\n5. 사양이 재현 시험을 요구한다. 보고서 "
+                      "`### 재현 시험` 의 실패 출력이 사양의 결함과 맞고", text)
+        self.assertIn("고치기 전 코드로 되돌려 돌리지 않는다(git 쓰기 금지).\n\n## 등급과 판정", text)
+        # developer.md 의 예외(시험으로 재현할 수 없는 결함)는 이유와 대신 확인한 방법을 본다(Codex 계획 리뷰 p13c r1)
+        self.assertIn("보고서가 시험으로 재현할 수 없다고 적었으면(화면에서만 보이는 결함, 외부 환경) 실패 출력 대신 그 이유와 대신 "
+                      "확인한 방법이 타당한지 본다.", text)
+        from hteam import config, specs
+        st = self.task_state("T-001")
+        rd = {**st["rounds"][-1], "note": "더 고친다"}
+        text = compose.review_prompt(self.p, config.load(self.p), specs.load(self.p, "T-001"), rd,
+                                     st["rounds"][-1]["reviews"][0])
+        self.assertIn("요청을 따른 쪽을 맞는 것으로 본다.\n6. 사양이 재현 시험을 요구한다.", text)
+
+
 class TextTemplateTest(unittest.TestCase):
     """문구 규칙·리뷰 문구 절·리뷰 프롬프트 템플릿(설계 11.7·6.2)."""
 
@@ -418,7 +480,7 @@ class TextTemplateTest(unittest.TestCase):
                        "`### 문구 점검` 을 요구하면", "이 태스크가 추가한 줄의 의심 위치"):
             self.assertIn(needle, text)
         prompt = (ROOT / "templates/review-prompt.md").read_text(encoding="utf-8")
-        self.assertIn("\n\n{{tests}}{{round_scope}}{{group}}{{design}}{{text}}## REVIEW_FILE 형식\n", prompt)
+        self.assertIn("\n\n{{tests}}{{round_scope}}{{group}}{{design}}{{text}}{{guard}}## REVIEW_FILE 형식\n", prompt)
         for name, slots in (("review-tests.md", ["test_lines"]),
                             ("review-group.md", ["group_key", "group_tasks", "full_lines", "full_tail"]),
                             ("review-round.md", ["round", "prev", "prev_review", "prev_head", "new_commits", "prev", "prev",

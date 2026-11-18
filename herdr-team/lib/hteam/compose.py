@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 
-from . import designdiff, gitio, lint, specs, state, testgate, textlint, workspace
+from . import designdiff, gitio, guardlint, lint, specs, state, testgate, textlint, workspace
 from .errors import FAIL, USAGE, HteamError
 from .paths import SHIM, TEMPLATES, handoff_rel, report_rel, review_rel
 from .util import fill, show
@@ -320,6 +320,22 @@ def text_findings(p, files: list[str], shas: list[str]) -> list[str] | None:
     return guarded(lambda: textlint.text_lint(p.work_root, files, shas))
 
 
+def guard_findings(p, files: list[str], shas: list[str]) -> list[str]:
+    """검사 약화 의심 경고 목록(설계 6.6 의 1): guardlint 를 guarded 로 감싼다(실패하면 failure 한 줄이고 리뷰는 계속한다).
+    직무와 관계없다. `hteam lint --task` 의 guard_findings 도 이것이다."""
+    return guarded(lambda: guardlint.guard_lint(p.work_root, files, shas))
+
+
+GUARD_INTRO = ("자동 검사(`hteam review`, 이 태스크의 대상 커밋. 문자열 안의 낱말도 잡고 정당한 쓰임도 있으니 직접 열어 보고, "
+               "보고서에 적은 이유와 함께 위 P1 정의로 판단한다):")
+
+
+def guard_section(p, files: list[str], shas: list[str]) -> str:
+    """리뷰 프롬프트의 검사 약화 의심 절(설계 6.6 의 1). 찾은 것(실패 줄 포함)이 없으면 빈 문자열."""
+    found = guard_findings(p, files, shas)
+    return f"## 검사 약화 의심\n{GUARD_INTRO}\n{findings_list(found)}\n\n" if found else ""
+
+
 def design_section(p, cfg, spec, files: list[str], shas: list[str], agent: str = "codex") -> str:
     """리뷰 프롬프트의 디자인 절(설계 6.2): director·designer·developer 태스크이고 설정에 `[roles.director]` 가 있을
     때만 디자인 기준(11장)과 자동 검사 경고(design_findings)를 넣는다. 아니면 빈 문자열. 렌더링에 쓸 도구는 리뷰어
@@ -423,6 +439,11 @@ def group_section(p, spec, tests: dict | None) -> str:
 
 
 REQUEST_SCOPE = "4. 위 기준 5 의 이번 라운드 요청을 반영했는지. 반영하지 않았으면 P1 이다.\n"
+# 재현 시험 태스크의 기준 끝 한 줄(설계 6.6 의 2). 번호는 이번 라운드 요청 줄(5)이 있으면 6, 없으면 5 다
+REPRO_RULE = ("사양이 재현 시험을 요구한다. 보고서 `### 재현 시험` 의 실패 출력이 사양의 결함과 맞고 그 시험이 대상 커밋에 있는지"
+              "(이미 실패하던 시험을 쓴 회귀 수정이면 그 시험이 저장소에 있는지) 본다. 보고서가 시험으로 재현할 수 없다고 "
+              "적었으면(화면에서만 보이는 결함, 외부 환경) 실패 출력 대신 그 이유와 대신 확인한 방법이 타당한지 본다. 고치기 전 "
+              "코드로 되돌려 돌리지 않는다(git 쓰기 금지).")
 
 
 def round_section(p, tid: str, rd: dict, rounds: list[dict], commits: list[dict], requested: bool) -> str:
@@ -483,7 +504,8 @@ def review_prompt(p, cfg, spec, rd: dict, att: dict, rounds: list[dict] | None =
     (없으면 그대로). 사양에 issue 가 있으면 태스크 줄 바로 뒤에 이슈 줄(issue_line)을 넣는다. 작업 공간 태스크의 대상 커밋에
     병합 커밋이 있으면 작업 공간 줄 뒤에 그 안내 줄(merge_commit_line)을 넣는다.
     기준 뒤에 프로젝트 점검표(review_extra), 테스트 절(tests_section), 묶음 절(group_section), 디자인 절(design_section),
-    문구 절(text_section) 순서로 붙인다. 없는 절은 빈 문자열이다. 점검표를 읽지 못한 경고는 warnings(리스트면)에 더한다.
+    문구 절(text_section), 검사 약화 의심 절(guard_section) 순서로 붙인다. 없는 절은 빈 문자열이다. 재현 시험 태스크
+    (specs.repro_task)면 기준 끝에 REPRO_RULE 한 줄을 더한다. 점검표를 읽지 못한 경고는 warnings(리스트면)에 더한다.
     관문 결과는 시도 기록 inputs.tests 를 쓴다(관문을 다시 돌리지 않는다). 라운드 2 부터는
     테스트 절 다음에 라운드 절(round_section, rounds 는 상태의 라운드 기록)을 붙인다. 리뷰어는 작업 루트에서 뜨므로 상태 루트
     파일(사양·직무 문서·이번 라운드 작업 사양·관문 로그, 기준 절·점검표 안의 팀 파일)은 메인 사본을 가리킨다(p.state_ref·
@@ -504,6 +526,8 @@ def review_prompt(p, cfg, spec, rd: dict, att: dict, rounds: list[dict] | None =
         request = "".join(f"\n- 이번 라운드 {label}: {text}" for label, text in asks) + f"\n- 이번 라운드 작업 사양: `{work}`"
         request_rule = (f"\n5. 이번 라운드 요청(위 {labels})을 반영했는가. 요청이 사양의 Acceptance 를 바꾸면 요청을 따른 쪽을 "
                         "맞는 것으로 본다.")
+    if specs.repro_task(spec):  # 재현 시험 태스크(설계 5.11 의 4, 6.6 의 2)
+        request_rule += f"\n{6 if asks else 5}. {REPRO_RULE}"
     extra, warned = review_extra(p)
     if warned and warnings is not None:
         warnings.append(warned)
@@ -522,6 +546,6 @@ def review_prompt(p, cfg, spec, rd: dict, att: dict, rounds: list[dict] | None =
                 round_scope=round_section(p, tid, rd, rounds or [], commits, bool(asks)),
                 group=group_section(p, spec, tests),
                 design=team_refs(p, design_section(p, cfg, spec, files, shas, att.get("agent") or "codex")),
-                text=team_refs(p, text_section(p, files, shas)),
+                text=team_refs(p, text_section(p, files, shas)), guard=guard_section(p, files, shas),
                 commits="\n".join(f"- {c['sha'][:10]} {c['subject']}" for c in commits) or "- 없음",
                 files="\n".join(f"- `{show(f)}`" for f in files) or "- 없음").rstrip() + "\n"

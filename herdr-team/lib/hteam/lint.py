@@ -567,7 +567,7 @@ def design_lint(root: Path, files: list[str]) -> list[str]:
 def lint_task(p, tid: str) -> dict:
     """태스크의 리뷰 대상 커밋(review.target_commits)이 바꾼 파일을 리뷰 프롬프트와 같은 규칙으로 검사한다. 읽기만 한다.
     findings 는 디자인 절의 경고 목록(디렉터 직무 유무와 관계없이), text_findings 는 문구 절의 경고 목록
-    (`.herdr-team/text-rules.md` 가 없으면 None)."""
+    (`.herdr-team/text-rules.md` 가 없으면 None), guard_findings 는 검사 약화 의심 절의 경고 목록(설계 6.6 의 1)."""
     from . import compose, review, state, workspace  # review·compose 가 이 모듈을 쓴다. 불러오는 순서가 꼬이지 않게 여기서 가져온다
     st = state.require(p, tid)
     p = workspace.view(p, st)  # 커밋·파일은 그 태스크의 작업 루트에서 본다(설계 5.10.2)
@@ -575,7 +575,7 @@ def lint_task(p, tid: str) -> dict:
     files = review.changed_files(p, commits, st.get("base"))
     shas = [c["sha"] for c in commits]
     return {"task": tid, "files": files, "findings": compose.design_findings(p, files, shas),
-            "text_findings": compose.text_findings(p, files, shas)}
+            "text_findings": compose.text_findings(p, files, shas), "guard_findings": compose.guard_findings(p, files, shas)}
 
 
 def _cmd(args) -> dict:

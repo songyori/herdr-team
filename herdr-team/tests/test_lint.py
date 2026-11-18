@@ -417,6 +417,18 @@ class LintCommandTest(TeamCase):
                                            "src/app.css:1: 과용 기본 색 1개(#1e3a8a Tailwind blue-900) — design-rules §1 의 11"],
                          out)
 
+    def test_lint_task_guard_findings(self):
+        # 리뷰 프롬프트의 검사 약화 의심 절과 같은 목록이다(설계 6.6 의 1). 직무와 관계없다
+        self.write_spec("T-001", "developer")
+        state.create(self.p, "T-001", "developer")
+        code, out = self.hteam("lint", "--task", "T-001", as_=None)
+        self.assertEqual((code, out["guard_findings"]), (0, []), out)
+        self.assertEqual(self.hteam("start", "T-001")[0], 0)
+        self.act_work("T-001", {"src/app.test.ts": "it.skip('저장', () => {});\n"})
+        code, out = self.hteam("lint", "--task", "T-001", as_=None)
+        self.assertEqual(out["guard_findings"], ["src/app.test.ts:1: 시험 건너뛰기 \".skip(\"(it.skip('저장', () => {});)"],
+                         out)
+
     def test_scaffold_copies_design_rules(self):
         desc = self.tmp / "desc.txt"
         desc.write_text("앱\n")
