@@ -44,7 +44,16 @@ class ScanTest(unittest.TestCase):
                  "혁신적인 기능": '상투어 "혁신적"', "Seamless 결제 경험": '상투어 "Seamless"',
                  "편리하다라고 할 수 있다": 'hedging "라고 할 수 있"', "물론입니다 바로 해요": '챗봇 잔재 "물론입니다"',
                  "그리고, 저장한다": '쉼표 "그리고,"', "저장하며, 보낸다": '쉼표 "며,"', "확인해서, 보낸다": '쉼표 "해서,"',
-                 "저장하고, 보낸다": '쉼표 "고,"'}
+                 "저장하고, 보낸다": '쉼표 "고,"',
+                 # 13단계(설계 11.14 의 2)
+                 "잠시 뒤 문제가 발생했습니다": '상용구 오류 "문제가 발생했습니다"', "오류가 발생했습니다": '상용구 오류 "오류가 발생했습니다"',
+                 "문제가 생겼습니다": '상용구 오류 "문제가 생겼습니다"', "당신의 계정": '2인칭 "당신의"', "당신이 고른": '2인칭 "당신"',
+                 "성공적으로 저장했어요": '상투어 "성공적으로"', "다양한 기능": '상투어 "다양한"', "효율적인 관리": '상투어 "효율적"',
+                 "원활한 결제": '상투어 "원활"', "한눈에 보는 요약": '상투어 "한눈에"', "손쉽게 시작": '상투어 "손쉽게"',
+                 "간편하게 결제": '상투어 "간편하게"', "올인원 앱": '상투어 "올인원"', "차원이 다른 속도": '상투어 "차원이 다른"',
+                 "정보를 가지고 있어요": '번역투 "가지고 있"', "관리자에 의해 지워졌어요": '번역투 "에 의해"',
+                 "화면에서의 동작": '번역투 "에서의"', "앱으로의 이동": '번역투 "으로의"', "시사하는 바가 크다": '번역투 "시사하는 바"',
+                 "주목할 만하다": '번역투 "주목할 만하"'}
         for text, want in cases.items():
             self.assertIn(want, self.heads(f'const a = "{text}";'), text)
         self.assertEqual(self.heads('const a = "저장이 안되요";'), ['오탈자 "안되요"'])  # "되요" 로 다시 세지 않는다
@@ -111,12 +120,64 @@ class ScanTest(unittest.TestCase):
         for word in ("필요", "중요", "개요", "주요", "수요", "아니요", "좋아요"):
             self.assertEqual(ending_styles(f'"{word}"'), set(), word)
 
-    def test_long_line_excerpt_is_cut(self):
+    def test_excerpt_is_around_the_match(self):
+        # 설계 11.14 의 2: 줄 앞 60자 대신 일치 위치 앞뒤 30자(시안 HTML 의 수천 자 줄에서 위치를 찾게)
         text = 'const a = "' + "가" * 80 + '됬";'
-        item = self.found(text)[0]
-        snippet = item.split("(", 1)[1][:-1]
-        self.assertEqual(len(snippet), 60)
-        self.assertTrue(snippet.endswith("…"))
+        self.assertEqual(self.found(text), ['src/app.tsx:1: 오탈자 "됬"(…' + "가" * 30 + '됬";)'])
+        text = 'x = "' + "가" * 40 + "됬" + "나" * 40 + '"'
+        self.assertEqual(self.found(text)[0].split("(", 1)[1], "…" + "가" * 30 + "됬" + "나" * 30 + "…)")
+        # Markdown 의 인라인 코드는 같은 길이의 공백으로 바꿔 보므로 발췌 위치가 맞다
+        self.assertEqual(self.found("앞 `코드` 됬다\n", "docs/user/a.md"), ['docs/user/a.md:1: 오탈자 "됬"(앞 `코드` 됬다)'])
+
+    def test_repeat_counts_per_file(self):
+        text = ('a = "A가 아니라 B예요";\nb = "C가 아니라 D예요";\n' + 'c = "카드를 통해 결제해요";\n' * 2
+                + 'd = "앱을 통해 받아요";\n' + 'e = "결제에 대해 알려요";\n' * 2)
+        self.assertEqual(self.found(text), ['src/app.tsx:1: 반복 "아니라" 2번(줄: 1, 2)',
+                                            'src/app.tsx:3: 반복 "을 통해·를 통해" 3번(줄: 3, 4, 5)'])
+        self.assertEqual(self.found('a = "이것이다 저것이다";\nb = "그것입니다";\n'),
+                         ['src/app.tsx:1: 반복 "것이다·것입니다" 3번(줄: 1, 2)'])
+        self.assertEqual(self.found('a = "에 대해 에 대해";\nb = "아니라";\n'), [])  # 문턱 아래
+
+    def test_data_sample_content_is_not_checked(self):
+        text = ('<li data-sample>사용자 댓글: 완료됬어요\n여러 줄 됬어요</li>\n<li>저장됬어요</li>\n'
+                '<div data-sample="1"><div>안쪽됬</div>바깥됬</div>\n<p data-sample />자기 닫음됬\n'
+                '<p data-sample-id="x">표시 아님됬</p>\n')
+        found = self.found(text, "docs/design/screens/home/index.html")
+        self.assertEqual([x.split(":", 2)[1] for x in found], ["3", "4", "5", "6"])
+        self.assertIn('오탈자 "됬"(…ta-sample="1"><div>안쪽됬</div>바깥됬</div>)', found[1])  # 발췌는 줄 원문이다
+        self.assertEqual(len(self.found("<p data-sample>됬</p>\n", "docs/user/a.md")), 1)  # Markdown 은 보지 않는다
+        self.assertEqual(textlint.mask_samples("<b data-sample>가\n나</b>끝"), "<b data-sample> \n </b>끝")
+        self.assertEqual(textlint.mask_samples("<b data-sample>닫지 않음"), "<b data-sample>닫지 않음")
+        # 속성 이름이 정확히 data-sample 일 때만이다. 속성 값 안의 글자는 이름이 아니다(Codex 계획 리뷰 p13c r2)
+        real = ('<p class="data-sample">저장됬어요</p>\n<p title=\'data-sample 예시\'>저장됬어요</p>\n'
+                '<p data-sample-id="x">저장됬어요</p>\n<Item onClick={() => a > b} data-sample>가짜됬</Item>\n'
+                '<img data-sample src="a.png">이미지 뒤됬\n<li {...props} DATA-SAMPLE>가짜됬</li>\n')
+        found = self.found(real, "src/app.tsx")
+        self.assertEqual([x.split(":", 2)[1] for x in found], ["1", "2", "3", "5"])
+
+    def test_sample_scan_stays_linear(self):
+        # 빈 요소와 닫히지 않은 요소가 많아도 닫는 태그를 찾으려 파일 끝까지 다시 훑지 않는다(Codex 계획 리뷰 p13c r2)
+        import time
+        voids = '<img data-sample src="avatar.png"><p>저장했어요</p>\n' * 25000
+        unclosed = "<div data-sample><p>저장했어요</p>\n" * 25000
+        for text in (voids, unclosed):
+            start = time.monotonic()
+            rows = textlint.visible_lines("docs/design/screens/home/index.html", text)
+            self.assertLess(time.monotonic() - start, 1.5, text[:20])
+            self.assertEqual(len(rows), 25000)  # 빈 요소·닫히지 않은 요소는 아무것도 지우지 않는다
+
+    def test_long_lines_stay_linear(self):
+        # 마침표 없는 긴 줄에서 복붙 문장 찾기와 종결 낱말 찾기가 제곱 시간이 되지 않는다(Codex 계획 리뷰 p13c r1)
+        import time
+        spaced = "a = '" + "가나다 라마바 " * 25000 + "'"  # 글자 20만(약 200 KB 이상), 마침표 없음
+        solid = "b = '" + "가" * 200000 + "x"  # 띄어 쓰지 않은 한글, 따옴표로 닫지 않음
+        for line in (spaced, solid):
+            start = time.monotonic()
+            rows = textlint.added_rows("src/app.tsx", line, {line})
+            textlint.scan_rows("src/app.tsx", rows, [])
+            self.assertEqual(textlint.copies([("src/app.tsx", rows)]), [])
+            self.assertEqual(textlint.labels([("src/app.tsx", rows)]), [])
+            self.assertLess(time.monotonic() - start, 1.5, line[:10])
 
 
 class GlossaryTest(unittest.TestCase):
@@ -213,6 +274,35 @@ class GitTextLintTest(TeamCase):
         self.commit("src/b.md", "b\n", "main 가지")
         self.git("merge", "--no-ff", "-q", "-m", "[T-001] 병합", "side")
         self.assertEqual(text_lint(self.proj, ["src/a.md"], [self.head()]), ['src/a.md:1: 오탈자 "됬"(저장됬다)'])
+
+    def test_copied_sentences_and_label_forms_across_files(self):
+        same = "변경 내용은 저장하면 바로 적용됩니다."
+        a = self.commit("src/a.tsx", "".join(f'a{n} = "{same}";\n' for n in range(3)) + "<button>저장</button>\n",
+                        "[T-001] a")
+        b = self.commit("src/b.tsx", "".join(f'b{n} = "{same}";\n' for n in range(2)) + "<button>저장하기</button>\n",
+                        "[T-001] b")
+        self.assertEqual(text_lint(self.proj, ["src/a.tsx", "src/b.tsx"], [a, b]),
+                         [f'src/a.tsx:1: 복붙 "{same}" 5번',
+                          'src/b.tsx:3: 라벨 형태 혼용 "저장"·"저장하기"(처음 "저장": src/a.tsx:4)'])
+        self.assertEqual(text_lint(self.proj, ["src/a.tsx"], [a]), [])  # 한 파일에 세 번, 라벨은 한 형태
+        self.assertEqual(textlint.copies([("x.md", [(1, "", "짧다. 아주 짧은 문장.")] * 6)]), [])  # 10자 미만
+
+    def test_one_megabyte_changed_file(self):
+        import time
+        line = "<p>저장하면 바로 적용돼요. 다음 화면으로 가요</p>\n"
+        n = 1_000_000 // len(line.encode("utf-8"))
+        sha = self.commit("src/big.html", line * n, "[T-001] 큰 화면")
+        start = time.monotonic()
+        found = text_lint(self.proj, ["src/big.html"], [sha])
+        self.assertLess(time.monotonic() - start, 1.5)
+        self.assertEqual(found, [f'src/big.html:1: 복붙 "저장하면 바로 적용돼요." {n}번'])
+
+    def test_added_text_files_for_the_precheck(self):
+        sha = self.commit("src/a.tsx", '// 한글 주석\nconst a = 1;\n', "[T-001] 주석")
+        other = self.commit("src/b.tsx", '<p data-sample>가짜 댓글</p>\n<p>저장</p>\n', "[T-001] 화면")
+        self.assertEqual(textlint.added_text_files(self.proj, ["src/a.tsx", "src/b.tsx"], [sha, other]), ["src/b.tsx"])
+        self.commit("src/c.tsx", '<p data-sample>가짜 댓글</p>\n', "[T-001] 표본만")
+        self.assertEqual(textlint.added_text_files(self.proj, ["src/c.tsx"], [self.head()]), [])
 
     def test_diff_lines(self):
         first = self.commit("src/a.txt", "하나\n++둘\n셋\n", "[T-001] 1")

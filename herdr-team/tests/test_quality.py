@@ -1,4 +1,5 @@
 """13단계 코드 품질 규칙(설계 5.11 의 2–4): 작업 규칙 7번·3번, developer 의 재현 시험, planner·메인 규칙의 표시 줄, 표시 줄 읽기."""
+import re
 import unittest
 
 from tests.helpers import ROOT, VALID_BODY
@@ -63,6 +64,32 @@ class PlanWarningDocTest(unittest.TestCase):
         tasks = section(text, "tasks.toml 형식")
         for needle in ("`acceptance` 를 5개 이하로", "`title` 에 \"및\"·\"그리고\" 를 쓰지 않는다", "`warnings`"):
             self.assertIn(needle, tasks)
+
+
+class WriterChecklistTest(unittest.TestCase):
+    """작성자 점검표(설계 11.14 의 3), 사람 글 표시, text-rules §4 더하기(11.14 의 1)."""
+
+    def test_writer_checklist(self):
+        for role in ("developer", "designer"):
+            rules = section(read(f"roles/{role}.md"), "문구 규칙")
+            for needle in ('§4 "항상 고친다" 항목마다 한 줄', "`<번호>. 지킴`", "`<번호>. 고침: <위치>`", "`<번호>. 해당 없음`",
+                           "§1 보존을 지켰는지", "리뷰 사전 검사가 돌려보낸다"):
+                self.assertIn(needle, rules, role)
+        self.assertIn("`data-sample` 속성을 붙인다", section(read("roles/designer.md"), "문구 규칙"))
+
+    def test_text_rules_section_four(self):
+        text = read("text-rules.md")
+        four = section(text, "§4 AI 티·번역투")
+        always = four[four.index("항상 고친다:"):four.index("반복될 때만")]
+        self.assertEqual([int(n) for n in re.findall(r"(?m)^(\d+)\. ", always)], list(range(1, 13)))
+        for needle in ('"문제가 발생했습니다"', "한눈에, 손쉽게, 간편하게, 올인원, 차원이 다른, 성공적으로, 다양한, 효율적, 원활",
+                       '2인칭 "당신"', "같은 문장을 여러 곳에 복사하지 않는다"):
+            self.assertIn(needle, always)
+        repeat = four[four.index("반복될 때만"):four.index("고치지 않는다(과교정 방지)")]
+        for needle in ('"~할 수 있다"(정책 문서의 권한·가능성 표현은 §1 의 3번이 우선한다)', '"가지고 있다"', '"~에 의해"',
+                       '"~에서의·~으로의"'):
+            self.assertIn(needle, repeat)
+        self.assertIn("k-skill `korean-humanizer`(https://github.com/NomaDamas/k-skill, MIT)", section(text, "출처"))
 
 
 class ReproTaskTest(unittest.TestCase):
