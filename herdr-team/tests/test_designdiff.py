@@ -42,6 +42,18 @@ class DesignDiffTest(TeamCase):
         sha = self.change({"src/s.html": "<p>가</p>\n"})
         self.assertEqual(len(self.lint(["src/s.html"], [sha])), 1)  # 작은 파일은 그대로 알린다
 
+    def test_oversize_changed_file_suppresses_kept_signals(self):
+        # 링크가 작은 파일에서 1 MiB 넘는 변경 파일로 옮겨 갔으면 남았는지 알 수 없어 보존 신호를 내지 않는다(최종 리뷰 2 라운드)
+        from hteam.lint import MAX_BYTES
+        pad = "x" * 100 + "\n"
+        big = pad * (MAX_BYTES // len(pad) + 10)
+        self.change({"src/big.html": big, "src/s.html": '<a href="/gone">가</a>\n'}, "기존")
+        sha = self.change({"src/big.html": big + '<a href="/gone">가</a>\n', "src/s.html": "<p>가</p>\n"})
+        self.assertEqual(self.lint(["src/big.html", "src/s.html"], [sha]), [])
+        sha = self.change({"src/s.html": '<a href="/gone">가</a>\n'}, "되돌림")
+        sha = self.change({"src/s.html": "<p>가</p>\n"})
+        self.assertEqual(len(self.lint(["src/s.html"], [sha])), 1)  # 큰 파일을 바꾸지 않았으면 그대로 알린다
+
     def test_unbalanced_handler_repeats_are_linear(self):
         # 닫히지 않는 `onClick={` 가 한 줄에 되풀이돼도 값마다 창 안에서 끝난다(최종 리뷰 3)
         import time

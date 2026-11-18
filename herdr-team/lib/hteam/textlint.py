@@ -368,61 +368,145 @@ _HASH_SUFFIXES = frozenset({".py", ".sh", ".rb", ".yml", ".yaml", ".toml"})
 _ANGLE_SUFFIXES = MARKUP | frozenset({".vue", ".svelte"})
 
 
-def strip_eol_comment(rel: str, line: str) -> str:
-    """줄에서 따옴표 밖의 줄 끝 주석을 뺀 글(문구 사전 검사용): `//…`(앞이 `:` 면 주소라 아니다)·같은 줄의 `/* … */`(C 계열·JS·TS·
-    Swift·Kotlin·Dart·Java·Go·CSS), `#…`(`.py .sh .rb .yml .yaml .toml`, 줄 머리나 공백 뒤), `<!-- … -->`(마크업). 따옴표('·\"·`)와
-    역슬래시는 한 번 훑으며 따르고, 문자열·마크업 글 안의 한글은 남긴다. 닫히지 않은 따옴표는 줄 끝까지 문자열이다."""
+_HTML_LIKE = frozenset({".html", ".htm", ".vue", ".svelte"})  # <script>·<style> 블록이 있는 마크업
+_SPECIAL = re.compile(r"[\"'`/\\#<{}$\n]")
+_BLOCK_TAG = re.compile(r"<(script|style)\b([^>]*)>", re.I)
+_SCSS_LANG = re.compile(r"""lang\s*=\s*["']?(scss|less|sass)""", re.I)
+
+
+def comment_free_lines(rel: str, text: str) -> list[str] | None:
+    """파일 전체를 한 번 훑어 줄마다 주석을 뺀 글(문구 사전 검사용, 선형). 상태를 줄을 넘어 따른다: 여러 줄 `/* … */`·`<!-- … -->`,
+    줄을 넘는 백틱 템플릿 문자열(`${…}` 안은 코드로 읽고 중첩한다). `'`·`\"` 는 줄 끝에서 닫힌다. 줄 주석은 `//`(앞이 `:` 면 주소라
+    아니다)와 `#`(`.py .sh .rb .yml .yaml .toml`, 줄 머리나 공백 뒤). `.html .htm .vue .svelte` 는 `<script>`·`<style>` 밖(마크업
+    본문)에서 `<!-- -->` 만 주석이고 그 안은 JS·CSS 규칙이다. `.jsx .tsx` 는 JSX 글을 가려내지 못한다(알려진 한계). 지운 주석은 공백
+    하나로 바꾸고 줄 수는 그대로다(줄 i 의 글은 반환값 [i-1]). 대상이 아닌 확장자는 None."""
     suffix = Path(rel).suffix.lower()
-    slash, hash_, angle = suffix in _SLASH_SUFFIXES, suffix in _HASH_SUFFIXES, suffix in _ANGLE_SUFFIXES
-    if not (slash or hash_ or angle):
-        return line
+    if suffix in _HASH_SUFFIXES:
+        region = "hash"
+    elif suffix in _ANGLE_SUFFIXES:
+        region = "markup"
+    elif suffix in _SLASH_SUFFIXES:
+        region = "code"
+    else:
+        return None
+    detect_tags = suffix in _HTML_LIKE
+    line_ok = suffix not in _BLOCK_ONLY  # style 블록은 lang 으로 바뀐다
     out: list[str] = []
+    buf: list[str] = []
     quote = ""
-    i, n = 0, len(line)
+    stack: list[list] = []  # ["T"] 템플릿 문자열, ["E", 깊이] 그 안의 ${ … }
+    i, n = 0, len(text)
+
+    def drop(end: int) -> int:
+        """i 부터 end 까지가 주석이다: 공백 하나를 남기고 안의 줄바꿈마다 줄을 닫는다."""
+        buf.append(" ")
+        for _ in range(text.count("\n", i, end)):
+            out.append("".join(buf))
+            buf.clear()
+        return end
+
     while i < n:
-        c = line[i]
+        m = _SPECIAL.search(text, i)
+        if m is None:
+            buf.append(text[i:])
+            break
+        j = m.start()
+        if j > i:
+            buf.append(text[i:j])
+        c = text[j]
+        i = j + 1
+        if c == "\n":
+            out.append("".join(buf))
+            buf.clear()
+            quote = ""
+            continue
+        top = stack[-1] if stack else None
+        if top is not None and top[0] == "T":  # 템플릿 문자열 안: 주석 모양도 글이다
+            buf.append(c)
+            if c == "\\" and i < n and text[i] != "\n":
+                buf.append(text[i])
+                i += 1
+            elif c == "`":
+                stack.pop()
+            elif c == "$" and text.startswith("{", i):
+                buf.append("{")
+                stack.append(["E", 1])
+                i += 1
+            continue
+        if region == "markup":
+            if c == "<" and text.startswith("<!--", j):
+                end = text.find("-->", j + 4)
+                i = drop(n if end < 0 else end + 3)
+                continue
+            tag = _BLOCK_TAG.match(text, j) if detect_tags and c == "<" else None
+            if tag and not tag.group(0).endswith("/>"):
+                region = tag.group(1).lower()
+                line_ok = region == "script" or bool(_SCSS_LANG.search(tag.group(2)))
+                buf.append(tag.group(0))
+                i = tag.end()
+            else:
+                buf.append(c)
+            continue
+        if region in ("script", "style") and c == "<" and text[j + 2:j + 2 + len(region)].lower() == region \
+                and text.startswith("</", j):  # HTML 은 따옴표 안이어도 </script 에서 블록이 끝난다
+            region, quote = "markup", ""
+            stack.clear()
+            buf.append(c)
+            continue
+        buf.append(c)
         if quote:
-            out.append(c)
-            if c == "\\" and i + 1 < n:
-                out.append(line[i + 1])
+            if c == "\\" and i < n and text[i] != "\n":
+                buf.append(text[i])
                 i += 1
             elif c == quote:
                 quote = ""
-        elif c in "\"'`":
+        elif c in "\"'":
             quote = c
-            out.append(c)
-        elif slash and line.startswith("/*", i):
-            end = line.find("*/", i + 2)
-            if end < 0:
-                break
-            out.append(" ")
-            i = end + 1
-        elif slash and suffix not in _BLOCK_ONLY and line.startswith("//", i) and (i == 0 or line[i - 1] != ":"):
-            break
-        elif hash_ and c == "#" and (i == 0 or line[i - 1] in " \t"):
-            break
-        elif angle and line.startswith("<!--", i):
-            end = line.find("-->", i + 4)
-            if end < 0:
-                break
-            out.append(" ")
-            i = end + 2
-        else:
-            out.append(c)
-        i += 1
-    return "".join(out)
+        elif c == "`" and region != "hash" and region != "style":
+            stack.append(["T"])
+        elif c == "{" and top is not None:
+            top[1] += 1
+        elif c == "}" and top is not None:
+            top[1] -= 1
+            if top[1] == 0:
+                stack.pop()
+        elif c == "/" and region != "hash":
+            if text.startswith("*", i):
+                buf.pop()
+                end = text.find("*/", i + 1)
+                i = drop(n if end < 0 else end + 2)
+            elif line_ok and text.startswith("/", i) and (j == 0 or text[j - 1] != ":"):
+                buf.pop()
+                nl = text.find("\n", i)
+                i = n if nl < 0 else nl
+        elif c == "#" and region == "hash" and (j == 0 or text[j - 1] in " \t\n"):
+            buf.pop()
+            nl = text.find("\n", i)
+            i = n if nl < 0 else nl
+    out.append("".join(buf))
+    return out
+
+
+def strip_eol_comment(rel: str, line: str) -> str:
+    """한 줄만 보고 주석을 뺀 글(comment_free_lines 의 한 줄 판). 줄이 대상 확장자가 아니면 그대로다."""
+    lines = comment_free_lines(rel, line)
+    return line if lines is None else lines[0]
 
 
 def added_text_files(root: Path, files: list[str], shas: list[str]) -> list[str]:
     """문구 대상(targets) 가운데 대상 커밋(shas)이 검사할 줄(주석이 아니고 한글이 보이는 줄)을 더한 파일(설계 6.6 의 3,
-    `### 문구 점검` 사전 검사). 줄 끝 주석(strip_eol_comment)을 뺀 글에 한글이 남아야 센다(코드만 바꾼 변경을 돌려보내지
-    않는다). diff 를 읽지 못한 파일은 세지 않는다(그 파일 때문에 돌려보내지 않는다)."""
+    `### 문구 점검` 사전 검사). 파일 전체를 한 번 훑어 여러 줄 주석·줄 끝 주석을 뺀 글(comment_free_lines)에 한글이 남아야
+    센다(코드만 바꾼 변경을 돌려보내지 않는다). diff 를 읽지 못한 파일은 세지 않는다(그 파일 때문에 돌려보내지 않는다)."""
     out = []
     for rel in targets(root, files):
         added = gitio.added_lines(root, shas, rel)
         text = read_source(root, rel)
-        if added and text is not None and any(line in added and HANGUL.search(strip_eol_comment(rel, body))
-                                              for _, line, body in visible_lines(rel, text)):
+        if not added or text is None:
+            continue
+        suffix = Path(rel).suffix.lower()
+        clean = comment_free_lines(rel, mask_samples(text, suffix) if suffix in SAMPLE_SUFFIXES else text)
+        if any(line in added and HANGUL.search(body if clean is None else clean[number - 1])
+               for number, line, body in visible_lines(rel, text)):
             out.append(rel)
     return out
 

@@ -360,6 +360,35 @@ class GitTextLintTest(TeamCase):
         sha = self.commit("src/page.html", "<p>저장</p> <!-- 메모 -->\n", "[T-001] 마크업")
         self.assertEqual(ts(self.proj, ["src/page.html"], [sha]), ["src/page.html"])
 
+    def test_precheck_follows_multiline_comments_and_templates(self):
+        # 파일 전체를 한 번 훑어 여러 줄 주석은 뺀다. 템플릿 문자열·마크업 본문의 주석 모양 글은 남긴다(최종 리뷰 2 라운드)
+        ts = textlint.added_text_files
+        sha = self.commit("src/c.ts", "const a = 1;\n/*\n  사용자 정보\n*/\nrun();\n", "[T-001] 여러 줄 주석")
+        self.assertEqual(ts(self.proj, ["src/c.ts"], [sha]), [])
+        sha = self.commit("src/c.vue", "<template><p>x</p></template>\n<!--\n  설명 주석\n-->\n", "[T-001] 마크업 주석")
+        self.assertEqual(ts(self.proj, ["src/c.vue"], [sha]), [])
+        sha = self.commit("src/t.tsx", "const faq = `\nFAQ // 저장 방법\n`;\n", "[T-001] 템플릿")
+        self.assertEqual(ts(self.proj, ["src/t.tsx"], [sha]), ["src/t.tsx"])
+        sha = self.commit("src/n.tsx", "const s = `a ${x /* 설명 */} b`;\n", "[T-001] 식 안 주석")
+        self.assertEqual(ts(self.proj, ["src/n.tsx"], [sha]), [])
+        sha = self.commit("src/m.html", "<p>/* 저장 */</p>\n", "[T-001] 본문")
+        self.assertEqual(ts(self.proj, ["src/m.html"], [sha]), ["src/m.html"])
+        sha = self.commit("src/m2.html", "<p>a // 저장</p>\n", "[T-001] 본문 2")
+        self.assertEqual(ts(self.proj, ["src/m2.html"], [sha]), ["src/m2.html"])
+        sha = self.commit("src/s.vue", "<script>\n// 한글 주석\nrun();\n</script>\n<p>x</p>\n", "[T-001] 스크립트")
+        self.assertEqual(ts(self.proj, ["src/s.vue"], [sha]), [])
+        sha = self.commit("src/s2.vue", "<script>\nrun(); /* 설명\n여러 줄 */\n</script>\n<p>/* 저장 */</p>\n", "[T-001] 혼합")
+        self.assertEqual(ts(self.proj, ["src/s2.vue"], [sha]), ["src/s2.vue"])
+
+    def test_comment_scan_is_linear(self):
+        import time
+        text = "'\"`/*//<!--#${}\\\n" * (1_000_000 // 16)
+        for rel in ("a.tsx", "a.vue", "a.yml", "a.html"):
+            start = time.monotonic()
+            lines = textlint.comment_free_lines(rel, text)
+            self.assertLess(time.monotonic() - start, 1.5, rel)
+            self.assertEqual(len(lines), text.count("\n") + 1)
+
     def test_added_text_files_for_the_precheck(self):
         sha = self.commit("src/a.tsx", '// 한글 주석\nconst a = 1;\n', "[T-001] 주석")
         other = self.commit("src/b.tsx", '<p data-sample>가짜 댓글</p>\n<p>저장</p>\n', "[T-001] 화면")

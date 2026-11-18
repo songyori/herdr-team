@@ -281,7 +281,7 @@ def design_diff_lint(root: Path, files: list[str], shas: list[str]) -> list[str]
             net[name] += gone[rel][name] - came[rel][name]
     removed_anywhere = set(all_removed)
     final: set[tuple[str, str]] = set()
-    unread: set[str] = set()  # 1 MiB 를 넘어 최종 글을 읽지 않은 파일(그 파일의 지운 값은 남았는지 확인할 수 없어 알리지 않는다)
+    unread: set[str] = set()  # 1 MiB 를 넘어 최종 글을 읽지 않은 파일(하나라도 있으면 남았는지 판단할 수 없어 보존 신호를 내지 않는다)
     for rel in diffs if shas else ():
         size = gitio.file_size(root, shas[-1], rel)
         if size is not None and size > MAX_BYTES:
@@ -296,7 +296,7 @@ def design_diff_lint(root: Path, files: list[str], shas: list[str]) -> list[str]
             lost = gone[rel][name] - came[rel][name]
             if lost > 0 and net[name] > 0:
                 found.append(f"{rel}: 지운 줄에서 {name} {lost}개가 줄었다(대체가 있는지 확인)")
-        if rel not in unread:
+        if not unread:  # 큰 파일을 건너뛰었으면 값이 거기로 옮겨 갔는지 알 수 없어 보존 신호를 내지 않는다
             found += _kept_findings(rel, removed, final)
         text = read_source(root, rel)
         if text is not None:
