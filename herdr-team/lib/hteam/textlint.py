@@ -361,14 +361,68 @@ def targets(root: Path, files: list[str]) -> list[str]:
     return out
 
 
+_SLASH_SUFFIXES = frozenset({".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte", ".swift", ".kt", ".dart", ".java", ".go",
+                             ".scss", ".less", ".css"})
+_BLOCK_ONLY = frozenset({".css"})  # 한 줄 주석 `//` 가 없는 문법
+_HASH_SUFFIXES = frozenset({".py", ".sh", ".rb", ".yml", ".yaml", ".toml"})
+_ANGLE_SUFFIXES = MARKUP | frozenset({".vue", ".svelte"})
+
+
+def strip_eol_comment(rel: str, line: str) -> str:
+    """줄에서 따옴표 밖의 줄 끝 주석을 뺀 글(문구 사전 검사용): `//…`(앞이 `:` 면 주소라 아니다)·같은 줄의 `/* … */`(C 계열·JS·TS·
+    Swift·Kotlin·Dart·Java·Go·CSS), `#…`(`.py .sh .rb .yml .yaml .toml`, 줄 머리나 공백 뒤), `<!-- … -->`(마크업). 따옴표('·\"·`)와
+    역슬래시는 한 번 훑으며 따르고, 문자열·마크업 글 안의 한글은 남긴다. 닫히지 않은 따옴표는 줄 끝까지 문자열이다."""
+    suffix = Path(rel).suffix.lower()
+    slash, hash_, angle = suffix in _SLASH_SUFFIXES, suffix in _HASH_SUFFIXES, suffix in _ANGLE_SUFFIXES
+    if not (slash or hash_ or angle):
+        return line
+    out: list[str] = []
+    quote = ""
+    i, n = 0, len(line)
+    while i < n:
+        c = line[i]
+        if quote:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(line[i + 1])
+                i += 1
+            elif c == quote:
+                quote = ""
+        elif c in "\"'`":
+            quote = c
+            out.append(c)
+        elif slash and line.startswith("/*", i):
+            end = line.find("*/", i + 2)
+            if end < 0:
+                break
+            out.append(" ")
+            i = end + 1
+        elif slash and suffix not in _BLOCK_ONLY and line.startswith("//", i) and (i == 0 or line[i - 1] != ":"):
+            break
+        elif hash_ and c == "#" and (i == 0 or line[i - 1] in " \t"):
+            break
+        elif angle and line.startswith("<!--", i):
+            end = line.find("-->", i + 4)
+            if end < 0:
+                break
+            out.append(" ")
+            i = end + 2
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def added_text_files(root: Path, files: list[str], shas: list[str]) -> list[str]:
     """문구 대상(targets) 가운데 대상 커밋(shas)이 검사할 줄(주석이 아니고 한글이 보이는 줄)을 더한 파일(설계 6.6 의 3,
-    `### 문구 점검` 사전 검사). diff 를 읽지 못한 파일은 세지 않는다(그 파일 때문에 돌려보내지 않는다)."""
+    `### 문구 점검` 사전 검사). 줄 끝 주석(strip_eol_comment)을 뺀 글에 한글이 남아야 센다(코드만 바꾼 변경을 돌려보내지
+    않는다). diff 를 읽지 못한 파일은 세지 않는다(그 파일 때문에 돌려보내지 않는다)."""
     out = []
     for rel in targets(root, files):
         added = gitio.added_lines(root, shas, rel)
         text = read_source(root, rel)
-        if added and text is not None and any(line in added for _, line, _ in visible_lines(rel, text)):
+        if added and text is not None and any(line in added and HANGUL.search(strip_eol_comment(rel, body))
+                                              for _, line, body in visible_lines(rel, text)):
             out.append(rel)
     return out
 

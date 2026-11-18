@@ -26,6 +26,32 @@ class DesignDiffTest(TeamCase):
     def lint(self, files, shas):
         return design_diff_lint(self.proj, list(files), list(shas))
 
+    def test_oversize_final_file_is_not_read_and_quiet(self):
+        # 1 MiB 를 넘는 파일은 보존 신호를 보지 않는다: 지운 링크가 있어도 조용하고 빠르다(최종 리뷰 2)
+        import time
+        from hteam.lint import MAX_BYTES
+        pad = "x" * 100 + "\n"
+        old = '<a href="/gone">가</a>\n' + pad * (MAX_BYTES // len(pad) + 10)
+        self.change({"src/big.html": old}, "기존")
+        sha = self.change({"src/big.html": old.replace('<a href="/gone">가</a>\n', "", 1)})
+        with mock.patch.object(designdiff.gitio, "file_text", side_effect=AssertionError("읽으면 안 된다")):
+            t = time.monotonic()
+            self.assertEqual(self.lint(["src/big.html"], [sha]), [])
+            self.assertLess(time.monotonic() - t, 3.0)
+        small = self.change({"src/s.html": '<a href="/gone">가</a>\n'}, "작은 기존")
+        sha = self.change({"src/s.html": "<p>가</p>\n"})
+        self.assertEqual(len(self.lint(["src/s.html"], [sha])), 1)  # 작은 파일은 그대로 알린다
+
+    def test_unbalanced_handler_repeats_are_linear(self):
+        # 닫히지 않는 `onClick={` 가 한 줄에 되풀이돼도 값마다 창 안에서 끝난다(최종 리뷰 3)
+        import time
+        line = "onClick={" * 111_000 + "\n"
+        self.change({"src/a.tsx": line}, "기존")
+        sha = self.change({"src/a.tsx": "<p>x</p>\n"})
+        t = time.monotonic()
+        self.lint(["src/a.tsx"], [sha])
+        self.assertLess(time.monotonic() - t, 1.5)
+
     def test_removed_aria_label_is_reported(self):
         self.change({"src/Btn.tsx": '<button aria-label="닫기"><X/></button>\n<a aria-labelledby="t">x</a>\n'},
                     "기존")

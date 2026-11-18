@@ -331,16 +331,17 @@ def _value_end(line: str, start: int) -> int:
 
 
 def _object_end(line: str, start: int) -> int:
-    """line[start] == "{" 인 객체의 닫는 `}` 다음 위치. 줄 안에서 닫히지 않으면 줄 끝."""
+    """line[start] == "{" 인 객체의 닫는 `}` 다음 위치. 닫히지 않으면 SCAN_WINDOW 글자 뒤(또는 줄 끝)."""
     depth = 0
-    for i in range(start, len(line)):
+    stop = min(len(line), start + SCAN_WINDOW)  # 닫히지 않은 `{` 가 되풀이돼도 선형으로 끝낸다
+    for i in range(start, stop):
         if line[i] == "{":
             depth += 1
         elif line[i] == "}":
             depth -= 1
             if depth == 0:
                 return i + 1
-    return len(line)
+    return stop
 
 
 def _direct_value(inner: str) -> int | None:
@@ -365,6 +366,7 @@ def _role_colors(line: str) -> list[tuple[float, float, float]]:
     까지만 본다. 값이 객체(DTCG `{"$type": …, "$value": …}`)면 `$` 로 시작하는 메타 키를 건너뛰고 `$value`·`value` 의 값을 읽는다.
     색을 읽지 못한 값은 뺀다."""
     out = []
+    budget = 50 * SCAN_WINDOW  # 객체를 읽는 글자 합계의 상한(닫히지 않은 `{` 가 되풀이되는 한 줄에서도 선형으로 끝낸다)
     for m in _NAME.finditer(line):
         name = m.group(1) or m.group(3)
         if name in ("value", "$value") or not _ROLE.search(name):
@@ -373,7 +375,11 @@ def _role_colors(line: str) -> list[tuple[float, float, float]]:
         while start < len(line) and line[start] in " \t":
             start += 1
         if line.startswith("{", start):
-            inner = line[start:_object_end(line, start)]
+            end = _object_end(line, start)
+            budget -= 2 * (end - start)
+            if budget < 0:
+                break
+            inner = line[start:end]
             key = _direct_value(inner)
             if key is None:
                 continue

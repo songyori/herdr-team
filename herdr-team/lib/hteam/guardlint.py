@@ -154,11 +154,13 @@ def guard_lint(root: Path, files: list[str], shas: list[str]) -> list[str]:
     for rel in files:
         if rel.startswith("../") or matches_any(rel, EXCLUDE):
             continue
+        text = read_source(root, rel)
+        if text is None and not is_test_file(rel):  # 바이너리·UTF-8 아님·1 MiB 초과·지운 파일은 diff 를 읽지 않는다(시험 파일은 읽는다)
+            continue
         lines = gitio.diff_lines(root, shas, rel)
         if lines is None:
             continue
         added, removed = lines
-        text = read_source(root, rel)
         if text is not None and Path(rel).suffix.lower() not in PROSE:
             found += line_findings(rel, text, set(added))
         if is_test_file(rel):

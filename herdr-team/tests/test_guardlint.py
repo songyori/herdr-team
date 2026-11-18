@@ -94,6 +94,27 @@ class GuardLintGitTest(TeamCase):
         more = self.commit("src/b.py", "try:\n    a()\nexcept ValueError:\n    pass\n    log()\n", "[T-001] 문장이 더 있다")
         self.assertEqual(guard_lint(self.proj, ["src/b.py"], [more]), [])
 
+    def test_unreadable_files_are_not_diffed_but_tests_are(self):
+        # 바이너리·1 MiB 초과 파일은 diff 를 읽지 않고, 시험 파일은 읽는다(최종 리뷰 5)
+        from unittest import mock
+        self.commit("tests/test_a.py", "def test_save():\n    assert 1\n", "기존 시험")
+        (self.proj / "assets").mkdir()
+        (self.proj / "assets/logo.png").write_bytes(b"\x89PNG\xff\xfe" * 10)
+        (self.proj / "assets/big.json").write_text("{}\n" + "x" * (1 << 20))
+        self.git("add", "--", "assets")
+        self.git("commit", "-q", "-m", "[T-001] 이미지")
+        first = self.head()
+        second = self.commit("tests/test_a.py", "", "[T-001] 시험 지움")
+        real = gitio.diff_lines
+        seen = []
+        def spy(root, shas, rel):
+            seen.append(rel)
+            return real(root, shas, rel)
+        with mock.patch.object(gitio, "diff_lines", spy):
+            found = guard_lint(self.proj, ["assets/logo.png", "assets/big.json", "tests/test_a.py"], [first, second])
+        self.assertEqual(seen, ["tests/test_a.py"])
+        self.assertIn("tests/test_a.py: 단언 1개 지움, 0개 더함", found)
+
     def test_removed_test_annotation_only(self):
         # 함수는 두고 `@Test` 만 지우면 그 시험은 돌지 않는다. 지운 줄에는 표시만 있어 이름을 찾지 못한다(r1)
         rel = "src/test/java/a/FooTest.java"

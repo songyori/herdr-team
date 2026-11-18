@@ -328,6 +328,18 @@ def blob(root, commit: str, path: str) -> str | None:
     return found.split(":", 1)[1] if found else None
 
 
+def file_size(root, commit: str, rel: str) -> int | None:
+    """commit 에 있는 일반 파일 rel(root 기준)의 바이트 수(글을 읽지 않고 `cat-file -s`). 없거나 일반 파일이 아니거나 git 이 읽지
+    못하면 None."""
+    try:
+        found = tree_entry(root, commit, to_top(top_prefix(root), rel))
+        if found is None or not found.startswith(("100644:", "100755:")):
+            return None
+        return int(run(root, "cat-file", "-s", found.split(":", 1)[1]).stdout.strip())
+    except (HteamError, ValueError):
+        return None
+
+
 def file_text(root, commit: str, rel: str) -> str | None:
     """commit 에 있는 파일 rel(root 기준, `../` 가능)의 글(CRLF 는 LF 로). 그 커밋에 없거나(지운 파일) 일반 파일이 아니거나,
     git 이 읽지 못하거나 UTF-8 이 아니면 None(designdiff 의 보존 신호가 쓴다)."""

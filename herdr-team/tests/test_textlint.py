@@ -343,6 +343,23 @@ class GitTextLintTest(TeamCase):
         self.assertEqual(textlint.targets(self.proj, ["src/b.tsx"]), [])
         self.assertEqual(textlint.added_text_files(self.proj, ["src/b.tsx"], [sha]), [])
 
+    def test_precheck_ignores_end_of_line_comments(self):
+        # 줄 끝 주석의 한글은 문구 점검 소절을 요구하지 않는다(최종 리뷰 1). 문자열·마크업 글 안의 한글은 요구한다
+        ts = textlint.added_text_files
+        sha = self.commit("src/server.ts", "export const b = 2; // 재시도 횟수\nconst c = 3; /* 설명 */ run();\n", "[T-001] 주석")
+        self.assertEqual(ts(self.proj, ["src/server.ts"], [sha]), [])
+        sha = self.commit("src/msg.ts", 'const msg = "다시 시도해 주세요"\n', "[T-001] 문구")
+        self.assertEqual(ts(self.proj, ["src/msg.ts"], [sha]), ["src/msg.ts"])
+        sha = self.commit("ci.yml", "run: make # 빌드\n", "[T-001] 워크플로")
+        self.assertEqual(ts(self.proj, ["ci.yml"], [sha]), [])
+        sha = self.commit("src/url.ts", 'const u = "http://x" // 주석\n', "[T-001] 주소")
+        self.assertEqual(ts(self.proj, ["src/url.ts"], [sha]), [])
+        self.assertEqual(textlint.strip_eol_comment("src/url.ts", 'const u = "http://x" // 주석'), 'const u = "http://x" ')
+        self.assertEqual(textlint.strip_eol_comment("a.html", "<p>저장</p> <!-- 메모 -->"), "<p>저장</p>  ")
+        self.assertEqual(textlint.strip_eol_comment("a.py", 'x = "a \\" # 안"  # 끝'), 'x = "a \\" # 안"  ')
+        sha = self.commit("src/page.html", "<p>저장</p> <!-- 메모 -->\n", "[T-001] 마크업")
+        self.assertEqual(ts(self.proj, ["src/page.html"], [sha]), ["src/page.html"])
+
     def test_added_text_files_for_the_precheck(self):
         sha = self.commit("src/a.tsx", '// 한글 주석\nconst a = 1;\n', "[T-001] 주석")
         other = self.commit("src/b.tsx", '<p data-sample>가짜 댓글</p>\n<p>저장</p>\n', "[T-001] 화면")

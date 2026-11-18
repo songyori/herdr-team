@@ -336,6 +336,14 @@ class StyleScanTest(unittest.TestCase):
             self.scan(rel, text)
             self.assertLess(time.monotonic() - t, 1.5, rel)
 
+    def test_unclosed_role_object_repeats_are_linear(self):
+        # 따옴표 키 뒤에 닫히지 않는 `{` 가 되풀이되는 한 줄(최종 리뷰 4)
+        import time
+        line = '"primary":{' * 90000 + "\n"
+        t = time.monotonic()
+        self.scan("t.json", line)
+        self.assertLess(time.monotonic() - t, 1.5)
+
     def test_targets_and_isolation(self):
         root = Path(tempfile.mkdtemp(prefix="hteam-style-")).resolve()
         self.addCleanup(shutil.rmtree, root, True)

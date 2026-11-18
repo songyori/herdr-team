@@ -13,7 +13,7 @@ from pathlib import Path
 
 from . import gitio
 from .globs import matches_any
-from .lint import EXCLUDE, read_source
+from .lint import EXCLUDE, MAX_BYTES, read_source
 
 # 내용 검사(lint.SUFFIXES)에서 .md 를 빼고(설명 글이 신호 낱말을 담는다) 앱 형식을 더한다
 SUFFIXES = frozenset({".html", ".css", ".scss", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte", ".json", ".dart",
@@ -104,6 +104,7 @@ def _value(m: re.Match, first: int = 1) -> str:
 
 
 SCAN_LIMIT = 2000  # 여러 줄 읽기의 창 크기(선형을 지킨다)
+MAX_OPEN_SCANS = 200  # 한 줄·한 파일에서 닫히지 않은 `{…}` 읽기를 이만큼 하면 더 읽지 않는다
 
 
 def _event_value(line: str, start: int, limit: int | None = None) -> str | None:
@@ -111,7 +112,7 @@ def _event_value(line: str, start: int, limit: int | None = None) -> str | None:
     `{() => { save(); }}`). 줄 안에서 닫히지 않으면 None. limit 이 있으면 `{…}` 를 줄 경계 없이 limit 글자 안에서 읽는다(최종 파일의 여러 줄 처리기)."""
     quote = line[start:start + 1]
     if quote in ('"', "'"):
-        end = line.find(quote, start + 1)
+        end = line.find(quote, start + 1, len(line) if limit is None else start + 1 + limit)
         return line[start + 1:end] if end >= 0 else None
     if quote != "{":
         return None
@@ -133,10 +134,15 @@ def kept_values(line: str) -> list[tuple[str, str]]:
     out += [("링크 href", _value(m)) for m in _LINK_TO.finditer(line)]  # 라우터 링크의 to 도 링크다
     if _INPUT_TAG.search(line):
         out += [(f"입력란 {m.group(1)}", _value(m, 2)) for m in _INPUT_ATTR.finditer(line)]
+    open_scans = 0  # 닫히지 않아 창을 다 쓴 읽기 횟수(되풀이되는 병적인 줄에서도 선형으로 끝낸다)
     for m in _EVENT.finditer(line):
-        value = _event_value(line, m.end())
+        value = _event_value(line, m.end(), SCAN_LIMIT)  # 값마다 창 안에서 끝난다
         if value is not None:
             out.append((f"이벤트 {m.group(1)}", " ".join(value.split())))
+        elif line.startswith("{", m.end()):
+            open_scans += 1
+            if open_scans > MAX_OPEN_SCANS:
+                break
     out += [(_LISTENER_KIND, m.group(1)) for m in _LISTENER.finditer(line)]
     out += [("data-testid", _value(m)) for m in _TESTID.finditer(line)]
     out += [("testTag", m.group(1)) for m in _TEST_TAG.finditer(line)]
@@ -165,11 +171,16 @@ def final_values(text: str) -> set[tuple[str, str]]:
         if close:
             window = window[:close.start()]
         out |= {(f"입력란 {m.group(1)}", _value(m, 2)) for m in _INPUT_ATTR.finditer(window)}
+    open_scans = 0
     for m in _EVENT.finditer(text):
         if text[m.end():m.end() + 1] == "{":
             value = _event_value(text, m.end(), SCAN_LIMIT)
             if value is not None and " ".join(value.split()):
                 out.add(("이벤트", " ".join(value.split())))
+            elif value is None:
+                open_scans += 1
+                if open_scans > MAX_OPEN_SCANS:
+                    break
     return out
 
 
@@ -270,7 +281,12 @@ def design_diff_lint(root: Path, files: list[str], shas: list[str]) -> list[str]
             net[name] += gone[rel][name] - came[rel][name]
     removed_anywhere = set(all_removed)
     final: set[tuple[str, str]] = set()
+    unread: set[str] = set()  # 1 MiB 를 넘어 최종 글을 읽지 않은 파일(그 파일의 지운 값은 남았는지 확인할 수 없어 알리지 않는다)
     for rel in diffs if shas else ():
+        size = gitio.file_size(root, shas[-1], rel)
+        if size is not None and size > MAX_BYTES:
+            unread.add(rel)
+            continue
         text = gitio.file_text(root, shas[-1], rel)
         if text is not None:
             final |= final_values(text)
@@ -280,7 +296,8 @@ def design_diff_lint(root: Path, files: list[str], shas: list[str]) -> list[str]
             lost = gone[rel][name] - came[rel][name]
             if lost > 0 and net[name] > 0:
                 found.append(f"{rel}: 지운 줄에서 {name} {lost}개가 줄었다(대체가 있는지 확인)")
-        found += _kept_findings(rel, removed, final)
+        if rel not in unread:
+            found += _kept_findings(rel, removed, final)
         text = read_source(root, rel)
         if text is not None:
             found += _added_findings(rel, text, set(added) - removed_anywhere)
