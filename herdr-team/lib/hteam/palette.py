@@ -5,13 +5,16 @@
 """
 from __future__ import annotations
 
+import functools
+import hashlib
+import itertools
 import json
 import math
 import re
 from pathlib import Path
 
 from . import color
-from .errors import FAIL, HteamError
+from .errors import FAIL, USAGE, HteamError
 
 DATA = Path(__file__).with_name("data")
 BUCKET = 30  # hue 칸 너비(도). 칸 k 는 [30k, 30k+30)
@@ -22,6 +25,7 @@ FONT_CLASSES = ("돋움", "부리", "표시", "손글씨")
 BODY_CLASSES = ("돋움", "부리")  # 본문 글꼴로 배정하는 계열
 HUE_TOLERANCE = 0.5  # 팔레트의 hue 와 accent 의 OKLCH h 가 이보다 멀면 깨진 카탈로그다(들여오기는 h 를 소수 첫째 자리로 적는다)
 _HEX6 = re.compile(r"#[0-9a-f]{6}")
+_TASK = re.compile(r"T-\d{3,}")
 
 
 def _invalid(why: str) -> HteamError:
@@ -166,3 +170,185 @@ def font_key(name: str) -> str:
 def hangul_font(stack: list[str], latin: set[str]) -> str | None:
     """글꼴 스택에서 한글을 그리는 글꼴: 라틴 과용 글꼴(latin, font_key 집합)이 아닌 첫 글꼴. 없으면 None(시스템 글꼴)."""
     return next((name for name in stack if font_key(name) and font_key(name) not in latin), None)
+
+
+# --- 배정(hteam palette deal, 설계 11.10) ---
+
+MIN_GAP = 3  # A·B·C 칸 사이 원형 거리(칸 가운데 사이 90°)
+POSTURES = ("절제", "몰입", "전면", "흠뻑")
+SLOTS = "ABC"
+FIT_ROUNDS = 500  # 집합 가중치의 반복 비례 맞춤 상한
+FIT_TOL = 1e-12  # 칸마다 확률이 목표와 이만큼 안이면 멈춘다
+
+
+class Draw:
+    """시드 글에서 정수를 차례로 뽑는다: SHA-256(<시드 글>:<차례 번호>) 앞 8바이트, 거부 표집(치우침 없음).
+    random 모듈을 쓰지 않는다(Python 판마다 결과가 달라질 수 있다)."""
+
+    def __init__(self, seed: str):
+        self.seed = seed
+        self.count = 0
+
+    def below(self, n: int) -> int:
+        """0 이상 n 미만의 정수 하나."""
+        if n <= 0:
+            raise ValueError("n 은 1 이상이다")
+        limit = (1 << 64) - (1 << 64) % n
+        while True:
+            digest = hashlib.sha256(f"{self.seed}:{self.count}".encode("utf-8")).digest()
+            self.count += 1
+            value = int.from_bytes(digest[:8], "big")
+            if value < limit:
+                return value % n
+
+    def pick(self, items: list):
+        return items[self.below(len(items))]
+
+    def fraction(self) -> float:
+        """0 이상 1 미만의 수 하나(다이제스트 앞 8바이트의 위 53비트)."""
+        digest = hashlib.sha256(f"{self.seed}:{self.count}".encode("utf-8")).digest()
+        self.count += 1
+        return (int.from_bytes(digest[:8], "big") >> 11) / (1 << 53)
+
+
+def gap(a: int, b: int) -> int:
+    """두 칸의 원형 거리(0–6)."""
+    d = abs(a - b) % 12
+    return min(d, 12 - d)
+
+
+def _apart(ks) -> bool:
+    return all(gap(a, b) >= MIN_GAP for a, b in itertools.combinations(ks, 2))
+
+
+def bucket_sets() -> list[tuple[int, int, int]]:
+    """허용 칸에서 서로 MIN_GAP 이상 떨어진 칸 셋의 집합(오름차순 튜플, 사전 차례). 20개다."""
+    return [s for s in itertools.combinations(ALLOWED, 3) if _apart(s)]
+
+
+def marginals(weights: list[float]) -> dict[int, float]:
+    """집합 가중치에서 칸마다 뽑힐 확률(math.fsum: 정확히 반올림한 합이라 Python 판마다 같다)."""
+    return {k: math.fsum(w for w, s in zip(weights, bucket_sets()) if k in s) for k in ALLOWED}
+
+
+@functools.lru_cache(maxsize=None)
+def set_weights() -> tuple[float, ...]:
+    """bucket_sets 차례의 가중치(합 1). 칸마다 뽑힐 확률이 3/len(ALLOWED)(0.3)가 되게 반복 비례 맞춤으로 정한다: 칸마다
+    차례로 그 칸이 든 집합은 목표/지금, 들지 않은 집합은 (1−목표)/(1−지금)을 곱하고, 한 바퀴마다 합을 1로 맞춘다. 칸마다
+    확률이 목표와 FIT_TOL 안이거나 FIT_ROUNDS 바퀴면 멈춘다. 합은 모두 math.fsum 이다(내장 sum 은 Python 3.12 에서 합하는 방법이
+    바뀌어 가중치가 판마다 달라진다). 곱셈·나눗셈은 IEEE 754 그대로라 결정적이다. 집합을 고르게 뽑으면 빈칸 옆 칸이 치우친다
+    (설계 11.10)."""
+    sets = bucket_sets()
+    target = 3 / len(ALLOWED)
+    weights = [1 / len(sets)] * len(sets)
+    for _ in range(FIT_ROUNDS):
+        for k in ALLOWED:
+            now = math.fsum(w for w, s in zip(weights, sets) if k in s)
+            weights = [w * (target / now if k in s else (1 - target) / (1 - now)) for w, s in zip(weights, sets)]
+        total = math.fsum(weights)
+        weights = [w / total for w in weights]
+        if max(abs(m - target) for m in marginals(weights).values()) < FIT_TOL:
+            break
+    return tuple(weights)
+
+
+@functools.lru_cache(maxsize=None)
+def cumulative() -> tuple[float, ...]:
+    """set_weights 의 누적 경계. i 번째는 앞 i+1 개 가중치의 math.fsum 이다(Python 판마다 같다)."""
+    weights = set_weights()
+    return tuple(math.fsum(weights[:i + 1]) for i in range(len(weights)))
+
+
+def brand_pairs(first: int) -> list[tuple[int, int]]:
+    """A 를 칸 first 로 고정할 때(240–300° 칸이어도 된다) B·C 가 될 허용 칸 쌍(오름차순, 사전 차례)."""
+    return [(b, c) for b, c in itertools.combinations(ALLOWED, 2) if _apart((first, b, c))]
+
+
+def pick_buckets(draw: Draw, first: int | None = None) -> tuple[int, int, int]:
+    """A·B·C 칸. first 가 없으면 set_weights 로 집합 하나(53비트 수를 누적 경계 cumulative() 와 차례로 견준다)를 고른 뒤 여섯
+    차례 가운데 하나를 고르게 고른다. first 가 있으면 A = first, B·C 는 brand_pairs 가운데 하나를 고르게 고르고 차례를 고르게
+    정한다."""
+    if first is None:
+        u = draw.fraction()
+        sets = bucket_sets()
+        chosen = next((s for s, edge in zip(sets, cumulative()) if u < edge), sets[-1])  # 경계가 1 보다 작으면 마지막 집합
+        return draw.pick(list(itertools.permutations(chosen)))
+    b, c = draw.pick(brand_pairs(first))
+    return (first, b, c) if draw.below(2) == 0 else (first, c, b)
+
+
+def _show(p: dict, near: bool) -> dict:
+    out = {k: p.get(k) for k in ("id", "source", "license", "accent", "bg", "ink", "mood")}
+    if near:
+        out["near"] = True
+    return out
+
+
+def _candidates(k: int, palettes: list[dict], draw: Draw) -> list[dict]:
+    """칸 k 의 팔레트 후보 2개(서로 다른 것). 칸 안의 것을 고르게 뽑고, 모자라면 칸 가운데 hue 에서 가까운 차례로(같으면 id
+    차례) 다른 칸의 것을 near 로 채운다."""
+    inside = [p for p in palettes if bucket(p["hue"]) == k]
+    chosen = []
+    while inside and len(chosen) < 2:
+        chosen.append(_show(inside.pop(draw.below(len(inside))), False))
+    center = k * BUCKET + BUCKET / 2
+    outside = sorted((p for p in palettes if bucket(p["hue"]) != k),
+                     key=lambda p: (color.hue_distance(p["hue"], center), p["id"]))
+    for p in outside[:2 - len(chosen)]:
+        chosen.append(_show(p, True))
+    return chosen
+
+
+def deal(seed: str, brand_hue: float | None = None, turn: int = 0) -> dict:
+    """배정(설계 11.10 의 출력 JSON 과 같은 dict). 같은 seed·brand_hue 면 늘 같다. 뽑는 차례: 칸(pick_buckets) → 자세 →
+    칸마다 팔레트 후보(A·B·C) → 본문 글꼴 셋. brand_hue 를 주면 A 는 그 hue 의 칸이고 팔레트 후보를 두지 않는다."""
+    palettes = [p for p in load_palettes() if chromatic(p)]
+    fonts = [f for f in load_fonts() if f["deal"]]
+    draw = Draw(seed)
+    first = None if brand_hue is None else bucket(brand_hue)
+    ks = pick_buckets(draw, first)
+    postures = list(POSTURES)
+    chosen_postures = [postures.pop(draw.below(len(postures))) for _ in SLOTS]
+    picks = [[] if first is not None and i == 0 else _candidates(k, palettes, draw) for i, k in enumerate(ks)]
+    chosen_fonts = [fonts.pop(draw.below(len(fonts))) for _ in SLOTS]
+    slots = [{"slot": name, "hue": [k * BUCKET, k * BUCKET + BUCKET], "posture": posture, "palettes": pick,
+              "body_font": {"id": f["id"], "name": f["name"], "class": f["class"], "license": f["license"],
+                            "url": f["source_url"]}}
+             for name, k, posture, pick, f in zip(SLOTS, ks, chosen_postures, picks, chosen_fonts)]
+    return {"seed": seed, "turn": turn, "brand_hue": brand_hue, "excluded_hue": list(EXCLUDED), "slots": slots}
+
+
+def _cmd_deal(args) -> dict:
+    if not _TASK.fullmatch(args.task):
+        raise HteamError("usage", f"태스크 ID 는 T- 와 숫자 3자리 이상이다: {args.task!r}", USAGE)
+    if args.turn < 0:
+        raise HteamError("usage", f"--turn 은 0 이상이다: {args.turn}", USAGE)
+    brand = args.brand_hue
+    if brand is not None and not (math.isfinite(brand) and 0 <= brand < 360):
+        raise HteamError("usage", f"--brand-hue 는 0 이상 360 미만의 수다: {brand}", USAGE)
+    if args.seed is not None:
+        if not args.seed.strip():
+            raise HteamError("usage", "--seed 가 빈 글이다", USAGE)
+        seed = args.seed
+    else:
+        from .paths import find_project  # --seed 를 주면 프로젝트 밖에서도 된다(시험·획일도 측정)
+        seed = f"{find_project(args.root).root.name}:{args.task}:{args.turn}"
+    return deal(seed, brand, args.turn)
+
+
+def _hue_arg(text: str) -> float:
+    try:
+        return float(text)
+    except ValueError:
+        raise HteamError("usage", f"--brand-hue 는 수다: {text!r}", USAGE) from None
+
+
+def register(sub) -> None:
+    palette = sub.add_parser("palette")
+    psub = palette.add_subparsers(dest="palette_cmd", required=True, parser_class=palette.__class__)
+    d = psub.add_parser("deal")
+    d.add_argument("--task", required=True)
+    d.add_argument("--turn", type=int, default=0)
+    d.add_argument("--seed")
+    d.add_argument("--brand-hue", type=_hue_arg)
+    d.set_defaults(func=_cmd_deal)

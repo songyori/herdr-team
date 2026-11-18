@@ -23,6 +23,7 @@ COMMAND_MODULES: tuple[str, ...] = (
     "ask",
     "approval",
     "lint",
+    "palette",
     "image",
     "coord",
     "setup",
