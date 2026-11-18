@@ -271,6 +271,22 @@ class PlanWarningTest(TeamCase):
                                      task("b", owns=["src/b/**"], acceptance=six)]),
                          ["b: 태스크가 크다(acceptance 6개). 둘로 나눌지 본다"])
 
+    def test_pending_rolled_back_tasks_are_still_size_warned(self):
+        # 커밋 전에 멈춘 apply 의 pending 은 다음 apply 가 되돌린다. 그 태스크의 크기 경고는 남고, 커밋한 a 는 건너뛴다
+        six = [f"확인 {n}" for n in range(6)]
+        self.setup_run()
+        a = task("a", owns=["src/a/**"], acceptance=six)
+        b = task("b", owns=["src/b/**"], acceptance=six)
+        self.path.write_text(toml([a]), encoding="utf-8")
+        self.assertEqual(self.hteam("plan", "apply")[0], 0)
+        self.path.write_text(toml([a, b]), encoding="utf-8")
+        code, out = self.hteam("plan", "apply", "--append", env={"HTEAM_TEST_DIE_AT": "plan_before_commit"})
+        self.assertEqual(code, 137, out)
+        plan = json.loads((self.state_dir / "plan.json").read_text())
+        self.assertEqual([r["key"] for r in plan["pending"]], ["b"])
+        self.assertIn("b", plan["tasks"])
+        self.assertEqual(self.check([a, b]), ["b: 태스크가 크다(acceptance 6개). 둘로 나눌지 본다"])
+
     def test_file_option_still_reads_the_project_voice(self):
         # --file 은 검사할 계획 파일만 바꾼다. 문구 기준은 늘 프로젝트 작업 루트의 docs/planning/voice.md 다(Codex 계획 리뷰 p13c r1)
         missing = "docs/planning/voice.md 가 없다. 서비스 문구가 있으면 문구 기준을 쓴다"

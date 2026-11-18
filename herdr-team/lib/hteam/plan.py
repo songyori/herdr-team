@@ -259,16 +259,16 @@ def warnings(tasks: list[dict], voice: Path, applied=()) -> list[str]:
 def check(p, cfg, path: Path) -> dict:
     """읽기 전용. 파일 검사에 더해 이미 적용한 계획(plan.json)이 있으면 apply --append 가 받아들일지도 본다.
     그래서 기획 태스크의 사전 검사가 승인 전에 막는다(승인 뒤에는 고칠 라운드가 없다). 묶음 규칙은 적용한 key 를 빼고
-    본다(apply --append 와 같다). 출력 test 는 그 파일에 `[test]` 가 있는지, warnings 는 막지 않는 경고(warnings 함수, 없으면
+    본다(apply --append 와 같다). 적용한 key 는 커밋 전에 멈춘 apply 의 pending(다음 apply 가 되돌린다)을 뺀 것이다. 출력 test 는 그 파일에 `[test]` 가 있는지, warnings 는 막지 않는 경고(warnings 함수, 없으면
     빈 목록)다. voice.md 는 검사하는 파일 위치와 상관없이 그 작업 루트(p.work_root)의 VOICE_FILE 을 본다."""
     data = read_plan_data(path)
     tasks = plan_tasks(data)
     plan = read_json(p.plan_file, None)
-    known = _surviving(p, plan) if plan is not None and "test" in data else None
-    groups = _checked(cfg, data, known or {})
+    surv = _surviving(p, plan) if plan is not None else None  # 다음 apply 의 복구 뒤에도 남을 적용 항목만
+    groups = _checked(cfg, data, (surv if "test" in data else None) or {})
     if plan is not None:
-        _keep_applied(known if known is not None else _surviving(p, plan), tasks)
-    applied = set(plan.get("tasks") or {}) if isinstance(plan, dict) else set()
+        _keep_applied(surv, tasks)
+    applied = set(surv) if surv is not None else set()
     return {"tasks": len(tasks), "groups": groups, "test": "test" in data,
             "warnings": warnings(tasks, p.work_root / VOICE_FILE, applied)}
 
