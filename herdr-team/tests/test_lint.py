@@ -298,6 +298,43 @@ class StyleScanTest(unittest.TestCase):
             self.assertEqual(self.scan("t.json", text), want)
         self.assertEqual(self.scan("t.json", '{"primary":{"$type":"color","$description":"oklch(0.6 0.15 260)"}}\n'), [])
 
+    def test_metadata_subtree_not_token_value(self):
+        # 메타데이터(`$extensions` 하위 트리)의 value·preview 는 토큰 값이 아니다. JSON 경로와 줄 단위 되돌림 모두.
+        ok = ('{\n  "primary": {\n    "$type": "color",\n    "$extensions": {"vendor": {"value": "oklch(0.55 0.2 260)", "preview": "oklch(0.55 0.2 290)"}},\n'
+              '    "$value": "oklch(0.55 0.15 40)"\n  }\n}\n')
+        self.assertEqual(self.scan("t.json", ok), [])
+        bad_json = ok.replace('\n  }\n}', ',\n  }\n}')  # 끝 쉼표 — JSON 이 아니라 줄 단위로 되돌아간다
+        self.assertEqual(self.scan("t.json", bad_json), [])
+        one_line = '{"primary": {"$extensions": {"value": "oklch(0.55 0.2 260)"}, "$value": "oklch(0.55 0.15 40)",}}\n'
+        self.assertEqual(self.scan("t.json", one_line), [])
+        real = '{"primary": {"$extensions": {"value": "oklch(0.55 0.15 40)"}, "$value": "oklch(0.55 0.2 260)",}}\n'
+        self.assertEqual(len(self.scan("t.json", real)), 1)
+
+    def test_array_themes_distinct(self):
+        text = ('{\n  "themes": [\n    {"primary": "oklch(0.55 0.2 260)"},\n    {"primary": "oklch(0.55 0.2 290)"}\n  ]\n}\n')
+        got = self.scan("t.json", text)
+        self.assertEqual([x.split(":")[1] for x in got], ["3", "4"])
+
+    def test_dtcg_font_tokens(self):
+        pretty = '{\n  "font": {\n    "body": {\n      "$type": "fontFamily",\n      "$value": ["%s", "sans-serif"]\n    }\n  }\n}\n'
+        got = self.scan("t.json", pretty % "Pretendard")
+        self.assertEqual(len(got), 1)
+        self.assertIn("과용 글꼴", got[0])
+        self.assertTrue(got[0].startswith("t.json:5:"))
+        self.assertEqual(self.scan("t.json", pretty % "SUIT"), [])
+        s = '{"font": {"body": {"$type": "fontFamily", "$value": "Pretendard, sans-serif"}}}\n'
+        self.assertEqual(len(self.scan("t.json", s)), 1)
+
+    def test_performance_bounds(self):
+        import time
+        css = "".join(".a%d { font-family: SUIT, sans-serif; }\n" % i for i in range(25000))
+        js = "".join("fontFamily: {\n" for _ in range(5000))
+        big = "{" + ",\n".join('"key_number_%d": "value"' % i for i in range(40000)) + "}"
+        for rel, text in (("a.css", css), ("a.json", big), ("a.js", js)):
+            t = time.monotonic()
+            self.scan(rel, text)
+            self.assertLess(time.monotonic() - t, 1.5, rel)
+
     def test_targets_and_isolation(self):
         root = Path(tempfile.mkdtemp(prefix="hteam-style-")).resolve()
         self.addCleanup(shutil.rmtree, root, True)

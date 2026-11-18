@@ -277,7 +277,9 @@ _COLOR_LITERAL = re.compile(r"(?<![&\w])#[0-9a-fA-F]{3,8}(?![\w-])|\b(?:rgba?|hs
 # 글꼴 선언의 머리(`font-family:`·`fontFamily:`·`"fontFamily":`). 값은 _font_values 가 여러 줄까지 읽는다.
 _FONT_HEAD = re.compile(r"""(?:font-family|fontFamily)["']?\s*:\s*""", re.I)
 _FONT_LIST = re.compile(r""":\s*(\[[^\]]*\]|"[^"\n]*"|'[^'\n]*'|`[^`\n]*`)""")
-_VALUE_KEY = re.compile(r"""["']?\$?value["']?\s*:\s*""", re.I)
+# 객체 안을 토큰으로 읽는다: 따옴표 글(뒤에 `:` 가 오면 키), 따옴표 없는 키, 괄호. 글 안의 내용은 한 덩어리로 건너뛴다.
+_OBJ_TOKEN = re.compile(r"""(?P<s>"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')(?P<c>\s*:\s*)?|(?P<i>[A-Za-z_$][\w$]*)(?P<ic>\s*:\s*)|(?P<b>[{}\[\]])""")
+SCAN_WINDOW = 4000  # 닫히지 않은 `{`·`[`·끝나지 않는 값을 앞으로 찾는 최대 글자 수(병적인 입력에서도 선형으로 끝낸다)
 BLUE_HUE = (240, 300)  # 주 강조로 근거가 필요한 OKLCH h(파랑·남색·보라, 설계 11.12 의 1 §1 의 11)
 BLUE_MIN_C = 0.08
 # 프로젝트의 design-rules.md 가 13단계 판인지 가르는 줄(Task 3 이 쓰는 §1 의 11 의 머리). 색·글꼴 경고가 인용하는 규칙이다
@@ -338,6 +340,23 @@ def _object_end(line: str, start: int) -> int:
     return len(line)
 
 
+def _direct_value(inner: str) -> int | None:
+    """객체 글(inner, 첫 글자 `{`)에서 그 객체 바로 아래의 `$value`·`value` 키 다음 위치. 안쪽 객체·배열(`$extensions` 등)과 글 안의
+    내용은 건너뛴다. 없으면 None."""
+    depth = 0
+    for t in _OBJ_TOKEN.finditer(inner):
+        if t.group("b"):
+            depth += 1 if t.group("b") in "{[" else -1
+            if depth <= 0:
+                return None
+        elif depth == 1:
+            if t.group("c") and t.group("s")[1:-1].lower() in ("value", "$value"):
+                return t.end("c")
+            if t.group("ic") and t.group("i").lower() in ("value", "$value"):
+                return t.end("ic")
+    return None
+
+
 def _role_colors(line: str) -> list[tuple[float, float, float]]:
     """이름에 primary·accent·brand 가 든 값마다 그 값의 첫 색(OKLCH)을 줄 안 차례로. 값은 그 선언의 끝(`;`·`}`·괄호 밖 `,`·줄 끝)
     까지만 본다. 값이 객체(DTCG `{"$type": …, "$value": …}`)면 `$` 로 시작하는 메타 키를 건너뛰고 `$value`·`value` 의 값을 읽는다.
@@ -352,10 +371,10 @@ def _role_colors(line: str) -> list[tuple[float, float, float]]:
             start += 1
         if line.startswith("{", start):
             inner = line[start:_object_end(line, start)]
-            key = _VALUE_KEY.search(inner)
+            key = _direct_value(inner)
             if key is None:
                 continue
-            base = start + key.end()
+            base = start + key
         else:
             base = start
         found = _COLOR_LITERAL.search(line, base, _value_end(line, base))
@@ -365,33 +384,49 @@ def _role_colors(line: str) -> list[tuple[float, float, float]]:
     return out
 
 
-def _font_values(text: str):
+def _line_starts(text: str) -> list[int]:
+    """각 줄이 시작하는 위치(0 번째 줄 = 0). 위치 → 줄 번호는 `bisect.bisect_right(starts, pos)`."""
+    return [0] + [m.end() for m in re.finditer("\n", text)]
+
+
+_BRACES = re.compile(r"[{}]")
+
+
+def _font_values(text: str, starts: list[int] | None = None):
     """글꼴 선언마다 (선언이 시작하는 줄 번호, 글꼴 이름 목록)을 낸다. 값은 여러 줄에 걸칠 수 있다: 배열은 닫는 `]` 까지, CSS 값은
-    `;`·`}` 까지(줄이 `,` 로 끝나면 다음 줄로 이어진다), Tailwind 중첩 `fontFamily: { sans: [...] }` 는 안의 목록마다."""
+    `;`·`}` 까지(줄이 `,` 로 끝나면 다음 줄로 이어진다), Tailwind 중첩 `fontFamily: { sans: [...] }` 는 안의 목록마다.
+    닫히지 않은 괄호·끝나지 않는 값은 SCAN_WINDOW 글자까지만 본다."""
+    if starts is None:
+        starts = _line_starts(text)
+    n = len(text)
     for m in _FONT_HEAD.finditer(text):
-        number = text.count("\n", 0, m.start()) + 1
+        number = bisect.bisect_right(starts, m.start())
         i = m.end()
         head = text[i:i + 1]
+        limit = min(n, i + SCAN_WINDOW)
         if head == "{":
             depth = 0
-            for j in range(i, len(text)):
-                depth += (text[j] == "{") - (text[j] == "}")
+            j = limit - 1
+            for b in _BRACES.finditer(text, i, limit):
+                depth += 1 if b.group() == "{" else -1
                 if depth == 0:
+                    j = b.start()
                     break
             for item in _FONT_LIST.finditer(text[i:j + 1]):
                 yield number, font_stack(item.group(1))
         elif head == "[":
-            j = text.find("]", i)
-            yield number, font_stack(text[i:j + 1] if j >= 0 else text[i:text.find("\n", i) if "\n" in text[i:] else len(text)])
+            j = text.find("]", i, limit)
+            end = text.find("\n", i, limit)
+            yield number, font_stack(text[i:j + 1] if j >= 0 else text[i:end if end >= 0 else limit])
         elif head in ("\"", "'", "`"):
-            j = text.find(head, i + 1)
-            end = text.find("\n", i)
-            yield number, font_stack(text[i:j + 1] if 0 <= j and (end < 0 or j < end) else text[i:end if end >= 0 else len(text)])
+            j = text.find(head, i + 1, limit)
+            end = text.find("\n", i, limit)
+            yield number, font_stack(text[i:j + 1] if 0 <= j and (end < 0 or j < end) else text[i:end if end >= 0 else limit])
         else:
             value = ""
-            while i <= len(text):
+            while i <= n and len(value) < SCAN_WINDOW:
                 end = text.find("\n", i)
-                line = text[i:end if end >= 0 else len(text)]
+                line = text[i:end if end >= 0 else n]
                 stop = min((k for k in (line.find(";"), line.find("}")) if k >= 0), default=-1)
                 if stop >= 0:
                     value += line[:stop]
@@ -400,22 +435,27 @@ def _font_values(text: str):
                 if not line.rstrip().endswith(",") or end < 0:
                     break
                 i = end + 1
-            yield number, font_stack(value)
+            yield number, font_stack(value[:SCAN_WINDOW])
 
 
-def _json_role_hues(text: str) -> list[tuple[int, float]] | None:
-    """JSON 토큰 파일(text)에서 주 강조 hue 경고를 (줄 번호, h)로 낸다. JSON 이 아니면 None(줄 단위 검사로 되돌아간다).
-    키 경로에 primary·accent·brand 가 든 문자열 값을 색으로 읽는다(`$value` 말고 `$` 로 시작하는 메타 키의 값은 뺀다).
-    역할 객체(경로에서 처음 역할 이름이 나온 키)마다 문서 순서의 첫 파랑·남색·보라 값 하나만, 그 값이 나온 줄에 단다."""
+def _json_role_hues(text: str, starts: list[int] | None = None):
+    """JSON 토큰 파일(text)에서 (주 강조 hue 경고 [(줄 번호, h)], DTCG 글꼴 토큰 [(줄 번호, 글꼴 이름 목록)])를 낸다. JSON 이 아니면
+    None(줄 단위 검사로 되돌아간다). 키 경로(배열은 색인 포함)에 primary·accent·brand 가 든 문자열 값을 색으로 읽는다. `$value` 말고
+    `$` 로 시작하는 키(`$extensions` 등)의 하위 트리는 깊이와 관계없이 메타데이터라 통째로 뺀다. 역할 객체(경로에서 처음 역할
+    이름이 나온 키)마다 문서 순서의 첫 파랑·남색·보라 값 하나만, 그 값이 나온 줄에 단다. `$type` 이 fontFamily(s) 인 객체의 `$value`
+    (글·배열)는 글꼴 목록으로 내며 `$value` 키의 줄에 단다."""
     try:
         data = json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
+    if starts is None:
+        starts = _line_starts(text)
     cursor = 0  # 문서 순서로 키·값을 찾아 나가는 위치(같은 값이 여러 번 나와도 차례대로 맞는다)
 
     def locate(needle_src: str) -> int | None:
         nonlocal cursor
-        for needle in (json.dumps(needle_src), json.dumps(needle_src, ensure_ascii=False)):
+        plain = json.dumps(needle_src, ensure_ascii=False)
+        for needle in (plain, json.dumps(needle_src)) if plain != json.dumps(needle_src) else (plain,):
             at = text.find(needle, cursor)
             if at >= 0:
                 cursor = at + len(needle)
@@ -423,30 +463,38 @@ def _json_role_hues(text: str) -> list[tuple[int, float]] | None:
         return None
 
     out: list[tuple[int, float]] = []
+    fonts: list[tuple[int, list[str]]] = []
     done: set[tuple] = set()  # 이미 단 역할 객체(경로 접두)
 
-    def walk(node, path: tuple, role: tuple | None, own: str | None, role_line: int) -> None:
+    def line_of(at: int | None, fallback: int) -> int:
+        return bisect.bisect_right(starts, at) if at is not None else fallback
+
+    def walk(node, path: tuple, role: tuple | None, role_line: int, meta: bool) -> None:
         if isinstance(node, dict):
+            font_obj = not meta and str(node.get("$type", "")).lower() in ("fontfamily", "fontfamilies")
             for key, child in node.items():
                 at = locate(str(key))
-                line = text.count("\n", 0, at) + 1 if at is not None else role_line
-                is_role = role is None and _ROLE.search(str(key))
-                walk(child, path + (key,), path + (key,) if is_role else role, str(key),
-                     line if is_role else role_line)
+                line = line_of(at, role_line)
+                is_role = role is None and not meta and _ROLE.search(str(key))
+                if font_obj and key == "$value" and isinstance(child, (str, list)):
+                    stack = font_stack(child) if isinstance(child, str) else [str(x) for x in child if isinstance(x, str)]
+                    fonts.append((line, stack))
+                walk(child, path + (key,), path + (key,) if is_role else role, line if is_role else role_line,
+                     meta or (str(key).startswith("$") and key != "$value"))
         elif isinstance(node, list):
-            for child in node:
-                walk(child, path, role, own, role_line)
+            for idx, child in enumerate(node):
+                walk(child, path + (idx,), role, role_line, meta)
         elif isinstance(node, str):
             at = locate(node)
-            if role is None or role in done or (own or "").startswith("$") and own != "$value":
+            if meta or role is None or role in done:
                 return
             lch = color.parse(node)
             if lch is not None and lch[1] >= BLUE_MIN_C and BLUE_HUE[0] <= lch[2] < BLUE_HUE[1]:
                 done.add(role)
-                out.append((text.count("\n", 0, at) + 1 if at is not None else role_line, lch[2]))
+                out.append((line_of(at, role_line), lch[2]))
 
-    walk(data, (), None, None, 1)
-    return out
+    walk(data, (), None, 1, False)
+    return out, fonts
 
 
 def style_scan(rel: str, text: str, overused: dict) -> list[str]:
@@ -459,7 +507,9 @@ def style_scan(rel: str, text: str, overused: dict) -> list[str]:
     hits: dict[str, int] = {}  # 과용 색 → 첫 줄(나온 차례)
     ramp_hits: dict[str, int] = {}
     found: list[tuple[int, str]] = []
-    json_hues = _json_role_hues(text) if rel.lower().endswith(".json") else None
+    starts = _line_starts(text)
+    parsed = _json_role_hues(text, starts) if rel.lower().endswith(".json") else None
+    json_hues = parsed[0] if parsed else None if parsed is None else []
     for number, what in ((n, f"주 강조가 파랑·남색·보라 계열(h {round(h)}°) — 근거를 적는다(§1 의 11)") for n, h in json_hues or []):
         found.append((number, what))
     for number, line in enumerate(text.split("\n"), 1):
@@ -474,7 +524,7 @@ def style_scan(rel: str, text: str, overused: dict) -> list[str]:
         if blue is not None:
             found.append((number, f"주 강조가 파랑·남색·보라 계열(h {round(blue[2])}°) — 근거를 적는다(§1 의 11)"))
     seen_lines: set[int] = set()  # 한 줄에 글꼴 경고는 하나만 단다
-    for number, stack in _font_values(text):
+    for number, stack in [*_font_values(text, starts), *(parsed[1] if parsed else [])]:
         if not stack or number in seen_lines:
             continue
         if font_key(stack[0]) in latin:
