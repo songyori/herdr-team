@@ -12,6 +12,7 @@ from pathlib import Path
 from . import gitio
 from .globs import matches_any
 from .lint import cap, read_source
+from .specs import code_lines
 
 # 문구 대상 확장자(설계 11.7). 코드 확장자는 주석 줄을, HTML·XML 은 주석 줄을, Markdown 은 코드 블록과 인라인 코드를 뺀다
 SUFFIXES = frozenset({".md", ".mdx", ".txt", ".html", ".htm", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte", ".json",
@@ -65,18 +66,17 @@ def excerpt(line: str) -> str:
 
 def visible_lines(rel: str, text: str) -> list[tuple[int, str, str]]:
     """검사할 줄 (줄 번호, 줄 원문, 검사할 글). 코드 확장자는 주석으로 시작하는 줄, HTML·XML 은 `<!--` 로 시작하는 줄,
-    Markdown 은 펜스(``` · ~~~) 블록을 빼고 인라인 코드를 지운 글을 본다(`* 글머리` 는 남는다). 한글이 없는 줄은 뺀다."""
+    Markdown 은 펜스 코드 블록(specs.code_lines: 펜스 문자와 길이를 따르고 앞 공백은 보지 않는다. 네 백틱 펜스 안의 세 백틱
+    예시도 코드다)을 빼고 인라인 코드를 지운 글을 본다(`* 글머리` 는 남는다). 한글이 없는 줄은 뺀다."""
     suffix = Path(rel).suffix.lower()
+    lines = text.split("\n")
+    code = code_lines(lines, any_indent=True) if suffix in MARKDOWN else [False] * len(lines)
     out: list[tuple[int, str, str]] = []
-    fenced = False
-    for number, line in enumerate(text.split("\n"), 1):
+    for number, (line, fenced) in enumerate(zip(lines, code), 1):
         head, body = line.lstrip(), line
+        if fenced:
+            continue
         if suffix in MARKDOWN:
-            if head.startswith(("```", "~~~")):
-                fenced = not fenced
-                continue
-            if fenced:
-                continue
             body = _INLINE.sub(" ", line)
         elif suffix in CODE and head.startswith(COMMENTS):
             continue
@@ -178,6 +178,18 @@ def targets(root: Path, files: list[str]) -> list[str]:
     for rel in files:
         text = read_source(root, rel) if _candidate(rel) else None
         if text is not None and visible_lines(rel, text):
+            out.append(rel)
+    return out
+
+
+def added_text_files(root: Path, files: list[str], shas: list[str]) -> list[str]:
+    """문구 대상(targets) 가운데 대상 커밋(shas)이 검사할 줄(주석이 아니고 한글이 보이는 줄)을 더한 파일(설계 6.6 의 3,
+    `### 문구 점검` 사전 검사). diff 를 읽지 못한 파일은 세지 않는다(그 파일 때문에 돌려보내지 않는다)."""
+    out = []
+    for rel in targets(root, files):
+        added = gitio.added_lines(root, shas, rel)
+        text = read_source(root, rel)
+        if added and text is not None and any(line in added for _, line, _ in visible_lines(rel, text)):
             out.append(rel)
     return out
 

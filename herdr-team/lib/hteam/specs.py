@@ -69,6 +69,29 @@ def _one_line(text: str) -> bool:
     return text.splitlines() == [text]
 
 
+def code_lines(lines: list[str], any_indent: bool = False) -> list[bool]:
+    """줄마다 펜스 코드 블록의 줄(여는 줄·안·닫는 줄)인가. CommonMark 펜스 규칙: 여는 줄은 같은 문자 3개 이상(백틱 펜스의
+    info 에 백틱이 있으면 인라인 코드라 펜스가 아니다), 닫는 줄은 같은 문자 ≥ 여는 길이 + 공백뿐(네 백틱 펜스 안의 세 백틱 줄은
+    닫지 않는다). 닫히지 않으면 끝까지다. 펜스 줄의 앞 공백은 3칸까지이고, any_indent 면 보지 않는다(목록 안에 들여 쓴 코드
+    블록). 사양 절 읽기(parse)와 보고서 소절 사전 검사(review.report_headings, 설계 6.6 의 3)는 기본값으로, 문구 검사
+    (textlint.visible_lines)는 any_indent 로 쓴다."""
+    pad = r"[ \t]*" if any_indent else r" {0,3}"
+    opening = re.compile(rf"^{pad}(`{{3,}}|~{{3,}})(.*)$")
+    out: list[bool] = []
+    fence = None
+    for line in lines:
+        if fence is None:
+            fm = opening.match(line)
+            if fm and not (fm.group(1)[0] == "`" and "`" in fm.group(2)):
+                fence = (fm.group(1)[0], len(fm.group(1)))
+            out.append(fence is not None)
+        else:
+            if re.fullmatch(pad + re.escape(fence[0]) + "{%d,}[ \t]*" % fence[1], line):
+                fence = None
+            out.append(True)
+    return out
+
+
 def parse(text: str) -> Spec:
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
@@ -91,24 +114,10 @@ def parse(text: str) -> Spec:
         raise _bad(f"front matter 에 {', '.join(missing)} 가 없다")
     body = "\n".join(lines[end + 1:]).strip("\n") + "\n"
     sections: dict[str, str] = {}
-    current, buf, fence = None, [], None
-    for line in body.splitlines():
-        # 코드 블록 안의 `## ...` 는 절 머리가 아니다. CommonMark 펜스 규칙: 여는 줄은 같은 문자 3개 이상
-        # (백틱 펜스의 info 에 백틱이 있으면 인라인 코드라 펜스가 아니다), 닫는 줄은 같은 문자 ≥ 여는 길이 + 공백뿐.
-        if fence is None:
-            fm = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
-            if fm and not (fm.group(1)[0] == "`" and "`" in fm.group(2)):
-                fence = (fm.group(1)[0], len(fm.group(1)))
-                if current is not None:
-                    buf.append(line)
-                continue
-        else:
-            if re.fullmatch(r" {0,3}" + re.escape(fence[0]) + "{%d,}[ \t]*" % fence[1], line):
-                fence = None
-            if current is not None:
-                buf.append(line)
-            continue
-        m = None if fence else re.match(r"^## (.+?)\s*$", line)
+    current, buf = None, []
+    body_lines = body.splitlines()
+    for line, code in zip(body_lines, code_lines(body_lines)):
+        m = None if code else re.match(r"^## (.+?)\s*$", line)  # 코드 블록 안의 `## ...` 는 절 머리가 아니다
         if m:
             if current is not None:
                 sections[current] = "\n".join(buf).strip()

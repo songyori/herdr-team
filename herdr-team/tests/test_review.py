@@ -183,6 +183,8 @@ owns = ["docs/design/**", "assets/**"]
 title = "디자인"
 owns = ["docs/design/**", "assets/**"]
 """
+# 보고서 소절 사전 검사(설계 6.6 의 3)를 지나는 보고서. 디자인·문구 절 시험은 이 보고서로 리뷰어까지 간다
+CHECKED_REPORT = "## r1\n- 바꾼 파일: 시험\n### 디자인 점검\n- 지킴\n### 문구 점검\n- 지킴\n"
 
 
 class DesignSectionTest(ReviewCase):
@@ -198,7 +200,7 @@ class DesignSectionTest(ReviewCase):
 
     def prompt(self, tid, role, files, **kw):
         self.started(tid, role, **kw)
-        self.assertEqual(self.act_work(tid, files)[0], 0)
+        self.assertEqual(self.act_work(tid, files, report=CHECKED_REPORT)[0], 0)
         code, out = self.hteam("review", tid)
         self.assertEqual(code, 0, out)
         return (self.state_dir / f"tasks/{tid}/r1-review-a1.md").read_text(encoding="utf-8")
@@ -317,7 +319,7 @@ class TextSectionTest(ReviewCase):
 
     def prompt(self, tid, role, files, **kw):
         self.started(tid, role, **kw)
-        self.assertEqual(self.act_work(tid, files)[0], 0)
+        self.assertEqual(self.act_work(tid, files, report=CHECKED_REPORT)[0], 0)
         code, out = self.hteam("review", tid)
         self.assertEqual(code, 0, out)
         return (self.state_dir / f"tasks/{tid}/r1-review-a1.md").read_text(encoding="utf-8")
@@ -362,7 +364,7 @@ class TextSectionTest(ReviewCase):
         self.write_spec("T-001", "developer")
         state.create(self.p, "T-001", "developer")
         self.assertEqual(self.hteam("start", "T-001", "--worker", "codex")[0], 0)
-        self.assertEqual(self.act_work("T-001", {"src/app.tsx": 'a = "저장됬어요";\n'})[0], 0)
+        self.assertEqual(self.act_work("T-001", {"src/app.tsx": 'a = "저장됬어요";\n'}, report=CHECKED_REPORT)[0], 0)
         self.assertEqual(self.hteam("review", "T-001")[0], 0)
         self.assertEqual(self.attempt("T-001")["agent"], "claude")
         text = (self.state_dir / "tasks/T-001/r1-review-a1.md").read_text(encoding="utf-8")
@@ -383,7 +385,7 @@ class TextSectionTest(ReviewCase):
         # Codex 계획 r1: 문구 대상 판정(textlint.targets)도 자동 검사다. 예외로 끝나도 리뷰 프롬프트를 쓰고 리뷰어를 띄운다
         from hteam import review
         self.started("T-001", "developer")
-        self.assertEqual(self.act_work("T-001", {"src/app.tsx": 'a = "저장됬어요";\n'})[0], 0)
+        self.assertEqual(self.act_work("T-001", {"src/app.tsx": 'a = "저장됬어요";\n'}, report=CHECKED_REPORT)[0], 0)
         with mock.patch.dict(os.environ, self._env("drive", None, None), clear=True), \
                 mock.patch.object(textlint, "targets", side_effect=RuntimeError("대상 판정\n실패")):
             out = review.review(self.p, "T-001")
@@ -488,6 +490,12 @@ class TextTemplateTest(unittest.TestCase):
             self.assertEqual(re.findall(r"\{\{(\w+)\}\}", (ROOT / "templates" / name).read_text(encoding="utf-8")), slots)
         self.assertIn("1. 사양의 Acceptance 를 실제로 충족하는가. {{verify_rule}}\n", prompt)
 
+    def test_review_text_quotes_service_text(self):
+        # 설계 6.6 의 4: 리뷰어가 읽은 서비스 문구를 인용한다. hteam 은 인용이 없다고 막지 않는다
+        text = (ROOT / "templates/review-text.md").read_text(encoding="utf-8")
+        self.assertIn("- `## 직접 확인한 것` 에 이 태스크가 바꾼 서비스 문구 가운데 직접 읽은 3–5줄을 `파일:줄 \"문구\"` 로 "
+                      "인용한다(바뀐 문구가 그보다 적으면 전부).\n\n자동 검사", text)
+
     def test_review_design_example_and_agents_reviewer_lines(self):
         # 설계 6.2: 디자인 지적 표시의 (회귀)는 이 태스크의 지적이고 ## 회귀 절과 다르다. 리뷰어 규칙은 새 형식을 적는다
         design = (ROOT / "templates/review-design.md").read_text(encoding="utf-8")
@@ -504,6 +512,120 @@ class TextTemplateTest(unittest.TestCase):
         import re
         for path in (ROOT / "templates").rglob("*.md"):
             self.assertIsNone(re.search(r"\d~\d", path.read_text(encoding="utf-8")), path)
+
+
+class ReportHeadingsTest(unittest.TestCase):
+    """보고서 소절 읽기(설계 6.6 의 3): 이번 라운드 절만, 펜스 코드 블록 안의 `## `·`### ` 줄은 절을 끊지도 소절로 세지도 않는다."""
+
+    def test_round_section_and_fences(self):
+        from hteam import review
+        text = ("# T-001 보고서\n## r1\n### 문구 점검\n- 지킴\n## r2\n```text\n## r3\n### 재현 시험\n```\n### 디자인 점검\n"
+                "~~~~\n```\n### 가짜\n~~~~\n### 재현 시험 (회귀)   \n## r20\n### 다른 라운드\n")
+        self.assertEqual(review.report_headings(text, 2), ["### 디자인 점검", "### 재현 시험 (회귀)"])
+        self.assertEqual(review.report_headings(text, 1), ["### 문구 점검"])
+        self.assertEqual(review.report_headings(text, 20), ["### 다른 라운드"])
+        self.assertEqual(review.report_headings(text, 3), [])  # 펜스 안의 `## r3` 은 절이 아니다
+        self.assertEqual(review.report_headings("## r1\n```\n### 문구 점검\n", 1), [])  # 닫히지 않은 펜스는 끝까지다
+
+
+class ReportPrecheckTest(ReviewCase):
+    """보고서 소절 사전 검사(설계 6.6 의 3): 셋이 각각 조건일 때만 리뷰어 없이 돌려보낸다."""
+
+    def setUp(self):
+        TeamCase.setUp(self)
+        self.init_project(config=DESIGN_CONFIG, roles=("planner", "director", "designer", "developer", "tester"))
+        self.commit(".herdr-team/text-rules.md", "# 문구 규칙\n", "chore: 문구 규칙")
+        self.setup_run()
+        self.p = Project(self.proj)
+
+    def review(self, tid, role, files, report, **kw):
+        self.started(tid, role, **kw)
+        self.assertEqual(self.act_work(tid, files, report=report)[0], 0)
+        code, out = self.hteam("review", tid)
+        self.assertEqual(code, 0, out)
+        return out
+
+    def assert_sent_back(self, out, problems):
+        self.assertEqual((out["status"], out["source"], out["problems"]), ("changes", "hteam", problems), out)
+
+    def test_text_check_needs_added_korean_line(self):
+        out = self.review("T-001", "developer", {"src/t1/app.tsx": 'a = "저장했어요";\n', "src/t1/b.py": "print('저장')\n"},
+                          "## r1\n### 디자인 점검\n- 지킴\n", owns="src/t1/**")
+        self.assert_sent_back(out, ["보고서 r1 절에 ### 문구 점검 이 없다(문구 대상 파일에 한글 줄을 더했다: src/t1/app.tsx)"])
+        text = (self.proj / "docs/reviews/T-001/r1.md").read_text(encoding="utf-8")
+        self.assertIn("- [P1] 보고서 r1 절에 ### 문구 점검 이 없다", text)
+        # 한글이 주석에만 있거나 한글 줄을 더하지 않은 코드 변경은 돌려보내지 않는다
+        out = self.review("T-002", "developer", {"src/t2/server.ts": "// 저장 주석\nconst a = 1;\n"}, "## r1\n- 바꾼 파일\n",
+                          owns="src/t2/**")
+        self.assertEqual(out["status"], "reviewing", out)
+
+    def test_design_check_by_role_and_screen_files(self):
+        out = self.review("T-001", "designer", {"docs/design/screens/home/notes.md": "메모\n"}, "## r1\n### 문구 점검\n",
+                          owns="docs/design/screens/home/**")
+        self.assert_sent_back(out, ["보고서 r1 절에 ### 디자인 점검 이 없다(designer 태스크다)"])
+        out = self.review("T-002", "developer", {"src/t2/Btn.tsx": "<b/>\n", "src/t2/x.css": "a{}\n", "src/t2/y.vue": "<b/>\n",
+                                                 "src/t2/z.svelte": "<b/>\n"}, "## r1\n", owns="src/t2/**")
+        self.assert_sent_back(out, ["보고서 r1 절에 ### 디자인 점검 이 없다(화면 파일을 바꿨다: src/t2/Btn.tsx, src/t2/x.css, "
+                                    "src/t2/y.vue 외 1개)"])
+        # 서버 코드일 수 있는 .ts·.js·.json 만, 앱 파일만 바꾼 developer 는 돌려보내지 않는다(리뷰어가 본다)
+        out = self.review("T-003", "developer", {"src/t3/api.ts": "export {}\n", "src/t3/a.js": "x\n", "src/t3/d.json": "{}\n",
+                                                 "src/t3/V.swift": "x\n", "src/t3/A.kt": "x\n", "src/t3/m.dart": "x\n"},
+                          "## r1\n", owns="src/t3/**")
+        self.assertEqual(out["status"], "reviewing", out)
+
+    def test_old_design_heading_is_accepted(self):
+        out = self.review("T-001", "director", {"docs/design/direction.md": "방향\n"}, "## r1\n### 금지 목록 점검\n- 지킴\n",
+                          owns="docs/design/direction.md")
+        self.assertEqual(out["status"], "reviewing", out)
+
+    def test_repro_check_only_for_repro_tasks(self):
+        body = VALID_BODY.replace("표준 라이브러리만.", "표준 라이브러리만.\n" + REPRO_LINE)
+        out = self.review("T-001", "developer", {"src/t1/app.py": "x = 1\n"}, "## r1\n```\n### 재현 시험\n```\n",
+                          owns="src/t1/**", body=body)
+        self.assert_sent_back(out, ["보고서 r1 절에 ### 재현 시험 이 없다(사양 Constraints 가 재현 시험을 요구한다)"])
+        report = "## r1\n### 재현 시험 (실패 뒤 통과)\n```\n## r1\n```\n"  # 펜스 안의 `## r1` 은 절을 끊지 않는다
+        out = self.review("T-002", "developer", {"src/t2/app.py": "x = 2\n"}, report, owns="src/t2/**", body=body)
+        self.assertEqual(out["status"], "reviewing", out)
+        out = self.review("T-003", "developer", {"src/t3/app.py": "x = 3\n"}, "## r1\n", owns="src/t3/**")  # 표시 줄이 없다
+        self.assertEqual(out["status"], "reviewing", out)
+
+    def test_other_round_section_does_not_count(self):
+        self.started("T-001", "developer")
+        self.assertEqual(self.act_work("T-001", {"src/app.tsx": 'a = "저장"\n'}, report=CHECKED_REPORT)[0], 0)
+        self.assertEqual(self.hteam("review", "T-001")[1]["status"], "reviewing")
+        self.act_review("T-001", "REQUEST_CHANGES", text="## 지적 사항\n- [P1] src/app.tsx:1 — 틀림. 고친다.\n")
+        self.assertEqual(self.hteam("review-finish", "T-001")[1]["status"], "changes")
+        self.assertEqual(self.hteam("fix", "T-001")[0], 0)
+        report = CHECKED_REPORT + "## r2\n- 고쳤다\n"  # r1 절의 소절은 r2 에 세지 않는다
+        self.assertEqual(self.act_work("T-001", {"src/app.tsx": 'a = "저장해요"\n'}, report=report)[0], 0)
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual(code, 0, out)
+        self.assert_sent_back(out, ["보고서 r2 절에 ### 문구 점검 이 없다(문구 대상 파일에 한글 줄을 더했다: src/app.tsx)",
+                                    "보고서 r2 절에 ### 디자인 점검 이 없다(화면 파일을 바꿨다: src/app.tsx)"])
+
+    def test_markdown_code_example_change_is_not_text(self):
+        # 네 백틱 펜스 안의 세 백틱 예시는 코드다. 예시만 바꾼 태스크는 돌려보내지 않는다(Codex 계획 리뷰 p13c r1)
+        guide = "# 안내\n\n설명 글이다.\n\n````markdown\n```\n예시 하나\n```\n````\n"
+        self.commit("src/t1/guide.md", guide, "기존 안내")
+        out = self.review("T-001", "developer", {"src/t1/guide.md": guide.replace("예시 하나", "예시 둘")}, "## r1\n",
+                          owns="src/t1/**")
+        self.assertEqual(out["status"], "reviewing", out)
+
+    def test_text_check_failure_does_not_send_back(self):
+        from hteam import review
+        self.started("T-001", "developer")
+        self.assertEqual(self.act_work("T-001", {"src/app.tsx": 'a = "저장"\n'}, report="## r1\n### 디자인 점검\n")[0], 0)
+        with mock.patch.dict(os.environ, self._env("drive", None, None), clear=True), \
+                mock.patch.object(textlint, "added_text_files", side_effect=RuntimeError("판정 실패")):
+            out = review.review(self.p, "T-001")
+        self.assertEqual(out["status"], "reviewing", out)
+
+    def test_no_commits_skips_report_checks(self):
+        self.started("T-001", "designer", owns="docs/design/screens/home/**")
+        self.act_work("T-001", commit=False)
+        code, out = self.hteam("review", "T-001")
+        self.assertEqual(code, 0, out)
+        self.assertFalse(any("### 디자인 점검" in x for x in out["problems"]), out["problems"])
 
 
 class PrecheckTest(ReviewCase):

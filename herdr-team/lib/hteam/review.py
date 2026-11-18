@@ -21,11 +21,12 @@ import os
 import re
 from typing import Iterator
 
-from . import compose, config, crew, dispatch, gitio, plan, procs, queue, roles, specs, state, tasks, testgate, workspace
+from . import (compose, config, crew, dispatch, gitio, lint, plan, procs, queue, roles, specs, state, tasks, testgate,
+               textlint, workspace)
 from .errors import CONFLICT, FAIL, USAGE, HteamError
 from .globs import covers_tree, matches_any
 from .horch import Horch
-from .paths import SHIM, find_project, review_rel
+from .paths import SHIM, find_project, report_rel, review_rel
 from .util import die_at, now, show, write_atomic
 
 AUTO_ATTEMPTS = 2  # 라운드당 자동 시도(설계 6.3 6)
@@ -43,6 +44,11 @@ ADJUST_BASIS = "`## 지적 사항` 의 P1 줄과 `## 이전 지적 확인` 의 �
 VERDICTS = ("APPROVE", "REQUEST_CHANGES")
 # 리뷰 시도를 띄우거나 복구할 수 있는 상태: 첫 시도·복구는 working, 자동 재시도·--retry·그 복구는 reviewing
 REVIEW_STATES = frozenset({"working", "reviewing"})
+# 보고서 소절 사전 검사(설계 6.6 의 3)
+TEXT_ROLES = ("designer", "developer")  # `### 문구 점검` 을 쓰는 직무(설계 11.7)
+SCREEN_SUFFIXES = frozenset({".html", ".htm", ".css", ".scss", ".jsx", ".tsx", ".vue", ".svelte"})  # developer 의 화면 파일
+SECTION_MISSING = "보고서 r{n} 절에 ### {title} 이 없다({why})"
+LISTED = 3  # 까닭에 보이는 파일 수
 
 
 def attempt_slot(k: int):
@@ -117,8 +123,71 @@ def changed_files(p, commits: list[dict], base: str | None = None) -> list[str]:
     return sorted(files)
 
 
+def report_headings(text: str, n: int) -> list[str]:
+    """보고서 글의 이번 라운드 `## r<n>` 절(그 제목 줄부터 다음 `## ` 제목 앞까지. 같은 제목의 절이 여럿이면 모두) 안의 `### `
+    제목 줄(끝 공백을 뗀 것). 펜스 코드 블록 안의 줄은 절을 끊지도 소절로 세지도 않는다(specs.code_lines: 출력 원문에 든
+    `## `·`### ` 줄이 소절을 밀어내거나 대신하지 않게)."""
+    lines = text.splitlines()
+    head = re.compile(rf"## r{n}(?![0-9])")
+    found, inside = [], False
+    for line, code in zip(lines, specs.code_lines(lines)):
+        if code:
+            continue
+        if line.startswith("## "):
+            inside = bool(head.match(line))
+        elif inside and line.startswith("### "):
+            found.append(line.rstrip())
+    return found
+
+
+def _listed(paths: list[str]) -> str:
+    shown = ", ".join(show(f) for f in paths[:LISTED])
+    return shown + (f" 외 {len(paths) - LISTED}개" if len(paths) > LISTED else "")
+
+
+def report_prechecks(p, cfg, st: dict, spec, commits: list[dict], files: list[str]) -> list[str]:
+    """보고서 소절 사전 검사(설계 6.6 의 3). 보고서 이번 라운드 절(report_headings)에 그 제목으로 시작하는 `### ` 줄이 없으면
+    한 줄(SECTION_MISSING):
+    - `### 문구 점검`: designer·developer 이고 `.herdr-team/text-rules.md` 가 있고 대상 커밋이 문구 대상 파일에 검사할 줄(한글이
+      보이는, 주석이 아닌 줄)을 더했다(textlint.added_text_files). 이 판정이 예외로 실패하면 돌려보내지 않는다.
+    - `### 디자인 점검`(옛 `### 금지 목록 점검` 도 받는다): 디자인 절이 붙는 태스크(director·designer·developer 이고
+      `[roles.director]` 가 있다)이고 director·designer 거나, developer 이면서 화면 파일(SCREEN_SUFFIXES)을 바꿨다.
+    - `### 재현 시험`: 재현 시험 태스크(specs.repro_task).
+    보고서를 읽지 못하면(없음, UTF-8 아님) 빈 글로 본다. 제목 줄만 보고 내용은 리뷰어가 본다."""
+    n = st["round"]
+    try:
+        text = (p.work_root / report_rel(st["id"])).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        text = ""
+    heads = report_headings(text, n)
+
+    def has(*titles: str) -> bool:
+        return any(h.startswith(f"### {t}") for h in heads for t in titles)
+
+    found = []
+    if spec.role in TEXT_ROLES and p.text_rules.is_file() and not has("문구 점검"):
+        try:
+            touched = textlint.added_text_files(p.work_root, files, [c["sha"] for c in commits])
+        except Exception:  # noqa: BLE001  조건을 모르면 돌려보내지 않는다(리뷰 프롬프트의 문구 절은 따로 실패 줄을 낸다)
+            touched = []
+        if touched:
+            found.append(SECTION_MISSING.format(n=n, title="문구 점검",
+                                                why=f"문구 대상 파일에 한글 줄을 더했다: {_listed(touched)}"))
+    if spec.role in lint.DESIGN_ROLES and "director" in cfg.roles and not has("디자인 점검", "금지 목록 점검"):
+        if spec.role != "developer":
+            found.append(SECTION_MISSING.format(n=n, title="디자인 점검", why=f"{spec.role} 태스크다"))
+        else:
+            screens = [f for f in files if os.path.splitext(f)[1].lower() in SCREEN_SUFFIXES]
+            if screens:
+                found.append(SECTION_MISSING.format(n=n, title="디자인 점검", why=f"화면 파일을 바꿨다: {_listed(screens)}"))
+    if specs.repro_task(spec) and not has("재현 시험"):
+        found.append(SECTION_MISSING.format(n=n, title="재현 시험", why="사양 Constraints 가 재현 시험을 요구한다"))
+    return found
+
+
 def prechecks(p, cfg, st: dict, spec, commits: list[dict], files: list[str]) -> list[str]:
-    """설계 6.1 4. 하나라도 걸리면 리뷰어를 띄우지 않고 REQUEST_CHANGES."""
+    """설계 6.1 4. 하나라도 걸리면 리뷰어를 띄우지 않고 REQUEST_CHANGES. 대상 커밋이 있으면 보고서 소절 사전 검사
+    (report_prechecks, 6.6 의 3)도 한다."""
     tid = st["id"]
     own = list(st["owns"]) + [f"docs/tasks/{tid}/**"]
     found = []
@@ -146,6 +215,8 @@ def prechecks(p, cfg, st: dict, spec, commits: list[dict], files: list[str]) -> 
              if not matches_any(d, mine)]
     if dirty:
         found.append("owns 안에 커밋하지 않은 변경이 있다: " + ", ".join(dirty))
+    if commits:
+        found += report_prechecks(p, cfg, st, spec, commits, files)
     return found
 
 

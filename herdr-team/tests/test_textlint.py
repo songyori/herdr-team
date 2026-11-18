@@ -75,6 +75,12 @@ class ScanTest(unittest.TestCase):
         self.assertEqual([x.split(":", 2)[1] for x in self.found(text, "docs/user/guide.md")], ["8"])
         self.assertEqual([n for n, _, _ in visible_lines("docs/user/guide.md", text)], [7, 8])
 
+    def test_nested_fence_example_is_code(self):
+        # 펜스 문자와 길이를 따른다: 네 백틱 펜스 안의 세 백틱 줄은 펜스를 닫지 않는다(Codex 계획 리뷰 p13c r1)
+        text = "설명 됬다\n````markdown\n```\n예시 됬다\n```\n````\n뒤 됬다\n  ~~~\n  들여 쓴 예시 됬다\n  ~~~\n"
+        self.assertEqual([x.split(":", 2)[1] for x in self.found(text, "docs/user/a.md")], ["1", "7"])
+        self.assertEqual([n for n, _, _ in visible_lines("docs/user/a.md", text)], [1, 7])
+
     def test_only_added_lines(self):
         text = 'const a = "저장됬어요";\nconst b = "삭제됬어요";\n'
         self.assertEqual(scan("src/app.tsx", text, {'const b = "삭제됬어요";'}, []),
