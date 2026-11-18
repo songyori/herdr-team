@@ -13,7 +13,7 @@ from tests.helpers import BIN, REPO, ROOT, TeamCase
 class CliTest(TeamCase):
     def test_version_envelope(self):
         code, out = self.hteam("version", as_=None)
-        self.assertEqual((code, out["ok"], out["version"]), (0, True, "0.7.2"))
+        self.assertEqual((code, out["ok"], out["version"]), (0, True, "0.8.0"))
 
     def test_fix_usage_lists_base_merge(self):
         # 설계 6.4 8단계: fix 사용법에 --base-merge 가 보인다
@@ -76,12 +76,13 @@ class CliTest(TeamCase):
         plugin = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())
         market = json.loads((REPO / ".claude-plugin" / "marketplace.json").read_text())
         entry = [p for p in market["plugins"] if p["name"] == "herdr-team"][0]
-        self.assertEqual({VERSION, plugin["version"], entry["version"]}, {"0.7.2"})
+        self.assertEqual({VERSION, plugin["version"], entry["version"]}, {"0.8.0"})
         self.assertEqual(entry["source"], "./herdr-team")
-        # hteam 이 받는 가장 낮은 herdr-orch 는 함께 배포하는 herdr-orch 와 같다(12단계: 대리 보고·relay-status, 0.5.0)
+        # hteam 이 받는 가장 낮은 herdr-orch(12단계: 대리 보고·relay-status, 0.5.0)는 그대로다. 함께 배포하는 herdr-orch 0.5.1 은
+        # skill 문서 한 문장만 바꿨다(설계 9.7 의 3, 13단계)
         from hteam.horch import HORCH_MIN
         orch = [p for p in market["plugins"] if p["name"] == "herdr-orch"][0]
-        self.assertEqual(HORCH_MIN, orch["version"])
+        self.assertEqual((HORCH_MIN, orch["version"]), ("0.5.0", "0.5.1"))
 
 
 class CompileWarningTest(unittest.TestCase):

@@ -143,7 +143,7 @@ class ScaffoldTest(TeamCase):
         shim = str(self.proj / ".herdr-team/bin/hteam")
         env = dict(self.env, HERDR_TEAM_PLUGIN_ROOT=str(ROOT))
         out = subprocess.run([sys.executable, shim, "version"], capture_output=True, text=True, env=env)
-        self.assertEqual(json.loads(out.stdout)["version"], "0.7.2")
+        self.assertEqual(json.loads(out.stdout)["version"], "0.8.0")
         registry = self.tmp / "installed.json"
         registry.write_text(json.dumps({"plugins": {"herdr-team@herdr-team": [{"installPath": str(ROOT)}]}}))
         env = dict(self.env, HTEAM_PLUGINS_JSON=str(registry))
@@ -536,6 +536,20 @@ class TemplateContractTest(unittest.TestCase):
                        "`HORCH_HOME` 을 넣은 세션부터다", "맡은 태스크가 없을 때", "`hteam agent reset <이름>`",
                        "도는 임시 워커는 끝날 때까지 그대로다", "herdr-orch 만 쓰는 프로젝트"):
             self.assertIn(needle, p12)
+        # 13단계(0.8.0): 플러그인 둘(herdr-orch 0.5.1 은 문서만), upgrade 의 새 규칙 파일 셋·moved·project-rules 와 함께 커밋,
+        # CLAUDE.md 세 곳, 관제·메인 다시 열기, 확정한 디자인 시스템은 그대로(설계 15.3 의 13 README "0.7.2 → 0.8.0")
+        self.assertLess(readme.index("#### 0.7.2 → 0.8.0"), readme.index("#### 0.7.1 → 0.7.2"))
+        p13 = readme[readme.index("#### 0.7.2 → 0.8.0"):readme.index("#### 0.7.1 → 0.7.2")]
+        for needle in ("herdr-orch 도 0.5.1 로 올린다", "`claude plugin update herdr-orch@herdr-team`",
+                       "`.herdr-team/palette.md`", "`.herdr-team/fonts-ko.md`", "`.herdr-team/web-rules.md`", "`moved`",
+                       "`.herdr-team/project-rules/<직무>.md`", "`git diff -- .herdr-team`",
+                       "직무 문서와 project-rules 를 함께 경로를 지정해 커밋한다", "`manual` 에 `CLAUDE.md` 가 나온다",
+                       "바뀐 곳은 셋이다", "`- 재현 시험:`", "`unknown_regression`", "관제를 끈다",
+                       "같은 터미널에서 메인 세션을 새로 열고", "`…/herdr-team/0.8.0/bin/hteam`", "이미 확정한 디자인 시스템",
+                       "새 director 태스크", "herdr-orch 만 쓰는 프로젝트"):
+            self.assertIn(needle, p13)
+        self.assertIn("| `herdr-team` | 0.8.0 |", readme)
+        self.assertIn("| `herdr-orch` | 0.5.1 |", readme)
         team = readme[readme.index("## herdr-team\n"):readme.index("### 이미 세팅한 프로젝트 업그레이드")]
         self.assertNotIn("질문 보기", team)
         for needle in ("메인 세션 아래 한 단계로 보인다", "`main_terminal`", "`--outlive-parent`", "숨은 리뷰어",

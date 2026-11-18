@@ -4,8 +4,8 @@
 
 | 플러그인 | 버전 | 하는 일 |
 |---|---|---|
-| `herdr-orch` | 0.5.0 | Claude·Codex 워커를 Herdr pane 으로 띄우고 메일함으로 질문·보고를 주고받는 `horch` CLI 와 스킬 |
-| `herdr-team` | 0.7.2 | `herdr-orch` 위의 직무 팀. 사용자는 메인 Claude 세션과 대화하고, 기획·디자인·개발·테스트는 직무 에이전트가 맡고, 산출물은 반대쪽 모델(Claude ↔ Codex)이 리뷰한다 |
+| `herdr-orch` | 0.5.1 | Claude·Codex 워커를 Herdr pane 으로 띄우고 메일함으로 질문·보고를 주고받는 `horch` CLI 와 스킬 |
+| `herdr-team` | 0.8.0 | `herdr-orch` 위의 직무 팀. 사용자는 메인 Claude 세션과 대화하고, 기획·디자인·개발·테스트는 직무 에이전트가 맡고, 산출물은 반대쪽 모델(Claude ↔ Codex)이 리뷰한다 |
 
 - 문서, 명령 출력, 에이전트끼리 주고받는 글은 한국어다.
 - 개인 프로젝트이고 0.x 버전이다. 버전이 바뀌면 설정과 동작이 바뀔 수 있다(아래 "이미 세팅한 프로젝트 업그레이드").
@@ -304,6 +304,33 @@ Run 소유자가 Claude·Codex 워커를 Herdr pane 으로 띄우고, SQLite 메
 ### 이미 세팅한 프로젝트 업그레이드
 
 scaffold 는 있는 파일을 덮어쓰지 않는다. 앞 버전에서 세팅한 프로젝트는 새 기능을 손으로 옮겨야 하고, 옮기지 않으면 조용히 빠진다(예: `[roles.director]` 가 없으면 디자인 디렉터 단계와 시스템 보강이 없다).
+
+#### 0.7.2 → 0.8.0
+
+herdr-orch 도 0.5.1 로 올린다(skill 문서의 감독 메인 대리 보고 한 문장만 바뀌었다. hteam 이 받는 가장 낮은 herdr-orch 는 0.5.0 그대로라 올리지 않아도 hteam 은 돈다). herdr-team 은 품질 보완이다: 디렉터의 팔레트 배정(`hteam palette deal`)과 새 규칙 파일 셋(`palette.md`·`fonts-ko.md`·`web-rules.md`), design-rules·text-rules 보강, 리뷰의 검사 약화 의심·보고서 소절 사전 검사·재현 시험, 색·글꼴·웹 자동 검사, 직무 문서와 따로 두는 프로젝트 규칙(`.herdr-team/project-rules/<직무>.md`). 순서는 0.5.0 → 0.6.0 과 같다. 2 는 메인 세션에 맡겨도 되고, 3–5 는 프로젝트를 쓰는 사람이 직접 한다(이유는 0.5.0 → 0.6.0 과 같다).
+
+1. 플러그인 둘을 올린다(`claude plugin marketplace update herdr-team`, `claude plugin update herdr-orch@herdr-team`, `claude plugin update herdr-team@herdr-team`).
+2. 프로젝트 루트에서 `.herdr-team/bin/hteam upgrade` 를 실행한다.
+   - `created` 에 새 규칙 파일 셋(`.herdr-team/palette.md`·`.herdr-team/fonts-ko.md`·`.herdr-team/web-rules.md`)이, `updated` 에 바뀐 규칙 파일(`design-rules.md`·`text-rules.md`)과 직무 문서 다섯이 나온다.
+   - 직무 문서에 직접 더한 절(지금 템플릿에 없는 `## ` 제목의 절. 예: `## 이 프로젝트 규칙`)은 지우지 않고 `moved` 에 적힌 대로 `.herdr-team/project-rules/<직무>.md` 로 옮긴다. 그 파일은 그 직무 워커의 사양에 직무 문서 뒤로 붙는다. project-rules 파일에 커밋 안 된 변경이 있으면 그 직무 문서는 `skipped` 다(확인해 커밋한 뒤 다시 한다). 템플릿 제목 절 안에 더한 줄은 옮기지 않고 템플릿으로 덮인다(필요하면 git 에서 꺼내 project-rules 에 옮긴다).
+   - `git diff -- .herdr-team` 으로 바뀐 것을 확인하고, 직무 문서와 project-rules 를 함께 경로를 지정해 커밋한다(`git add -- .herdr-team && git commit -m "chore: herdr-team 0.8.0" -- .herdr-team`).
+   - `manual` 에 `CLAUDE.md` 가 나온다. `<!-- herdr-team -->` 절을 `herdr-team/templates/CLAUDE.section.md` 와 견줘 고친다. 바뀐 곳은 셋이다.
+     - 메인 규칙의 새 줄("작업 공간 태스크가 기준 브랜치의 새 커밋" 줄 뒤): 버그·회귀를 고치는 태스크의 `## Constraints` 에 `- 재현 시험:` 줄을 넣는다.
+     - 메인 규칙의 새 줄("플러그인을 올린 뒤" 줄 뒤): 이 프로젝트에 맞는 직무 규칙은 직무 문서가 아니라 `.herdr-team/project-rules/<직무>.md` 에 쓴다.
+     - decide 처리 기준의 `unknown_regression` 줄: Constraints 에 재현 시험 줄을 넣는다.
+   - 바꾼 파일을 경로를 지정해 커밋한다(`git add -- CLAUDE.md && git commit -m "chore: herdr-team 0.8.0" -- CLAUDE.md`).
+3. 지금 메인 세션을 끝낸다(`/exit`).
+4. 관제를 끈다(0.5.0 → 0.6.0 의 4). 리뷰(사전 검사·자동 검사)와 워커 띄우기는 관제 쪽이고, 관제와 그 자식은 관제가 뜰 때의 플러그인 경로로 돈다.
+5. 같은 터미널에서 메인 세션을 새로 열고 메시지를 하나 보낸다. 새 세션의 훅이 관제를 0.8.0 으로 다시 띄운다. 관제가 뜨지 않으면 `/herdr-team:up` 을 실행한다. 메인 규칙(2 의 `CLAUDE.md`)은 세션을 시작할 때 읽힌다. 메인 대리 보고 설정은 0.7.2 에서 했으므로 할 일이 없다.
+6. 확인한다: `.herdr-team/bin/hteam version` 이 `0.8.0` 이고, `hc get <관제 터미널>` 의 `argv` 가 `…/herdr-team/0.8.0/bin/hteam` 이다.
+
+올린 뒤 달라지는 것:
+
+- 이미 확정한 디자인 시스템(`docs/design/system/`)과 화면 시안은 바뀌지 않는다. 팔레트 배정은 새 director 태스크(와 그 방향 전환)부터다. 확정한 시스템이 과용 색·글꼴을 쓰면 그 파일을 바꾸는 태스크의 리뷰에 색·글꼴 경고가 나올 수 있다: 근거(브랜드 자산, 사용자 선택)를 `### 디자인 점검` 에 적으면 리뷰어가 지적하지 않는다.
+- 앞으로 이 프로젝트에 맞는 직무 규칙을 더할 때는 직무 문서가 아니라 `.herdr-team/project-rules/<직무>.md` 에 쓴다(직무 문서는 upgrade 가 템플릿으로 바꾼다).
+- 리뷰 전에 hteam 이 보고서 이번 라운드 절의 소절(`### 문구 점검`·`### 디자인 점검`·`### 재현 시험`)을 보고, 그 태스크에 필요한 소절이 없으면 리뷰어 없이 돌려보낸다(수정 라운드도 그 라운드 절에 다시 둔다).
+- 도는 워커는 끝날 때까지 옛 사양 그대로다. 작업 규칙 7번(검사 약화 금지)과 project-rules 는 다음에 띄우는 워커 사양부터다.
+- herdr-team 없이 herdr-orch 만 쓰는 프로젝트는 0.5.1 로 올려도 바뀌는 동작이 없다(문서만).
 
 #### 0.7.1 → 0.7.2
 

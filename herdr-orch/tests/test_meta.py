@@ -18,7 +18,7 @@ class MetaTest(HorchCase):
         market = json.loads((REPO / ".claude-plugin" / "marketplace.json").read_text())
         entry = [p for p in market["plugins"] if p["name"] == "herdr-orch"][0]
         self.assertEqual({VERSION, plugin["version"], entry["version"]}, {VERSION})
-        self.assertEqual(VERSION, "0.5.0")  # Claude 상태 대리 보고와 백그라운드 일(herdr-orch 설계 16장)
+        self.assertEqual(VERSION, "0.5.1")  # 0.5.1: skill 문서 한 문장(herdr-team 설계 9.7 의 3). 대리 보고·백그라운드 일은 0.5.0
 
     def test_skill_output(self):
         proc = subprocess.run([sys.executable, str(BIN), "--home", str(self.home), "skill"],
