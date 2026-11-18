@@ -93,7 +93,7 @@ def final_values(text: str) -> set[tuple[str, str]]    # 마지막 커밋 파일
 ---
 ### Task 1: 카탈로그와 들여오기 스크립트(설계 11.10)
 
-들여오기 스크립트는 고정한 커밋의 원본 다섯 파일을 받아(SHA-256 확인) 형식만 바꿔 `palettes.json`·`overused.json`·`LICENSES.md` 를 쓴다. `fonts-ko.json` 은 조사(2026-11-18, `deal: true` 는 OFL 원문을 확인한 본문용 돋움·부리이고 과용 목록이 아닌 것)로 고른 손 목록이다. 항목마다 `reserved_name` 에 라이선스 원문의 예약 이름(Reserved Font Name, 저작권 줄 뒤 "with Reserved Font Name …")을 그대로 적는다(없으면 null, 원문을 읽지 못한 글꼴도 null). 조사 폴더의 원문(`.superpowers/sdd/p13b-data/dl/fonts/`)에서 SUIT·SUITE·Spoqa Han Sans Neo·IBM Plex Sans KR·Nanum Myeongjo 다섯만 예약 이름이 있다. `palette.py` 는 이 데이터를 읽고 검사한다: 글꼴 항목마다 `verified`·`reserved_name` 이 있어야 하고, `deal: true` 는 `verified: true`·`OFL` 로 시작하는 라이선스·본문 계열(돋움·부리)이어야 한다(아니면 `catalog_invalid`. 손상된 카탈로그가 확인 못 한 글꼴을 배정하지 않게). 배정 대상의 이름이 과용 글꼴(`overused.json` 의 `fonts_ko`·`fonts_latin`, `font_key` 로 견준다)이어도 `catalog_invalid` 다. 팔레트는 유채색 강조(C ≥ `color.ACHROMATIC_C`)면 저장한 `hue` 와 `color.parse(accent)` 의 h 가 원형 거리 0.5° 안이어야 한다(틀리면 엉뚱한 칸의 후보가 된다. 들여온 카탈로그는 0° 차이다). 둘 다 실제 카탈로그를 망가뜨린 사본으로 시험한다(Codex 계획 리뷰 r2). 생성한 세 파일은 커밋한다(플러그인이 싣고 간다). 시험은 네트워크 없이 본다: 스크립트의 순수 함수(작은 원본 조각), 저장소 데이터가 스크립트의 직렬화 꼴 그대로인지, 데이터의 스키마·출처·라이선스·칸 덮기.
+들여오기 스크립트는 고정한 커밋의 원본 다섯 파일을 받아(SHA-256 확인) 형식만 바꿔 `palettes.json`·`overused.json`·`LICENSES.md` 를 쓴다. `fonts-ko.json` 은 조사(2026-11-18, `deal: true` 는 OFL 원문을 확인한 본문용 돋움·부리이고 과용 목록이 아닌 것)로 고른 손 목록이다. 항목마다 `reserved_name` 에 라이선스 원문의 예약 이름(Reserved Font Name, 저작권 줄 뒤 "with Reserved Font Name …")을 그대로 적는다(없으면 null, 원문을 읽지 못한 글꼴도 null). 조사 폴더의 원문(`.superpowers/sdd/p13b-data/dl/fonts/`)에서 SUIT·SUITE·Spoqa Han Sans Neo·IBM Plex Sans KR·Nanum Myeongjo 다섯만 예약 이름이 있다. `palette.py` 는 이 데이터를 읽고 검사한다: 글꼴 항목마다 `verified`·`reserved_name` 이 있어야 하고, `deal: true` 는 `verified: true`·`OFL` 로 시작하는 라이선스·본문 계열(돋움·부리)이어야 한다(아니면 `catalog_invalid`. 손상된 카탈로그가 확인 못 한 글꼴을 배정하지 않게). 배정 대상의 이름이 과용 글꼴(`overused.json` 의 `fonts_ko`·`fonts_latin`, `font_key` 로 견준다)이어도 `catalog_invalid` 다. 팔레트는 유채색 강조(C ≥ `color.ACHROMATIC_C`)면 저장한 `hue` 와 `color.parse(accent)` 의 h 가 원형 거리 0.5° 안이어야 한다(틀리면 엉뚱한 칸의 후보가 된다. 들여온 카탈로그는 0° 차이다). 둘 다 실제 카탈로그를 망가뜨린 사본으로 시험한다(Codex 계획 리뷰 r2). 수 필드(`hue`)는 참·거짓이 아닌 유한한 수여야 하고, float 로 바꿀 수 없는 큰 JSON 정수(`10**309`, `math.isfinite` 가 OverflowError)도 `internal` 이 아니라 `catalog_invalid` 다(r3). 생성한 세 파일은 커밋한다(플러그인이 싣고 간다). 시험은 네트워크 없이 본다: 스크립트의 순수 함수(작은 원본 조각), 저장소 데이터가 스크립트의 직렬화 꼴 그대로인지, 데이터의 스키마·출처·라이선스·칸 덮기.
 
 **Files:**
 - Create: `scripts/import-palettes.py`, `scripts/test_import_palettes.py`
@@ -633,7 +633,13 @@ def _text(value) -> bool:
 
 
 def _real(value) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    """유한한 수인가(참·거짓은 아니다). float 로 바꿀 수 없을 만큼 큰 JSON 정수(10**309)도 아니다(OverflowError)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 def bucket(hue: float) -> int:
@@ -902,6 +908,8 @@ class BrokenCatalogTest(unittest.TestCase):
             with self.subTest(key=key):
                 text = json.dumps({"sources": [], "palettes": [good, {**good, "id": "x:2", key: value}]})
                 self.assertIn("palettes[1]", self.broken("palettes.json", text, palette.load_palettes))
+        huge = json.dumps({"sources": [], "palettes": [good, {**good, "id": "x:2", "hue": 10 ** 309}]})
+        self.assertIn("hue", self.broken("palettes.json", huge, palette.load_palettes))  # OverflowError 가 아니라 catalog_invalid
         dup = json.dumps({"sources": [], "palettes": [good, good]})
         self.assertIn("겹친다", self.broken("palettes.json", dup, palette.load_palettes))
         grey = json.dumps({"sources": [], "palettes": [good, {**good, "id": "x:2", "accent": "#777777"}]})
@@ -2112,7 +2120,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/templates
 ---
 ### Task 4: director.md 단계 보완과 review-design 의 director 점검(설계 11.11, 11.12 의 5)
 
-director.md 의 닻(묶음 예시 "차분한 모노톤·넓은 여백", 시안 표의 B "따뜻한 회백색·세리프·벽돌색", 시스템 예시 "#1F6F5C·Pretendard")을 자리표시로 바꾸고, 보드·시안 quickstart 에 `design_systems: false` 를 넣고, 단계 ① 에 분야 반사를 비켜 간 묶음과 브랜드 실제 값, 단계 ② 에 배정 절차(1–7)와 기록(10), 단계 ③ 에 OKLCH 램프·중립·자세·`palette_source:` 를 더한다. review-design 의 2번 director 점검에 팔레트 배정을 더한다(프로젝트의 director 직무 문서 단계 ② 가 `hteam palette deal` 로 배정받는 판일 때만. 옛 프로젝트나 director.md 를 건너뛴 upgrade 의 director 를 P2 로 잡지 않는다, Codex 계획 리뷰 r2). 시험은 직무 문서 다섯 어디에도 옛 닻(`#2f6fed`, `#1F6F5C`, `Pretendard 16px`, `차분한 모노톤·넓은 여백 (추천)`, `따뜻한 회백색`)이 없는지 본다. `## ` 제목은 그대로다. 단계 ② 의 번호는 1 배정 … 7 브랜드 우선(설계 11.11 의 번호와 같다), 8 캔버스, 9 원본, 10 기록, 11 질문, 12 답 처리다.
+director.md 의 닻(묶음 예시 "차분한 모노톤·넓은 여백", 시안 표의 B "따뜻한 회백색·세리프·벽돌색", 시스템 예시 "#1F6F5C·Pretendard")을 자리표시로 바꾸고, 보드·시안 quickstart 에 `design_systems: false` 를 넣고, 단계 ① 에 분야 반사를 비켜 간 묶음과 브랜드 실제 값, 단계 ② 에 배정 절차(1–7)와 기록(10), 단계 ③ 에 OKLCH 램프·중립·자세·`palette_source:` 를 더한다. review-design 의 2번 director 점검에 팔레트 배정을 더한다(프로젝트의 director 직무 문서 단계 ② 가 `hteam palette deal` 로 배정받는 판일 때만. 옛 프로젝트나 director.md 를 건너뛴 upgrade 의 director 를 P2 로 잡지 않는다, Codex 계획 리뷰 r2). 그 가운데 새 규칙 위반(주 강조의 §1 의 11, 한글 본문 글꼴의 §1 의 7)은 프로젝트 `.herdr-team/design-rules.md` 에 13단계 §1 의 11 줄(Task 5 의 `STYLE_RULES_MARKER` 와 같은 줄 머리)이 있을 때만 본다: design-rules.md 만 건너뛴 upgrade 는 그 규칙이 사본에 없다(r3). 시험은 그 조건 문장이 두 위반 문장보다 앞에 오고 표지가 실제 design-rules 줄과 같은지 본다. 시험은 직무 문서 다섯 어디에도 옛 닻(`#2f6fed`, `#1F6F5C`, `Pretendard 16px`, `차분한 모노톤·넓은 여백 (추천)`, `따뜻한 회백색`)이 없는지 본다. `## ` 제목은 그대로다. 단계 ② 의 번호는 1 배정 … 7 브랜드 우선(설계 11.11 의 번호와 같다), 8 캔버스, 9 원본, 10 기록, 11 질문, 12 답 처리다.
 
 **Files:**
 - Modify: `herdr-team/templates/roles/director.md`, `herdr-team/templates/review-design.md`
@@ -2174,6 +2182,16 @@ director.md 의 닻(묶음 예시 "차분한 모노톤·넓은 여백", 시안 �
         for needle in ("단계 ② 가 `hteam palette deal` 로 배정받는 판이면", "`## 팔레트 배정` 기록(없으면 P2)", "60° 이상",
                        "design-rules §1 의 11 위반", "§1 의 7 위반", "`palette_source:` 줄(없으면 P2)"):
             self.assertIn(needle, review)
+        # 새 director.md 에 옛 design-rules.md 인 프로젝트(design-rules 만 건너뛴 upgrade)에는 그 사본에 없는 §1 의 11·새 §1 의 7
+        # 위반을 요구하지 않는다: 그 둘은 design-rules.md 에 13단계 줄이 있을 때만 본다(Codex 계획 리뷰 r3). 표지는 실제 규칙 줄이다
+        marker = "11. 근거 없이 프레임워크 기본 팔레트 값"
+        gate = f"`.herdr-team/design-rules.md` 에 13단계 §1 의 11 줄(줄 머리 `{marker}`)이 있을 때만"
+        self.assertIn(gate, review)
+        self.assertLess(review.index(gate), review.index("design-rules §1 의 11 위반"))
+        self.assertLess(review.index(gate), review.index("§1 의 7 위반"))
+        self.assertLess(review.index("`palette_source:` 줄(없으면 P2)"), review.index(gate))  # 기록·축 점검은 그 앞이다
+        self.assertIn("옛 규칙 사본이면 이 둘을 지적하지 않는다", review)
+        self.assertIn("\n" + marker, RULES.read_text(encoding="utf-8"))
 
     def test_planner_names_the_director_task(self):
 ```
@@ -2374,7 +2392,7 @@ director 는 design-rules §3 의 7번 대비(본문 4.5:1, 24px 이상 글자·
 ```
 
 ```markdown
-director 는 design-rules §3 의 7번 대비(본문 4.5:1, 24px 이상 글자·아이콘·테두리 3:1), 컴포넌트의 상태별 미리보기(기본·hover·focus·눌림·disabled·로딩·error 중 해당하는 것), 아이콘 세트 하나를 지켰는가. 프로젝트의 director 직무 문서(`.herdr-team/roles/director.md`) 단계 ② 가 `hteam palette deal` 로 배정받는 판이면(13단계 upgrade 뒤) director 톤 시안·시스템의 팔레트 배정도 본다: `docs/design/direction.md` 의 `## 팔레트 배정` 기록(없으면 P2), A·B·C 의 축 좌표 넷 가운데 셋 이상 다름과 주 강조 hue 사이 거리(브랜드 우선이 아니면 60° 이상), 주 강조가 과용 색(`palette.md` 의 과용 색)이거나 OKLCH h 240–300° 면 근거(없으면 design-rules §1 의 11 위반), 한글 본문 글꼴이 과용 글꼴이면 근거(없으면 §1 의 7 위반), 시스템 README 의 `palette_source:` 줄(없으면 P2).
+director 는 design-rules §3 의 7번 대비(본문 4.5:1, 24px 이상 글자·아이콘·테두리 3:1), 컴포넌트의 상태별 미리보기(기본·hover·focus·눌림·disabled·로딩·error 중 해당하는 것), 아이콘 세트 하나를 지켰는가. 프로젝트의 director 직무 문서(`.herdr-team/roles/director.md`) 단계 ② 가 `hteam palette deal` 로 배정받는 판이면(13단계 upgrade 뒤) director 톤 시안·시스템의 팔레트 배정도 본다: `docs/design/direction.md` 의 `## 팔레트 배정` 기록(없으면 P2), A·B·C 의 축 좌표 넷 가운데 셋 이상 다름과 주 강조 hue 사이 거리(브랜드 우선이 아니면 60° 이상), 시스템 README 의 `palette_source:` 줄(없으면 P2). 그 위에 프로젝트의 `.herdr-team/design-rules.md` 에 13단계 §1 의 11 줄(줄 머리 `11. 근거 없이 프레임워크 기본 팔레트 값`)이 있을 때만 새 규칙으로 본다: 주 강조가 과용 색(`palette.md` 의 과용 색)이거나 OKLCH h 240–300° 면 근거(없으면 design-rules §1 의 11 위반), 한글 본문 글꼴이 과용 글꼴이면 근거(없으면 §1 의 7 위반). 그 줄이 없는 옛 규칙 사본이면 이 둘을 지적하지 않는다(그 사본에 없는 규칙이다).
 ```
 
 - [ ] **Step 4: 시험이 통과하는지 본다**
@@ -2543,6 +2561,8 @@ class LintCommandTest(TeamCase):
         # 아니면 내지 않는다: 옛 프로젝트(Codex 계획 리뷰 r1), palette.md 는 생겼는데 design-rules.md 는 건너뛴 upgrade(r2)
         rules = (ROOT / "templates/design-rules.md").read_text(encoding="utf-8")
         self.assertEqual(sum(line.startswith(STYLE_RULES_MARKER) for line in rules.split("\n")), 1)  # Task 3 이 쓴 표지
+        review = (ROOT / "templates/review-design.md").read_text(encoding="utf-8")
+        self.assertIn(f"`{STYLE_RULES_MARKER}`", review)  # 리뷰의 director 새 규칙 점검도 같은 줄로 가른다(Task 4)
         self.write_spec("T-001", "developer")
         state.create(self.p, "T-001", "developer")
         self.assertEqual(self.hteam("start", "T-001")[0], 0)
@@ -3248,7 +3268,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- docs/superpowers/spe
 - 과용 글꼴의 한글 목록에 일반 글꼴 이름(`ui-sans-serif`·`sans-serif`·`ui-serif`·`serif`)과 `BlinkMacSystemFont` 를 더했다(스택에 한글 글꼴이 없을 때 시스템 글꼴이 그린다는 설계 11.10 의 규칙을 Tailwind 기본 스택에도 맞춘 것). `monospace` 는 넣지 않았다(코드 글꼴).
 - 색·글꼴 검사는 줄 단위다. 여러 줄에 걸친 토큰(DTCG `"$type": "fontFamily"` 와 `"$value"` 가 다른 줄), `font:` 줄임 속성, `var()` 로 이어진 값, 따옴표 없는 JS 키(`primary: '#…'`), Tailwind 설정 파일의 `fontFamily: { sans: [...] }` 여러 줄은 보지 않는다. 한 줄에 이름 붙은 값이 여럿이면 다음 이름 앞까지만 그 값으로 본다. hex 는 앞뒤 글자로 거르지만 `href="#add"` 같은 조각이 3자리 hex 로 읽힐 수 있다(과용 색·램프와 같을 때만 경고).
 - 보존 신호는 줄 단위다. 여러 줄에 걸친 입력 태그의 name·id 와 여러 줄 처리기(`{` 가 줄 안에서 닫히지 않는다)는 보지 않고, `v-on:click`·`(click)`(Angular)·`android:id` 는 보지 않는다. 처리 값 안의 문자열에 든 중괄호(`"}"`)는 짝 세기를 틀리게 한다. 남았는지는 마지막 리뷰 대상 커밋의 대상 파일(이 태스크가 바꾼 파일) 내용으로 같은 종류·값 전체를 견주므로, 다른 꼴의 링크(`:to="'/x'"`, `router.push('/x')`, 변수에 든 경로)나 처리 값을 감싼 것(`{save}` → `{() => save()}`)도 경고하고, 태스크가 바꾸지 않은 파일로 옮긴 것도 경고한다. 같은 값이 그 파일들의 다른 곳에 남아 있으면 조용하다.
-- 색·글꼴 검사는 프로젝트의 `.herdr-team/design-rules.md` 에 13단계 §1 의 11 줄(줄 머리 `11. 근거 없이 프레임워크 기본 팔레트 값`)이 있을 때만 돈다. upgrade 전이나 design-rules.md 를 건너뛴 upgrade 에는 과용 색·글꼴 경고가 없다(인용할 규칙이 그 사본에 없다). 사용자가 그 줄을 고쳐 머리가 달라져도 검사하지 않는다. 리뷰의 director 배정 점검은 director 직무 문서가 배정 절차를 담을 때만이다.
+- 색·글꼴 검사는 프로젝트의 `.herdr-team/design-rules.md` 에 13단계 §1 의 11 줄(줄 머리 `11. 근거 없이 프레임워크 기본 팔레트 값`)이 있을 때만 돈다. upgrade 전이나 design-rules.md 를 건너뛴 upgrade 에는 과용 색·글꼴 경고가 없다(인용할 규칙이 그 사본에 없다). 사용자가 그 줄을 고쳐 머리가 달라져도 검사하지 않는다. 리뷰의 director 배정 점검은 director 직무 문서가 배정 절차를 담을 때만이고, 그 가운데 새 규칙(§1 의 11·7) 위반은 design-rules.md 에 같은 줄이 있을 때만이다(리뷰어가 프로젝트 사본을 읽어 가른다. 기계 검사가 아니다).
 - 글꼴 카탈로그의 `reserved_name` 은 원문을 읽은 글꼴만 적었다. 원문을 읽지 못한 글꼴(라이선스 "확인 못 함")은 null 이고 예약 이름이 없다는 뜻이 아니다(fonts-ko.md 가 그 글꼴은 바꾸지 말라고 적는다).
 - 배정의 결정성은 IEEE 754 배정밀도 위의 `math.fsum`·곱셈·나눗셈과 SHA-256 에 기댄다. 시험이 박아 둔 가중치·배정으로 지킨다.
 - 들여오기 스크립트는 raw.githubusercontent.com 에서 받는다. 시험은 네트워크 없이 스크립트의 순수 함수와 저장소 데이터의 꼴만 본다. 원본과 같은지는 `--check`(네트워크)로 본다.
