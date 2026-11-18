@@ -982,7 +982,7 @@ class TestBlockTest(StartCase):
         self.use_gate()
         self.write_spec("T-001")
         text = self.spec_text()
-        self.assertIn("(리뷰 사전 검사가 수정 라운드로 돌려보낸다).\n\n## 테스트\n- 순서: 작업을 `[T-001]` 커밋으로 먼저 "
+        self.assertIn("꼭 필요하면 보고서에 이유를 적는다.\n\n## 테스트\n- 순서: 작업을 `[T-001]` 커밋으로 먼저 "  # 작업 규칙 7번 뒤
                       "커밋한다 → `.herdr-team/bin/hteam test T-001` 를 돌린다 → 보고서를 따로 커밋한다.", text)
         for needle in ("done 전에 `.herdr-team/bin/hteam test T-001` 가 통과해야 한다(exit 0)",
                        "소유 경로 안의 `.gitignore`(예: `src/.gitignore`)", "전체 테스트는 돌리지 않는다",

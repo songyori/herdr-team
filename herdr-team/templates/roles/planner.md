@@ -138,6 +138,7 @@ full = "npx vitest run"
 - `[test]` 표에 테스트 명령 두 개를 쓴다. `quick` 은 바뀐 파일과 관련된 테스트만 돌리고 `{files}` 를 정확히 한 번 담는다(예: `npx vitest related --run --passWithNoTests {files}`, `npx jest --findRelatedTests --passWithNoTests {files}`). `full` 은 전체 테스트다. 관련 테스트가 없을 때 성공으로 끝나야 한다. pytest 처럼 모은 테스트가 없을 때 5 로 끝나는 도구는 `ok_exit = [0, 5]` 를 넣는다. 테스트가 DB·포트를 같이 써서 동시에 돌면 깨지면 `exclusive = true` 를 넣는다. `timeout_min`(기본 30)으로 한 번 실행의 상한을 정한다.
 - hteam 은 커밋된 HEAD 의 tasks.toml 에서 `[test]` 를 읽는다. `[test]` 는 커밋해야 적용된다.
 - 테스트 도구를 설치하는 첫 developer 태스크의 `acceptance` 에 "`[test]` 의 quick·full 명령이 실행된다" 를 넣는다.
+- 버그·회귀를 고치는 developer 태스크(증분 기획의 결함 수정 등)는 `constraints` 끝에 줄을 바꿔 `- 재현 시험: 고치기 전에 실패하는 시험을 먼저 쓴다(보고서 ### 재현 시험)` 를 넣는다(TOML 문자열 안의 `\n`). 그 줄이 있는 태스크는 워커가 실패하는 시험을 먼저 쓰고 리뷰가 그 기록을 본다. 새 기능 태스크에는 넣지 않는다.
 - `[test]` 가 있으면 `hteam plan check` 가 묶음 규칙과 `[test]` 형식을 검사한다.
 - 끝내기 전에 `.herdr-team/bin/hteam plan check --file docs/planning/tasks.toml` 이 통과해야 한다(리뷰 사전 검사도 같은 검사를 한다).
 

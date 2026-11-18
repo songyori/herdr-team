@@ -1510,16 +1510,18 @@ class Drive:
     # --- 관제가 만드는 태스크(8.9 의 1–5) ---
     def create_task(self, *, role: str, title: str, target: str, change: str, acceptance: list[str],
                     owns: list[str] | None = None, depends: list[str] | None = None,
-                    plan_append: bool = False, issue: str | None = None) -> str | None:
+                    plan_append: bool = False, issue: str | None = None, repro: bool = False) -> str | None:
         """`task new` 와 같은 함수로 다음 ID 의 사양과 pending 상태를 만들고(직무·owns 검사. 입력 오류는 사양을 쓰기 전에
-        그대로 올린다) 네 절을 채워 덮어쓴다. acceptance 의 `{tid}` 는 새 ID 로 바꾼다. 사양 검사가 실패하면 커밋하지 않고
+        그대로 올린다) 네 절을 채워 덮어쓴다. acceptance 의 `{tid}` 는 새 ID 로 바꾼다. repro 면 Constraints 의 기본 줄 뒤에
+        재현 시험 표시 줄(specs.REPRO_LINE, 설계 5.11 의 4)을 더한다(회귀 수정). 사양 검사가 실패하면 커밋하지 않고
         decide escalation 뒤 None(덮어쓴 파일은 커밋 안 된 채 남는다). 통과하면 `spec: <T>` 경로 지정 커밋과 로그 뒤 ID.
         시작은 부른 쪽이 start_ready 로 한다. issue 가 있으면 front matter 에 쓴다(물려받은 Redmine 이슈, 설계 5.1)."""
         cfg = config.load(self.p)
         tid = specs.new(self.p, cfg, role, title, owns, depends)["id"]
         rel = self._spec_rel(tid)
         lines = [line.replace("{tid}", tid) for line in acceptance]
-        body = (f"## Target\n{target}\n\n## Change\n{change}\n\n## Constraints\n{CONSTRAINTS}\n\n## Acceptance\n"
+        constraints = f"{CONSTRAINTS}\n{specs.REPRO_LINE}" if repro else CONSTRAINTS
+        body = (f"## Target\n{target}\n\n## Change\n{change}\n\n## Constraints\n{constraints}\n\n## Acceptance\n"
                 + "".join(f"- {line}\n" for line in lines))
         front = {**({"plan": "append"} if plan_append else {}), **({"issue": issue} if issue else {})}
         write_atomic(self.p.spec_path(tid), specs.render(tid, role, title, body, owns=owns, depends=depends,
@@ -1556,7 +1558,8 @@ class Drive:
                 acceptance.append(REGRESSION_TEST)
             tid = self.create_task(role=cause["role"], title="회귀 수정: " + item["text"][:40], target=", ".join(owns),
                                    change=f"{src}\n{item['text']}", acceptance=acceptance, owns=owns,
-                                   issue=redmine.issue_of(self.p, causes[0]))  # 원인 태스크의 issue(설계 5.1)
+                                   issue=redmine.issue_of(self.p, causes[0]),  # 원인 태스크의 issue(설계 5.1)
+                                   repro=True)  # 회귀 수정은 재현 시험 태스크다(설계 5.11 의 4)
             if tid:
                 made.append(tid)
         by_role: dict[str, list[dict]] = {}  # 항목을 낸 리뷰의 태스크 직무(처음 나온 순서)

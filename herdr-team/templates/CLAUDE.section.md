@@ -21,6 +21,7 @@
 - 사용자에게 보이는 글(진행 보고, 질문 앞 글)에서 줄글보다 표로 구분하기 좋은 데이터(여러 항목을 같은 기준으로 견주는 것, 항목마다 값·상태·결과가 있는 목록)는 마크다운 표로 쓴다. 표는 생각 블록이 아니라 답변 글에 둔다.
 - 진행 중 태스크에 범위를 더할 때: 사양에 "추가 범위" 를 커밋하고, working 이면 `.herdr-team/bin/hteam scope T-xxx "<내용>"`, pending 이면 커밋으로 끝난다.
 - 작업 공간 태스크가 기준 브랜치의 새 커밋(나중에 병합된 회귀 수정 등)을 받아야 하면 `.herdr-team/bin/hteam fix T-xxx --base-merge --note "<이유>"` 를 한다. 일하는 중이면 그 워커를 닫고 새 라운드가 병합부터 한다. 워커에게 병합·rebase 를 직접 지시하지 않는다(사전 검사가 기준에서 들어온 파일을 소유 경로 밖 변경으로 반려한다).
+- 버그·회귀를 고치는 태스크를 `.herdr-team/bin/hteam task new` 로 만들면(decide `unknown_regression` 의 회귀 수정 포함) `## Constraints` 에 `- 재현 시험: 고치기 전에 실패하는 시험을 먼저 쓴다(보고서 ### 재현 시험)` 줄을 넣는다. 워커가 실패하는 시험을 먼저 쓰고 리뷰가 그 기록을 본다. 묶음 정리 태스크와 수정 라운드(`hteam fix`)에는 넣지 않는다.
 - decide 를 처리하며 만든 태스크(회귀 수정, `[test]` 고치기, 증분 기획)도 같은 순서(task new → 채우기 → 커밋 → start)를 마친 뒤 decide 를 `hteam answer` 로 닫는다.
 - `git commit` 이 `index.lock` 오류로 실패하면 몇 초 뒤 같은 명령을 다시 한다(관제의 병합과 겹쳤다).
 - Redmine 을 쓰는 프로젝트(`[redmine]`)면 이슈 상태·노트는 관제가 바꾼다. 메인도 바꾸지 않는다. `hteam status` 의 `redmine.failed` 가 늘면 사용자에게 알린다.
@@ -55,7 +56,7 @@ decide 에 적힌 `files` 만 읽고 `commands` 가운데 하나로 처리한다
 | `repeat_test_failure` | 실패가 그 태스크 탓이 아닐 수 있다(소유 경로 밖 코드, 다른 워커의 커밋 안 된 파일). 리뷰 파일의 quick 출력 끝을 보고 사용자에게 묻는다 |
 | `test_config` | 사용자가 직접 넣은 `[test]` 면 사용자에게 묻는다. 아니면 `[test]` 를 고치는 기획 태스크(`plan: append`)를 만들어 시작한다 |
 | `planning_gaps` | 문서로 답할 수 있으면 묶음 정리 태스크 사양에 넣는다(시작 전이면 사양 커밋, working 이면 `hteam scope`). 제품 결정이 필요한 항목은 모아 한 번에 묻고, 넣기로 하면 증분 기획 태스크(`plan: append`)를 만들어 시작한다 |
-| `unknown_regression` | 원인 태스크를 정해(모르면 사용자에게 묻는다) 회귀 수정 태스크를 만들어 시작한다: `hteam task new --role <원인 태스크 직무> --title "회귀 수정: <요약>" --owns "<원인 태스크 owns>"`, Change 첫 줄은 decide 의 `source`(예 `출처: T-xxx followups`), Acceptance 는 두 줄: "이 항목의 실패한 테스트(항목에 적힌 이름)를 직접 돌리는 명령이 통과하고 그 명령과 출력 원문이 보고서에 있다", "`hteam test T-yyy` 가 통과한다"(확정한 `[test]` 가 있을 때만, `hteam status` 의 `test_gate.state` 가 `approved`). 커밋하고 `hteam start T-yyy` 한 뒤 닫는다 |
+| `unknown_regression` | 원인 태스크를 정해(모르면 사용자에게 묻는다) 회귀 수정 태스크를 만들어 시작한다: `hteam task new --role <원인 태스크 직무> --title "회귀 수정: <요약>" --owns "<원인 태스크 owns>"`, Change 첫 줄은 decide 의 `source`(예 `출처: T-xxx followups`), Acceptance 는 두 줄: "이 항목의 실패한 테스트(항목에 적힌 이름)를 직접 돌리는 명령이 통과하고 그 명령과 출력 원문이 보고서에 있다", "`hteam test T-yyy` 가 통과한다"(확정한 `[test]` 가 있을 때만, `hteam status` 의 `test_gate.state` 가 `approved`). Constraints 에 재현 시험 줄(위 메인 규칙)을 넣는다. 커밋하고 `hteam start T-yyy` 한 뒤 닫는다 |
 | `token_update` | 관제가 기계적으로 하지 못한 디자인 보강 토큰 반영이다. UI 기반 개발 태스크가 done 이면 토큰 갱신 태스크(UI 기반과 같은 owns, `depends_on` 에 보강 태스크)를 만들고, 아직 시작하지 않은 화면 구현 태스크의 `depends_on` 에 더해 커밋한다. working 이면 `hteam scope`, 리뷰 중이면 결과를 기다린 뒤 정한다 |
 | `merge_conflict` | 충돌 파일을 사용자에게 보이고 묻는다. 고치기로 하면 `hteam fix T-xxx --note "<충돌을 어떻게 풀지 사용자 지시>"`(상한이면 `--force-round`. 기준 병합 지시는 hteam 이 사양에 넣는다), 버리기로 하면 `hteam drop T-xxx` |
 | `workspace_failed` | `detail.kind` 로 가른다. `setup_failed` 는 로그 끝을 보이고 사용자가 setup 이나 환경을 고친 뒤 `hteam start T-xxx`(decide 에 태스크가 없으면 마무리 전체 테스트다. `hteam start` 없이 닫으면 관제가 다시 돌린다). `slot_dirty` 는 그 슬롯의 `git status` 를 보이고, 사용자가 버려도 된다고 하면 `hteam slot reset <N>`. `branch_exists`·`base_moved`·`merge_blocked` 는 git 상태를 보이고 사용자에게 묻는다(메인 폴더를 기준 브랜치로 되돌리기, 남은 브랜치 지우기 등은 사용자가 정한다) |

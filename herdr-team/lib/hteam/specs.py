@@ -13,6 +13,9 @@ from .util import read_json, write_atomic
 ID_RE = re.compile(r"T-\d{3,}")
 ISSUE_RE = re.compile(r"#?([0-9]{1,9})")  # 이슈 번호(설계 5.1 7단계). 앞의 # 는 뗀다
 SECTIONS = ("Target", "Change", "Constraints", "Acceptance")
+# 재현 시험 표시 줄(설계 5.11 의 4). 사양 `## Constraints` 에 줄 머리가 `- 재현 시험:` 인 줄이 있으면 재현 시험 태스크다
+REPRO_LINE = "- 재현 시험: 고치기 전에 실패하는 시험을 먼저 쓴다(보고서 ### 재현 시험)"
+REPRO_RE = re.compile(r"(?m)^[ \t]*- 재현 시험:")
 LIST_KEYS = ("owns", "depends_on")
 PLACEHOLDER_RE = re.compile(r"<[^<>\n]*>")
 # 자리표시를 지운 뒤 남는 목록·강조·인용 서식과 공백. 이것뿐이면 빈 절이다.
@@ -135,6 +138,12 @@ def problems(spec: Spec) -> list[str]:
     if "issue" in spec.front and spec.issue is None:
         found.append(f"issue 는 숫자 1–9자리 이슈 번호다(앞의 # 는 뗀다): {spec.front['issue']!r}")
     return found
+
+
+def repro_task(spec: Spec) -> bool:
+    """재현 시험 태스크인가(설계 5.11 의 4): `## Constraints` 에 줄 머리(앞 공백 뒤)가 `- 재현 시험:` 인 줄이 있다. 메인·기획자가
+    손으로 쓰는 줄이라 뒤쪽 글은 견주지 않는다."""
+    return bool(REPRO_RE.search(spec.sections.get("Constraints", "")))
 
 
 def load(p, tid: str) -> Spec:

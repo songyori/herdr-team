@@ -16,6 +16,7 @@ LOCAL_ISO = r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d"
 CONSTRAINTS = "다른 태스크의 소유 경로와 이 태스크 범위 밖은 건드리지 않는다"
 REGRESSION_ACCEPT_RUN = "- 이 항목의 실패한 테스트(항목에 적힌 이름)를 직접 돌리는 명령이 통과하고 그 명령과 출력 원문이 보고서에 있다"
 CLEANUP_ACCEPT = "- 항목마다 고쳤거나 고치지 않은 이유를 보고서에 적었다"
+REPRO_LINE = "- 재현 시험: 고치기 전에 실패하는 시험을 먼저 쓴다(보고서 ### 재현 시험)"
 SUPPLEMENT_CHANGE = ("화면 디자이너의 시스템 추가 제안이다. 제안마다 받아들일지 정해 디자인 시스템에 더하고, 결정과 이유를 출처(태스크 "
                      "ID·라운드)와 함께 docs/design/direction.md 에 적는다.")
 SUPPLEMENT_ACCEPT = "- 제안마다 반영 여부와 이유가 출처와 함께 `docs/design/direction.md` 에 있다"
@@ -223,7 +224,7 @@ class BatchTest(FlowCase):
         self.assertEqual((sp.role, sp.title, sp.owns), ("developer", "회귀 수정: " + item[:40], ["src/t-001/**"]))
         self.assertEqual(sp.sections["Target"], "src/t-001/**")
         self.assertEqual(sp.sections["Change"], f"출처: T-003 followups\n{item}")
-        self.assertEqual(sp.sections["Constraints"], CONSTRAINTS)
+        self.assertEqual(sp.sections["Constraints"], f"{CONSTRAINTS}\n{REPRO_LINE}")  # 재현 시험 태스크(설계 5.11 의 4)
         self.assertEqual(sp.sections["Acceptance"], f"{REGRESSION_ACCEPT_RUN}\n- `hteam test T-004` 가 통과한다")
         self.assertEqual(self.subject(), "spec: T-004")
         self.assertTrue(self.tracked_clean(".herdr-team/tasks/T-004.md"))
@@ -283,6 +284,7 @@ class BatchTest(FlowCase):
         self.assertEqual(dev.sections["Change"], f"출처: T-003 followups\n- r2-F2: {a}\n- r1-F1: {b}")
         self.assertEqual(dev.sections["Target"], "src/t-001/**, src/t-002/**")
         self.assertEqual(dev.sections["Acceptance"], CLEANUP_ACCEPT)
+        self.assertEqual(dev.sections["Constraints"], CONSTRAINTS)  # 묶음 정리 태스크에는 재현 시험 줄을 넣지 않는다
         self.assertEqual((test.role, test.title, test.owns), ("tester", "묶음 정리: calc-test",
                                                               ["docs/qa/calc-test.md", "tests/calc-test/**"]))
         self.assertEqual(test.sections["Change"], f"출처: T-003 followups\n- r1-F3: {c}\n- -: {no_id}")

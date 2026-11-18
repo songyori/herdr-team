@@ -317,7 +317,7 @@ class PromptTemplateP7Test(unittest.TestCase):
     def test_worker_rules_priority_paragraph(self):
         text = read("templates/worker-rules.md")
         self.assertIn("새 태스크로 나눈다).\n\n" + WORK_PRIORITY + "\n\n1. 같은 작업 폴더에서", text)
-        self.assertTrue(text.rstrip().endswith("(리뷰 사전 검사가 수정 라운드로 돌려보낸다)."))
+        self.assertIn("(리뷰 사전 검사가 수정 라운드로 돌려보낸다).\n7. 검사를 통과시키려고", text)  # 13단계 7번(설계 5.11 의 2)
 
 
 class WorkSpecP7Test(TeamCase):
@@ -456,7 +456,8 @@ class AgentsRulesP7Test(unittest.TestCase):
     def test_worker_rules(self):
         rules = read("templates/worker-rules.md")
         self.assertIn("`git add .` 를 쓰지 않는다. " + P7_RULES_WORKSPACE + "\n2. 커밋은 경로를 지정한다", rules)
-        self.assertIn("남은 위험, 가정. " + P7_RULES_ISSUE + "\n4. ", rules)
+        self.assertIn("남은 위험, 가정. 그 절 안 `### 건드리지 않고 본 것`", rules)  # 13단계(설계 5.11 의 3)
+        self.assertIn("없음\"). " + P7_RULES_ISSUE + "\n4. ", rules)
         # 모든 워커 사양에 들어가는 글이다. 설정에 기대는 낱말(Redmine, 절 머리)을 쓰지 않아 설정이 없으면 뜻이 그대로다
         self.assertNotIn("Redmine", rules)
         self.assertNotIn("## 작업 공간", rules)
