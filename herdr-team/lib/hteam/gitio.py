@@ -328,6 +328,19 @@ def blob(root, commit: str, path: str) -> str | None:
     return found.split(":", 1)[1] if found else None
 
 
+def file_text(root, commit: str, rel: str) -> str | None:
+    """commit 에 있는 파일 rel(root 기준, `../` 가능)의 글(CRLF 는 LF 로). 그 커밋에 없거나(지운 파일) 일반 파일이 아니거나,
+    git 이 읽지 못하거나 UTF-8 이 아니면 None(designdiff 의 보존 신호가 쓴다)."""
+    try:
+        found = tree_entry(root, commit, to_top(top_prefix(root), rel))
+        if found is None or not found.startswith(("100644:", "100755:")):
+            return None
+        data = run(root, "cat-file", "blob", found.split(":", 1)[1], raw=True).stdout
+        return data.decode("utf-8").replace("\r\n", "\n")
+    except (HteamError, UnicodeDecodeError):
+        return None
+
+
 def _ref_present(root, ref: str) -> bool:
     """ref 가 느슨한 파일이나 packed-refs 로 존재하는가(깨졌어도). 버전에 기대지 않는다."""
     from pathlib import Path

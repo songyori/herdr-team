@@ -188,7 +188,7 @@ Run 소유자가 Claude·Codex 워커를 Herdr pane 으로 띄우고, SQLite 메
 - `.herdr-team/design-rules.md`: §1 AI 티 금지 목록 13개, §2–§7(접근성 WCAG 2.2 AA, 색, 글자, 레이아웃, 표면·동작, 상태), 즉시 차단 항목 10개(보고서에 예외를 적어도 리뷰가 P1). 번호 항목마다 검사 방식(`[기계]`·`[렌더]`·`[판단]`)이 붙는다. UI 를 바꾼 태스크는 보고서에 `### 디자인 점검` 을 둔다.
 - `.herdr-team/palette.md`(director): 톤 시안의 팔레트 배정 절차. 디렉터는 강조 hue 칸·색 자세·한글 본문 글꼴을 `.herdr-team/bin/hteam palette deal --task T-xxx --turn N` 으로 배정받는다(240–300° 칸은 배정하지 않는다, 브랜드 색이 있으면 `--brand-hue`). `.herdr-team/fonts-ko.md`(director·designer): 한글 글꼴 후보와 과용 글꼴. 카탈로그(taste-skill MIT·impeccable Apache-2.0 팔레트, 한글 글꼴, 과용 색·글꼴)는 플러그인 `lib/hteam/data/` 에 있다.
 - 리뷰 디자인 절(director 직무가 있는 프로젝트의 director·designer·developer 태스크): 기준 1–9. 이 태스크가 만든 문제만 `(새로 생김)`·`(회귀)`·`(기존)` 으로 나눠 지적하고, diff 의 지운 줄을 읽고, 빠진 상태를 찾고, 즉시 차단 항목은 P1, 고칠 방향은 싼 것부터.
-- 자동 검사(경고): diff 의 지운 줄에서 줄어든 접근성·글자 신호와 추가한 줄의 확대 막기·`focus-visible` 없는 포커스 제거(designdiff) 먼저, 바뀐 파일의 이모지·왼쪽 강조 테두리·파랑·보라 그라디언트(내용 검사)와 과용 기본 색·Tailwind 기본 램프·파랑·남색·보라 주 강조·과용 글꼴(색·글꼴 검사. `.herdr-team/design-rules.md` 가 0.8.0 판인 프로젝트만) 뒤, 합쳐 50건까지. 리뷰어가 볼 경고는 `.herdr-team/bin/hteam lint --task T` 로 미리 본다(`findings` 는 디자인, `text_findings` 는 문구).
+- 자동 검사(경고): diff 의 지운 줄에서 줄어든 접근성·글자 신호, 지운 줄의 보존 신호(링크·입력란 이름·이벤트·`data-testid` 값이 같은 변경에 없다)와 추가한 줄의 확대 막기·`focus-visible` 없는 포커스 제거(designdiff) 먼저, 바뀐 파일의 이모지·왼쪽 강조 테두리·파랑·보라 그라디언트(내용 검사)와 과용 기본 색·Tailwind 기본 램프·파랑·남색·보라 주 강조·과용 글꼴(색·글꼴 검사. `.herdr-team/design-rules.md` 가 0.8.0 판인 프로젝트만) 뒤, 합쳐 50건까지. 리뷰어가 볼 경고는 `.herdr-team/bin/hteam lint --task T` 로 미리 본다(`findings` 는 디자인, `text_findings` 는 문구).
 
 ### 디자인 아티팩트와 댓글
 

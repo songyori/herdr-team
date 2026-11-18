@@ -127,6 +127,7 @@
 - 과용 기본 색과 주 강조 hue(§1 의 11): 플러그인 카탈로그의 과용 색과 같은 hex(파일당 한 줄), 이름에 `primary`·`accent`·`brand` 가 든 CSS 변수·토큰의 색이 OKLCH h 240–300°·C 0.08 이상
 - 프레임워크 기본 램프(§3 의 11): Tailwind v3 기본 램프와 같은 hex 가 과용 색 말고 3개 이상(파일당 한 줄)
 - 과용 글꼴(§1 의 7): `font-family`·`fontFamily` 의 첫 글꼴이 라틴 과용 글꼴이거나, 한글을 그리는 글꼴이 과용 글꼴(`fonts-ko.md` 의 판정)
+- 지운 줄의 보존 신호: 링크 `href`, 입력란의 `name`·`id`, 이벤트(`onClick`·`@click` 의 값, `addEventListener` 의 이벤트 이름), `data-testid`·`testTag`·`accessibilityIdentifier` 의 값이 같은 변경의 추가한 줄에 없다(다시 그리면서 동작·시험 연결을 잃었는지 본다)
 
 ## 출처
 §2–§7 과 리뷰 방식(변경분 분류, 지운 줄 읽기, 즉시 차단 항목, 싼 수정 순서)은 jakubkrehel/skills(https://github.com/jakubkrehel/skills, MIT, 2026-11-01 커밋 60bf140)의 better-accessibility·better-colors·better-typography·better-layout·better-ui·interface-review·better-interface·state-machine 에서 가져와 orca-team 흐름에 맞게 새로 압축했다. 한글 줄바꿈·기울임·웹폰트 서브셋, 앱 플랫폼 대응, 보고서·리뷰 연결은 orca-team 이 더했다. herdr-team 은 orca-team 0.5.2 에서 옮겼다.

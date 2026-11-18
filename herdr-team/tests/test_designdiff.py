@@ -159,6 +159,80 @@ class DesignDiffTest(TeamCase):
         self.assertEqual(found, [f"src/b.tsx: 지운 줄에서 {name} 1개가 줄었다(대체가 있는지 확인)"
                                  for name in ("role", "alt", "lang", "focus:", "motion-safe:")])
 
+    def test_kept_signals_lost_in_a_redesign(self):  # 설계 11.13 의 2(13단계)
+        old = ('<a href="/settings">설정</a><a href="#">맨 위</a>\n'
+               '<input id="email" name="email" type="email" />\n'
+               '<button onClick={handleSave} data-testid="save-button">저장</button>\n'
+               "<button @click.prevent=\"remove(item)\">삭제</button>\n"
+               "el.addEventListener('keydown', onKey)\n"
+               '<label for="email">메일</label>\n')
+        self.change({"src/Form.vue": old, "app/Row.kt": 'Modifier.testTag("row")\n',
+                     "ios/Row.swift": 'view.accessibilityIdentifier = "row-cell"\n'}, "기존")
+        new = ('<Link to="/settings">설정</Link>\n'  # 값이 남았다
+               '<input id="mail" name="email" type="email" />\n'  # id 가 바뀌었다
+               '<button onClick={() => handleSave()} data-testid="save-button-2">저장</button>\n'  # 처리 값·시험 ID 가 바뀌었다
+               "<button>삭제</button>\n"
+               '<label for="email">메일</label>\n')
+        sha = self.change({"src/Form.vue": new, "app/Row.kt": "Modifier\n",
+                           "ios/Row.swift": 'view.accessibilityIdentifier = "row-cell"\n'})
+        found = [x for x in self.lint(["app/Row.kt", "ios/Row.swift", "src/Form.vue"], [sha]) if "보존 신호" in x]
+        self.assertEqual(found, [
+            'app/Row.kt: 보존 신호 — 지운 testTag "row"(같은 변경에 대신하는 것이 없다)',
+            'src/Form.vue: 보존 신호 — 지운 입력란 id "email"(같은 변경에 대신하는 것이 없다)',
+            'src/Form.vue: 보존 신호 — 지운 이벤트 onClick "handleSave"(같은 변경에 대신하는 것이 없다)',  # 값 전체로 견준다
+            'src/Form.vue: 보존 신호 — 지운 data-testid "save-button"(같은 변경에 대신하는 것이 없다)',
+            'src/Form.vue: 보존 신호 — 지운 이벤트 @click.prevent "remove(item)"(같은 변경에 대신하는 것이 없다)',
+            'src/Form.vue: 보존 신호 — 지운 이벤트 addEventListener "keydown"(같은 변경에 대신하는 것이 없다)'])
+
+    def test_kept_signals_moved_to_another_file_are_quiet(self):
+        self.change({"src/Page.tsx": '<a href="/help" onClick={track}>도움말</a>\n'}, "기존")
+        sha = self.change({"src/Page.tsx": "<HelpLink />\n",
+                           "src/HelpLink.tsx": '<a\n  href="/help"\n  onClick={track}\n>도움말</a>\n'})
+        found = self.lint(["src/HelpLink.tsx", "src/Page.tsx"], [sha])
+        self.assertEqual([x for x in found if "보존 신호" in x], [])
+        self.assertEqual(designdiff.kept_values('<input name="q" id="q"> <div id="x" href="#">'),
+                         [("입력란 name", "q"), ("입력란 id", "q"), ("입력란 id", "x")])
+
+    def test_link_targets_are_compared_whole(self):
+        # Codex 계획 리뷰 r1: 링크 값을 추가한 글의 부분 문자열로 찾으면 닫는 태그의 `/` 나 더 긴 경로에 걸려 놓친다
+        self.change({"src/Nav.html": '<a href="/">홈</a>\n<a href="/settings">설정</a>\n<a href="/help">도움말</a>\n'}, "기존")
+        sha = self.change({"src/Nav.html": '<p>다른 내용</p>\n<a href="/admin/settings">설정</a>\n'
+                                           '<Link to={"/help"}>도움말</Link>\n'})
+        self.assertEqual([x for x in self.lint(["src/Nav.html"], [sha]) if "보존 신호" in x], [
+            'src/Nav.html: 보존 신호 — 지운 링크 href "/"(같은 변경에 대신하는 것이 없다)',
+            'src/Nav.html: 보존 신호 — 지운 링크 href "/settings"(같은 변경에 대신하는 것이 없다)'])
+
+    def test_link_edited_then_deleted_in_later_commit(self):
+        # Codex 계획 리뷰 r2: 첫 커밋이 링크의 class 를 바꾸고 둘째 커밋이 지우면, 커밋마다 합친 추가한 줄에는 그 링크가 남아
+        # 보인다. 남았는지는 마지막 리뷰 대상 커밋의 파일 내용으로 본다
+        self.change({"src/Nav.html": '<a class="a" href="/settings">설정</a>\n<p>x</p>\n'}, "기존")
+        first = self.change({"src/Nav.html": '<a class="b" href="/settings">설정</a>\n<p>x</p>\n'})
+        second = self.change({"src/Nav.html": "<p>x</p>\n"})
+        self.assertEqual([x for x in self.lint(["src/Nav.html"], [first, second]) if "보존 신호" in x],
+                         ['src/Nav.html: 보존 신호 — 지운 링크 href "/settings"(같은 변경에 대신하는 것이 없다)'])
+        self.assertEqual([x for x in self.lint(["src/Nav.html"], [first]) if "보존 신호" in x], [])  # 첫 커밋만이면 남았다
+        gone = self.change({}, delete=["src/Nav.html"])  # 지운 파일은 아무것도 남기지 않는다
+        self.change({"src/Other.html": '<a href="/x">x</a>\n'}, "기존 2")
+        moved = self.change({"src/Other.html": "<p>y</p>\n", "src/New.html": '<a href="/x">x</a>\n'})
+        self.assertEqual([x for x in self.lint(["src/Nav.html"], [gone]) if "보존 신호" in x], [])  # 지운 줄에 신호가 없다
+        self.assertEqual([x for x in self.lint(["src/New.html", "src/Other.html"], [moved]) if "보존 신호" in x], [])
+        self.change({"src/Old.html": '<a href="/old">옛</a>\n'}, "기존 3")
+        dropped = self.change({}, delete=["src/Old.html"])
+        self.assertEqual([x for x in self.lint(["src/Old.html"], [dropped]) if "보존 신호" in x],
+                         ['src/Old.html: 보존 신호 — 지운 링크 href "/old"(같은 변경에 대신하는 것이 없다)'])
+
+    def test_block_handlers_are_read_whole(self):
+        # Codex 계획 리뷰 r2: 중첩 중괄호가 든 한 줄 JSX 처리기도 값 전체로 읽는다
+        block = '<button onClick={() => { handleSave(); }}>저장</button>\n'
+        self.assertEqual(designdiff.kept_values(block), [("이벤트 onClick", "() => { handleSave(); }")])
+        self.assertEqual(designdiff.kept_values('<b onClick={() => { x(); }>\n'), [])  # 줄 안에서 닫히지 않는다
+        self.change({"src/Save.tsx": block + "<p>a</p>\n"}, "기존")
+        kept = self.change({"src/Save.tsx": "<p>b</p>\n" + block})  # 처리기 줄을 옮겼다
+        self.assertEqual([x for x in self.lint(["src/Save.tsx"], [kept]) if "보존 신호" in x], [])
+        dropped = self.change({"src/Save.tsx": "<button>저장</button>\n<p>b</p>\n"})
+        self.assertEqual([x for x in self.lint(["src/Save.tsx"], [dropped]) if "보존 신호" in x],
+                         ['src/Save.tsx: 보존 신호 — 지운 이벤트 onClick "() => { handleSave(); }"(같은 변경에 대신하는 것이 없다)'])
+
     def test_markdown_is_not_a_target(self):
         self.change({"docs/user/a.md": "aria-label keep-all\n"}, "기존")
         sha = self.change({"docs/user/a.md": "x\n"})

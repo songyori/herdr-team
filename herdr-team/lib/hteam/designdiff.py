@@ -1,5 +1,6 @@
-"""디자인 diff 자동 검사(설계 11.6): 리뷰 대상 커밋의 지운 줄에서 줄어든 접근성·글자 신호와, 추가한 줄의 확대 막기와
-대체 없는 포커스 제거를 찾는다.
+"""디자인 diff 자동 검사(설계 11.6·11.13 의 2): 리뷰 대상 커밋의 지운 줄에서 줄어든 접근성·글자 신호, 지운 줄의 보존
+신호(링크·입력란 이름·이벤트·시험 ID 값이 같은 변경의 추가한 줄에 없다), 추가한 줄의 확대 막기와 대체 없는 포커스 제거를
+찾는다.
 
 결과는 경고다(판정은 리뷰어가 디자인 기준 4번·6번으로 한다). git 은 gitio.diff_lines 로만 읽는다. 표준 라이브러리 정규식만
 쓰고 hc·horch·codex 를 부르지 않는다. 상한은 없다(디자인 절이 내용 검사와 합친 뒤 자른다).
@@ -79,9 +80,97 @@ WEAK_FOCUS = frozenset({"outline-none", "outline-hidden", "ring-0", "shadow-none
 _FOCUS_CLASS = re.compile(r"(?<![\w-])focus:!?([\w\[\]#%./:-]+)")
 
 
+# 보존 신호(설계 11.13 의 2, 13단계). 값은 큰따옴표·작은따옴표, 또는 JSX `{"…"}`·`{'…'}`·`` {`…`} `` 안의 글이다.
+_QUOTED = r"""(?:"([^"\n]*)"|'([^'\n]*)'|\{\s*["'`]([^"'`\n]*)["'`]\s*\})"""
+_HREF = re.compile(rf"(?<![\w-])href\s*=\s*{_QUOTED}")
+_LINK_TO = re.compile(rf"(?<![\w-])to\s*=\s*{_QUOTED}")  # 라우터 링크의 to: 남은 링크로만 본다
+_TESTID = re.compile(rf"(?<![\w-])data-testid\s*=\s*{_QUOTED}")
+_TEST_TAG = re.compile(r"""\btestTag\(\s*"([^"\n]*)"\s*\)""")
+_A11Y_ID = re.compile(r'\baccessibilityIdentifier\s*(?:=\s*|\(\s*)"([^"\n]*)"')
+_INPUT_TAG = re.compile(r"<(?:input|select|textarea)\b", re.I)
+_INPUT_ATTR = re.compile(rf"(?<![\w-])(name|id)\s*=\s*{_QUOTED}")
+_EVENT = re.compile(r"(?<![\w-])(onClick|onclick|@click(?:\.[\w-]+)*)\s*=\s*")
+_LISTENER = re.compile(r"""\baddEventListener\(\s*["'`]([\w:-]+)["'`]""")
+_LISTENER_KIND = "이벤트 addEventListener"
+
+
+def _value(m: re.Match, first: int = 1) -> str:
+    return " ".join(next((g for g in m.groups()[first - 1:] if g is not None), "").split())
+
+
+def _event_value(line: str, start: int) -> str | None:
+    """line[start] 에서 시작하는 이벤트 속성 값: 따옴표 글, 또는 같은 줄에서 짝이 맞는 `{…}` 의 안(중첩 중괄호 포함,
+    `{() => { save(); }}`). 줄 안에서 닫히지 않으면 None(여러 줄 처리기는 놓친다)."""
+    quote = line[start:start + 1]
+    if quote in ('"', "'"):
+        end = line.find(quote, start + 1)
+        return line[start + 1:end] if end >= 0 else None
+    if quote != "{":
+        return None
+    depth = 0
+    for i in range(start, len(line)):
+        if line[i] == "{":
+            depth += 1
+        elif line[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return line[start + 1:i]
+    return None
+
+
+def kept_values(line: str) -> list[tuple[str, str]]:
+    """한 줄의 보존 신호 (종류, 값). 값은 공백을 하나로 줄인 속성 값 전체다. 빈 값과 `href="#"` 는 뺀다. 입력란 name·id 는
+    `<input`·`<select`·`<textarea` 가 든 줄에서만 본다(여러 줄에 걸친 태그는 놓친다)."""
+    out = [("링크 href", _value(m)) for m in _HREF.finditer(line)]
+    if _INPUT_TAG.search(line):
+        out += [(f"입력란 {m.group(1)}", _value(m, 2)) for m in _INPUT_ATTR.finditer(line)]
+    for m in _EVENT.finditer(line):
+        value = _event_value(line, m.end())
+        if value is not None:
+            out.append((f"이벤트 {m.group(1)}", " ".join(value.split())))
+    out += [(_LISTENER_KIND, m.group(1)) for m in _LISTENER.finditer(line)]
+    out += [("data-testid", _value(m)) for m in _TESTID.finditer(line)]
+    out += [("testTag", m.group(1)) for m in _TEST_TAG.finditer(line)]
+    out += [("accessibilityIdentifier", m.group(1)) for m in _A11Y_ID.finditer(line)]
+    return [(kind, v) for kind, v in out if v and not (kind == "링크 href" and v == "#")]
+
+
+def _key(kind: str) -> str:
+    """같은 것으로 보는 종류: 링크(href·라우터 to), 이벤트 처리 값(onClick·onclick·@click), 그 밖은 종류 그대로."""
+    if kind == "링크 href":
+        return "링크"
+    if kind.startswith("이벤트 ") and kind != _LISTENER_KIND:
+        return "이벤트"
+    return kind
+
+
+def final_values(text: str) -> set[tuple[str, str]]:
+    """파일 글(마지막 리뷰 대상 커밋의 내용)에 있는 보존 신호 (_key 종류, 값 전체). 라우터 링크의 to 값도 링크다."""
+    out: set[tuple[str, str]] = set()
+    for line in text.split("\n"):
+        out |= {(_key(kind), value) for kind, value in kept_values(line)}
+        out |= {("링크", _value(m)) for m in _LINK_TO.finditer(line)}
+    return out
+
+
 def _short(text: str) -> str:
     """공백을 하나로 줄이고 앞 60자(내용 검사 발췌와 같다)."""
     return " ".join(text.split())[:SNIPPET]
+
+
+def _kept_findings(rel: str, removed: list[str], final: set[tuple[str, str]]) -> list[str]:
+    """지운 줄의 보존 신호 가운데 마지막 커밋의 대상 파일 어디에도 같은 종류·값 전체로 남지 않은 것(지운 줄 차례, (종류,
+    값)마다 한 번). 중간 커밋이 더했다가 지운 줄은 남은 것이 아니다."""
+    seen: set[tuple[str, str]] = set()
+    found = []
+    for line in removed:
+        for kind, value in kept_values(line):
+            if (kind, value) in seen:
+                continue
+            seen.add((kind, value))
+            if (_key(kind), value) not in final:
+                found.append(f'{rel}: 보존 신호 — 지운 {kind} "{_short(value)}"(같은 변경에 대신하는 것이 없다)')
+    return found
 
 
 def _counts(lines: list[str]) -> Counter:
@@ -131,7 +220,11 @@ def _added_findings(rel: str, text: str, added: set[str]) -> list[str]:
 
 def design_diff_lint(root: Path, files: list[str], shas: list[str]) -> list[str]:
     """files(시도 기록의 바뀐 파일) 가운데 대상 파일의 diff 경고. 파일 순서, 파일 안에서 지운 줄 신호(SIGNALS 순서) →
-    추가한 줄(줄 번호 순).
+    보존 신호(지운 줄 차례) → 추가한 줄(줄 번호 순).
+
+    보존 신호: 그 파일의 지운 줄에 있는 링크·입력란 name·id·이벤트·시험 ID 값이, 마지막 리뷰 대상 커밋(shas 의 끝)의 대상 파일
+    어디에도 같은 종류·값 전체로 없을 때 알린다(gitio.file_text. 옮긴 줄·다른 파일로 옮긴 컴포넌트는 걸러지고, 지운 파일은 아무
+    것도 남기지 않는다. 커밋마다 합친 추가한 줄로 보면 중간 커밋이 고쳤다가 다음 커밋이 지운 링크를 남은 것으로 본다).
 
     지운 줄: 모든 대상 파일에 걸쳐 내용이 같은 지운 줄·추가한 줄(옮긴 줄)을 짝지어 뺀 나머지로 파일별 신호 수를 센다.
     태스크 전체 순감소(net)가 0 보다 크고 그 파일에서 줄었을 때만 알린다(줄 나누기·옮긴 파일·컴포넌트 추출은 걸러진다).
@@ -156,12 +249,18 @@ def design_diff_lint(root: Path, files: list[str], shas: list[str]) -> list[str]
         for name, _ in SIGNALS:
             net[name] += gone[rel][name] - came[rel][name]
     removed_anywhere = set(all_removed)
+    final: set[tuple[str, str]] = set()
+    for rel in diffs if shas else ():
+        text = gitio.file_text(root, shas[-1], rel)
+        if text is not None:
+            final |= final_values(text)
     found: list[str] = []
-    for rel, (added, _) in diffs.items():
+    for rel, (added, removed) in diffs.items():
         for name, _ in SIGNALS:
             lost = gone[rel][name] - came[rel][name]
             if lost > 0 and net[name] > 0:
                 found.append(f"{rel}: 지운 줄에서 {name} {lost}개가 줄었다(대체가 있는지 확인)")
+        found += _kept_findings(rel, removed, final)
         text = read_source(root, rel)
         if text is not None:
             found += _added_findings(rel, text, set(added) - removed_anywhere)
