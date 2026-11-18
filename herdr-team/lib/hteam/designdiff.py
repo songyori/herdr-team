@@ -98,9 +98,12 @@ def _value(m: re.Match, first: int = 1) -> str:
     return " ".join(next((g for g in m.groups()[first - 1:] if g is not None), "").split())
 
 
-def _event_value(line: str, start: int) -> str | None:
+SCAN_LIMIT = 2000  # 여러 줄 읽기의 창 크기(선형을 지킨다)
+
+
+def _event_value(line: str, start: int, limit: int | None = None) -> str | None:
     """line[start] 에서 시작하는 이벤트 속성 값: 따옴표 글, 또는 같은 줄에서 짝이 맞는 `{…}` 의 안(중첩 중괄호 포함,
-    `{() => { save(); }}`). 줄 안에서 닫히지 않으면 None(여러 줄 처리기는 놓친다)."""
+    `{() => { save(); }}`). 줄 안에서 닫히지 않으면 None. limit 이 있으면 `{…}` 를 줄 경계 없이 limit 글자 안에서 읽는다(최종 파일의 여러 줄 처리기)."""
     quote = line[start:start + 1]
     if quote in ('"', "'"):
         end = line.find(quote, start + 1)
@@ -108,7 +111,7 @@ def _event_value(line: str, start: int) -> str | None:
     if quote != "{":
         return None
     depth = 0
-    for i in range(start, len(line)):
+    for i in range(start, len(line) if limit is None else min(len(line), start + limit)):
         if line[i] == "{":
             depth += 1
         elif line[i] == "}":
@@ -122,6 +125,7 @@ def kept_values(line: str) -> list[tuple[str, str]]:
     """한 줄의 보존 신호 (종류, 값). 값은 공백을 하나로 줄인 속성 값 전체다. 빈 값과 `href="#"` 는 뺀다. 입력란 name·id 는
     `<input`·`<select`·`<textarea` 가 든 줄에서만 본다(여러 줄에 걸친 태그는 놓친다)."""
     out = [("링크 href", _value(m)) for m in _HREF.finditer(line)]
+    out += [("링크 href", _value(m)) for m in _LINK_TO.finditer(line)]  # 라우터 링크의 to 도 링크다
     if _INPUT_TAG.search(line):
         out += [(f"입력란 {m.group(1)}", _value(m, 2)) for m in _INPUT_ATTR.finditer(line)]
     for m in _EVENT.finditer(line):
@@ -145,11 +149,22 @@ def _key(kind: str) -> str:
 
 
 def final_values(text: str) -> set[tuple[str, str]]:
-    """파일 글(마지막 리뷰 대상 커밋의 내용)에 있는 보존 신호 (_key 종류, 값 전체). 라우터 링크의 to 값도 링크다."""
+    """파일 글(마지막 리뷰 대상 커밋의 내용)에 있는 보존 신호 (_key 종류, 값 전체). 줄 단위로 읽은 것에 더해, 여러 줄로
+    나뉜 입력 태그의 name·id 와 여러 줄 `{…}` 처리기도 읽는다(Prettier 줄바꿈. 창은 SCAN_LIMIT 글자)."""
     out: set[tuple[str, str]] = set()
     for line in text.split("\n"):
         out |= {(_key(kind), value) for kind, value in kept_values(line)}
-        out |= {("링크", _value(m)) for m in _LINK_TO.finditer(line)}
+    for tag in _INPUT_TAG.finditer(text):
+        window = text[tag.start():tag.start() + SCAN_LIMIT]
+        close = re.search(r"(?<!=)>", window)  # 화살표 `=>` 는 태그 끝이 아니다
+        if close:
+            window = window[:close.start()]
+        out |= {(f"입력란 {m.group(1)}", _value(m, 2)) for m in _INPUT_ATTR.finditer(window)}
+    for m in _EVENT.finditer(text):
+        if text[m.end():m.end() + 1] == "{":
+            value = _event_value(text, m.end(), SCAN_LIMIT)
+            if value is not None and " ".join(value.split()):
+                out.add(("이벤트", " ".join(value.split())))
     return out
 
 

@@ -233,6 +233,30 @@ class DesignDiffTest(TeamCase):
         self.assertEqual([x for x in self.lint(["src/Save.tsx"], [dropped]) if "보존 신호" in x],
                          ['src/Save.tsx: 보존 신호 — 지운 이벤트 onClick "() => { handleSave(); }"(같은 변경에 대신하는 것이 없다)'])
 
+    def test_prettier_wrap_of_input_and_handler_is_quiet(self):
+        # 태스크 6 리뷰: 최종 파일에서 줄바꿈된 입력 태그·처리기는 그대로 남은 것이다
+        old = ('<input id="email" name="email" type="email" className="x" />\n'
+               '<button onClick={() => { save(); }}>저장</button>\n')
+        self.change({"src/F.tsx": old}, "기존")
+        new = ('<input\n  id="email"\n  name="email"\n  type="email"\n  className="x"\n/>\n'
+               '<button\n  onClick={() => {\n    save();\n  }}\n>저장</button>\n')
+        sha = self.change({"src/F.tsx": new})
+        self.assertEqual([x for x in self.lint(["src/F.tsx"], [sha]) if "보존 신호" in x], [])
+        # 처리기를 아예 지우거나 입력란 id 를 바꾸면 알린다(지운 쪽은 한 줄이다)
+        self.change({"src/G.tsx": old}, "기존 2")
+        sha2 = self.change({"src/G.tsx": '<input\n  id="mail"\n  name="email"\n/>\n<button>저장</button>\n'})
+        self.assertEqual([x for x in self.lint(["src/G.tsx"], [sha2]) if "보존 신호" in x], [
+            'src/G.tsx: 보존 신호 — 지운 입력란 id "email"(같은 변경에 대신하는 것이 없다)',
+            'src/G.tsx: 보존 신호 — 지운 이벤트 onClick "() => { save(); }"(같은 변경에 대신하는 것이 없다)'])
+
+    def test_removed_router_link_is_reported_and_moving_it_is_quiet(self):
+        self.change({"src/Nav.tsx": '<Link to="/settings">설정</Link>\n<p>a</p>\n'}, "기존")
+        moved = self.change({"src/Nav.tsx": '<p>a</p>\n<Link className="n" to="/settings">설정</Link>\n'})
+        self.assertEqual([x for x in self.lint(["src/Nav.tsx"], [moved]) if "보존 신호" in x], [])
+        dropped = self.change({"src/Nav.tsx": "<p>a</p>\n"})
+        self.assertEqual([x for x in self.lint(["src/Nav.tsx"], [dropped]) if "보존 신호" in x],
+                         ['src/Nav.tsx: 보존 신호 — 지운 링크 href "/settings"(같은 변경에 대신하는 것이 없다)'])
+
     def test_markdown_is_not_a_target(self):
         self.change({"docs/user/a.md": "aria-label keep-all\n"}, "기존")
         sha = self.change({"docs/user/a.md": "x\n"})
