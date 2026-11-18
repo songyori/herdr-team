@@ -264,9 +264,11 @@ def check(p, cfg, path: Path) -> dict:
     data = read_plan_data(path)
     tasks = plan_tasks(data)
     plan = read_json(p.plan_file, None)
-    surv = _surviving(p, plan) if plan is not None else None  # 다음 apply 의 복구 뒤에도 남을 적용 항목만
-    groups = _checked(cfg, data, (surv if "test" in data else None) or {})
+    known = _surviving(p, plan) if plan is not None and "test" in data else None
+    groups = _checked(cfg, data, known or {})  # 오류 순서는 그대로: 파일 검사가 plan_incomplete 보다 먼저
+    surv = None  # 다음 apply 의 복구 뒤에도 남을 적용 항목만
     if plan is not None:
+        surv = known if known is not None else _surviving(p, plan)
         _keep_applied(surv, tasks)
     applied = set(surv) if surv is not None else set()
     return {"tasks": len(tasks), "groups": groups, "test": "test" in data,
