@@ -242,7 +242,7 @@ class DesignRulesTest(unittest.TestCase):
         self.assertEqual(heads, ["# 디자인 규칙", "## §0 범위", "## §1 금지 목록 (AI 티)", "## §2 접근성 (WCAG 2.2 AA)",
                                  "## §3 색", "## §4 글자", "## §5 레이아웃", "## §6 표면·동작", "## §7 상태",
                                  "## 즉시 차단 항목", "## 자동 검사", "## 출처"])
-        counts = {"§1 금지 목록 (AI 티)": 10, "§2 접근성 (WCAG 2.2 AA)": 14, "§3 색": 7, "§4 글자": 10, "§5 레이아웃": 10,
+        counts = {"§1 금지 목록 (AI 티)": 13, "§2 접근성 (WCAG 2.2 AA)": 14, "§3 색": 12, "§4 글자": 10, "§5 레이아웃": 10,
                   "§6 표면·동작": 11, "§7 상태": 5}
         for title, n in counts.items():
             found = re.findall(r"(?m)^(\d+)\. ", section(self.rules, title))
@@ -307,6 +307,90 @@ class DesignRulesTest(unittest.TestCase):
         rules = section(developer, "화면 규칙")
         for needle in ("임시 확인 페이지", "커밋하지 않는다", "확인 뒤 되돌린다", "Storybook", "§7 줄에는 상태와 방법만 적는다"):
             self.assertIn(needle, rules)
+
+
+class PaletteDocTest(unittest.TestCase):
+    """13단계 규칙 파일(설계 11.9·11.12 의 1–3): palette.md·fonts-ko.md, design-rules 의 새 항목, 직무 문서의 입력."""
+
+    def read(self, rel):
+        return (ROOT / "templates" / rel).read_text(encoding="utf-8")
+
+    def test_design_rules_new_items(self):
+        rules = self.read("design-rules.md")
+        head = rules[:rules.index("## §0 범위")]
+        self.assertIn("직무별 참고 파일: director 는 `.herdr-team/palette.md`", head)
+        self.assertIn("검사 방식 표기", section(rules, "§0 범위"))
+        ban = section(rules, "§1 금지 목록 (AI 티)")
+        for needle in ("한글 Pretendard·Noto Sans KR·Nanum Gothic", "`.herdr-team/fonts-ko.md`", "지어낸 마케팅 수치",
+                       "11. 근거 없이 프레임워크 기본 팔레트 값", "OKLCH h 240–300°", "12. 근거 없이 이름 붙은 룩",
+                       "13. 템플릿 크롬을 쓰지 않는다"):
+            self.assertIn(needle, ban)
+        colors = section(rules, "§3 색")
+        for needle in ("강조의 수와 면적은 색 자세가 정한다(§3 의 8)", "8. 색 자세를 정해", "9. 중립은 순회색이나",
+                       "10. 색 면 위의", "11. 램프는 OKLCH 로", "12. 시스템 README 에 `palette_source:` 줄"):
+            self.assertIn(needle, colors)
+        self.assertNotIn("둘째 강조색은", colors)
+        for needle in ("impeccable", "taste-skill", "nutlope/hallmark", "frontend-design", "`lib/hteam/data/LICENSES.md`"):
+            self.assertIn(needle, section(rules, "출처"))
+        self.assertLessEqual(len(rules.splitlines()), 150)  # 설계 11.9: 목표 150줄 안쪽
+
+    def test_palette_doc(self):
+        text = self.read("palette.md")
+        heads = re.findall(r"(?m)^## (.+)$", text)
+        self.assertEqual(heads, ["1. 배정 받기", "2. 기본값 버리기", "3. 세 안 만들기", "4. 축 좌표",
+                                 "5. 무드·아이디어 문장과 거울 시험", "6. 브랜드 우선", "7. 색 자세", "8. 중립과 색 면",
+                                 "9. 과용 색(대표 예)", "10. 기록 형식", "팔레트 배정"])  # 마지막은 기록 형식 예시의 제목
+        for needle in ("`.herdr-team/bin/hteam palette deal --task T-xxx --turn <N>`", "`--brand-hue", "`catalog_invalid`",
+                       "`near: true`", "셋 이상이 서로 달라야 한다", "60° 이상", "| 절제 |", "| 몰입 |", "| 전면 |", "| 흠뻑 |",
+                       "C 0.005–0.02", "`#1e3a8a`", "`overused.json`", "`palette_source:", "### turn <N>", "거울 시험"):
+            self.assertIn(needle, text)
+
+    def test_fonts_doc_lists_every_catalog_font(self):
+        from hteam import palette
+        text = self.read("fonts-ko.md")
+        rows = {}
+        for line in section(text, "1. 후보").splitlines():
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if len(cells) == 7 and cells[0] not in ("이름", "---"):
+                rows[cells[0]] = cells
+        fonts = palette.load_fonts()
+        self.assertEqual(set(rows), {f["name"] for f in fonts})  # fonts-ko.json 의 글꼴이 모두 표에 있다(설계 11.12 의 3)
+        for f in fonts:
+            name, cls, _, lic, rfn, url, deal = rows[f["name"]]
+            want_rfn = f["reserved_name"] or ("없음" if f["verified"] else "확인 못 함")
+            self.assertEqual((cls, lic, rfn, url, deal),
+                             (f["class"], f["license"], want_rfn, f["source_url"], "예" if f["deal"] else "아니오"), f["id"])
+        over = palette.load_overused()
+        for name in over["fonts_ko"] + over["fonts_latin"]:
+            self.assertIn(name, section(text, "2. 과용 글꼴"))
+        for needle in ("`unicode-range`", "`assets/<화면>/`", "`font-display: swap`", "OFL.txt", "§4 의 7", "§1 의 7"):
+            self.assertIn(needle, text)
+
+    def test_subset_guidance_keeps_reserved_font_names(self):
+        # OFL: 서브셋은 바꾼 판이다. 예약 이름이 있는 글꼴의 바꾼 판은 글꼴 안의 이름까지 예약 이름 없이 바꾼다(Codex 계획 리뷰 r1 P0)
+        from hteam import palette
+        files = section(self.read("fonts-ko.md"), "4. 글꼴 파일 넣기와 서브셋")
+        for needle in ("고치지 않고 그대로 넣는 것이다", "바꾼 판(Modified Version)", "name 테이블", "https://openfontlicense.org/ofl-faq/",
+                       "`<프로젝트>-본문`", "받은 그대로 넣는다"):
+            self.assertIn(needle, files)
+        reserved = [name for f in palette.load_fonts() if f["reserved_name"] for name in f["reserved_name"].split(", ")]
+        self.assertIn("SUIT", reserved)
+        for span in re.findall(r"`([^`]+)`", files):  # 예시 이름(코드 조각) 어디에도 예약 이름이 없다
+            for name in reserved:
+                self.assertNotIn(name.lower(), span.lower(), span)
+        self.assertNotIn("SUIT-subset", self.read("fonts-ko.md"))
+
+    def test_role_inputs(self):
+        director = section(self.read("roles/director.md"), "입력")
+        self.assertIn("`.herdr-team/palette.md`", director)
+        self.assertIn("`.herdr-team/fonts-ko.md`", director)
+        self.assertIn("`.herdr-team/fonts-ko.md`", section(self.read("roles/designer.md"), "입력"))
+        for role in ("developer", "tester", "planner"):
+            self.assertNotIn("palette.md", self.read(f"roles/{role}.md"), role)
+        # 예시 값이 닻이 되지 않게(설계 11.11): 화면 디자이너의 확정 값 예시도 자리표시다
+        self.assertIn("`--color-primary: <주색 값>`", section(self.read("roles/designer.md"), "시스템이 없을 때"))
+        for path in (ROOT / "templates" / "roles").glob("*.md"):
+            self.assertNotIn("#2f6fed", path.read_text(encoding="utf-8"), path.name)
 
 
 class TextRulesDocTest(unittest.TestCase):

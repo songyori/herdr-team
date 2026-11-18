@@ -29,6 +29,8 @@ FILES = {
     "config.toml": ".herdr-team/config.toml",
     "design-rules.md": ".herdr-team/design-rules.md",
     "text-rules.md": ".herdr-team/text-rules.md",
+    "palette.md": ".herdr-team/palette.md",
+    "fonts-ko.md": ".herdr-team/fonts-ko.md",
     "roles/planner.md": ".herdr-team/roles/planner.md",
     "roles/director.md": ".herdr-team/roles/director.md",
     "roles/designer.md": ".herdr-team/roles/designer.md",

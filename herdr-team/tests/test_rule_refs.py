@@ -61,11 +61,13 @@ def parse_rules(path: Path) -> dict[int, set[int]]:
     return out
 
 
-def problems(root: Path) -> list[str]:
+def problems(root: Path, stats: dict | None = None) -> list[str]:
+    """인용 문제 목록. stats 를 주면 본 파일 수(files)와 인용 수(cites)를 담는다(시험이 아무것도 안 본 채 통과하지 않게)."""
     tpl = root / "templates"
     rules = {k: parse_rules(tpl / v) for k, v in RULES.items() if (tpl / v).is_file()}
     files = sorted(tpl.rglob("*.md")) + sorted((root / "lib" / "hteam").glob("*.py")) + sorted((root / "hooks").glob("*.py"))
     found = []
+    cites = 0
     for f in files:
         rel = f.relative_to(root).as_posix()
         for n, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
@@ -75,6 +77,7 @@ def problems(root: Path) -> list[str]:
                 before = line[:m.start()]
                 if OTHER_DOC.search(before):
                     continue
+                cites += 1
                 names = NAME.findall(before)
                 later = LATER.match(line[m.end():])
                 target = names[-1] if names else (later.group(1) if later else default_target(rel))
@@ -89,12 +92,85 @@ def problems(root: Path) -> list[str]:
                         found.append(f"{rel}:{n}: {RULES[target]} 에 §{s} 가 없다: {m.group(0)}")
                 if item is not None and a in sec and item not in sec[a]:
                     found.append(f"{rel}:{n}: {RULES[target]} §{a} 에 {item}번이 없다: {m.group(0)}")
+    if stats is not None:
+        stats.update(files=len(files), cites=cites)
+    return found
+
+
+METHOD = re.compile(r"(?: \[(?:기계|렌더|판단)\])+$")
+
+
+def method_problems(path: Path) -> list[str]:
+    """검사 방식 표기(설계 11.9): `## §N` 절의 번호 항목마다 끝에 [기계]·[렌더]·[판단] 이 하나 이상 있다. `## 자동 검사` 절이
+    `§N 의 M` 으로 가리키는 항목은 [기계] 이고, [기계] 항목은 모두 자동 검사 절이 가리킨다. 펜스 코드 블록 안은 보지 않는다."""
+    name = path.name
+    items: dict[tuple[int, int], set[str]] = {}
+    auto: set[tuple[int, int]] = set()
+    found = []
+    cur, in_auto, fence = None, False, None
+    for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        m = FENCE.match(line)
+        if m:
+            if fence is None:
+                fence = m.group(1)
+            elif re.fullmatch(re.escape(fence[0]) + "{" + str(len(fence)) + ",}", line.strip()):
+                fence = None
+            continue
+        if fence:
+            continue
+        h = re.match(r"## §(\d+)\b", line)
+        if h:
+            cur, in_auto = int(h.group(1)), False
+            continue
+        if line.startswith("## "):
+            cur, in_auto = None, line.strip() == "## 자동 검사"
+            continue
+        if in_auto:
+            auto |= {(int(c.group(1)), int(c.group(4))) for c in CITE.finditer(line) if c.group(4)}
+            continue
+        item = re.match(r"(\d+)\. ", line)
+        if item and cur is not None:
+            tag = METHOD.search(line.rstrip())
+            if not tag:
+                found.append(f"{name}:{n}: 검사 방식 표기가 없다: §{cur} 의 {item.group(1)}")
+            items[(cur, int(item.group(1)))] = set(re.findall(r"기계|렌더|판단", tag.group(0))) if tag else set()
+    for key in sorted(auto):
+        if key not in items:
+            found.append(f"{name}: 자동 검사 절이 가리키는 항목이 없다: §{key[0]} 의 {key[1]}")
+        elif "기계" not in items[key]:
+            found.append(f"{name}: 자동 검사 절이 가리키는 항목이 [기계] 가 아니다: §{key[0]} 의 {key[1]}")
+    for key, tags in sorted(items.items()):
+        if "기계" in tags and key not in auto:
+            found.append(f"{name}: 자동 검사 절이 가리키지 않는 [기계] 항목: §{key[0]} 의 {key[1]}")
     return found
 
 
 class RuleRefTest(unittest.TestCase):
     def test_templates_and_code_cite_existing_rules(self):
-        self.assertEqual(problems(ROOT), [])
+        stats: dict = {}
+        self.assertEqual(problems(ROOT, stats), [])
+        self.assertGreater(stats["files"], 0)  # 경로가 틀려 아무것도 보지 않은 채 통과하지 않는다
+        self.assertGreater(stats["cites"], 0)
+
+    def test_rule_items_have_check_methods(self):
+        checked = [ROOT / "templates" / name for name in ("design-rules.md", "web-rules.md")
+                   if (ROOT / "templates" / name).is_file()]
+        self.assertIn(ROOT / "templates" / "design-rules.md", checked)
+        for path in checked:
+            self.assertEqual(method_problems(path), [], path.name)
+
+    def test_method_checker_catches_missing_and_mismatched_tags(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "design-rules.md"
+            path.write_text("# 규칙\n\n## §1 금지\n1. 하나 [기계]\n2. 둘 [판단]\n3. 셋\n4. 넷 [렌더] [판단]\n"
+                            "5. 다섯 [기계] [판단]\n```\n6. 펜스 안\n```\n\n## 자동 검사\n- §1 의 1(하나), §1 의 2(둘), §1 의 9\n",
+                            encoding="utf-8")
+            self.assertEqual(method_problems(path), [
+                "design-rules.md:6: 검사 방식 표기가 없다: §1 의 3",
+                "design-rules.md: 자동 검사 절이 가리키는 항목이 [기계] 가 아니다: §1 의 2",
+                "design-rules.md: 자동 검사 절이 가리키는 항목이 없다: §1 의 9",
+                "design-rules.md: 자동 검사 절이 가리키지 않는 [기계] 항목: §1 의 5",
+            ])
 
     def test_checker_catches_broken_citations(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -8,6 +8,7 @@
 - `docs/planning/`(spec.md 의 사용자 흐름·화면 목록, contracts.md), 선행 태스크 보고서 `docs/tasks/<T>/report.md`
 - 디자인 시스템이 있으면(설정에 `[roles.director]` 가 있다): `docs/design/system/`(디자인 시스템 사본 `tokens.json`, `README.md`, `components/`, 글꼴 같은 에셋. 시스템 값의 기준), `docs/design/direction.md`(확정한 디자인 방향과 `design_system_url: <URL>` 줄)
 - `.herdr-team/design-rules.md`(디자인 규칙: §1 AI 티 금지 목록, §2–§7 품질 규칙)
+- 디자인 시스템이 없어 글꼴을 고르면 `.herdr-team/fonts-ko.md`(한글 글꼴 후보, 과용 글꼴, 글꼴 파일 넣기)
 - 즉시 차단 항목(design-rules)은 예외가 인정되지 않는다(보고서에 예외를 적어도 리뷰가 P1 이다). 삭제처럼 되돌리기 어려운 동작에는 확인·되돌리기·구별되는 표시(§7 의 4번), 오류 상태에는 무엇이 잘못됐는지와 할 수 있는 일(§7 의 5번)을 둔다.
 - `.herdr-team/text-rules.md`(문구 규칙)와 `docs/planning/voice.md`(문구 기준: 문체·호칭·라벨·용어집. 있으면)
 - 있으면 `docs/design/screens/` 의 앞서 만든 화면(같은 앱 안에서 모양을 맞춘다)
@@ -36,7 +37,7 @@
 
 ## 시스템이 없을 때
 `[roles.director]` 가 없는 프로젝트:
-- notes.md 의 `## 확정 값` 소절에 이 화면이 쓰는 색·글꼴 크기·간격·모서리·그림자 값을 이름과 값으로 적는다(예: `--color-primary: #2f6fed`). `index.html` 은 그 값만 쓴다.
+- notes.md 의 `## 확정 값` 소절에 이 화면이 쓰는 색·글꼴 크기·간격·모서리·그림자 값을 이름과 값으로 적는다(예: `--color-primary: <주색 값>`). `index.html` 은 그 값만 쓴다.
 - 앞서 만든 화면(`docs/design/screens/*/notes.md`)이 있으면 그 `## 확정 값` 을 그대로 쓰고, 새로 필요한 값만 이 화면의 `## 확정 값` 에 더한다. 같은 이름에 다른 값을 주지 않는다.
 - 아이콘 세트는 하나만 쓰고 그 이름을 `## 확정 값` 에 적는다.
 - `### 시스템 추가 제안` 은 "없음" 한 줄이다(보강할 시스템이 없다).
