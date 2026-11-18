@@ -155,6 +155,37 @@ class ScanTest(unittest.TestCase):
         found = self.found(real, "src/app.tsx")
         self.assertEqual([x.split(":", 2)[1] for x in found], ["1", "2", "3", "5"])
 
+    def test_sample_mark_ignores_tags_in_comments_and_attribute_values(self):
+        # 주석·속성 값 안의 태그 모양 글은 사람 글 표시가 아니다(Codex p13c Task 5 리뷰)
+        rel = "docs/design/screens/home/index.html"
+        self.assertEqual(self.found("<!-- <p data-sample> 예시 -->\n<p>저장됬어요</p>\n", rel),
+                         [f'{rel}:2: 오탈자 "됬"(<p>저장됬어요</p>)'])
+        self.assertEqual(len(self.found("{/* <p data-sample> 예시 */}\n<p>저장됬어요</p>\n", "src/app.tsx")), 1)
+        attr = '<a title="<p data-sample>">x</a><p>저장됬어요</p>\n'
+        self.assertEqual(len(self.found(attr, "src/app.tsx")), 1)
+        self.assertEqual(len(self.found(attr, "a.html")), 1)
+        self.assertEqual(len(self.found("<!-- 닫지 않음 <p data-sample>\n<p>저장됬어요</p>\n", "a.html")), 1)
+        self.assertEqual(self.found("<!-- 메모 --><p data-sample>가짜됬</p>\n", "a.html"), [])  # 주석 뒤 진짜 표시는 지운다
+
+    def test_component_names_are_case_sensitive(self):
+        self.assertEqual(self.found('<Link href="/profile" data-sample>댓글이 등록됬어요</Link>\n', "src/app.tsx"), [])
+        self.assertEqual(self.found("<Input data-sample>가짜됬</Input>\n", "src/app.tsx"), [])
+        self.assertEqual(len(self.found('<link rel="x" data-sample>저장됬어요\n', "a.html")), 1)  # .html 은 빈 요소 link
+        self.assertEqual(self.found("<P data-sample>가짜됬</p>\n", "a.html"), [])  # .html 은 대소문자를 가리지 않는다
+        self.assertEqual(len(self.found("<Item data-sample>가짜됬</item>\n", "src/app.tsx")), 1)  # 컴포넌트는 가린다
+        self.assertEqual(len(self.found('<link rel="x" data-sample>저장됬어요\n', "src/app.tsx")), 1)  # 소문자는 빈 요소
+
+    def test_excerpt_stays_linear_on_long_lines_with_many_hits(self):
+        import time
+        line = "<p>가 됬 아니라 </p>" * 100000
+        start = time.monotonic()
+        rows = textlint.added_rows("src/app.tsx", line, {line})
+        found = textlint.scan_rows("src/app.tsx", rows, [])
+        self.assertLess(time.monotonic() - start, 1.5)
+        self.assertEqual(len(found), 100001)  # 오탈자 10만 + 반복 집계 한 줄
+        self.assertEqual(textlint.excerpt("  ab cd  ", 3, 4), "ab cd")
+        self.assertEqual(textlint.excerpt("x" * 40 + "됬" + "y" * 40, 40, 41), "…" + "x" * 30 + "됬" + "y" * 30 + "…")
+
     def test_sample_scan_stays_linear(self):
         # 빈 요소와 닫히지 않은 요소가 많아도 닫는 태그를 찾으려 파일 끝까지 다시 훑지 않는다(Codex 계획 리뷰 p13c r2)
         import time
@@ -296,6 +327,14 @@ class GitTextLintTest(TeamCase):
         found = text_lint(self.proj, ["src/big.html"], [sha])
         self.assertLess(time.monotonic() - start, 1.5)
         self.assertEqual(found, [f'src/big.html:1: 복붙 "저장하면 바로 적용돼요." {n}번'])
+
+    def test_comment_and_component_samples_for_targets(self):
+        sha = self.commit("src/a.tsx", "{/* <p data-sample> 예시 */}\n<p>저장됬어요</p>\n", "[T-001] 주석")
+        self.assertEqual(textlint.targets(self.proj, ["src/a.tsx"]), ["src/a.tsx"])
+        self.assertEqual(textlint.added_text_files(self.proj, ["src/a.tsx"], [sha]), ["src/a.tsx"])
+        sha = self.commit("src/b.tsx", '<Link href="/p" data-sample>가짜 댓글</Link>\n', "[T-001] 링크")
+        self.assertEqual(textlint.targets(self.proj, ["src/b.tsx"]), [])
+        self.assertEqual(textlint.added_text_files(self.proj, ["src/b.tsx"], [sha]), [])
 
     def test_added_text_files_for_the_precheck(self):
         sha = self.commit("src/a.tsx", '// 한글 주석\nconst a = 1;\n', "[T-001] 주석")

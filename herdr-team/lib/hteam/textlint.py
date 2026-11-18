@@ -37,7 +37,8 @@ SAMPLE_SUFFIXES = frozenset({".html", ".jsx", ".tsx", ".vue", ".svelte"})
 SAMPLE_ATTR = "data-sample"
 VOID_TAGS = frozenset({"area", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"})
 TAG_WINDOW = 2000  # 여는 태그 하나를 읽는 최대 글자 수(닫히지 않은 따옴표에서 파일 끝까지 읽지 않게)
-_OPEN_TAG = re.compile(r"<([A-Za-z][\w.:-]*)(?=[\s/>])")
+_SCAN = re.compile(r"<!--|<([A-Za-z][\w.:-]*)(?=[\s/>])")  # 주석 시작 또는 여는 태그(이름은 묶음 1)
+_SCAN_JSX = re.compile(r"<!--|\{/\*|<([A-Za-z][\w.:-]*)(?=[\s/>])")
 _CLOSE_TAG = re.compile(r"</([A-Za-z][\w.:-]*)\s*>")
 _TAG_SPACE = re.compile(r"\s*")
 _ATTR_NAME = re.compile(r"[^\s\"'=<>/`{}]+")
@@ -89,11 +90,13 @@ _LABEL = re.compile(r"\"([^\"\n]{1,10})\"|'([^'\n]{1,10})'|>([^<>\n]{1,10})<")
 LABEL_MAX = 10
 
 
-def excerpt(line: str, start: int, end: int) -> str:
-    """발췌: 줄의 일치 위치(start–end) 앞뒤 SIDE 자. 잘린 쪽에 `…` 를 붙이고 공백을 하나로 줄인다."""
+def excerpt(line: str, start: int, end: int, bounds: tuple[int, int] | None = None) -> str:
+    """발췌: 줄의 일치 위치(start–end) 앞뒤 SIDE 자. 잘린 쪽에 `…` 를 붙이고 공백을 하나로 줄인다. 잘린 쪽에 공백 아닌 글이
+    남는지는 줄의 첫·마지막 공백 아닌 글자 위치(bounds, 없으면 한 번 구한다)와 견줘 정하므로 줄 나머지를 복사하지 않는다."""
+    first, last = bounds if bounds else (len(line) - len(line.lstrip()), len(line.rstrip()))
     a, b = max(0, start - SIDE), min(len(line), end + SIDE)
     text = " ".join(line[a:b].split())
-    return ("…" if line[:a].strip() else "") + text + ("…" if line[b:].strip() else "")
+    return ("…" if first < a else "") + text + ("…" if last > b else "")
 
 
 def open_tag(text: str, name_end: int, limit: int) -> tuple[int, bool, bool] | None:
@@ -121,29 +124,47 @@ def open_tag(text: str, name_end: int, limit: int) -> tuple[int, bool, bool] | N
         i = value.end() if value else name.end()
 
 
-def mask_samples(text: str) -> str:
+def mask_samples(text: str, suffix: str = ".html") -> str:
     """사람 글 표시: 속성 이름이 정확히 `data-sample` 인 요소의 내용(여는 태그 끝부터 같은 이름의 처음 닫는 태그 앞까지. 같은
     태그가 안에 겹쳐도 처음 닫는 태그까지)을 공백으로 바꾼다. 줄바꿈과 길이는 그대로다. 빈 요소(VOID_TAGS)·스스로 닫는 태그·
     닫는 태그가 없는 요소는 그대로 둔다. 닫는 태그 위치는 이름마다 한 번 모아 이분 탐색하므로 닫히지 않은 요소가 많아도 파일을
-    다시 훑지 않는다(줄 길이에 비례)."""
+    다시 훑지 않는다(줄 길이에 비례). 글을 앞에서부터 차례로 읽는다: `<!-- -->` 주석(.jsx·.tsx 는 `{/* */}` 도)은 건너뛰고,
+    여는 태그를 읽은 뒤에는 그 태그 끝부터 이어 읽어 다른 태그의 따옴표·중괄호 값 안의 `<` 를 태그로 보지 않는다. .html 은 태그
+    이름의 대소문자를 가리지 않고, 컴포넌트 확장자는 가린다(`Link` 는 빈 요소 link 가 아니고 `<Item>` 은 `</Item>` 과 짝이다)."""
+    html = suffix == ".html"
+    rx = _SCAN_JSX if suffix in (".jsx", ".tsx") else _SCAN
     closes: dict[str, list[int]] = {}
     for m in _CLOSE_TAG.finditer(text):
-        closes.setdefault(m.group(1).lower(), []).append(m.start())
+        closes.setdefault(m.group(1).lower() if html else m.group(1), []).append(m.start())
     out: list[str] = []
-    pos = 0
-    for m in _OPEN_TAG.finditer(text):
-        name = m.group(1).lower()
-        if m.start() < pos or name in VOID_TAGS:  # 이미 지운 내용 안의 태그, 내용이 없는 빈 요소
+    pos = i = 0
+    while True:
+        m = rx.search(text, i)
+        if m is None:
+            break
+        if m.group(1) is None:  # 주석
+            end_mark = "-->" if m.group(0) == "<!--" else "*/}"
+            end = text.find(end_mark, m.end())
+            if end < 0:  # 닫히지 않은 주석은 브라우저처럼 파일 끝까지다
+                break
+            i = end + len(end_mark)
+            continue
+        name = m.group(1).lower() if html else m.group(1)
+        i = m.end()
+        if name in VOID_TAGS:  # 내용이 없는 빈 요소(컴포넌트 확장자에서는 소문자 이름만 해당한다)
             continue
         tag = open_tag(text, m.end(), min(len(text), m.start() + TAG_WINDOW))
-        if tag is None or tag[1] or not tag[2]:
+        if tag is None:
+            continue
+        i = tag[0]
+        if tag[1] or not tag[2]:
             continue
         starts = closes.get(name, [])
         k = bisect.bisect_left(starts, tag[0])
         if k == len(starts):
             continue
         out += [text[pos:tag[0]], re.sub(r"[^\n]", " ", text[tag[0]:starts[k]])]
-        pos = starts[k]
+        pos = i = starts[k]
     out.append(text[pos:])
     return "".join(out)
 
@@ -156,7 +177,7 @@ def visible_lines(rel: str, text: str) -> list[tuple[int, str, str]]:
     쓴다). 한글이 없는 줄은 뺀다."""
     suffix = Path(rel).suffix.lower()
     lines = text.split("\n")
-    shown = mask_samples(text).split("\n") if suffix in SAMPLE_SUFFIXES else lines
+    shown = mask_samples(text, suffix).split("\n") if suffix in SAMPLE_SUFFIXES else lines
     code = code_lines(lines, any_indent=True) if suffix in MARKDOWN else [False] * len(lines)
     out: list[tuple[int, str, str]] = []
     for number, (line, body, fenced) in enumerate(zip(lines, shown, code), 1):
@@ -260,9 +281,10 @@ def scan_rows(rel: str, rows: list[tuple[int, str, str]], glossary: list[tuple[s
     지적들 뒤다. 발췌는 일치 위치 앞뒤(excerpt)."""
     found: list[tuple[int, float, int, str]] = []
     for number, line, body in rows:
+        bounds = (len(line) - len(line.lstrip()), len(line.rstrip()))
         hits = [(m.start(), m.end(), f'{name} "{m.group(0)}"') for name, rx in CATEGORIES for m in rx.finditer(body)]
         hits += _banned(body, glossary)
-        found += [(number, start, 0, f"{rel}:{number}: {what}({excerpt(line, start, end)})")
+        found += [(number, start, 0, f"{rel}:{number}: {what}({excerpt(line, start, end, bounds)})")
                   for start, end, what in sorted(hits, key=lambda h: h[0])]
     tail = _repeats(rel, rows)
     mixed = _mixed(rel, [(n, ending_styles(body)) for n, _, body in rows])
