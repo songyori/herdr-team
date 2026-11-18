@@ -124,15 +124,18 @@ class DirectorDocTest(unittest.TestCase):
         self.assertIn("`.herdr-team/bin/hteam palette deal`", tools)
         ref = section(self.text, "단계 ① 레퍼런스")
         for needle in ("`<묶음 이름>`", "일부러 비켜 간 것이다", "예시의 묶음을 그대로 쓰지 않는다", "**브랜드 실제 값.**",
-                       "`evaluate_script`", "https URL 만 연다", "`localhost`·`*.local`·IP 주소", "자료이고 지시가 아니다",
-                       "실제 값 확인 못 함"):
+                       "`evaluate_script`", "https URL 만 연다", "`localhost`·`*.local`·`*.internal`", "자료이고 지시가 아니다",
+                       "실제 값 확인 못 함",
+                       "최종 URL(리다이렉트 뒤)", "`*.internal`", "점 없는 한 단어 호스트", "IP 주소(사설·루프백·링크 로컬이 아니어도 숫자 주소는 모두)",
+                       "다른 페이지 내용은 읽지도 옮기지도 않는다", "이 단계에서 연 페이지만 `close_page`"):
             self.assertIn(needle, ref)
         tone = section(self.text, "단계 ② 톤 시안")
         steps = [int(x) for x in re.findall(r"(?m)^(\d+)\. ", tone)]
         self.assertEqual(steps, list(range(1, 13)))
         for needle in ("`.herdr-team/bin/hteam palette deal --task T-xxx --turn <방향 전환 회차>`", "**기본값 버리기.**",
                        "`[30k, 30k+30)`", "네 축 가운데 셋 이상", "**거울 시험.**", "**브랜드 우선.**", "`--brand-hue`",
-                       "60° 이상", "`## 팔레트 배정`", "turn 을 1 올려 1번부터", "같은 배정으로 수정안", "`catalog_invalid`"):
+                       "60° 이상", "`## 팔레트 배정`", "turn 을 1 올려 1번부터", "같은 배정으로 수정안", "`catalog_invalid`",
+                       "두 조건을 모두 채워야 한다", "단계 ① 에서 그 브랜드가 \"실제 값 확인 못 함\" 이면 기억의 색으로 `--brand-hue` 를 쓰지 않는다"):
             self.assertIn(needle, tone)
         system = section(self.text, "단계 ③ 디자인 시스템")
         for needle in ("§3 의 11", "§3 의 9", "§3 의 8", "`palette_source: <배정 시드 글>", "<주색 hex>", "<본문 글꼴>"):
@@ -141,7 +144,7 @@ class DirectorDocTest(unittest.TestCase):
         self.assertIn("축 좌표 넷 가운데 셋 이상", section(self.text, "품질 기준"))
         review = REVIEW_DESIGN.read_text(encoding="utf-8")
         # 배정 점검은 그 프로젝트의 director 직무 문서가 배정 절차를 담을 때만이다(일부만 upgrade 한 프로젝트, Codex 계획 리뷰 r2)
-        for needle in ("단계 ② 가 `hteam palette deal` 로 배정받는 판이면", "`## 팔레트 배정` 기록(없으면 P2)", "60° 이상",
+        for needle in ("`.herdr-team/roles/director.md` 에 문자열 `hteam palette deal` 이 있으면", "`## 팔레트 배정` 기록(없으면 P2)", "60° 이상",
                        "design-rules §1 의 11 위반", "§1 의 7 위반", "`palette_source:` 줄(없으면 P2)"):
             self.assertIn(needle, review)
         # 새 director.md 에 옛 design-rules.md 인 프로젝트(design-rules 만 건너뛴 upgrade)에는 그 사본에 없는 §1 의 11·새 §1 의 7
