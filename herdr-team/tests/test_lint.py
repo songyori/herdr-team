@@ -3,10 +3,14 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests.helpers import ROOT, TeamCase
 from hteam import state
-from hteam.lint import DESIGN_ROLES, MAX_BYTES, MAX_FINDINGS, cap, design_findings, design_lint, hue_family, scan
+from hteam import palette
+from hteam.errors import HteamError
+from hteam.lint import (DESIGN_ROLES, MAX_BYTES, MAX_FINDINGS, STYLE_RULES_MARKER, cap, design_findings, design_lint,
+                        font_stack, has_style_rules, hue_family, scan, style_findings, style_scan)
 from hteam.paths import Project
 
 VS16 = chr(0xFE0F)  # 이모지 표시 선택자. 소스에서 보이지 않으므로 이름으로 쓴다
@@ -185,6 +189,83 @@ class ScanTest(unittest.TestCase):
         self.assertEqual(found[-1].split("(", 1)[0], "src/ui/many.css:2000: 파랑·보라 그라디언트")
 
 
+class StyleScanTest(unittest.TestCase):
+    """13단계 색·글꼴 검사(설계 11.13 의 1)."""
+
+    def setUp(self):
+        self.over = palette.load_overused()
+
+    def scan(self, rel, text):
+        return style_scan(rel, text, self.over)
+
+    def test_overused_colors_once_per_file(self):
+        text = ".a { color: #1E3A8A; }\n.b { background: #1e3a8a80; }\n.c { color: #d97757 }\n.d { color: #2563eb }\n.e { color: #6366f1 }\n"
+        self.assertEqual(self.scan("src/a.css", text), [
+            "src/a.css:1: 과용 기본 색 4개(#1e3a8a Tailwind blue-900, #d97757 Anthropic 군집 테라코타, "
+            "#2563eb Tailwind blue-600, …) — design-rules §1 의 11"])
+        self.assertEqual(self.scan("src/b.css", ".a { color: #1e3a8b; }\n<p>&#2563; #fffeee</p>\n"), [])  # 숫자 문자 참조는 hex 가 아니다
+
+    def test_tailwind_ramp_needs_three_besides_overused(self):
+        two = ".a { color: #fb923c; border-color: #c2410c }\n.b { color: #2563eb }\n"  # orange-400·700 둘, blue-600 은 과용 색
+        self.assertEqual([x.split(" — ")[0] for x in self.scan("src/a.css", two)], ["src/a.css:2: 과용 기본 색 1개(#2563eb Tailwind blue-600)"])
+        three = "x\n:root { --a: #fb923c; --b: #c2410c; --c: #fff1f2; --d: #fb923c }\n"
+        self.assertEqual(self.scan("src/t.css", three), ["src/t.css:2: Tailwind 기본 램프 값 3개 — design-rules §3 의 11"])
+
+    def test_primary_accent_brand_hue(self):
+        text = (":root { --color-primary: #1e40af; --accent-ink: #ffffff; }\n"
+                '{"brand": {"value": "oklch(0.55 0.2 290)"}, "neutral": "#64748b"}\n'
+                "$brand-accent: hsl(250 60% 50%);\n"
+                ":root { --primary: oklch(0.6 0.05 260); --accent: #c2410c; }\n"  # C 0.05 은 무채색에 가깝다, 주황은 아니다
+                '"secondary": "#2563eb", "primary": "#0f7d45"\n'
+                "--surface: #1e3a8a;\n")
+        found = [x for x in self.scan("tokens.json", text) if "주 강조" in x]
+        later = ":root { --primary-foreground: #fff; --primary: oklch(0.6 0.15 260); }\n"  # 앞 토큰이 괜찮아도 뒤 토큰을 본다
+        self.assertEqual(self.scan("src/t.css", later),
+                         ["src/t.css:1: 주 강조가 파랑·남색·보라 계열(h 260°) — 근거를 적는다(§1 의 11)"])
+        self.assertEqual(found, ["tokens.json:1: 주 강조가 파랑·남색·보라 계열(h 266°) — 근거를 적는다(§1 의 11)",
+                                 "tokens.json:2: 주 강조가 파랑·남색·보라 계열(h 290°) — 근거를 적는다(§1 의 11)",
+                                 "tokens.json:3: 주 강조가 파랑·남색·보라 계열(h 281°) — 근거를 적는다(§1 의 11)"])
+
+    def test_overused_fonts(self):
+        text = ("body { font-family: Inter, SUIT, sans-serif; }\n"
+                "h1 { font-family: 'Pretendard Variable', -apple-system, sans-serif !important; }\n"
+                'p { font-family: "IBM Plex Sans KR", sans-serif; }\n'
+                '{"fontFamily": ["Noto Sans KR", "sans-serif"]}\n'
+                "const s = { fontFamily: 'SUIT, sans-serif' };\n"
+                "code { font-family: ui-monospace, monospace; }\n"
+                "div { font-family: system-ui, sans-serif; }\n"
+                ":root { --font-family: Roboto; }\n"
+                ".x { font-family: var(--font-body); }\n")
+        self.assertEqual(self.scan("src/a.css", text), [
+            "src/a.css:1: 과용 글꼴 Inter — §1 의 7", "src/a.css:2: 과용 글꼴 Pretendard Variable — §1 의 7",
+            "src/a.css:4: 과용 글꼴 Noto Sans KR — §1 의 7", "src/a.css:7: 과용 글꼴 system-ui — §1 의 7",
+            "src/a.css:8: 과용 글꼴 Roboto — §1 의 7"])
+        self.assertEqual(font_stack(' "A B", \'C\' , d ;'), ["A B", "C", "d"])
+        self.assertEqual(font_stack('["SUIT", "sans-serif"]'), ["SUIT", "sans-serif"])
+        self.assertEqual(font_stack('"SUIT, serif"'), ["SUIT", "serif"])
+
+    def test_targets_and_isolation(self):
+        root = Path(tempfile.mkdtemp(prefix="hteam-style-")).resolve()
+        self.addCleanup(shutil.rmtree, root, True)
+        for rel, text in (("src/a.css", ".a { color: #1e3a8a }\n"), ("docs/planning/spec.md", "#1e3a8a\n"),
+                          ("scripts/a.py", "'#1e3a8a'\n"), ("docs/design/screens/h/artifact/project/x.html", "#1e3a8a\n")):
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text(text, encoding="utf-8")
+        files = ["src/a.css", "docs/planning/spec.md", "scripts/a.py", "docs/design/screens/h/artifact/project/x.html",
+                 "../x.css", "src/gone.css"]
+        self.assertEqual([x.split("(")[0] for x in style_findings(root, files)], ["src/a.css:1: 과용 기본 색 1개"])
+        with mock.patch.object(palette, "load_overused", side_effect=palette._invalid("x")):
+            with self.assertRaises(HteamError):
+                style_findings(root, files)
+            self.assertEqual(style_findings(root, ["docs/planning/spec.md"]), [])  # 볼 파일이 없으면 카탈로그를 읽지 않는다
+        self.assertEqual(design_lint(root, files), [])  # 이모지 등 내용 검사는 색·글꼴 경고를 섞지 않는다
+        self.assertFalse(has_style_rules(root / "없는 파일.md"))
+        (root / "rules.md").write_bytes(b"\xff\xfe")
+        self.assertFalse(has_style_rules(root / "rules.md"))
+        (root / "rules.md").write_text("x\n" + STYLE_RULES_MARKER + "(…) [기계] [판단]\n", encoding="utf-8")
+        self.assertTrue(has_style_rules(root / "rules.md"))
+
+
 class LintCommandTest(TeamCase):
     def setUp(self):
         super().setUp()
@@ -220,6 +301,30 @@ class LintCommandTest(TeamCase):
         code, out = self.hteam("lint", "--task", "T-001", as_=None)
         self.assertEqual(out["findings"], ["src/Btn.tsx: 지운 줄에서 aria-label 1개가 줄었다(대체가 있는지 확인)",
                                            "src/Btn.tsx:2: 이모지(🚀)"], out)
+
+    def test_style_checks_only_with_13th_stage_rules(self):
+        # 색·글꼴 검사의 경고는 13단계 design-rules(§1 의 7·11, §3 의 11)를 인용한다. 프로젝트의 design-rules.md 가 그 판이
+        # 아니면 내지 않는다: 옛 프로젝트(Codex 계획 리뷰 r1), palette.md 는 생겼는데 design-rules.md 는 건너뛴 upgrade(r2)
+        rules = (ROOT / "templates/design-rules.md").read_text(encoding="utf-8")
+        self.assertEqual(sum(line.startswith(STYLE_RULES_MARKER) for line in rules.split("\n")), 1)  # Task 3 이 쓴 표지
+        review = (ROOT / "templates/review-design.md").read_text(encoding="utf-8")
+        self.assertIn(f"`{STYLE_RULES_MARKER}`", review)  # 리뷰의 director 새 규칙 점검도 같은 줄로 가른다(Task 4)
+        self.write_spec("T-001", "developer")
+        state.create(self.p, "T-001", "developer")
+        self.assertEqual(self.hteam("start", "T-001")[0], 0)
+        self.act_work("T-001", {"src/app.css": ".a { color: #1e3a8a; font-family: Pretendard, sans-serif; }\n"})
+        code, out = self.hteam("lint", "--task", "T-001", as_=None)
+        self.assertEqual((code, out["findings"]), (0, []), out)  # design-rules.md 가 없다
+        old = rules[:rules.index("11. 근거 없이 프레임워크")]  # 0.7.2 처럼 §1 의 11 이 없는 사본
+        self.commit(".herdr-team/design-rules.md", old, "chore: 옛 규칙")
+        self.commit(".herdr-team/palette.md", "# 팔레트 배정\n", "chore: palette.md 만 생긴 upgrade")
+        code, out = self.hteam("lint", "--task", "T-001", as_=None)
+        self.assertEqual((code, out["findings"]), (0, []), out)
+        self.commit(".herdr-team/design-rules.md", rules, "chore: 0.8.0 upgrade")
+        code, out = self.hteam("lint", "--task", "T-001", as_=None)
+        self.assertEqual(out["findings"], ["src/app.css:1: 과용 글꼴 Pretendard — §1 의 7",
+                                           "src/app.css:1: 과용 기본 색 1개(#1e3a8a Tailwind blue-900) — design-rules §1 의 11"],
+                         out)
 
     def test_scaffold_copies_design_rules(self):
         desc = self.tmp / "desc.txt"

@@ -1,7 +1,10 @@
-"""디자인 자동 검사(설계 11.6): `hteam lint --task T`.
+"""디자인 자동 검사(설계 11.6·11.13): `hteam lint --task T`.
 
 리뷰 대상 커밋이 바꾼 파일에서 디자인 규칙(`.herdr-team/design-rules.md`) §1 의 1(이모지), 2(왼쪽 강조 테두리),
-3(파랑·보라 그라디언트) 의심 위치를 찾는다. 결과는 경고다(블록 인용처럼 정당한 쓰임이 있다). 판정은 리뷰어가 한다.
+3(파랑·보라 그라디언트) 의심 위치를 찾는다(design_findings). 13단계 색·글꼴 검사(style_findings)는 과용 색·Tailwind
+기본 램프(파일당 한 줄), 이름에 primary·accent·brand 가 든 토큰의 파랑·남색·보라 강조, 과용 글꼴을 찾는다. 카탈로그는
+palette.load_overused 이고 깨지면 그 검사만 실패한다(compose 가 따로 감싼다). 결과는 경고다(블록 인용처럼 정당한 쓰임이
+있다). 판정은 리뷰어가 한다.
 리뷰 프롬프트의 디자인 절(compose.review_prompt)이 시도 기록의 바뀐 파일로 부른다. 표준 라이브러리 정규식만 쓰고
 git·hc·horch·codex 를 부르지 않는다(명령 `lint --task` 만 review 의 대상 커밋 계산과 compose 의 절 목록을 거친다).
 read_source·cap 은 문구 검사(textlint)도 함께 쓴다.
@@ -13,6 +16,7 @@ import colorsys
 import re
 from pathlib import Path
 
+from . import color
 from .globs import matches_any
 from .paths import find_project
 
@@ -258,6 +262,120 @@ def design_findings(root: Path, files: list[str]) -> list[str]:
         text = read_source(root, rel)
         if text is not None:
             found += scan(rel, text)
+    return found
+
+
+# 13단계 색·글꼴 검사(설계 11.13 의 1). hex 는 앞이 `&`·낱말 글자가 아니고(HTML 숫자 문자 참조 `&#123;` 는 뺀다) 뒤가 낱말
+# 글자·하이픈이 아닌 3·4·6·8자리다. 4·8자리의 알파는 버리고 견준다.
+_HEX = re.compile(r"(?<![&\w])#([0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})(?![\w-])")
+# 이름 붙은 값: CSS 변수(`--x:`)·Sass 변수(`$x:`)·따옴표 키(`"x":`, tokens.json·JS 객체). 값의 끝은 다음 이름 앞이다
+# (`value`·`$value` 키는 값을 감싸는 껍데기라 끝으로 보지 않는다).
+_NAME = re.compile(r"""(?:(?<![\w$-])(--[\w-]+|\$[\w-]+)|(["'])([^"'\n]{1,80})\2)\s*:""")
+_ROLE = re.compile(r"primary|accent|brand", re.I)
+_COLOR_LITERAL = re.compile(r"(?<![&\w])#[0-9a-fA-F]{3,8}(?![\w-])|\b(?:rgba?|hsla?|oklch)\([^()\n]*\)", re.I)
+_FONT_DECL = re.compile(r"""(?:font-family|fontFamily)["']?\s*:\s*(\[[^\]\n]*\]|"[^"\n]*"|'[^'\n]*'|`[^`\n]*`|[^;{}\n]+)""",
+                        re.I)
+BLUE_HUE = (240, 300)  # 주 강조로 근거가 필요한 OKLCH h(파랑·남색·보라, 설계 11.12 의 1 §1 의 11)
+BLUE_MIN_C = 0.08
+# 프로젝트의 design-rules.md 가 13단계 판인지 가르는 줄(Task 3 이 쓰는 §1 의 11 의 머리). 색·글꼴 경고가 인용하는 규칙이다
+STYLE_RULES_MARKER = "11. 근거 없이 프레임워크 기본 팔레트 값"
+
+
+def has_style_rules(rules: Path) -> bool:
+    """프로젝트의 design-rules.md(rules)에 13단계 색·글꼴 규칙이 있나: 줄 머리가 STYLE_RULES_MARKER 인 줄. 읽지 못하면(없음,
+    UTF-8 아님) 없다고 본다."""
+    try:
+        text = rules.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    return any(line.startswith(STYLE_RULES_MARKER) for line in text.split("\n"))
+
+
+def _hex6(digits: str) -> str:
+    d = digits.lower()
+    return "#" + ("".join(c * 2 for c in d[:3]) if len(d) in (3, 4) else d[:6])
+
+
+def font_stack(value: str) -> list[str]:
+    """font-family 값(CSS 글, 따옴표 글, JSON·JS 배열)의 글꼴 이름들. `!important` 와 감싼 따옴표는 뗀다."""
+    v = re.sub(r"\s*!important\s*$", "", value.strip().rstrip(",;").strip(), flags=re.I)
+    if v.startswith("["):
+        names = re.findall(r"""["'`]([^"'`]*)["'`]""", v)
+    else:
+        if len(v) >= 2 and v[0] in "\"'`" and v[-1] == v[0]:
+            v = v[1:-1]
+        names = v.split(",")
+    return [n for n in (x.strip().strip("\"'`").strip() for x in names) if n]
+
+
+def _role_colors(line: str) -> list[tuple[float, float, float]]:
+    """이름에 primary·accent·brand 가 든 값마다 그 값의 첫 색(OKLCH)을 줄 안 차례로. 색을 읽지 못한 값은 뺀다."""
+    names = [m for m in _NAME.finditer(line) if (m.group(3) or "") not in ("value", "$value")]
+    out = []
+    for i, m in enumerate(names):
+        if not _ROLE.search(m.group(1) or m.group(3)):
+            continue
+        end = names[i + 1].start() if i + 1 < len(names) else len(line)
+        found = _COLOR_LITERAL.search(line, m.end(), end)
+        lch = color.parse(found.group(0)) if found else None
+        if lch is not None:
+            out.append(lch)
+    return out
+
+
+def style_scan(rel: str, text: str, overused: dict) -> list[str]:
+    """한 파일의 색·글꼴 경고(설계 11.13 의 1)를 줄 순서로. 과용 색·램프는 파일당 한 줄이고 그 첫 줄에 단다."""
+    from .palette import font_key, hangul_font  # palette 가 color 를 쓴다. 이 모듈을 가져오는 차례가 꼬이지 않게 여기서 가져온다
+    named = {c["hex"]: c["name"] for c in overused["colors"]}
+    ramp = set(overused["tailwind_ramp"]) - set(named)
+    latin = {font_key(n) for n in overused["fonts_latin"]}
+    korean = {font_key(n) for n in overused["fonts_ko"]}
+    hits: dict[str, int] = {}  # 과용 색 → 첫 줄(나온 차례)
+    ramp_hits: dict[str, int] = {}
+    found: list[tuple[int, str]] = []
+    for number, line in enumerate(text.split("\n"), 1):
+        for m in _HEX.finditer(line):
+            h = _hex6(m.group(1))
+            if h in named:
+                hits.setdefault(h, number)
+            elif h in ramp:
+                ramp_hits.setdefault(h, number)
+        blue = next((lch for lch in _role_colors(line)
+                     if lch[1] >= BLUE_MIN_C and BLUE_HUE[0] <= lch[2] < BLUE_HUE[1]), None)  # 줄에 하나만 단다
+        if blue is not None:
+            found.append((number, f"주 강조가 파랑·남색·보라 계열(h {round(blue[2])}°) — 근거를 적는다(§1 의 11)"))
+        for m in _FONT_DECL.finditer(line):
+            stack = font_stack(m.group(1))
+            if not stack:
+                continue
+            if font_key(stack[0]) in latin:
+                found.append((number, f"과용 글꼴 {stack[0]} — §1 의 7"))
+                break
+            hangul = hangul_font(stack, latin)
+            if hangul is not None and font_key(hangul) in korean:
+                found.append((number, f"과용 글꼴 {hangul} — §1 의 7"))
+                break
+    if hits:
+        shown = ", ".join(f"{h} {named[h]}" for h in list(hits)[:3]) + (", …" if len(hits) > 3 else "")
+        found.append((min(hits.values()), f"과용 기본 색 {len(hits)}개({shown}) — design-rules §1 의 11"))
+    if len(ramp_hits) >= 3:
+        found.append((min(ramp_hits.values()), f"Tailwind 기본 램프 값 {len(ramp_hits)}개 — design-rules §3 의 11"))
+    return [f"{rel}:{number}: {what}" for number, what in sorted(found, key=lambda x: x[0])]
+
+
+def style_findings(root: Path, files: list[str]) -> list[str]:
+    """files 가운데 검사 대상(design_findings 와 같은 확장자·제외)의 색·글꼴 경고(상한 없음). 카탈로그가 깨지면
+    HteamError(catalog_invalid) 를 그대로 올린다(디자인 절이 이 검사만 실패로 적는다)."""
+    from .palette import load_overused
+    overused = None
+    found: list[str] = []
+    for rel in files:
+        if rel.startswith("../") or Path(rel).suffix.lower() not in SUFFIXES or matches_any(rel, EXCLUDE):
+            continue
+        text = read_source(root, rel)
+        if text is not None:
+            overused = overused or load_overused()
+            found += style_scan(rel, text, overused)
     return found
 
 
