@@ -244,6 +244,41 @@ class StyleScanTest(unittest.TestCase):
         self.assertEqual(font_stack('["SUIT", "sans-serif"]'), ["SUIT", "sans-serif"])
         self.assertEqual(font_stack('"SUIT, serif"'), ["SUIT", "serif"])
 
+    def test_multiline_font_declarations(self):
+        css = "body {\n  font-family:\n    Inter,\n    sans-serif;\n}\n"
+        self.assertEqual(self.scan("a.css", css), ["a.css:2: 과용 글꼴 Inter — §1 의 7"])
+        css2 = "p { font-family: Newsreader,\n  SUIT,\n  serif; }\n"  # 한글 글꼴은 Newsreader(과용 아님)
+        self.assertEqual(self.scan("a.css", css2), [])
+        arr = '{\n  "fontFamily": [\n    "Pretendard",\n    "sans-serif"\n  ]\n}\n'
+        self.assertEqual(self.scan("t.json", arr), ["t.json:2: 과용 글꼴 Pretendard — §1 의 7"])
+        self.assertEqual(self.scan("t.json", '{"fontFamily": [\n "Inter",\n "SUIT"\n]}\n'), ["t.json:1: 과용 글꼴 Inter — §1 의 7"])
+        self.assertEqual(self.scan("t.json", '{"fontFamily": [\n "Newsreader",\n "SUIT"\n]}\n'), [])
+
+    def test_tailwind_nested_font_family(self):
+        one = "module.exports = { theme: { fontFamily: { display: ['Newsreader', 'serif'], sans: ['Inter', 'sans-serif'] } } }\n"
+        self.assertEqual(self.scan("tailwind.config.js", one), ["tailwind.config.js:1: 과용 글꼴 Inter — §1 의 7"])
+        multi = "fontFamily: {\n  display: ['Newsreader', 'serif'],\n  body: [\n    'Roboto',\n    'sans-serif',\n  ],\n},\n"
+        self.assertEqual(self.scan("tailwind.config.js", multi), ["tailwind.config.js:1: 과용 글꼴 Roboto — §1 의 7"])
+        ok = "fontFamily: { display: ['Newsreader', 'serif'], mono: ['ui-monospace', 'monospace'] }\n"
+        self.assertEqual(self.scan("tailwind.config.js", ok), [])
+
+    def test_role_color_value_boundary(self):
+        self.assertEqual(self.scan("a.css", ":root { --primary: var(--orange); color: oklch(0.6 0.15 260); }\n"), [])
+        self.assertEqual(self.scan("a.css", "x { --accent: var(--o)\n; }\ny { color: oklch(0.6 0.15 260) }\n"), [])
+        self.assertEqual(self.scan("t.json", '{"primary": "var(--o)", "link": "oklch(0.6 0.15 260)"}\n'), [])
+        want = ["t.json:1: 주 강조가 파랑·남색·보라 계열(h 260°) — 근거를 적는다(§1 의 11)"]
+        self.assertEqual(self.scan("t.json", '{"primary": "oklch(0.6 0.15 260)", "x": 1}\n'), want)  # 괄호 안 공백
+        self.assertEqual(self.scan("t.json", '{"primary": "rgb(30, 64, 175)", "x": 1}\n')[0].split(" — ")[0], "t.json:1: 주 강조가 파랑·남색·보라 계열(h 266°)")
+
+    def test_dtcg_metadata_order(self):
+        want = ["t.json:1: 주 강조가 파랑·남색·보라 계열(h 260°) — 근거를 적는다(§1 의 11)"]
+        a = '{"primary":{"$type":"color","$value":"oklch(0.6 0.15 260)"}}\n'
+        b = '{"primary":{"$value":"oklch(0.6 0.15 260)","$type":"color"}}\n'
+        c = '{"primary":{"$type":"color","$description":"x, y","$extensions":{"a":1},"value":"oklch(0.6 0.15 260)"}}\n'
+        for text in (a, b, c):
+            self.assertEqual(self.scan("t.json", text), want)
+        self.assertEqual(self.scan("t.json", '{"primary":{"$type":"color","$description":"oklch(0.6 0.15 260)"}}\n'), [])
+
     def test_targets_and_isolation(self):
         root = Path(tempfile.mkdtemp(prefix="hteam-style-")).resolve()
         self.addCleanup(shutil.rmtree, root, True)

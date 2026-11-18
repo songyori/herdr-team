@@ -273,8 +273,10 @@ _HEX = re.compile(r"(?<![&\w])#([0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-
 _NAME = re.compile(r"""(?:(?<![\w$-])(--[\w-]+|\$[\w-]+)|(["'])([^"'\n]{1,80})\2)\s*:""")
 _ROLE = re.compile(r"primary|accent|brand", re.I)
 _COLOR_LITERAL = re.compile(r"(?<![&\w])#[0-9a-fA-F]{3,8}(?![\w-])|\b(?:rgba?|hsla?|oklch)\([^()\n]*\)", re.I)
-_FONT_DECL = re.compile(r"""(?:font-family|fontFamily)["']?\s*:\s*(\[[^\]\n]*\]|"[^"\n]*"|'[^'\n]*'|`[^`\n]*`|[^;{}\n]+)""",
-                        re.I)
+# 글꼴 선언의 머리(`font-family:`·`fontFamily:`·`"fontFamily":`). 값은 _font_values 가 여러 줄까지 읽는다.
+_FONT_HEAD = re.compile(r"""(?:font-family|fontFamily)["']?\s*:\s*""", re.I)
+_FONT_LIST = re.compile(r""":\s*(\[[^\]]*\]|"[^"\n]*"|'[^'\n]*'|`[^`\n]*`)""")
+_VALUE_KEY = re.compile(r"""["']?\$?value["']?\s*:\s*""", re.I)
 BLUE_HUE = (240, 300)  # 주 강조로 근거가 필요한 OKLCH h(파랑·남색·보라, 설계 11.12 의 1 §1 의 11)
 BLUE_MIN_C = 0.08
 # 프로젝트의 design-rules.md 가 13단계 판인지 가르는 줄(Task 3 이 쓰는 §1 의 11 의 머리). 색·글꼴 경고가 인용하는 규칙이다
@@ -308,19 +310,96 @@ def font_stack(value: str) -> list[str]:
     return [n for n in (x.strip().strip("\"'`").strip() for x in names) if n]
 
 
+def _value_end(line: str, start: int) -> int:
+    """start 에서 시작하는 값의 끝 위치: 괄호 밖의 `;`·`}`·`,` 앞, 아니면 줄 끝. `rgb(1, 2, 3)` 안의 쉼표는 값 안이다."""
+    depth = 0
+    for i in range(start, len(line)):
+        c = line[i]
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0 and c in ";},":
+            return i
+    return len(line)
+
+
+def _object_end(line: str, start: int) -> int:
+    """line[start] == "{" 인 객체의 닫는 `}` 다음 위치. 줄 안에서 닫히지 않으면 줄 끝."""
+    depth = 0
+    for i in range(start, len(line)):
+        if line[i] == "{":
+            depth += 1
+        elif line[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+    return len(line)
+
+
 def _role_colors(line: str) -> list[tuple[float, float, float]]:
-    """이름에 primary·accent·brand 가 든 값마다 그 값의 첫 색(OKLCH)을 줄 안 차례로. 색을 읽지 못한 값은 뺀다."""
-    names = [m for m in _NAME.finditer(line) if (m.group(3) or "") not in ("value", "$value")]
+    """이름에 primary·accent·brand 가 든 값마다 그 값의 첫 색(OKLCH)을 줄 안 차례로. 값은 그 선언의 끝(`;`·`}`·괄호 밖 `,`·줄 끝)
+    까지만 본다. 값이 객체(DTCG `{"$type": …, "$value": …}`)면 `$` 로 시작하는 메타 키를 건너뛰고 `$value`·`value` 의 값을 읽는다.
+    색을 읽지 못한 값은 뺀다."""
     out = []
-    for i, m in enumerate(names):
-        if not _ROLE.search(m.group(1) or m.group(3)):
+    for m in _NAME.finditer(line):
+        name = m.group(1) or m.group(3)
+        if name in ("value", "$value") or not _ROLE.search(name):
             continue
-        end = names[i + 1].start() if i + 1 < len(names) else len(line)
-        found = _COLOR_LITERAL.search(line, m.end(), end)
+        start = m.end()
+        while start < len(line) and line[start] in " \t":
+            start += 1
+        if line.startswith("{", start):
+            inner = line[start:_object_end(line, start)]
+            key = _VALUE_KEY.search(inner)
+            if key is None:
+                continue
+            base = start + key.end()
+        else:
+            base = start
+        found = _COLOR_LITERAL.search(line, base, _value_end(line, base))
         lch = color.parse(found.group(0)) if found else None
         if lch is not None:
             out.append(lch)
     return out
+
+
+def _font_values(text: str):
+    """글꼴 선언마다 (선언이 시작하는 줄 번호, 글꼴 이름 목록)을 낸다. 값은 여러 줄에 걸칠 수 있다: 배열은 닫는 `]` 까지, CSS 값은
+    `;`·`}` 까지(줄이 `,` 로 끝나면 다음 줄로 이어진다), Tailwind 중첩 `fontFamily: { sans: [...] }` 는 안의 목록마다."""
+    for m in _FONT_HEAD.finditer(text):
+        number = text.count("\n", 0, m.start()) + 1
+        i = m.end()
+        head = text[i:i + 1]
+        if head == "{":
+            depth = 0
+            for j in range(i, len(text)):
+                depth += (text[j] == "{") - (text[j] == "}")
+                if depth == 0:
+                    break
+            for item in _FONT_LIST.finditer(text[i:j + 1]):
+                yield number, font_stack(item.group(1))
+        elif head == "[":
+            j = text.find("]", i)
+            yield number, font_stack(text[i:j + 1] if j >= 0 else text[i:text.find("\n", i) if "\n" in text[i:] else len(text)])
+        elif head in ("\"", "'", "`"):
+            j = text.find(head, i + 1)
+            end = text.find("\n", i)
+            yield number, font_stack(text[i:j + 1] if 0 <= j and (end < 0 or j < end) else text[i:end if end >= 0 else len(text)])
+        else:
+            value = ""
+            while i <= len(text):
+                end = text.find("\n", i)
+                line = text[i:end if end >= 0 else len(text)]
+                stop = min((k for k in (line.find(";"), line.find("}")) if k >= 0), default=-1)
+                if stop >= 0:
+                    value += line[:stop]
+                    break
+                value += line
+                if not line.rstrip().endswith(",") or end < 0:
+                    break
+                i = end + 1
+            yield number, font_stack(value)
 
 
 def style_scan(rel: str, text: str, overused: dict) -> list[str]:
@@ -344,17 +423,18 @@ def style_scan(rel: str, text: str, overused: dict) -> list[str]:
                      if lch[1] >= BLUE_MIN_C and BLUE_HUE[0] <= lch[2] < BLUE_HUE[1]), None)  # 줄에 하나만 단다
         if blue is not None:
             found.append((number, f"주 강조가 파랑·남색·보라 계열(h {round(blue[2])}°) — 근거를 적는다(§1 의 11)"))
-        for m in _FONT_DECL.finditer(line):
-            stack = font_stack(m.group(1))
-            if not stack:
-                continue
-            if font_key(stack[0]) in latin:
-                found.append((number, f"과용 글꼴 {stack[0]} — §1 의 7"))
-                break
-            hangul = hangul_font(stack, latin)
-            if hangul is not None and font_key(hangul) in korean:
-                found.append((number, f"과용 글꼴 {hangul} — §1 의 7"))
-                break
+    seen_lines: set[int] = set()  # 한 줄에 글꼴 경고는 하나만 단다
+    for number, stack in _font_values(text):
+        if not stack or number in seen_lines:
+            continue
+        if font_key(stack[0]) in latin:
+            found.append((number, f"과용 글꼴 {stack[0]} — §1 의 7"))
+            seen_lines.add(number)
+            continue
+        hangul = hangul_font(stack, latin)
+        if hangul is not None and font_key(hangul) in korean:
+            found.append((number, f"과용 글꼴 {hangul} — §1 의 7"))
+            seen_lines.add(number)
     if hits:
         shown = ", ".join(f"{h} {named[h]}" for h in list(hits)[:3]) + (", …" if len(hits) > 3 else "")
         found.append((min(hits.values()), f"과용 기본 색 {len(hits)}개({shown}) — design-rules §1 의 11"))
