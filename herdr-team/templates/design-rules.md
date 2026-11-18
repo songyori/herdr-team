@@ -126,9 +126,9 @@
 - §1 의 1(이모지), §1 의 2(왼쪽 줄 강조), §1 의 3(파랑·보라 그라디언트). Tailwind 조합은 한 줄 또는 한 클래스 목록 안에서 본다. 한 줄에 다른 요소가 섞이면 거짓 경고가 날 수 있다.
 - 지운 줄에서 줄어든 접근성·글자 신호: 접근 가능한 이름·대체 텍스트(§2 의 8), 포커스(§2 의 2), 라벨 연결(§2 의 6), 동작 줄이기(§2 의 10), 알림(§2 의 12), `lang`(§2 의 13), `keep-all`(§4 의 6), `tabular-nums`(§4 의 8), 토글 상태 `aria-expanded`·`aria-pressed`(web-rules §7 의 10), 표 머리 `<caption`·`scope`(web-rules §7 의 3)
 - 추가한 줄의 확대 막기(`user-scalable=no`·`maximum-scale=1`, §2 의 14)와 `focus-visible` 없는 포커스 제거(`outline: none`, §2 의 2)
-- 과용 기본 색과 주 강조 hue(§1 의 11): 플러그인 카탈로그의 과용 색과 같은 hex(파일당 한 줄), 이름에 `primary`·`accent`·`brand` 가 든 CSS 변수·토큰의 색이 OKLCH h 240–300°·C 0.08 이상
+- 과용 기본 색과 주 강조 hue(§1 의 11): 플러그인 카탈로그의 과용 색과 같은 hex(파일당 한 줄), 이름에 `primary`·`accent`·`brand` 가 든 CSS 변수·토큰(토큰 파일은 `name` 이 그런 토큰 객체도 보고 `{…}` 참조를 따라간다)의 색이 OKLCH h 240–300°·C 0.08 이상
 - 프레임워크 기본 램프(§3 의 11): Tailwind v3 기본 램프와 같은 hex 가 과용 색 말고 3개 이상(파일당 한 줄)
-- 과용 글꼴(§1 의 7): `font-family`·`fontFamily` 의 첫 글꼴이 라틴 과용 글꼴이거나, 한글을 그리는 글꼴이 과용 글꼴(`fonts-ko.md` 의 판정)
+- 과용 글꼴(§1 의 7): `font-family`·`fontFamily`·`--font-…` 사용자 속성·토큰 파일 `families` 의 첫 글꼴이 라틴 과용 글꼴이거나, 한글을 그리는 글꼴이 과용 글꼴(`fonts-ko.md` 의 판정)
 - 지운 줄의 보존 신호: 링크 `href`, 입력란의 `name`·`id`, 이벤트(`onClick`·`@click` 의 값, `addEventListener` 의 이벤트 이름), `data-testid`·`testTag`·`accessibilityIdentifier` 의 값이 같은 변경의 추가한 줄에 없다(다시 그리면서 동작·시험 연결을 잃었는지 본다)
 - 웹: 클릭 처리기(`onClick`·`@click`)를 단 `<div>`·`<span>` 과 `role="button"`(§2 의 1), 양수 `tabindex`(§2 의 3), `transition` 의 `all`(§6 의 3). 아래 줄과 함께 프로젝트에 web-rules.md 가 있을 때만 찾고, Markdown 은 보지 않는다
 - web-rules 항목: `transition` 의 `height`·`max-height`·`width`·`top`·`left`(web-rules §5 의 1), CSS 선택자의 `:invalid` 와 클래스 값의 `invalid:` 변형(web-rules §3 의 2), 크기(`width`·`height`) 없는 `<img>`·`<video>`(web-rules §6 의 2), `.css` 의 `@import`(web-rules §6 의 4, 파일당 한 줄), `will-change`(web-rules §6 의 7), `title` 없는 `<iframe>`(web-rules §7 의 9). 주석은 보지 않는다. JS 객체의 값은 글 하나일 때만 읽고, styled-components·emotion 의 CSS 템플릿 글은 CSS 로 읽는다. JS 문자열 안의 예시 태그·선언도 잡는다. `<img>`·`<video>`·`<iframe>` 은 한 줄 안에서 닫힌 태그만 보고, 클래스·style 이 있는 `<img>`·`<video>` 는 크기를 알 수 없어 보지 않는다

@@ -337,6 +337,59 @@ class StyleScanTest(unittest.TestCase):
         s = '{"font": {"body": {"$type": "fontFamily", "$value": "Pretendard, sans-serif"}}}\n'
         self.assertEqual(len(self.scan("t.json", s)), 1)
 
+    def test_claude_design_tokens(self):
+        # 실환경 13단계 D1: 디렉터의 시스템 사본은 Claude Design 꼴 tokens.json 이다(이름이 값인 토큰 목록, 테마, 참조 값,
+        # type.families). 역할은 토큰 객체의 name 으로, 색은 value 의 참조를 따라가 읽는다.
+        import json
+        doc = {"color": {"themes": [{"id": "light"}], "tokens": [
+            {"name": "amber-300", "value": {"light": "oklch(0.82 0.14 80)"}},
+            {"name": "violet-600", "value": {"light": "oklch(0.5 0.2 285)"}},
+            {"name": "surface-accent", "value": {"light": "{amber-300}"}, "usage": "호박색 주 강조 면"},
+            {"name": "brand-primary", "value": {"light": "{violet-600}"}},
+            {"name": "text-accent", "value": {"light": "oklch(0.45 0.18 265)", "dark": "oklch(0.7 0.15 265)"}},
+            {"name": "accent-loop", "value": {"light": "{accent-loop}"}},
+            {"name": "accent-missing", "value": {"light": "{없는-토큰}"}},
+            {"name": "brand-site", "link": "oklch(0.5 0.2 285)"}]},
+            "type": {"fonts": [{"family": "Pretendard", "file": "fonts/P.woff2"}],
+                     "families": {"body": "\"Pretendard\", \"Apple SD Gothic Neo\", sans-serif",
+                                  "display": "\"Do Hyeon\", sans-serif", "mono": ["Roboto Mono", "monospace"]}}}
+        text = json.dumps(doc, ensure_ascii=False, indent=2)
+
+        def line(needle, nth=1):
+            at = -1
+            for _ in range(nth):
+                at = text.index(needle, at + 1)
+            return text[:at].count("\n") + 1
+        ref, direct, body = line("{violet-600}"), line("oklch(0.45"), line('"body"')
+        self.assertEqual(self.scan("docs/design/system/tokens.json", text), [
+            f"docs/design/system/tokens.json:{ref}: 주 강조가 파랑·남색·보라 계열(h 285°) — 근거를 적는다(§1 의 11)",
+            f"docs/design/system/tokens.json:{direct}: 주 강조가 파랑·남색·보라 계열(h 265°) — 근거를 적는다(§1 의 11)",
+            f"docs/design/system/tokens.json:{body}: 과용 글꼴 Pretendard — §1 의 7"])
+        # DTCG 경로 참조 `{a.b.c}` 도 같은 파일 안에서 따라간다
+        text = json.dumps({"color": {"blue": {"500": {"$type": "color", "$value": "oklch(0.6 0.15 260)"}},
+                                     "primary": {"$type": "color", "$value": "{color.blue.500}"}}}, indent=2)
+        self.assertEqual(self.scan("t.json", text),
+                         [f"t.json:{line('{color.blue.500}')}: 주 강조가 파랑·남색·보라 계열(h 260°) — 근거를 적는다(§1 의 11)"])
+
+    def test_font_custom_properties(self):
+        css = (":root {\n  --font-body: \"Pretendard\", sans-serif;\n  --font-size-lg: 1.25rem;\n"
+               "  --bs-font-sans-serif: Inter, sans-serif;\n  --color-accent: #c2410c;\n  --fonts: Roboto;\n"
+               "  --fontFamily: Roboto;\n}\n")
+        self.assertEqual(self.scan("a.css", css), ["a.css:2: 과용 글꼴 Pretendard — §1 의 7",
+                                                   "a.css:4: 과용 글꼴 Inter — §1 의 7",
+                                                   "a.css:7: 과용 글꼴 Roboto — §1 의 7"])
+        js = "const t = { '--font-display': 'Roboto, serif', fontSize: 12 };\n"
+        self.assertEqual(self.scan("a.js", js), ["a.js:1: 과용 글꼴 Roboto — §1 의 7"])
+
+    def test_font_heads_on_one_long_line_are_linear(self):
+        # 한 줄에 글꼴 선언 머리가 되풀이돼도 값마다 줄 끝까지 읽지 않는다(실환경 13단계 D1 수정과 함께)
+        import time
+        for text in ("a{font-family: Inter, " * 50000, "--font-x: " * 100000, "--font-x:a," * 100000,
+                     '{"fontFamily": ["Inter", ' * 50000):
+            t = time.monotonic()
+            self.scan("a.css", text)
+            self.assertLess(time.monotonic() - t, 1.5, text[:12])
+
     def test_performance_bounds(self):
         import time
         css = "".join(".a%d { font-family: SUIT, sans-serif; }\n" % i for i in range(25000))

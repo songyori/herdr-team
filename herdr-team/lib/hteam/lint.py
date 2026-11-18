@@ -277,8 +277,9 @@ _HEX = re.compile(r"(?<![&\w])#([0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-
 _NAME = re.compile(r"""(?:(?<![\w$-])(--[\w-]+|\$[\w-]+)|(["'])([^"'\n]{1,80})\2)\s*:""")
 _ROLE = re.compile(r"primary|accent|brand", re.I)
 _COLOR_LITERAL = re.compile(r"(?<![&\w])#[0-9a-fA-F]{3,8}(?![\w-])|\b(?:rgba?|hsla?|oklch)\([^()\n]*\)", re.I)
-# 글꼴 선언의 머리(`font-family:`·`fontFamily:`·`"fontFamily":`). 값은 _font_values 가 여러 줄까지 읽는다.
-_FONT_HEAD = re.compile(r"""(?:font-family|fontFamily)["']?\s*:\s*""", re.I)
+# 글꼴 선언의 머리(`font-family:`·`fontFamily:`·`"fontFamily":`, 이름에 `font` 마디가 든 CSS 사용자 속성 `--font-body:`). 값은
+# _font_values 가 여러 줄까지 읽는다. 사용자 속성 이름은 소유 한정자로 한 번에 읽고(되짚지 않는다) 마디는 _font_values 가 본다.
+_FONT_HEAD = re.compile(r"""(?:(?<![\w-])(--[\w-]++)|font-family|fontFamily)["']?\s*:\s*""", re.I)
 _FONT_LIST = re.compile(r""":\s*(\[[^\]]*\]|"[^"\n]*"|'[^'\n]*'|`[^`\n]*`)""")
 # 객체 안을 토큰으로 읽는다: 따옴표 글(뒤에 `:` 가 오면 키), 따옴표 없는 키, 괄호. 글 안의 내용은 한 덩어리로 건너뛴다.
 _OBJ_TOKEN = re.compile(r"""(?P<s>"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')(?P<c>\s*:\s*)?|(?P<i>[A-Za-z_$][\w$]*)(?P<ic>\s*:\s*)|(?P<b>[{}\[\]])""")
@@ -407,19 +408,29 @@ def _line_starts(text: str) -> list[int]:
 _BRACES = re.compile(r"[{}]")
 
 
+def _font_property(name: str) -> bool:
+    """CSS 사용자 속성 이름(name, `--` 포함)이 글꼴 값인가: `-` 로 나눈 마디에 `font` 가 있거나(`--font-body`·`--bs-font-sans-serif`)
+    `fontfamily` 가 든다(`--fontFamily`). `--fonts`·`--color-accent` 는 아니다."""
+    low = name[2:].lower()
+    return "font" in low.split("-") or "fontfamily" in low
+
+
 def _font_values(text: str, starts: list[int] | None = None):
     """글꼴 선언마다 (선언이 시작하는 줄 번호, 글꼴 이름 목록)을 낸다. 값은 여러 줄에 걸칠 수 있다: 배열은 닫는 `]` 까지, CSS 값은
     `;`·`}` 까지(줄이 `,` 로 끝나면 다음 줄로 이어진다), Tailwind 중첩 `fontFamily: { sans: [...] }` 는 안의 목록마다.
-    닫히지 않은 괄호·끝나지 않는 값은 SCAN_WINDOW 글자까지만 본다."""
+    닫히지 않은 괄호·끝나지 않는 값은 SCAN_WINDOW 글자까지만, 그리고 다음 글꼴 머리 앞까지만 본다(글꼴 값 안에 다른 글꼴 선언은
+    없다. 값들이 겹치지 않아 머리가 한 줄에 되풀이돼도 선형이다)."""
     if starts is None:
         starts = _line_starts(text)
     n = len(text)
-    for m in _FONT_HEAD.finditer(text):
+    heads = [m for m in _FONT_HEAD.finditer(text) if not m.group(1) or _font_property(m.group(1))]
+    for k, m in enumerate(heads):
         number = bisect.bisect_right(starts, m.start())
         i = m.end()
         head = text[i:i + 1]
-        limit = min(n, i + SCAN_WINDOW)
+        limit = min(n, i + SCAN_WINDOW, heads[k + 1].start() if k + 1 < len(heads) else n)
         if head == "{":
+            limit = min(n, i + SCAN_WINDOW)  # Tailwind 중첩 객체는 닫는 `}` 까지(안의 목록 키는 머리가 아니다)
             depth = 0
             j = limit - 1
             for b in _BRACES.finditer(text, i, limit):
@@ -439,9 +450,9 @@ def _font_values(text: str, starts: list[int] | None = None):
             yield number, font_stack(text[i:j + 1] if 0 <= j and (end < 0 or j < end) else text[i:end if end >= 0 else limit])
         else:
             value = ""
-            while i <= n and len(value) < SCAN_WINDOW:
-                end = text.find("\n", i)
-                line = text[i:end if end >= 0 else n]
+            while i <= limit and len(value) < SCAN_WINDOW:
+                end = text.find("\n", i, limit)  # 긴 줄에서 머리마다 줄 끝까지 자르지 않는다
+                line = text[i:end if end >= 0 else limit]
                 stop = min((k for k in (line.find(";"), line.find("}")) if k >= 0), default=-1)
                 if stop >= 0:
                     value += line[:stop]
@@ -453,18 +464,75 @@ def _font_values(text: str, starts: list[int] | None = None):
             yield number, font_stack(value[:SCAN_WINDOW])
 
 
+_TOKEN_REF = re.compile(r"\{([^{}]{1,200})\}")  # 토큰 참조 글 하나(Claude Design `{amber-300}`, DTCG `{color.brand.500}`)
+REF_DEPTH = 8  # 참조를 따라가는 최대 단계(제 자신을 가리키는 참조에서도 끝난다)
+REF_VALUE_MAX = 256  # 참조로 따라간 값 글의 최대 길이(색·참조 글은 이보다 짧다)
+FAMILY_KEYS = frozenset({"families", "fontfamilies"})  # 값마다 글꼴 목록인 객체의 키(Claude Design `type.families`)
+
+
+def _token_names(data) -> dict:
+    """JSON(data) 안의 이름 붙은 토큰(`{"name": <글>, "value"·"$value": <값>}`, Claude Design `color.tokens[]`)의 이름 → 값. 같은
+    이름은 처음 것. `$value` 말고 `$` 로 시작하는 키의 하위 트리(메타데이터)는 보지 않는다. 깊은 JSON 에서도 되부르지 않는다."""
+    names: dict = {}
+    stack = [data]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            name = node.get("name")
+            key = "$value" if "$value" in node else "value" if "value" in node else None
+            if isinstance(name, str) and key is not None:
+                names.setdefault(name, node[key])
+            stack.extend(v for k, v in node.items() if not (str(k).startswith("$") and k != "$value"))
+        elif isinstance(node, list):
+            stack.extend(node)
+    return names
+
+
+def _resolve_ref(value: str, theme, names: dict, data) -> str | None:
+    """value 가 참조 글(`{이름}`·`{a.b.c}`)이면 이름 붙은 토큰(names), 없으면 JSON 경로(data)로 따라가 값 글을 낸다. 따라간 값이
+    토큰 객체면 그 `$value`·`value`, 테마 객체면 theme(참조가 있던 키, 예 `light`) 값이나 `$` 로 시작하지 않는 첫 글을 쓴다. 참조가
+    아니면 value 그대로, 풀지 못하면 None."""
+    for _ in range(REF_DEPTH):
+        m = _TOKEN_REF.fullmatch(value.strip())
+        if m is None:
+            return value
+        ref = m.group(1).strip()
+        target = names.get(ref)
+        if target is None:
+            target = data
+            for part in ref.split("."):
+                target = target.get(part) if isinstance(target, dict) else None
+                if target is None:
+                    break
+        for _ in range(2):  # 토큰 객체의 값, 그 값의 테마
+            if isinstance(target, dict):
+                if "$value" in target or "value" in target:
+                    target = target.get("$value", target.get("value"))
+                elif isinstance(theme, str) and theme in target:
+                    target = target[theme]
+                else:
+                    target = next((v for k, v in target.items() if isinstance(v, str) and not str(k).startswith("$")), None)
+        if not isinstance(target, str) or len(target) > REF_VALUE_MAX:
+            return None  # 색 글은 짧다: 큰 글을 여러 참조가 가리켜도 참조마다 그 글을 다루지 않는다
+        value = target
+    return None
+
+
 def _json_role_hues(text: str, starts: list[int] | None = None):
-    """JSON 토큰 파일(text)에서 (주 강조 hue 경고 [(줄 번호, h)], DTCG 글꼴 토큰 [(줄 번호, 글꼴 이름 목록)])를 낸다. JSON 이 아니면
-    None(줄 단위 검사로 되돌아간다). 키 경로(배열은 색인 포함)에 primary·accent·brand 가 든 문자열 값을 색으로 읽는다. `$value` 말고
-    `$` 로 시작하는 키(`$extensions` 등)의 하위 트리는 깊이와 관계없이 메타데이터라 통째로 뺀다. 역할 객체(경로에서 처음 역할
-    이름이 나온 키)마다 문서 순서의 첫 파랑·남색·보라 값 하나만, 그 값이 나온 줄에 단다. `$type` 이 fontFamily(s) 인 객체의 `$value`
-    (글·배열)는 글꼴 목록으로 내며 `$value` 키의 줄에 단다."""
+    """JSON 토큰 파일(text)에서 (주 강조 hue 경고 [(줄 번호, h)], 글꼴 토큰 [(줄 번호, 글꼴 이름 목록)])를 낸다. JSON 이 아니면
+    None(줄 단위 검사로 되돌아간다). 키 경로(배열은 색인 포함)에 primary·accent·brand 가 든 문자열 값, 그리고 name 에 그 낱말이 든
+    토큰 객체(Claude Design `{"name": …, "value": …}`)의 `value`·`$value` 아래 문자열 값을 색으로 읽는다. 값이 참조(`{이름}`·
+    `{a.b.c}`)면 같은 파일 안에서 따라간다(_resolve_ref). `$value` 말고 `$` 로 시작하는 키(`$extensions` 등)의 하위 트리는 깊이와
+    관계없이 메타데이터라 통째로 뺀다. 역할 객체(경로에서 처음 역할이 정해진 키)마다 문서 순서의 첫 파랑·남색·보라 값 하나만, 그
+    값(참조면 참조 글)이 나온 줄에 단다. 글꼴: `$type` 이 fontFamily(s) 인 객체의 `$value`(글·배열)는 `$value` 키의 줄에,
+    `families`·`fontFamilies` 객체의 값(글·배열)은 그 키의 줄에 단다."""
     try:
         data = json.loads(text)
     except (ValueError, RecursionError):
         return None
     if starts is None:
         starts = _line_starts(text)
+    names = _token_names(data)
     cursor = 0  # 문서 순서로 키·값을 찾아 나가는 위치(같은 값이 여러 번 나와도 차례대로 맞는다)
 
     def locate(needle_src: str) -> int | None:
@@ -484,18 +552,21 @@ def _json_role_hues(text: str, starts: list[int] | None = None):
     def line_of(at: int | None, fallback: int) -> int:
         return bisect.bisect_right(starts, at) if at is not None else fallback
 
-    def walk(node, path: tuple, role: tuple | None, role_line: int, meta: bool) -> None:
+    def walk(node, path: tuple, role: tuple | None, role_line: int, meta: bool, family: bool = False) -> None:
         if isinstance(node, dict):
             font_obj = not meta and str(node.get("$type", "")).lower() in ("fontfamily", "fontfamilies")
+            named = role is None and not meta and isinstance(node.get("name"), str) and _ROLE.search(node["name"]) is not None
             for key, child in node.items():
                 at = locate(str(key))
                 line = line_of(at, role_line)
-                is_role = role is None and not meta and _ROLE.search(str(key))
-                if font_obj and key == "$value" and isinstance(child, (str, list)):
+                is_role = role is None and not meta and (_ROLE.search(str(key)) is not None
+                                                         or (named and key in ("value", "$value")))
+                if (font_obj and key == "$value" or family) and isinstance(child, (str, list)):
                     stack = font_stack(child) if isinstance(child, str) else [str(x) for x in child if isinstance(x, str)]
                     fonts.append((line, stack))
+                key_meta = str(key).startswith("$") and key != "$value"
                 walk(child, path + (key,), path + (key,) if is_role else role, line if is_role else role_line,
-                     meta or (str(key).startswith("$") and key != "$value"))
+                     meta or key_meta, not meta and not key_meta and str(key).lower() in FAMILY_KEYS and isinstance(child, dict))
         elif isinstance(node, list):
             for idx, child in enumerate(node):
                 walk(child, path + (idx,), role, role_line, meta)
@@ -503,7 +574,8 @@ def _json_role_hues(text: str, starts: list[int] | None = None):
             at = locate(node)
             if meta or role is None or role in done:
                 return
-            lch = color.parse(node)
+            value = _resolve_ref(node, path[-1] if path else None, names, data)
+            lch = color.parse(value) if value is not None else None
             if lch is not None and lch[1] >= BLUE_MIN_C and BLUE_HUE[0] <= lch[2] < BLUE_HUE[1]:
                 done.add(role)
                 out.append((line_of(at, role_line), lch[2]))

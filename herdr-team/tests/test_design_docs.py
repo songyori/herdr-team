@@ -389,7 +389,8 @@ class PaletteDocTest(unittest.TestCase):
                                  "9. 과용 색(대표 예)", "10. 기록 형식", "팔레트 배정"])  # 마지막은 기록 형식 예시의 제목
         for needle in ("`.herdr-team/bin/hteam palette deal --task T-xxx --turn <N>`", "`--brand-hue", "`catalog_invalid`",
                        "`near: true`", "셋 이상이 서로 달라야 한다", "60° 이상", "| 절제 |", "| 몰입 |", "| 전면 |", "| 흠뻑 |",
-                       "C 0.005–0.02", "`#1e3a8a`", "`overused.json`", "`palette_source:", "### turn <N>", "거울 시험"):
+                       "C 0.005–0.02", "`#1e3a8a`", "`overused.json`", "`palette_source:", "### turn <N>", "거울 시험",
+                       "버린 기본값의 색은 이름으로 적는다"):
             self.assertIn(needle, text)
 
     def test_fonts_doc_lists_every_catalog_font(self):
