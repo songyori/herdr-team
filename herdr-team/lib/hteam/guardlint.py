@@ -23,12 +23,14 @@ TEST_NAMES = ("*_test.*", "*.test.*", "*.spec.*", "test_*")
 SNIPPET = 60
 NAMES_SHOWN = 5
 # (분류 이름, 정규식). 이름이 출력에 그대로 나온다. 낱말처럼 생긴 것(xit·t.Skip)은 앞에 낱말 글자·점이 붙으면 보지 않는다
-# (sys.exit( 의 xit( 같은 것)
+# (sys.exit( 의 xit( 같은 것). .skip(·.only( 는 시험 함수 이름(it·test·describe…) 바로 뒤에서만 본다
+# (qs.only("a")·stream.skip(3) 같은 일반 코드 제외. 점부터 맞추려고 낱말마다 고정 길이 lookbehind 로 건다)
 LINE_CHECKS = (
     ("억제 주석", re.compile(r"@ts-ignore|@ts-expect-error|@ts-nocheck|eslint-disable|#\s*noqa\b|#\s*type:\s*ignore"
                          r"|#\s*pyright:\s*ignore|istanbul ignore|c8 ignore|pragma: no cover|//\s*nolint\b"
                          r"|@SuppressWarnings\b")),
-    ("시험 건너뛰기", re.compile(r"\.skip\(|\.only\(|(?<![\w$.])(?:xit|xdescribe|xtest)\(|@pytest\.mark\.(?:skip|xfail)"
+    ("시험 건너뛰기", re.compile(r"(?:(?<=\bit)|(?<=\btest)|(?<=\bdescribe)|(?<=\bcontext)|(?<=\bsuite)|(?<=\bspecify))\.(?:skip|only)\("
+                           r"|(?<![\w$.])(?:xit|xdescribe|xtest)\(|@pytest\.mark\.(?:skip|xfail)"
                            r"|@unittest\.skip|(?<![\w$.])t\.Skip\w*\(|#\[ignore\]|@Ignore\b|@Disabled")),
     ("빈 catch", re.compile(r"\bcatch\s*(?:\([^()]*\))?\s*\{\s*\}")),
 )

@@ -39,6 +39,14 @@ class LineTest(unittest.TestCase):
         for line, want in cases.items():
             self.assertEqual(heads("src/a.ts", line), [want], line)
 
+    def test_skip_only_after_test_function_name_only(self):
+        # 일반 코드의 .only(·.skip( (Django qs.only, 스트림 skip)은 보지 않는다
+        for line in ('qs = Model.objects.only("a")', "stream.skip(3)"):
+            self.assertEqual(heads("src/orm.py", line), [], line)
+        for line, want in {"it.skip('a', f)": ".skip(", "test.only('a', f)": ".only(", "describe.skip('a', f)": ".skip(",
+                           "context.only('a', f)": ".only(", "suite.skip('a')": ".skip(", "specify.only('a')": ".only("}.items():
+            self.assertEqual(heads("cypress/e2e/a.cy.js", line), [f'시험 건너뛰기 "{want}"'], line)
+
     def test_except_then_pass_and_lookalikes(self):
         text = "try:\n    a()\nexcept ValueError:\n    pass\nexcept KeyError:\n    log()\n"
         self.assertEqual(heads("src/a.py", text), ['빈 catch "except ValueError:"'])

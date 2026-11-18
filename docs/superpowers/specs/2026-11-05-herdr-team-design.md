@@ -1447,7 +1447,7 @@ Codex 리뷰어에게는 `AGENTS.md` 의 리뷰어 규칙도 적용된다(9.1). 
 ### 6.6 검사 약화 의심, 리뷰 기준과 사전 검사 더하기 (13단계)
 
 1. **검사 약화 의심**(`lib/hteam/guardlint.py`, 새). 리뷰 대상 커밋의 diff 를 `gitio.diff_lines`(11.7)로 읽어 의심 위치를 찾는다. 결과는 경고다(자동 불합격은 없다). 직무와 상관없이 리뷰 프롬프트에 `## 검사 약화 의심` 절로 넣는다. 찾은 것이 없으면 절을 넣지 않는다. 50건까지이고 넘으면 `… 외 N건` 이다. `compose.guarded`(6.2)로 감싸 실패해도 리뷰는 계속한다. 언어는 설정이 모르므로 패턴은 고정 목록이고, 문자열 안의 낱말도 잡을 수 있다(판정은 리뷰어).
-   - 추가한 줄: 억제 주석(`@ts-ignore`, `@ts-expect-error`, `@ts-nocheck`, `eslint-disable`, `# noqa`, `# type: ignore`, `# pyright: ignore`, `istanbul ignore`, `c8 ignore`, `pragma: no cover`, `//nolint`, `@SuppressWarnings`), 건너뛰기·골라 돌리기(`.skip(`, `.only(`, `xit(`, `xdescribe(`, `xtest(`, `@pytest.mark.skip`, `@pytest.mark.xfail`, `@unittest.skip`, `t.Skip(`, `#[ignore]`, `@Ignore`, `@Disabled`), 빈 catch(`catch (…) {}` 한 줄, 다음 줄이 `pass` 뿐인 `except …:`).
+   - 추가한 줄: 억제 주석(`@ts-ignore`, `@ts-expect-error`, `@ts-nocheck`, `eslint-disable`, `# noqa`, `# type: ignore`, `# pyright: ignore`, `istanbul ignore`, `c8 ignore`, `pragma: no cover`, `//nolint`, `@SuppressWarnings`), 건너뛰기·골라 돌리기(`it`·`test`·`describe`·`context`·`suite`·`specify` 뒤의 `.skip(`·`.only(`, `xit(`, `xdescribe(`, `xtest(`, `@pytest.mark.skip`, `@pytest.mark.xfail`, `@unittest.skip`, `t.Skip(`, `#[ignore]`, `@Ignore`, `@Disabled`), 빈 catch(`catch (…) {}` 한 줄, 다음 줄이 `pass` 뿐인 `except …:`).
    - 시험 파일: 경로 조각에 `test`·`tests`·`spec`·`__tests__` 가 있거나 이름이 `*_test.*`·`*.test.*`·`*.spec.*`·`test_*` 인 파일이다.
    - 지운 시험 파일: 대상 커밋이 시험 파일을 지웠다.
    - 지운 시험: 시험 파일의 지운 줄에 시험 정의(`def test_…`, `func Test…`, 줄 머리의 `it(`·`test(`, `@Test` 다음 줄의 함수)가 있고 같은 이름이 추가한 줄에 없다.
