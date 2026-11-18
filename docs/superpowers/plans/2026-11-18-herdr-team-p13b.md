@@ -19,7 +19,7 @@
 - Python 3.11 이상, 표준 라이브러리만. 커밋 전에 바꾼 `.py` 를 `python3 -m py_compile` 로 확인한다.
 - 13단계 값(그대로 쓴다):
   - 카탈로그(`herdr-team/lib/hteam/data/`): `palettes.json`(taste-skill 64 + impeccable 128 = 192), `fonts-ko.json`(23개, `deal: true` 13개), `overused.json`(`colors` 37, `tailwind_ramp` 241), `LICENSES.md`. 고정 커밋: taste-skill `f6b76575f949707b4e3c37cd86cb44b0b98643e8`, impeccable `d41d9860b0094dcb68030657da63461212835aaa`, tailwindcss v3.4.17 `4f9f603e12b51cc53b8a09c7739b8f88c8eb87eb`. 들여온 날 `2026-11-18`(상수).
-  - 배정: 칸 30°×12(`[30k, 30k+30)`), 제외 240–300°(칸 8·9), A·B·C 칸 사이 원형 거리 3칸 이상(허용 칸 10개에서 그런 칸 셋의 집합은 20개), 집합 가중치는 칸마다 확률 0.3 이 되게 반복 비례 맞춤(최대 500바퀴, 차이 < 1e-12 에서 멈춤)으로 코드가 계산, 자세 `절제`·`몰입`·`전면`·`흠뻑`, 무채색 강조 기준 C < 0.03, 시드 글 `<상태 루트 폴더 이름>:<태스크 ID>:<turn>`, 뽑기 `SHA-256("<시드 글>:<차례 번호>")` 앞 8바이트(정수는 거부 표집, 집합은 위 53비트 수를 누적 가중치와 견준다). 오류 코드 `catalog_invalid`(exit 1), `usage`(exit 2).
+  - 배정: 칸 30°×12(`[30k, 30k+30)`), 제외 240–300°(칸 8·9), A·B·C 칸 사이 원형 거리 3칸 이상(허용 칸 10개에서 그런 칸 셋의 집합은 20개), 집합 가중치는 칸마다 확률 0.3 이 되게 반복 비례 맞춤(최대 500바퀴, 차이 < 1e-12 에서 멈춤, 합은 모두 `math.fsum`)으로 코드가 계산, 자세 `절제`·`몰입`·`전면`·`흠뻑`, 무채색 강조 기준 C < 0.03, 시드 글 `<상태 루트 폴더 이름>:<태스크 ID>:<turn>`, 뽑기 `SHA-256("<시드 글>:<차례 번호>")` 앞 8바이트(정수는 거부 표집, 집합은 위 53비트 수를 누적 가중치와 견준다). 오류 코드 `catalog_invalid`(exit 1), `usage`(exit 2).
   - 경고 문구(설계 11.13): `<파일>:<첫 줄>: 과용 기본 색 N개(<hex> <이름>, …) — design-rules §1 의 11`, `<파일>:<첫 줄>: Tailwind 기본 램프 값 N개 — design-rules §3 의 11`, `<파일>:<줄>: 주 강조가 파랑·남색·보라 계열(h N°) — 근거를 적는다(§1 의 11)`, `<파일>:<줄>: 과용 글꼴 <이름> — §1 의 7`, `<파일>: 보존 신호 — 지운 <종류> "<값>"(같은 변경에 대신하는 것이 없다)`.
   - 검사 방식 표기: `[기계]`·`[렌더]`·`[판단]`(설계 11.9). `[기계]` 항목은 design-rules 의 `## 자동 검사` 절이 `§N 의 M` 으로 가리키고, 가리키는 항목은 `[기계]` 다.
 - 바꾸지 않는 것: `lint.hue_family`·`scan`·`design_findings`(기존 내용 검사), `designdiff.SIGNALS`, design-rules 의 기존 번호(새 항목은 그 절 끝), 즉시 차단 목록, `scripts/design-eval/eval.py`(p13a), herdr-orch 코드와 버전(버전은 p13d).
@@ -55,6 +55,7 @@ def gap(a: int, b: int) -> int
 def bucket_sets() -> list[tuple[int, int, int]]          # 20개, 오름차순 튜플의 사전 차례
 def marginals(weights: list[float]) -> dict[int, float]   # 칸 → 뽑힐 확률
 def set_weights() -> tuple[float, ...]                    # bucket_sets 차례의 가중치(합 1, 칸마다 0.3). 한 번 계산해 둔다
+def cumulative() -> tuple[float, ...]                     # 누적 경계: i 번째 = math.fsum(앞 i+1 개 가중치)
 def brand_pairs(first: int) -> list[tuple[int, int]]      # A 를 first 로 고정할 때 B·C 쌍
 def pick_buckets(draw: Draw, first: int | None = None) -> tuple[int, int, int]
 def deal(seed: str, brand_hue: float | None = None, turn: int = 0) -> dict     # p13a 의 eval.py 가 deal(seed) 로 부른다
@@ -81,12 +82,12 @@ def kept_values(line: str) -> list[tuple[str, str]]   # (종류, 값): "링크 h
            {"slot": "B", "…": "…"}, {"slot": "C", "…": "…"}]}
 ```
 
-데이터 꼴: `palettes.json` = `{"sources": [{"id", "repo", "commit", "path", "license", "date"}], "palettes": [{"id", "source", "license", "accent", "bg", "ink", "mood", "hue"}]}`, `overused.json` = `{"sources": [{…, "tag"}], "colors": [{"hex", "name"}], "tailwind_ramp": ["#…"], "fonts_ko": […], "fonts_latin": […]}`, `fonts-ko.json` = `[{"id", "name", "class", "license", "license_url", "source_url", "weights", "variable", "deal", "verified", "note"}]`.
+데이터 꼴: `palettes.json` = `{"sources": [{"id", "repo", "commit", "path", "license", "date"}], "palettes": [{"id", "source", "license", "accent", "bg", "ink", "mood", "hue"}]}`, `overused.json` = `{"sources": [{…, "tag"}], "colors": [{"hex", "name"}], "tailwind_ramp": ["#…"], "fonts_ko": […], "fonts_latin": […]}`, `fonts-ko.json` = `[{"id", "name", "class", "license", "license_url", "source_url", "weights", "variable", "deal", "verified", "reserved_name", "note"}]`(`reserved_name` 은 OFL 의 예약 이름 글이나 null).
 
 ---
 ### Task 1: 카탈로그와 들여오기 스크립트(설계 11.10)
 
-들여오기 스크립트는 고정한 커밋의 원본 다섯 파일을 받아(SHA-256 확인) 형식만 바꿔 `palettes.json`·`overused.json`·`LICENSES.md` 를 쓴다. `fonts-ko.json` 은 조사(2026-11-18, `deal: true` 는 OFL 원문을 확인한 본문용 돋움·부리이고 과용 목록이 아닌 것)로 고른 손 목록이다. `palette.py` 는 이 데이터를 읽고 검사한다. 생성한 세 파일은 커밋한다(플러그인이 싣고 간다). 시험은 네트워크 없이 본다: 스크립트의 순수 함수(작은 원본 조각), 저장소 데이터가 스크립트의 직렬화 꼴 그대로인지, 데이터의 스키마·출처·라이선스·칸 덮기.
+들여오기 스크립트는 고정한 커밋의 원본 다섯 파일을 받아(SHA-256 확인) 형식만 바꿔 `palettes.json`·`overused.json`·`LICENSES.md` 를 쓴다. `fonts-ko.json` 은 조사(2026-11-18, `deal: true` 는 OFL 원문을 확인한 본문용 돋움·부리이고 과용 목록이 아닌 것)로 고른 손 목록이다. 항목마다 `reserved_name` 에 라이선스 원문의 예약 이름(Reserved Font Name, 저작권 줄 뒤 "with Reserved Font Name …")을 그대로 적는다(없으면 null, 원문을 읽지 못한 글꼴도 null). 조사 폴더의 원문(`.superpowers/sdd/p13b-data/dl/fonts/`)에서 SUIT·SUITE·Spoqa Han Sans Neo·IBM Plex Sans KR·Nanum Myeongjo 다섯만 예약 이름이 있다. `palette.py` 는 이 데이터를 읽고 검사한다: 글꼴 항목마다 `verified`·`reserved_name` 이 있어야 하고, `deal: true` 는 `verified: true`·`OFL` 로 시작하는 라이선스·본문 계열(돋움·부리)이어야 한다(아니면 `catalog_invalid`. 손상된 카탈로그가 확인 못 한 글꼴을 배정하지 않게). 생성한 세 파일은 커밋한다(플러그인이 싣고 간다). 시험은 네트워크 없이 본다: 스크립트의 순수 함수(작은 원본 조각), 저장소 데이터가 스크립트의 직렬화 꼴 그대로인지, 데이터의 스키마·출처·라이선스·칸 덮기.
 
 **Files:**
 - Create: `scripts/import-palettes.py`, `scripts/test_import_palettes.py`
@@ -550,29 +551,29 @@ b45bcb4cb986e9af08f741e7c00fc1c8bb8f4ff360a0deb95a6b0e233690d515  herdr-team/lib
 
 ```json
 [
- {"id": "suit", "name": "SUIT", "class": "돋움", "license": "OFL-1.1", "license_url": "https://github.com/sun-typeface/SUIT/blob/main/LICENSE", "source_url": "https://github.com/sun-typeface/SUIT", "weights": "100–900(9굵기)", "variable": true, "deal": true, "verified": true, "note": "저장소 LICENSE 원문 확인: OFL 1.1, (c) 2022 SUNN, 예약 이름 SUIT"},
- {"id": "suite", "name": "SUITE", "class": "돋움", "license": "OFL-1.1", "license_url": "https://github.com/sun-typeface/SUITE/blob/main/LICENSE", "source_url": "https://github.com/sun-typeface/SUITE", "weights": "Light–Heavy(정적 7굵기)", "variable": true, "deal": true, "verified": true, "note": "저장소 LICENSE 원문 확인: OFL 1.1, (c) 2023 SUNN, 예약 이름 SUITE"},
- {"id": "wanted-sans", "name": "Wanted Sans", "class": "돋움", "license": "OFL-1.1", "license_url": "https://github.com/wanteddev/wanted-sans/blob/main/OFL.txt", "source_url": "https://github.com/wanteddev/wanted-sans", "weights": "Regular–ExtraBlack(정적 7굵기)", "variable": true, "deal": true, "verified": true, "note": "저장소 OFL.txt 원문 확인. 가변 글꼴도 있다"},
- {"id": "spoqa-han-sans-neo", "name": "Spoqa Han Sans Neo", "class": "돋움", "license": "OFL-1.1", "license_url": "https://github.com/spoqa/spoqa-han-sans/blob/main/LICENSE", "source_url": "https://github.com/spoqa/spoqa-han-sans", "weights": "100–700(5굵기)", "variable": false, "deal": true, "verified": true, "note": "저장소 LICENSE 원문 확인: OFL 1.1, 예약 이름 Spoqa Han Sans Neo"},
- {"id": "ibm-plex-sans-kr", "name": "IBM Plex Sans KR", "class": "돋움", "license": "OFL-1.1", "license_url": "https://github.com/google/fonts/blob/main/ofl/ibmplexsanskr/OFL.txt", "source_url": "https://fonts.google.com/specimen/IBM+Plex+Sans+KR", "weights": "100–700(7굵기)", "variable": false, "deal": true, "verified": true, "note": "google/fonts OFL.txt 원문 확인: (c) 2017 IBM Corp, 예약 이름 Plex"},
- {"id": "gothic-a1", "name": "Gothic A1", "class": "돋움", "license": "OFL-1.1", "license_url": "https://github.com/google/fonts/blob/main/ofl/gothica1/OFL.txt", "source_url": "https://fonts.google.com/specimen/Gothic+A1", "weights": "100–900(9굵기)", "variable": false, "deal": true, "verified": true, "note": "google/fonts OFL.txt 원문 확인: (c) HanYang I&C"},
- {"id": "asta-sans", "name": "Asta Sans", "class": "돋움", "license": "OFL-1.1", "license_url": "https://github.com/google/fonts/blob/main/ofl/astasans/OFL.txt", "source_url": "https://fonts.google.com/specimen/Asta+Sans", "weights": "300–800(가변)", "variable": true, "deal": true, "verified": true, "note": "google/fonts OFL.txt 원문 확인. 원 저장소 https://github.com/42dot/Asta-Sans"},
- {"id": "hahmlet", "name": "Hahmlet", "class": "부리", "license": "OFL-1.1", "license_url": "https://github.com/google/fonts/blob/main/ofl/hahmlet/OFL.txt", "source_url": "https://fonts.google.com/specimen/Hahmlet", "weights": "100–900(가변)", "variable": true, "deal": true, "verified": true, "note": "google/fonts OFL.txt 원문 확인. 원 저장소 https://github.com/hyper-type/hahmlet"},
- {"id": "gowun-batang", "name": "Gowun Batang", "class": "부리", "license": "OFL-1.1", "license_url": "https://github.com/google/fonts/blob/main/ofl/gowunbatang/OFL.txt", "source_url": "https://fonts.google.com/specimen/Gowun+Batang", "weights": "400, 700", "variable": false, "deal": true, "verified": true, "note": "google/fonts OFL.txt 원문 확인"},
- {"id": "gowun-dodum", "name": "Gowun Dodum", "class": "돋움", "license": "OFL-1.1", "license_url": "https://github.com/google/fonts/blob/main/ofl/gowundodum/OFL.txt", "source_url": "https://fonts.google.com/specimen/Gowun+Dodum", "weights": "400", "variable": false, "deal": true, "verified": true, "note": "google/fonts OFL.txt 원문 확인. 굵기가 하나다"},
- {"id": "noto-serif-kr", "name": "Noto Serif KR", "class": "부리", "license": "OFL-1.1", "license_url": "https://github.com/google/fonts/blob/main/ofl/notoserifkr/OFL.txt", "source_url": "https://fonts.google.com/specimen/Noto+Serif+KR", "weights": "200–900(가변)", "variable": true, "deal": true, "verified": true, "note": "google/fonts OFL.txt 원문 확인: (c) 2012 Google Inc"},
- {"id": "nanum-myeongjo", "name": "Nanum Myeongjo", "class": "부리", "license": "OFL-1.1", "license_url": "https://github.com/google/fonts/blob/main/ofl/nanummyeongjo/OFL.txt", "source_url": "https://fonts.google.com/specimen/Nanum+Myeongjo", "weights": "400, 700, 800", "variable": false, "deal": true, "verified": true, "note": "google/fonts OFL.txt 원문 확인: (c) 2010 NHN, 예약 이름 Nanum(바꾼 사본을 그 이름으로 내지 않는다)"},
- {"id": "song-myung", "name": "Song Myung", "class": "부리", "license": "OFL-1.1", "license_url": "https://github.com/google/fonts/blob/main/ofl/songmyung/OFL.txt", "source_url": "https://fonts.google.com/specimen/Song+Myung", "weights": "400", "variable": false, "deal": true, "verified": true, "note": "google/fonts OFL.txt 원문 확인. 굵기가 하나다"},
- {"id": "maruburi", "name": "MaruBuri", "class": "부리", "license": "확인 못 함", "license_url": "https://hangeul.naver.com/font", "source_url": "https://hangeul.naver.com/font", "weights": "확인 못 함", "variable": false, "deal": false, "verified": false, "note": "네이버 안내 글은 상업 사용·재배포·수정을 허용하고 글꼴 판매만 막는다. 라이선스 원문 파일은 찾지 못했다"},
- {"id": "line-seed-sans-kr", "name": "LINE Seed Sans KR", "class": "돋움", "license": "확인 못 함", "license_url": "https://seed.line.me", "source_url": "https://seed.line.me", "weights": "확인 못 함", "variable": false, "deal": false, "verified": false, "note": "line/seed 저장소의 OFL.txt 는 일본어판만 담는다. 한국어판 라이선스 원문은 읽지 못했다"},
- {"id": "nanumsquare-neo", "name": "NanumSquare Neo", "class": "돋움", "license": "확인 못 함", "license_url": "https://hangeul.naver.com/font", "source_url": "https://hangeul.naver.com/font", "weights": "확인 못 함", "variable": false, "deal": false, "verified": false, "note": "네이버 안내 글에 이 글꼴 이름이 없고 원문 라이선스 파일을 찾지 못했다"},
- {"id": "gmarket-sans", "name": "Gmarket Sans", "class": "돋움", "license": "확인 못 함", "license_url": "https://corp.gmarket.com/fonts", "source_url": "https://corp.gmarket.com/fonts", "weights": "300, 500, 700", "variable": false, "deal": false, "verified": false, "note": "공식 페이지가 OFL 이라고 적지만 라이선스 원문·저작권 줄은 찾지 못했다"},
- {"id": "paperlogy", "name": "Paperlogy", "class": "돋움", "license": "확인 못 함", "license_url": "https://github.com/fonts-archive/Paperlogy", "source_url": "https://github.com/fonts-archive/Paperlogy", "weights": "확인 못 함", "variable": false, "deal": false, "verified": false, "note": "제3자 보관 저장소만 OFL 이라고 적는다. 원 배포처의 원문은 읽지 못했다"},
- {"id": "orbit", "name": "Orbit", "class": "돋움", "license": "OFL-1.1", "license_url": "https://github.com/google/fonts/blob/main/ofl/orbit/OFL.txt", "source_url": "https://fonts.google.com/specimen/Orbit", "weights": "400", "variable": false, "deal": false, "verified": true, "note": "google/fonts OFL.txt 원문 확인: (c) 2022 Orbit Project Authors. 표시용에 가까운 둥근 돋움이라 본문 배정에서 뺀다"},
- {"id": "do-hyeon", "name": "Do Hyeon", "class": "표시", "license": "OFL-1.1", "license_url": "https://github.com/google/fonts/blob/main/ofl/dohyeon/OFL.txt", "source_url": "https://fonts.google.com/specimen/Do+Hyeon", "weights": "400", "variable": false, "deal": false, "verified": true, "note": "google/fonts OFL.txt 원문 확인. 메타데이터 분류 DISPLAY"},
- {"id": "jua", "name": "Jua", "class": "손글씨", "license": "OFL-1.1", "license_url": "https://github.com/google/fonts/blob/main/ofl/jua/OFL.txt", "source_url": "https://fonts.google.com/specimen/Jua", "weights": "400", "variable": false, "deal": false, "verified": true, "note": "google/fonts OFL.txt 원문 확인. 메타데이터 분류는 DISPLAY 이고 손글씨는 느낌으로 나눴다"},
- {"id": "black-han-sans", "name": "Black Han Sans", "class": "표시", "license": "OFL-1.1", "license_url": "https://github.com/google/fonts/blob/main/ofl/blackhansans/OFL.txt", "source_url": "https://fonts.google.com/specimen/Black+Han+Sans", "weights": "400", "variable": false, "deal": false, "verified": true, "note": "google/fonts OFL.txt 원문 확인. 메타데이터 분류 DISPLAY"},
- {"id": "galmuri", "name": "Galmuri", "class": "표시", "license": "OFL-1.1", "license_url": "https://github.com/quiple/galmuri/blob/main/ofl.md", "source_url": "https://github.com/quiple/galmuri", "weights": "Regular, Bold, Condensed", "variable": false, "deal": false, "verified": true, "note": "저장소 ofl.md 원문 확인: OFL 1.1, (c) 2019–2025 Lee Minseo. 픽셀 글꼴이라 표시용"}
+ {"id": "suit", "name": "SUIT", "class": "돋움", "license": "OFL-1.1", "license_url": "https://github.com/sun-typeface/SUIT/blob/main/LICENSE", "source_url": "https://github.com/sun-typeface/SUIT", "weights": "100–900(9굵기)", "variable": true, "deal": true, "verified": true, "reserved_name": "SUIT", "note": "저장소 LICENSE 원문 확인: OFL 1.1, (c) 2022 SUNN"},
+ {"id": "suite", "name": "SUITE", "class": "돋움", "license": "OFL-1.1", "license_url": "https://github.com/sun-typeface/SUITE/blob/main/LICENSE", "source_url": "https://github.com/sun-typeface/SUITE", "weights": "Light–Heavy(정적 7굵기)", "variable": true, "deal": true, "verified": true, "reserved_name": "SUITE", "note": "저장소 LICENSE 원문 확인: OFL 1.1, (c) 2023 SUNN"},
+ {"id": "wanted-sans", "name": "Wanted Sans", "class": "돋움", "license": "OFL-1.1", "license_url": "https://github.com/wanteddev/wanted-sans/blob/main/OFL.txt", "source_url": "https://github.com/wanteddev/wanted-sans", "weights": "Regular–ExtraBlack(정적 7굵기)", "variable": true, "deal": true, "verified": true, "reserved_name": null, "note": "저장소 OFL.txt 원문 확인. 가변 글꼴도 있다"},
+ {"id": "spoqa-han-sans-neo", "name": "Spoqa Han Sans Neo", "class": "돋움", "license": "OFL-1.1", "license_url": "https://github.com/spoqa/spoqa-han-sans/blob/main/LICENSE", "source_url": "https://github.com/spoqa/spoqa-han-sans", "weights": "100–700(5굵기)", "variable": false, "deal": true, "verified": true, "reserved_name": "Spoqa Han Sans, Spoqa Han Sans JP, Spoqa Han Sans Neo", "note": "저장소 LICENSE 원문 확인: OFL 1.1, (c) 2015·2020 Spoqa"},
+ {"id": "ibm-plex-sans-kr", "name": "IBM Plex Sans KR", "class": "돋움", "license": "OFL-1.1", "license_url": "https://github.com/google/fonts/blob/main/ofl/ibmplexsanskr/OFL.txt", "source_url": "https://fonts.google.com/specimen/IBM+Plex+Sans+KR", "weights": "100–700(7굵기)", "variable": false, "deal": true, "verified": true, "reserved_name": "Plex", "note": "google/fonts OFL.txt 원문 확인: (c) 2017 IBM Corp"},
+ {"id": "gothic-a1", "name": "Gothic A1", "class": "돋움", "license": "OFL-1.1", "license_url": "https://github.com/google/fonts/blob/main/ofl/gothica1/OFL.txt", "source_url": "https://fonts.google.com/specimen/Gothic+A1", "weights": "100–900(9굵기)", "variable": false, "deal": true, "verified": true, "reserved_name": null, "note": "google/fonts OFL.txt 원문 확인: (c) HanYang I&C"},
+ {"id": "asta-sans", "name": "Asta Sans", "class": "돋움", "license": "OFL-1.1", "license_url": "https://github.com/google/fonts/blob/main/ofl/astasans/OFL.txt", "source_url": "https://fonts.google.com/specimen/Asta+Sans", "weights": "300–800(가변)", "variable": true, "deal": true, "verified": true, "reserved_name": null, "note": "google/fonts OFL.txt 원문 확인. 원 저장소 https://github.com/42dot/Asta-Sans"},
+ {"id": "hahmlet", "name": "Hahmlet", "class": "부리", "license": "OFL-1.1", "license_url": "https://github.com/google/fonts/blob/main/ofl/hahmlet/OFL.txt", "source_url": "https://fonts.google.com/specimen/Hahmlet", "weights": "100–900(가변)", "variable": true, "deal": true, "verified": true, "reserved_name": null, "note": "google/fonts OFL.txt 원문 확인. 원 저장소 https://github.com/hyper-type/hahmlet"},
+ {"id": "gowun-batang", "name": "Gowun Batang", "class": "부리", "license": "OFL-1.1", "license_url": "https://github.com/google/fonts/blob/main/ofl/gowunbatang/OFL.txt", "source_url": "https://fonts.google.com/specimen/Gowun+Batang", "weights": "400, 700", "variable": false, "deal": true, "verified": true, "reserved_name": null, "note": "google/fonts OFL.txt 원문 확인"},
+ {"id": "gowun-dodum", "name": "Gowun Dodum", "class": "돋움", "license": "OFL-1.1", "license_url": "https://github.com/google/fonts/blob/main/ofl/gowundodum/OFL.txt", "source_url": "https://fonts.google.com/specimen/Gowun+Dodum", "weights": "400", "variable": false, "deal": true, "verified": true, "reserved_name": null, "note": "google/fonts OFL.txt 원문 확인. 굵기가 하나다"},
+ {"id": "noto-serif-kr", "name": "Noto Serif KR", "class": "부리", "license": "OFL-1.1", "license_url": "https://github.com/google/fonts/blob/main/ofl/notoserifkr/OFL.txt", "source_url": "https://fonts.google.com/specimen/Noto+Serif+KR", "weights": "200–900(가변)", "variable": true, "deal": true, "verified": true, "reserved_name": null, "note": "google/fonts OFL.txt 원문 확인: (c) 2012 Google Inc"},
+ {"id": "nanum-myeongjo", "name": "Nanum Myeongjo", "class": "부리", "license": "OFL-1.1", "license_url": "https://github.com/google/fonts/blob/main/ofl/nanummyeongjo/OFL.txt", "source_url": "https://fonts.google.com/specimen/Nanum+Myeongjo", "weights": "400, 700, 800", "variable": false, "deal": true, "verified": true, "reserved_name": "Nanum, Naver Nanum, NanumGothic, Naver NanumGothic, NanumMyeongjo, Naver NanumMyeongjo, NanumBrush, Naver NanumBrush, NanumPen, Naver NanumPen", "note": "google/fonts OFL.txt 원문 확인: (c) 2010 NHN"},
+ {"id": "song-myung", "name": "Song Myung", "class": "부리", "license": "OFL-1.1", "license_url": "https://github.com/google/fonts/blob/main/ofl/songmyung/OFL.txt", "source_url": "https://fonts.google.com/specimen/Song+Myung", "weights": "400", "variable": false, "deal": true, "verified": true, "reserved_name": null, "note": "google/fonts OFL.txt 원문 확인. 굵기가 하나다"},
+ {"id": "maruburi", "name": "MaruBuri", "class": "부리", "license": "확인 못 함", "license_url": "https://hangeul.naver.com/font", "source_url": "https://hangeul.naver.com/font", "weights": "확인 못 함", "variable": false, "deal": false, "verified": false, "reserved_name": null, "note": "네이버 안내 글은 상업 사용·재배포·수정을 허용하고 글꼴 판매만 막는다. 라이선스 원문 파일은 찾지 못했다"},
+ {"id": "line-seed-sans-kr", "name": "LINE Seed Sans KR", "class": "돋움", "license": "확인 못 함", "license_url": "https://seed.line.me", "source_url": "https://seed.line.me", "weights": "확인 못 함", "variable": false, "deal": false, "verified": false, "reserved_name": null, "note": "line/seed 저장소의 OFL.txt 는 일본어판만 담는다. 한국어판 라이선스 원문은 읽지 못했다"},
+ {"id": "nanumsquare-neo", "name": "NanumSquare Neo", "class": "돋움", "license": "확인 못 함", "license_url": "https://hangeul.naver.com/font", "source_url": "https://hangeul.naver.com/font", "weights": "확인 못 함", "variable": false, "deal": false, "verified": false, "reserved_name": null, "note": "네이버 안내 글에 이 글꼴 이름이 없고 원문 라이선스 파일을 찾지 못했다"},
+ {"id": "gmarket-sans", "name": "Gmarket Sans", "class": "돋움", "license": "확인 못 함", "license_url": "https://corp.gmarket.com/fonts", "source_url": "https://corp.gmarket.com/fonts", "weights": "300, 500, 700", "variable": false, "deal": false, "verified": false, "reserved_name": null, "note": "공식 페이지가 OFL 이라고 적지만 라이선스 원문·저작권 줄은 찾지 못했다"},
+ {"id": "paperlogy", "name": "Paperlogy", "class": "돋움", "license": "확인 못 함", "license_url": "https://github.com/fonts-archive/Paperlogy", "source_url": "https://github.com/fonts-archive/Paperlogy", "weights": "확인 못 함", "variable": false, "deal": false, "verified": false, "reserved_name": null, "note": "제3자 보관 저장소만 OFL 이라고 적는다. 원 배포처의 원문은 읽지 못했다"},
+ {"id": "orbit", "name": "Orbit", "class": "돋움", "license": "OFL-1.1", "license_url": "https://github.com/google/fonts/blob/main/ofl/orbit/OFL.txt", "source_url": "https://fonts.google.com/specimen/Orbit", "weights": "400", "variable": false, "deal": false, "verified": true, "reserved_name": null, "note": "google/fonts OFL.txt 원문 확인: (c) 2022 Orbit Project Authors. 표시용에 가까운 둥근 돋움이라 본문 배정에서 뺀다"},
+ {"id": "do-hyeon", "name": "Do Hyeon", "class": "표시", "license": "OFL-1.1", "license_url": "https://github.com/google/fonts/blob/main/ofl/dohyeon/OFL.txt", "source_url": "https://fonts.google.com/specimen/Do+Hyeon", "weights": "400", "variable": false, "deal": false, "verified": true, "reserved_name": null, "note": "google/fonts OFL.txt 원문 확인. 메타데이터 분류 DISPLAY"},
+ {"id": "jua", "name": "Jua", "class": "손글씨", "license": "OFL-1.1", "license_url": "https://github.com/google/fonts/blob/main/ofl/jua/OFL.txt", "source_url": "https://fonts.google.com/specimen/Jua", "weights": "400", "variable": false, "deal": false, "verified": true, "reserved_name": null, "note": "google/fonts OFL.txt 원문 확인. 메타데이터 분류는 DISPLAY 이고 손글씨는 느낌으로 나눴다"},
+ {"id": "black-han-sans", "name": "Black Han Sans", "class": "표시", "license": "OFL-1.1", "license_url": "https://github.com/google/fonts/blob/main/ofl/blackhansans/OFL.txt", "source_url": "https://fonts.google.com/specimen/Black+Han+Sans", "weights": "400", "variable": false, "deal": false, "verified": true, "reserved_name": null, "note": "google/fonts OFL.txt 원문 확인. 메타데이터 분류 DISPLAY"},
+ {"id": "galmuri", "name": "Galmuri", "class": "표시", "license": "OFL-1.1", "license_url": "https://github.com/quiple/galmuri/blob/main/ofl.md", "source_url": "https://github.com/quiple/galmuri", "weights": "Regular, Bold, Condensed", "variable": false, "deal": false, "verified": true, "reserved_name": null, "note": "저장소 ofl.md 원문 확인: OFL 1.1, (c) 2019–2025 Lee Minseo. 픽셀 글꼴이라 표시용"}
 ]
 ```
 
@@ -600,6 +601,7 @@ EXCLUDED = (240, 300)  # 뽑지 않는 hue(파랑·남색·보라): 칸 8·9
 ALLOWED = tuple(k for k in range(360 // BUCKET) if not EXCLUDED[0] <= k * BUCKET < EXCLUDED[1])
 CHROMATIC_C = 0.03  # 강조 C 가 이보다 작으면 무채색이라 칸에 넣지 않는다(획일도 측정의 유효 강조와 같다)
 FONT_CLASSES = ("돋움", "부리", "표시", "손글씨")
+BODY_CLASSES = ("돋움", "부리")  # 본문 글꼴로 배정하는 계열
 _HEX6 = re.compile(r"#[0-9a-f]{6}")
 
 
@@ -679,13 +681,18 @@ def _font_problem(f) -> str | None:
             return f"{key} 가 빈 글이다"
     if f.get("class") not in FONT_CLASSES:
         return f"class 는 {'·'.join(FONT_CLASSES)} 가운데 하나다"
-    if not isinstance(f.get("variable"), bool) or not isinstance(f.get("deal"), bool):
-        return "variable·deal 은 참·거짓이다"
+    if not all(isinstance(f.get(key), bool) for key in ("variable", "deal", "verified")):
+        return "variable·deal·verified 는 참·거짓이다"
+    if "reserved_name" not in f or not (f["reserved_name"] is None or _text(f["reserved_name"])):
+        return "reserved_name 은 null 이나 글이다(OFL 의 예약 이름)"
+    if f["deal"] and not (f["verified"] and f["license"].startswith("OFL") and f["class"] in BODY_CLASSES):
+        return "배정 대상(deal: true)은 라이선스 원문을 확인한(verified) OFL 본문 글꼴(돋움·부리)이다"
     return None
 
 
 def load_fonts() -> list[dict]:
-    """fonts-ko.json 의 글꼴 목록. 배정 대상(deal: true)이 3개보다 적어도 catalog_invalid."""
+    """fonts-ko.json 의 글꼴 목록. 항목마다 verified·reserved_name 이 있고, 배정 대상(deal: true)은 확인한 OFL 본문 글꼴이며
+    3개 이상이다. 아니면 catalog_invalid."""
     data = _read("fonts-ko.json")
     if not isinstance(data, list):
         raise _invalid("fonts-ko.json 은 목록이다")
@@ -792,6 +799,17 @@ class CatalogTest(unittest.TestCase):
                 self.assertFalse(f["deal"], f["id"])
                 self.assertEqual(f["license"], "확인 못 함", f["id"])
 
+    def test_reserved_font_names_from_license_texts(self):
+        # OFL 의 예약 이름(Reserved Font Name): 라이선스 원문의 저작권 줄 뒤 "with Reserved Font Name …"(조사 2026-11-18).
+        # 예약 이름이 있는 글꼴을 바꾼 판(서브셋 포함)은 그 이름을 쓸 수 없다(fonts-ko.md 의 4)
+        fonts = palette.load_fonts()
+        self.assertTrue(all("reserved_name" in f for f in fonts))
+        self.assertEqual({f["id"]: f["reserved_name"] for f in fonts if f["reserved_name"] is not None}, {
+            "suit": "SUIT", "suite": "SUITE", "spoqa-han-sans-neo": "Spoqa Han Sans, Spoqa Han Sans JP, Spoqa Han Sans Neo",
+            "ibm-plex-sans-kr": "Plex",
+            "nanum-myeongjo": "Nanum, Naver Nanum, NanumGothic, Naver NanumGothic, NanumMyeongjo, Naver NanumMyeongjo, "
+                              "NanumBrush, Naver NanumBrush, NanumPen, Naver NanumPen"})
+
     def test_overused_lists(self):
         over = palette.load_overused()
         hexes = [c["hex"] for c in over["colors"]]
@@ -876,11 +894,23 @@ class BrokenCatalogTest(unittest.TestCase):
 
     def test_fonts_and_overused(self):
         font = {"id": "a", "name": "A", "class": "돋움", "license": "OFL-1.1", "license_url": "https://a",
-                "source_url": "https://a", "weights": "400", "variable": False, "deal": True}
+                "source_url": "https://a", "weights": "400", "variable": False, "deal": True, "verified": True,
+                "reserved_name": None}
         two = json.dumps([font, {**font, "id": "b"}, {**font, "id": "c", "deal": False}])
         self.assertIn("3개보다 적다", self.broken("fonts-ko.json", two, palette.load_fonts))
         self.assertIn("class", self.broken("fonts-ko.json", json.dumps([{**font, "class": "고딕"}]), palette.load_fonts))
         self.assertIn("deal", self.broken("fonts-ko.json", json.dumps([{**font, "deal": 1}]), palette.load_fonts))
+        no_key = {k: v for k, v in font.items() if k != "reserved_name"}
+        self.assertIn("reserved_name", self.broken("fonts-ko.json", json.dumps([no_key]), palette.load_fonts))
+        # 배정 대상은 확인한 OFL 본문 글꼴이어야 한다: 실제 카탈로그의 배정 대상 하나를 망가뜨린 사본
+        real = json.loads((DATA / "fonts-ko.json").read_text(encoding="utf-8"))
+        i = next(n for n, f in enumerate(real) if f["deal"])
+        for change in ({"verified": False}, {"license": "확인 못 함"}, {"class": "표시"}):
+            with self.subTest(change=change):
+                bad = [dict(f) for f in real]
+                bad[i].update(change)
+                self.assertIn("배정 대상", self.broken("fonts-ko.json", json.dumps(bad, ensure_ascii=False),
+                                                     palette.load_fonts))
         bad = {"colors": [{"hex": "#ABC", "name": "x"}], "tailwind_ramp": [], "fonts_ko": ["a"], "fonts_latin": ["b"]}
         self.assertIn("overused.json", self.broken("overused.json", json.dumps(bad), palette.load_overused))
         self.assertIn("overused.json", self.broken("overused.json", json.dumps({**bad, "colors": [], "fonts_ko": []}),
@@ -894,7 +924,7 @@ if __name__ == "__main__":
 - [ ] **Step 5: 시험이 통과하는지 본다**
 
 Run: `python3 -m unittest discover -s scripts -p 'test_import*.py' -v && (cd herdr-team && python3 -m unittest tests.test_catalog tests.test_color -v)`
-Expected: OK(넷, 여덟, 그리고 test_color 그대로).
+Expected: OK(넷, 아홉, 그리고 test_color 그대로).
 
 - [ ] **Step 6: 커밋한다**
 
@@ -910,7 +940,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- scripts/import-palet
 ---
 ### Task 2: `hteam palette deal`(설계 11.10)
 
-`palette.deal` 과 CLI 를 더한다. 같은 시드 글이면 늘 같은 배정이다. 칸은 설계 11.10(2026-11-18 고침)대로 뽑는다: 허용 칸 10개에서 서로 3칸 이상 떨어진 칸 셋의 집합 20개(`bucket_sets`)에 가중치(`set_weights`)를 줘 하나를 고르고, 여섯 차례 가운데 하나를 고르게 골라 A·B·C 로 둔다. 가중치는 칸마다 뽑힐 확률이 0.3 이 되게 반복 비례 맞춤으로 코드가 계산한다(칸마다 차례로 그 칸이 든 집합에 목표/지금, 들지 않은 집합에 (1−목표)/(1−지금)을 곱하고 한 바퀴마다 합을 1로 맞춘다. 차이 < 1e-12 이거나 500바퀴면 멈춘다. 20개 모두 양수이고 가장 큰 것이 약 0.1688 이다). 집합을 고르게 뽑으면 빈칸(240–300°) 옆 칸 7·10 이 각 50% 로 치우친다. 집합 고르기는 다이제스트의 53비트 수를 `bucket_sets` 차례의 누적 가중치와 견준다. `--brand-hue` 면 A 는 그 hue 의 칸(240–300° 도)이고 B·C 는 A 와 서로 3칸 이상인 허용 칸 쌍(`brand_pairs`) 가운데 고르게 고른 뒤 차례를 고르게 정한다. A 의 팔레트 후보는 두지 않는다. 칸의 팔레트가 2개보다 적으면 칸 가운데 hue 에서 가까운 차례(같으면 id 차례)로 다른 칸의 팔레트를 `near: true` 로 채운다(300–330° 칸은 늘 둘 다 near 다). 명령은 읽기만 하고 역할을 확인하지 않는다. `--seed` 를 주면 프로젝트를 찾지 않는다(시험·획일도 측정).
+`palette.deal` 과 CLI 를 더한다. 같은 시드 글이면 늘 같은 배정이다. 칸은 설계 11.10(2026-11-18 고침)대로 뽑는다: 허용 칸 10개에서 서로 3칸 이상 떨어진 칸 셋의 집합 20개(`bucket_sets`)에 가중치(`set_weights`)를 줘 하나를 고르고, 여섯 차례 가운데 하나를 고르게 골라 A·B·C 로 둔다. 가중치는 칸마다 뽑힐 확률이 0.3 이 되게 반복 비례 맞춤으로 코드가 계산한다(칸마다 차례로 그 칸이 든 집합에 목표/지금, 들지 않은 집합에 (1−목표)/(1−지금)을 곱하고 한 바퀴마다 합을 1로 맞춘다. 차이 < 1e-12 이거나 500바퀴면 멈춘다. 20개 모두 양수이고 가장 큰 것이 약 0.1688 이다). 집합을 고르게 뽑으면 빈칸(240–300°) 옆 칸 7·10 이 각 50% 로 치우친다. 집합 고르기는 다이제스트의 53비트 수를 `bucket_sets` 차례의 누적 경계(`cumulative()`)와 견준다. 가중치 맞춤·정규화·누적 경계의 합은 모두 `math.fsum` 이다: 내장 `sum` 은 Python 3.12 에서 합하는 방법이 바뀌어 같은 시드가 판마다 다른 집합을 고를 수 있다(Codex 계획 리뷰 r1). 곱셈·나눗셈은 그대로다. 시험이 가중치 20개(소수 12자리)와 고정 시드 몇 개의 칸·차례를 박아 둔 값과 견준다(이 계획을 쓸 때 Python 3.14 와 3.9 에서 같았다). `--brand-hue` 면 A 는 그 hue 의 칸(240–300° 도)이고 B·C 는 A 와 서로 3칸 이상인 허용 칸 쌍(`brand_pairs`) 가운데 고르게 고른 뒤 차례를 고르게 정한다. A 의 팔레트 후보는 두지 않는다. 칸의 팔레트가 2개보다 적으면 칸 가운데 hue 에서 가까운 차례(같으면 id 차례)로 다른 칸의 팔레트를 `near: true` 로 채운다(300–330° 칸은 늘 둘 다 near 다). 명령은 읽기만 하고 역할을 확인하지 않는다. `--seed` 를 주면 프로젝트를 찾지 않는다(시험·획일도 측정).
 
 **Files:**
 - Modify: `herdr-team/lib/hteam/palette.py`(import, `_TASK`, 끝에 배정과 `register`)
@@ -1030,6 +1060,19 @@ class DealTest(unittest.TestCase):
         self.assertEqual(weights, palette.set_weights())  # 결정적이다
         uniform = palette.marginals([1 / 20] * 20)
         self.assertGreater(max(uniform.values()), 0.45)  # 고르게 뽑으면 빈칸 옆 칸(7·10)이 치우친다
+
+    def test_golden_weights_and_draws(self):
+        # Python 판이 바뀌어도 같은 배정이다(합은 math.fsum, 뽑기는 SHA-256). 값이 바뀌면 같은 시드의 배정이 바뀐 것이다
+        self.assertEqual([round(w, 12) for w in palette.set_weights()], [
+            0.16875, 0.05625, 0.075000000001, 0.099999999999, 0.1, 0.075000000001, 0.01875, 0.00625, 0.056249999999,
+            0.16875, 0.0140625, 0.0421875, 0.0046875, 0.0140625, 0.0140625, 0.0421875, 0.0046875, 0.0140625, 0.00625,
+            0.01875])
+        self.assertEqual(palette.cumulative()[-1], 1.0)
+        got = {seed: palette.pick_buckets(palette.Draw(seed)) for seed in ("memo:T-004:0", "budget:1", "clinic:2",
+                                                                            "proj:T-001:0")}
+        self.assertEqual(got, {"memo:T-004:0": (1, 7, 4), "budget:1": (3, 6, 11), "clinic:2": (7, 4, 1),
+                               "proj:T-001:0": (10, 1, 5)})
+        self.assertEqual(palette.pick_buckets(palette.Draw("brand"), 8), (8, 5, 2))
 
     def test_each_bucket_in_about_thirty_percent_of_deals(self):
         counts = Counter(k for n in range(2000) for k in set(ks(palette.deal(f"spread:T-{n:04d}:0"))))
@@ -1205,27 +1248,36 @@ def bucket_sets() -> list[tuple[int, int, int]]:
 
 
 def marginals(weights: list[float]) -> dict[int, float]:
-    """집합 가중치에서 칸마다 뽑힐 확률."""
-    return {k: sum(w for w, s in zip(weights, bucket_sets()) if k in s) for k in ALLOWED}
+    """집합 가중치에서 칸마다 뽑힐 확률(math.fsum: 정확히 반올림한 합이라 Python 판마다 같다)."""
+    return {k: math.fsum(w for w, s in zip(weights, bucket_sets()) if k in s) for k in ALLOWED}
 
 
 @functools.lru_cache(maxsize=None)
 def set_weights() -> tuple[float, ...]:
     """bucket_sets 차례의 가중치(합 1). 칸마다 뽑힐 확률이 3/len(ALLOWED)(0.3)가 되게 반복 비례 맞춤으로 정한다: 칸마다
     차례로 그 칸이 든 집합은 목표/지금, 들지 않은 집합은 (1−목표)/(1−지금)을 곱하고, 한 바퀴마다 합을 1로 맞춘다. 칸마다
-    확률이 목표와 FIT_TOL 안이거나 FIT_ROUNDS 바퀴면 멈춘다(결정적이다). 집합을 고르게 뽑으면 빈칸 옆 칸이 치우친다(설계 11.10)."""
+    확률이 목표와 FIT_TOL 안이거나 FIT_ROUNDS 바퀴면 멈춘다. 합은 모두 math.fsum 이다(내장 sum 은 Python 3.12 에서 합하는 방법이
+    바뀌어 가중치가 판마다 달라진다). 곱셈·나눗셈은 IEEE 754 그대로라 결정적이다. 집합을 고르게 뽑으면 빈칸 옆 칸이 치우친다
+    (설계 11.10)."""
     sets = bucket_sets()
     target = 3 / len(ALLOWED)
     weights = [1 / len(sets)] * len(sets)
     for _ in range(FIT_ROUNDS):
         for k in ALLOWED:
-            now = sum(w for w, s in zip(weights, sets) if k in s)
+            now = math.fsum(w for w, s in zip(weights, sets) if k in s)
             weights = [w * (target / now if k in s else (1 - target) / (1 - now)) for w, s in zip(weights, sets)]
-        total = sum(weights)
+        total = math.fsum(weights)
         weights = [w / total for w in weights]
         if max(abs(m - target) for m in marginals(weights).values()) < FIT_TOL:
             break
     return tuple(weights)
+
+
+@functools.lru_cache(maxsize=None)
+def cumulative() -> tuple[float, ...]:
+    """set_weights 의 누적 경계. i 번째는 앞 i+1 개 가중치의 math.fsum 이다(Python 판마다 같다)."""
+    weights = set_weights()
+    return tuple(math.fsum(weights[:i + 1]) for i in range(len(weights)))
 
 
 def brand_pairs(first: int) -> list[tuple[int, int]]:
@@ -1234,17 +1286,13 @@ def brand_pairs(first: int) -> list[tuple[int, int]]:
 
 
 def pick_buckets(draw: Draw, first: int | None = None) -> tuple[int, int, int]:
-    """A·B·C 칸. first 가 없으면 set_weights 로 집합 하나(53비트 수를 누적 가중치와 차례로 견준다)를 고른 뒤 여섯 차례 가운데
-    하나를 고르게 고른다. first 가 있으면 A = first, B·C 는 brand_pairs 가운데 하나를 고르게 고르고 차례를 고르게 정한다."""
+    """A·B·C 칸. first 가 없으면 set_weights 로 집합 하나(53비트 수를 누적 경계 cumulative() 와 차례로 견준다)를 고른 뒤 여섯
+    차례 가운데 하나를 고르게 고른다. first 가 있으면 A = first, B·C 는 brand_pairs 가운데 하나를 고르게 고르고 차례를 고르게
+    정한다."""
     if first is None:
-        u, acc = draw.fraction(), 0.0
+        u = draw.fraction()
         sets = bucket_sets()
-        chosen = sets[-1]  # 누적 합의 반올림 오차로 u 가 끝까지 남으면 마지막 집합이다
-        for w, s in zip(set_weights(), sets):
-            acc += w
-            if u < acc:
-                chosen = s
-                break
+        chosen = next((s for s, edge in zip(sets, cumulative()) if u < edge), sets[-1])  # 경계가 1 보다 작으면 마지막 집합
         return draw.pick(list(itertools.permutations(chosen)))
     b, c = draw.pick(brand_pairs(first))
     return (first, b, c) if draw.below(2) == 0 else (first, c, b)
@@ -1343,7 +1391,7 @@ def register(sub) -> None:
 - [ ] **Step 4: 시험이 통과하는지 본다**
 
 Run: `(cd herdr-team && python3 -m unittest tests.test_palette tests.test_catalog tests.test_cli -v)`
-Expected: OK(test_palette 열하나).
+Expected: OK(test_palette 열둘).
 
 - [ ] **Step 5: 커밋한다**
 
@@ -1359,7 +1407,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam
 ---
 ### Task 3: 규칙 파일 — palette.md·fonts-ko.md·design-rules·검사 방식 표기(설계 11.9, 11.12 의 1–3)
 
-새 규칙 파일 둘을 만들고 scaffold·upgrade 대상(`setup.FILES`)에 넣는다. design-rules 에 13단계 디자인 항목(§1 의 7 바꿈, §1 의 10 덧붙임, §1 의 11–13, §3 의 1 바꿈, §3 의 8–12), 첫머리의 직무별 참고 파일 줄, §0 의 검사 방식 표기 설명, 출처를 더하고 모든 번호 항목 끝에 검사 방식 표기를 붙인다. 지금 자동 검사가 찾는 항목만 `[기계]` 다(§1 의 7·11, §3 의 11 은 Task 5 가 `[기계]` 로 바꾼다). 자동 검사 절은 가리키는 항목을 `§N 의 M` 으로 적는다. 규칙 참조 시험에 검사 방식 표기 검사와 "아무것도 안 본 채 통과하지 않는다" 지킴(p13a 리뷰 지적)을 더한다. 직무 문서는 입력 줄만 더한다(director: palette.md·fonts-ko.md, designer: fonts-ko.md). 화면 디자이너의 `## 확정 값` 예시(`--color-primary: #2f6fed`, 파랑)도 닻이라 자리표시(`<주색 값>`)로 바꾼다. 단계 절차는 Task 4 다.
+새 규칙 파일 둘을 만들고 scaffold·upgrade 대상(`setup.FILES`)에 넣는다. design-rules 에 13단계 디자인 항목(§1 의 7 바꿈, §1 의 10 덧붙임, §1 의 11–13, §3 의 1 바꿈, §3 의 8–12), 첫머리의 직무별 참고 파일 줄, §0 의 검사 방식 표기 설명, 출처를 더하고 모든 번호 항목 끝에 검사 방식 표기를 붙인다. 지금 자동 검사가 찾는 항목만 `[기계]` 다(§1 의 7·11, §3 의 11 은 Task 5 가 `[기계]` 로 바꾼다). 자동 검사 절은 가리키는 항목을 `§N 의 M` 으로 적는다. 규칙 참조 시험에 검사 방식 표기 검사와 "아무것도 안 본 채 통과하지 않는다" 지킴(p13a 리뷰 지적)을 더한다. 직무 문서는 입력 줄만 더한다(director: palette.md·fonts-ko.md, designer: fonts-ko.md). 화면 디자이너의 `## 확정 값` 예시(`--color-primary: #2f6fed`, 파랑)도 닻이라 자리표시(`<주색 값>`)로 바꾼다. 단계 절차는 Task 4 다. `fonts-ko.md` 의 후보 표에는 예약 이름 칸을 두고, 글꼴 파일 안내는 OFL 을 지킨다: 기본은 원본 파일을 고치지 않고 넣는 것이고, 서브셋은 바꾼 판이라 예약 이름이 있는 글꼴은 글꼴 안의 이름(name 테이블)·파일·`font-family` 이름을 예약 이름 없는 새 이름으로 바꾸거나, 저작권자·Google Fonts 가 배포한 서브셋 파일을 받은 그대로 쓴다(OFL FAQ). 예시 이름에 예약 이름을 쓰지 않는다(Codex 계획 리뷰 r1 P0).
 
 **Files:**
 - Create: `herdr-team/templates/palette.md`, `herdr-team/templates/fonts-ko.md`
@@ -1584,19 +1632,34 @@ class PaletteDocTest(unittest.TestCase):
         rows = {}
         for line in section(text, "1. 후보").splitlines():
             cells = [c.strip() for c in line.strip().strip("|").split("|")]
-            if len(cells) == 6 and cells[0] not in ("이름", "---"):
+            if len(cells) == 7 and cells[0] not in ("이름", "---"):
                 rows[cells[0]] = cells
         fonts = palette.load_fonts()
         self.assertEqual(set(rows), {f["name"] for f in fonts})  # fonts-ko.json 의 글꼴이 모두 표에 있다(설계 11.12 의 3)
         for f in fonts:
-            name, cls, _, lic, url, deal = rows[f["name"]]
-            self.assertEqual((cls, lic, url, deal), (f["class"], f["license"], f["source_url"], "예" if f["deal"] else "아니오"),
-                             f["id"])
+            name, cls, _, lic, rfn, url, deal = rows[f["name"]]
+            want_rfn = f["reserved_name"] or ("없음" if f["verified"] else "확인 못 함")
+            self.assertEqual((cls, lic, rfn, url, deal),
+                             (f["class"], f["license"], want_rfn, f["source_url"], "예" if f["deal"] else "아니오"), f["id"])
         over = palette.load_overused()
         for name in over["fonts_ko"] + over["fonts_latin"]:
             self.assertIn(name, section(text, "2. 과용 글꼴"))
         for needle in ("`unicode-range`", "`assets/<화면>/`", "`font-display: swap`", "OFL.txt", "§4 의 7", "§1 의 7"):
             self.assertIn(needle, text)
+
+    def test_subset_guidance_keeps_reserved_font_names(self):
+        # OFL: 서브셋은 바꾼 판이다. 예약 이름이 있는 글꼴의 바꾼 판은 글꼴 안의 이름까지 예약 이름 없이 바꾼다(Codex 계획 리뷰 r1 P0)
+        from hteam import palette
+        files = section(self.read("fonts-ko.md"), "4. 글꼴 파일 넣기와 서브셋")
+        for needle in ("고치지 않고 그대로 넣는 것이다", "바꾼 판(Modified Version)", "name 테이블", "https://openfontlicense.org/ofl-faq/",
+                       "`<프로젝트>-본문`", "받은 그대로 넣는다"):
+            self.assertIn(needle, files)
+        reserved = [name for f in palette.load_fonts() if f["reserved_name"] for name in f["reserved_name"].split(", ")]
+        self.assertIn("SUIT", reserved)
+        for span in re.findall(r"`([^`]+)`", files):  # 예시 이름(코드 조각) 어디에도 예약 이름이 없다
+            for name in reserved:
+                self.assertNotIn(name.lower(), span.lower(), span)
+        self.assertNotIn("SUIT-subset", self.read("fonts-ko.md"))
 
     def test_role_inputs(self):
         director = section(self.read("roles/director.md"), "입력")
@@ -1758,31 +1821,31 @@ Expected: FAIL/ERROR(새 파일이 없다, 표기가 없다, 금지 목록이 10
 디자인 디렉터(director)가 톤 시안과 디자인 시스템의 글꼴을 정할 때, 디자인 시스템이 없는 프로젝트의 화면 디자이너(designer)가 글꼴을 고를 때 읽는다. 팔레트 배정(`hteam palette deal`)의 `body_font` 는 아래 표에서 배정이 "예" 인 글꼴에서 나온다. 같은 목록이 플러그인 카탈로그 `fonts-ko.json` 에 있다(조사 2026-11-18).
 
 ## 1. 후보
-| 이름 | 계열 | 성격 | 라이선스 | 받는 곳 | 배정 |
-|---|---|---|---|---|---|
-| SUIT | 돋움 | 단정한 네오 그로테스크, 9굵기·가변 | OFL-1.1 | https://github.com/sun-typeface/SUIT | 예 |
-| SUITE | 돋움 | 단정한 네오 그로테스크, 정적 7굵기 | OFL-1.1 | https://github.com/sun-typeface/SUITE | 예 |
-| Wanted Sans | 돋움 | 라틴 짝이 좋은 돋움, 7굵기·가변 | OFL-1.1 | https://github.com/wanteddev/wanted-sans | 예 |
-| Spoqa Han Sans Neo | 돋움 | 담백하고 작은 글자에서 잘 읽힌다, 5굵기 | OFL-1.1 | https://github.com/spoqa/spoqa-han-sans | 예 |
-| IBM Plex Sans KR | 돋움 | 기술적·휴머니스트, 7굵기 | OFL-1.1 | https://fonts.google.com/specimen/IBM+Plex+Sans+KR | 예 |
-| Gothic A1 | 돋움 | 고딕, 9굵기 | OFL-1.1 | https://fonts.google.com/specimen/Gothic+A1 | 예 |
-| Asta Sans | 돋움 | 가변(300–800) 돋움 | OFL-1.1 | https://fonts.google.com/specimen/Asta+Sans | 예 |
-| Hahmlet | 부리 | 가변 부리, 제목에도 맞다 | OFL-1.1 | https://fonts.google.com/specimen/Hahmlet | 예 |
-| Gowun Batang | 부리 | 손맛 있는 바탕, 2굵기 | OFL-1.1 | https://fonts.google.com/specimen/Gowun+Batang | 예 |
-| Gowun Dodum | 돋움 | 손맛 있는 돋움, 1굵기 | OFL-1.1 | https://fonts.google.com/specimen/Gowun+Dodum | 예 |
-| Noto Serif KR | 부리 | 본문 부리, 가변(200–900) | OFL-1.1 | https://fonts.google.com/specimen/Noto+Serif+KR | 예 |
-| Nanum Myeongjo | 부리 | 본문 부리, 3굵기 | OFL-1.1 | https://fonts.google.com/specimen/Nanum+Myeongjo | 예 |
-| Song Myung | 부리 | 부리, 1굵기 | OFL-1.1 | https://fonts.google.com/specimen/Song+Myung | 예 |
-| Orbit | 돋움 | 표시용에 가까운 둥근 돋움 | OFL-1.1 | https://fonts.google.com/specimen/Orbit | 아니오 |
-| Do Hyeon | 표시 | 제목·로고용 | OFL-1.1 | https://fonts.google.com/specimen/Do+Hyeon | 아니오 |
-| Black Han Sans | 표시 | 굵은 제목·로고용 | OFL-1.1 | https://fonts.google.com/specimen/Black+Han+Sans | 아니오 |
-| Jua | 손글씨 | 둥근 손글씨 느낌, 제목용 | OFL-1.1 | https://fonts.google.com/specimen/Jua | 아니오 |
-| Galmuri | 표시 | 픽셀 글꼴 | OFL-1.1 | https://github.com/quiple/galmuri | 아니오 |
-| MaruBuri | 부리 | 본문 부리 | 확인 못 함 | https://hangeul.naver.com/font | 아니오 |
-| NanumSquare Neo | 돋움 | 네모꼴, 가변 | 확인 못 함 | https://hangeul.naver.com/font | 아니오 |
-| LINE Seed Sans KR | 돋움 | 둥근 기하 | 확인 못 함 | https://seed.line.me | 아니오 |
-| Gmarket Sans | 돋움 | 굵은 기하, 제목용 | 확인 못 함 | https://corp.gmarket.com/fonts | 아니오 |
-| Paperlogy | 돋움 | 제목·본문 | 확인 못 함 | https://github.com/fonts-archive/Paperlogy | 아니오 |
+| 이름 | 계열 | 성격 | 라이선스 | 예약 이름 | 받는 곳 | 배정 |
+|---|---|---|---|---|---|---|
+| SUIT | 돋움 | 단정한 네오 그로테스크, 9굵기·가변 | OFL-1.1 | SUIT | https://github.com/sun-typeface/SUIT | 예 |
+| SUITE | 돋움 | 단정한 네오 그로테스크, 정적 7굵기 | OFL-1.1 | SUITE | https://github.com/sun-typeface/SUITE | 예 |
+| Wanted Sans | 돋움 | 라틴 짝이 좋은 돋움, 7굵기·가변 | OFL-1.1 | 없음 | https://github.com/wanteddev/wanted-sans | 예 |
+| Spoqa Han Sans Neo | 돋움 | 담백하고 작은 글자에서 잘 읽힌다, 5굵기 | OFL-1.1 | Spoqa Han Sans, Spoqa Han Sans JP, Spoqa Han Sans Neo | https://github.com/spoqa/spoqa-han-sans | 예 |
+| IBM Plex Sans KR | 돋움 | 기술적·휴머니스트, 7굵기 | OFL-1.1 | Plex | https://fonts.google.com/specimen/IBM+Plex+Sans+KR | 예 |
+| Gothic A1 | 돋움 | 고딕, 9굵기 | OFL-1.1 | 없음 | https://fonts.google.com/specimen/Gothic+A1 | 예 |
+| Asta Sans | 돋움 | 가변(300–800) 돋움 | OFL-1.1 | 없음 | https://fonts.google.com/specimen/Asta+Sans | 예 |
+| Hahmlet | 부리 | 가변 부리, 제목에도 맞다 | OFL-1.1 | 없음 | https://fonts.google.com/specimen/Hahmlet | 예 |
+| Gowun Batang | 부리 | 손맛 있는 바탕, 2굵기 | OFL-1.1 | 없음 | https://fonts.google.com/specimen/Gowun+Batang | 예 |
+| Gowun Dodum | 돋움 | 손맛 있는 돋움, 1굵기 | OFL-1.1 | 없음 | https://fonts.google.com/specimen/Gowun+Dodum | 예 |
+| Noto Serif KR | 부리 | 본문 부리, 가변(200–900) | OFL-1.1 | 없음 | https://fonts.google.com/specimen/Noto+Serif+KR | 예 |
+| Nanum Myeongjo | 부리 | 본문 부리, 3굵기 | OFL-1.1 | Nanum, Naver Nanum, NanumGothic, Naver NanumGothic, NanumMyeongjo, Naver NanumMyeongjo, NanumBrush, Naver NanumBrush, NanumPen, Naver NanumPen | https://fonts.google.com/specimen/Nanum+Myeongjo | 예 |
+| Song Myung | 부리 | 부리, 1굵기 | OFL-1.1 | 없음 | https://fonts.google.com/specimen/Song+Myung | 예 |
+| Orbit | 돋움 | 표시용에 가까운 둥근 돋움 | OFL-1.1 | 없음 | https://fonts.google.com/specimen/Orbit | 아니오 |
+| Do Hyeon | 표시 | 제목·로고용 | OFL-1.1 | 없음 | https://fonts.google.com/specimen/Do+Hyeon | 아니오 |
+| Black Han Sans | 표시 | 굵은 제목·로고용 | OFL-1.1 | 없음 | https://fonts.google.com/specimen/Black+Han+Sans | 아니오 |
+| Jua | 손글씨 | 둥근 손글씨 느낌, 제목용 | OFL-1.1 | 없음 | https://fonts.google.com/specimen/Jua | 아니오 |
+| Galmuri | 표시 | 픽셀 글꼴 | OFL-1.1 | 없음 | https://github.com/quiple/galmuri | 아니오 |
+| MaruBuri | 부리 | 본문 부리 | 확인 못 함 | 확인 못 함 | https://hangeul.naver.com/font | 아니오 |
+| NanumSquare Neo | 돋움 | 네모꼴, 가변 | 확인 못 함 | 확인 못 함 | https://hangeul.naver.com/font | 아니오 |
+| LINE Seed Sans KR | 돋움 | 둥근 기하 | 확인 못 함 | 확인 못 함 | https://seed.line.me | 아니오 |
+| Gmarket Sans | 돋움 | 굵은 기하, 제목용 | 확인 못 함 | 확인 못 함 | https://corp.gmarket.com/fonts | 아니오 |
+| Paperlogy | 돋움 | 제목·본문 | 확인 못 함 | 확인 못 함 | https://github.com/fonts-archive/Paperlogy | 아니오 |
 
 - 배정 대상은 라이선스 원문을 확인한 OFL 글꼴 가운데 본문에 쓰는 돋움·부리이고 과용 목록에 없는 것이다.
 - 라이선스가 "확인 못 함" 인 글꼴은 참고로만 적었다. 쓰려면 받는 곳에서 라이선스 원문을 직접 확인하고 시스템 README 에 근거를 적는다.
@@ -1803,9 +1866,11 @@ Expected: FAIL/ERROR(새 파일이 없다, 표기가 없다, 금지 목록이 10
 - 계열을 엇갈려 쓰는 것(부리 본문 + 돋움 제목, 돋움 본문 + 표시 제목)도 큰 차이를 만든다.
 
 ## 4. 글꼴 파일 넣기와 서브셋
-- 화면 시안 `index.html` 은 외부 리소스(웹 글꼴 CDN 포함)를 쓰지 않는다. 글꼴 파일을 `assets/<화면>/`(디자이너) 또는 시스템 사본 `docs/design/system/`(디렉터)에 넣고 상대 경로로 부른다.
-- 한글 글꼴은 크다. 쓰는 글자만 남기는 서브셋(또는 동적 서브셋)으로 넣고 `font-display: swap` 을 쓴다(design-rules §4 의 2). 쓰는 굵기의 파일을 모두 넣는다.
-- OFL 글꼴은 파일과 함께 라이선스 원문(OFL.txt)을 둔다. 예약 이름(Reserved Font Name)이 있는 글꼴(SUIT, SUITE, Spoqa Han Sans Neo, IBM Plex, Nanum)은 서브셋 같은 바꾼 사본을 원래 이름으로 내지 않는다: 파일·`font-family` 이름을 바꾼다(예: `SUIT` → `SUIT-subset`).
+- 화면 시안 `index.html` 은 외부 리소스(웹 글꼴 CDN 포함)를 쓰지 않는다. 글꼴 파일을 `assets/<화면>/`(디자이너) 또는 시스템 사본 `docs/design/system/`(디렉터)에 넣고 상대 경로로 부른다. 쓰는 굵기의 파일을 모두 넣고 `font-display: swap` 을 쓴다(design-rules §4 의 2).
+- 기본은 받는 곳에서 받은 원본 글꼴 파일을 고치지 않고 그대로 넣는 것이다. 파일과 함께 라이선스 원문(OFL.txt)과 저작권 표시를 둔다.
+- 서브셋(쓰는 글자만 남기기. 한글 글꼴은 커서 design-rules §4 의 2 가 권한다)·형식 바꾸기로 만든 파일은 OFL 의 바꾼 판(Modified Version)이다(OFL FAQ, https://openfontlicense.org/ofl-faq/). 위 표의 "예약 이름"(Reserved Font Name)이 있는 글꼴은 바꾼 판에 그 이름을 쓸 수 없다. 서브셋하려면 글꼴 안의 이름(name 테이블의 패밀리·전체·PostScript 이름)과 파일 이름, CSS `font-family` 이름을 모두 예약 이름이 들어가지 않는 새 이름(예: `<프로젝트>-본문`)으로 바꾼다. 원래 이름에 무언가를 덧붙인 이름도 예약 이름을 담으므로 쓰지 않는다. 파일 이름·`font-family` 만 바꾸면 글꼴 안의 이름이 그대로라 안 된다.
+- 이름을 바꾸기 어려우면 서브셋하지 않고 원본을 넣거나, 저작권자·Google Fonts 가 배포하는 서브셋 파일을 받은 그대로 넣는다(고치지 않았으므로 바꾼 판이 아니다).
+- 예약 이름이 "없음" 인 글꼴도 바꾼 판에는 OFL 원문과 저작권 표시를 두고 바꾼 사실을 시스템 README 에 적는다. "확인 못 함" 인 글꼴은 라이선스를 직접 확인하기 전에는 바꾸지 않는다.
 
 ## 5. 기울임
 한글에는 기울임을 쓰지 않는다. 한글 글꼴에는 기울임체가 없어 브라우저가 기울여 합성한다(design-rules §4 의 7). 강조는 굵기나 색으로 한다.
@@ -2304,7 +2369,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/templates
 ---
 ### Task 5: 색·글꼴 내용 검사(설계 11.13 의 1 앞 넷)
 
-`lint.style_findings` 가 바뀐 파일(기존 내용 검사와 같은 확장자·제외)에서 넷을 찾는다. 과용 색(`overused.json` 의 `colors` 와 같은 hex, 3·4자리는 펼치고 알파는 버린다, 파일당 한 줄), Tailwind 기본 램프(과용 색 말고 서로 다른 값 3개 이상, 파일당 한 줄), 주 강조 hue(이름에 `primary`·`accent`·`brand` 가 든 CSS·Sass 변수나 따옴표 키의 첫 색이 h 240–300°, C ≥ 0.08), 과용 글꼴(`font-family`·`fontFamily` 의 첫 글꼴이 `fonts_latin`, 또는 한글을 그리는 글꼴이 `fonts_ko`). `compose.design_findings` 가 셋째 `guarded` 로 부른다: designdiff → 기존 내용 검사 → 색·글꼴, 합쳐 50건. 기존 `scan`·`design_findings`·`design_lint` 는 그대로라 기존 시험의 기대값이 바뀌지 않는다(`hteam lint --task` 의 한 시험만 새 줄이 붙는다). design-rules 의 §1 의 7·11, §3 의 11 을 `[기계] [판단]` 으로 바꾸고 자동 검사 절에 넷을 적는다.
+`lint.style_findings` 가 바뀐 파일(기존 내용 검사와 같은 확장자·제외)에서 넷을 찾는다. 과용 색(`overused.json` 의 `colors` 와 같은 hex, 3·4자리는 펼치고 알파는 버린다, 파일당 한 줄), Tailwind 기본 램프(과용 색 말고 서로 다른 값 3개 이상, 파일당 한 줄), 주 강조 hue(이름에 `primary`·`accent`·`brand` 가 든 CSS·Sass 변수나 따옴표 키의 첫 색이 h 240–300°, C ≥ 0.08), 과용 글꼴(`font-family`·`fontFamily` 의 첫 글꼴이 `fonts_latin`, 또는 한글을 그리는 글꼴이 `fonts_ko`). `compose.design_findings` 가 셋째 `guarded` 로 부른다: designdiff → 기존 내용 검사 → 색·글꼴, 합쳐 50건. 색·글꼴 검사는 13단계 규칙을 받은 프로젝트(`.herdr-team/palette.md` 가 있다, Task 4 의 리뷰 점검과 같은 조건)에서만 돈다: 경고가 인용하는 §1 의 7(새 문장)·§1 의 11·§3 의 11 이 upgrade 전 프로젝트의 규칙 사본에는 없다. 주 강조 hue 는 한 줄의 역할 토큰을 모두 본다(앞 토큰이 괜찮아도 뒤 토큰을 놓치지 않는다, 줄에 경고 하나). 기존 `scan`·`design_findings`·`design_lint` 는 그대로라 기존 시험의 기대값이 바뀌지 않는다. design-rules 의 §1 의 7·11, §3 의 11 을 `[기계] [판단]` 으로 바꾸고 자동 검사 절에 넷을 적는다.
 
 **Files:**
 - Modify: `herdr-team/lib/hteam/lint.py`, `herdr-team/lib/hteam/compose.py`(`design_findings`)
@@ -2313,7 +2378,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/templates
 
 **Interfaces:**
 - Consumes: Task 1 의 `palette.load_overused`·`font_key`·`hangul_font`, `color.parse`.
-- Produces: `lint.font_stack`, `lint.style_scan`, `lint.style_findings`. 카탈로그가 깨지면 `style_findings` 가 HteamError 를 올리고 디자인 절에는 `자동 검사 실패: HteamError: …` 한 줄만 남는다(다른 검사는 그대로).
+- Produces: `lint.font_stack`, `lint.style_scan`, `lint.style_findings`, `compose.design_findings` 의 색·글꼴 검사 조건(`p.team / "palette.md"` 가 있을 때만). 카탈로그가 깨지면 `style_findings` 가 HteamError 를 올리고 디자인 절에는 `자동 검사 실패: HteamError: …` 한 줄만 남는다(다른 검사는 그대로).
 
 - [ ] **Step 1: 실패하는 시험을 쓴다**
 
@@ -2390,6 +2455,9 @@ class StyleScanTest(unittest.TestCase):
                 '"secondary": "#2563eb", "primary": "#0f7d45"\n'
                 "--surface: #1e3a8a;\n")
         found = [x for x in self.scan("tokens.json", text) if "주 강조" in x]
+        later = ":root { --primary-foreground: #fff; --primary: oklch(0.6 0.15 260); }\n"  # 앞 토큰이 괜찮아도 뒤 토큰을 본다
+        self.assertEqual(self.scan("src/t.css", later),
+                         ["src/t.css:1: 주 강조가 파랑·남색·보라 계열(h 260°) — 근거를 적는다(§1 의 11)"])
         self.assertEqual(found, ["tokens.json:1: 주 강조가 파랑·남색·보라 계열(h 266°) — 근거를 적는다(§1 의 11)",
                                  "tokens.json:2: 주 강조가 파랑·남색·보라 계열(h 290°) — 근거를 적는다(§1 의 11)",
                                  "tokens.json:3: 주 강조가 파랑·남색·보라 계열(h 281°) — 근거를 적는다(§1 의 11)"])
@@ -2435,12 +2503,26 @@ class LintCommandTest(TeamCase):
 **Edit** `herdr-team/tests/test_lint.py`
 
 ```python
-        self.assertEqual(out["findings"], ["src/app.css:1: 왼쪽 강조 테두리(.card { border-left: 4px solid #2563eb; })"])
+    def test_scaffold_copies_design_rules(self):
 ```
 
 ```python
-        self.assertEqual(out["findings"], ["src/app.css:1: 왼쪽 강조 테두리(.card { border-left: 4px solid #2563eb; })",
-                                           "src/app.css:1: 과용 기본 색 1개(#2563eb Tailwind blue-600) — design-rules §1 의 11"])
+    def test_style_checks_only_with_13th_stage_rules(self):
+        # 색·글꼴 검사의 경고는 13단계 design-rules(§1 의 7·11, §3 의 11)를 인용한다. 그 규칙을 받지 않은 프로젝트(palette.md
+        # 가 없다)에는 내지 않는다(Codex 계획 리뷰 r1)
+        self.write_spec("T-001", "developer")
+        state.create(self.p, "T-001", "developer")
+        self.assertEqual(self.hteam("start", "T-001")[0], 0)
+        self.act_work("T-001", {"src/app.css": ".a { color: #1e3a8a; font-family: Pretendard, sans-serif; }\n"})
+        code, out = self.hteam("lint", "--task", "T-001", as_=None)
+        self.assertEqual((code, out["findings"]), (0, []), out)
+        self.commit(".herdr-team/palette.md", "# 팔레트 배정\n", "chore: 0.8.0 upgrade")
+        code, out = self.hteam("lint", "--task", "T-001", as_=None)
+        self.assertEqual(out["findings"], ["src/app.css:1: 과용 글꼴 Pretendard — §1 의 7",
+                                           "src/app.css:1: 과용 기본 색 1개(#1e3a8a Tailwind blue-900) — design-rules §1 의 11"],
+                         out)
+
+    def test_scaffold_copies_design_rules(self):
 ```
 
 - [ ] **Step 2: 시험이 실패하는지 본다**
@@ -2522,17 +2604,19 @@ def font_stack(value: str) -> list[str]:
     return [n for n in (x.strip().strip("\"'`").strip() for x in names) if n]
 
 
-def _role_color(line: str) -> tuple[float, float, float] | None:
-    """이름에 primary·accent·brand 가 든 값의 첫 색(OKLCH). 없으면 None."""
+def _role_colors(line: str) -> list[tuple[float, float, float]]:
+    """이름에 primary·accent·brand 가 든 값마다 그 값의 첫 색(OKLCH)을 줄 안 차례로. 색을 읽지 못한 값은 뺀다."""
     names = [m for m in _NAME.finditer(line) if (m.group(3) or "") not in ("value", "$value")]
+    out = []
     for i, m in enumerate(names):
         if not _ROLE.search(m.group(1) or m.group(3)):
             continue
         end = names[i + 1].start() if i + 1 < len(names) else len(line)
         found = _COLOR_LITERAL.search(line, m.end(), end)
-        if found:
-            return color.parse(found.group(0))
-    return None
+        lch = color.parse(found.group(0)) if found else None
+        if lch is not None:
+            out.append(lch)
+    return out
 
 
 def style_scan(rel: str, text: str, overused: dict) -> list[str]:
@@ -2552,9 +2636,10 @@ def style_scan(rel: str, text: str, overused: dict) -> list[str]:
                 hits.setdefault(h, number)
             elif h in ramp:
                 ramp_hits.setdefault(h, number)
-        lch = _role_color(line)
-        if lch is not None and lch[1] >= BLUE_MIN_C and BLUE_HUE[0] <= lch[2] < BLUE_HUE[1]:
-            found.append((number, f"주 강조가 파랑·남색·보라 계열(h {round(lch[2])}°) — 근거를 적는다(§1 의 11)"))
+        blue = next((lch for lch in _role_colors(line)
+                     if lch[1] >= BLUE_MIN_C and BLUE_HUE[0] <= lch[2] < BLUE_HUE[1]), None)  # 줄에 하나만 단다
+        if blue is not None:
+            found.append((number, f"주 강조가 파랑·남색·보라 계열(h {round(blue[2])}°) — 근거를 적는다(§1 의 11)"))
         for m in _FONT_DECL.finditer(line):
             stack = font_stack(m.group(1))
             if not stack:
@@ -2606,10 +2691,12 @@ def design_lint(root: Path, files: list[str]) -> list[str]:
 ```python
     """디자인 절의 경고 목록(설계 11.6·11.13): diff 검사(designdiff, 대상 커밋 shas 의 지운 줄·추가한 줄) 먼저, 내용 검사(lint,
     files 는 시도 기록의 바뀐 파일)와 색·글꼴 검사(lint.style_findings) 뒤. 검사마다 guarded 로 따로 감싸고(카탈로그가 깨져도
-    다른 검사는 낸다) 합쳐서 MAX_FINDINGS 까지. `hteam lint --task` 의 findings 도 이것이다."""
+    다른 검사는 낸다) 합쳐서 MAX_FINDINGS 까지. `hteam lint --task` 의 findings 도 이것이다. 색·글꼴 검사는 13단계 규칙을 받은
+    프로젝트(`.herdr-team/palette.md` 가 있다)에서만 돈다: 경고가 인용하는 design-rules §1 의 7·11, §3 의 11 이 옛 규칙 사본에는
+    없다(upgrade 전 프로젝트)."""
+    style = guarded(lambda: lint.style_findings(p.work_root, files)) if (p.team / "palette.md").is_file() else []
     return lint.cap(guarded(lambda: designdiff.design_diff_lint(p.work_root, files, shas))
-                    + guarded(lambda: lint.design_findings(p.work_root, files))
-                    + guarded(lambda: lint.style_findings(p.work_root, files)))
+                    + guarded(lambda: lint.design_findings(p.work_root, files)) + style)
 ```
 
 **Edit** `herdr-team/templates/design-rules.md`
@@ -2662,7 +2749,7 @@ def design_lint(root: Path, files: list[str]) -> list[str]:
 ```
 
 ```markdown
-"지운 줄에서 … 줄었다" 는 4번, "확대 막기"·"포커스 표시 제거" 는 6번의 즉시 차단 항목 후보다. "과용 기본 색"·"주 강조가 파랑·남색·보라"·"과용 글꼴"·"Tailwind 기본 램프" 는 design-rules §1 의 7·11, §3 의 11 후보이고 근거(브랜드 자산, 사용자 선택, `### 디자인 점검` 의 예외)가 있으면 지적하지 않는다.
+"지운 줄에서 … 줄었다" 는 4번, "확대 막기"·"포커스 표시 제거" 는 6번의 즉시 차단 항목 후보다. "과용 기본 색"·"주 강조가 파랑·남색·보라"·"과용 글꼴"·"Tailwind 기본 램프" 는 13단계 규칙을 받은 프로젝트(`.herdr-team/palette.md` 가 있다)에만 나오는 design-rules §1 의 7·11, §3 의 11 후보이고 근거(브랜드 자산, 사용자 선택, `### 디자인 점검` 의 예외)가 있으면 지적하지 않는다.
 ```
 
 **Edit** `README.md`
@@ -2672,7 +2759,7 @@ def design_lint(root: Path, files: list[str]) -> list[str]:
 ```
 
 ```markdown
-바뀐 파일의 이모지·왼쪽 강조 테두리·파랑·보라 그라디언트(내용 검사)와 과용 기본 색·Tailwind 기본 램프·파랑·남색·보라 주 강조·과용 글꼴(색·글꼴 검사) 뒤, 합쳐 50건까지.
+바뀐 파일의 이모지·왼쪽 강조 테두리·파랑·보라 그라디언트(내용 검사)와 과용 기본 색·Tailwind 기본 램프·파랑·남색·보라 주 강조·과용 글꼴(색·글꼴 검사. `.herdr-team/palette.md` 가 있는 프로젝트만, 0.8.0 upgrade 뒤) 뒤, 합쳐 50건까지.
 ```
 
 - [ ] **Step 4: 시험이 통과하는지 본다**
@@ -2694,7 +2781,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam
 ---
 ### Task 6: designdiff 보존 신호(설계 11.13 의 2 둘째)
 
-리디자인·수정 라운드에서 링크·입력란·이벤트·시험 ID 를 지우고 대신하는 것을 두지 않았는지 본다. 지운 줄에서 값을 뽑는다: `href`(빈 값·`#` 빼고), 입력 요소(`<input`·`<select`·`<textarea` 가 든 줄)의 `name`·`id`, `onClick=`·`onclick=`·`@click(.수식어)=` 의 값, `addEventListener('<이름>'`, `data-testid`, `testTag("…")`, `accessibilityIdentifier`. 남았는지는 그 태스크의 모든 대상 파일의 추가한 줄에서 본다: 링크와 이벤트 처리 값은 추가한 줄 어디에 있어도 된다(라우터 `to=`, 화살표 함수로 감싼 처리기. 낱말 글자로 시작·끝나면 낱말 경계), 입력란 name·id·addEventListener·시험 ID 는 같은 종류·값으로 다시 나와야 한다(id 를 바꾸면 잡는다). 순서는 파일마다 지운 줄 신호 → 보존 신호 → 추가한 줄이다. designer.md 품질 기준에 "지우면 이유를 적는다" 를 더한다(설계 11.12 의 5).
+리디자인·수정 라운드에서 링크·입력란·이벤트·시험 ID 를 지우고 대신하는 것을 두지 않았는지 본다. 지운 줄에서 값을 뽑는다: `href`(빈 값·`#` 빼고), 입력 요소(`<input`·`<select`·`<textarea` 가 든 줄)의 `name`·`id`, `onClick=`·`onclick=`·`@click(.수식어)=` 의 값, `addEventListener('<이름>'`, `data-testid`, `testTag("…")`, `accessibilityIdentifier`. 남았는지는 그 태스크의 모든 대상 파일의 추가한 줄에서 본다: 링크는 추가한 줄의 `href`·`to`(라우터 링크) 값 가운데 같은 값 전체가 있어야 한다(부분 문자열로 찾지 않는다: `/` 는 닫는 태그에, `/settings` 는 `/admin/settings` 에 들어 있다. Codex 계획 리뷰 r1). 이벤트 처리 값은 추가한 줄 어디에 있어도 된다(화살표 함수로 감싼 처리기. 낱말 글자로 시작·끝나면 낱말 경계), 입력란 name·id·addEventListener·시험 ID 는 같은 종류·값으로 다시 나와야 한다(id 를 바꾸면 잡는다). 순서는 파일마다 지운 줄 신호 → 보존 신호 → 추가한 줄이다. designer.md 품질 기준에 "지우면 이유를 적는다" 를 더한다(설계 11.12 의 5).
 
 **Files:**
 - Modify: `herdr-team/lib/hteam/designdiff.py`
@@ -2747,6 +2834,15 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam
         self.assertEqual(designdiff.kept_values('<input name="q" id="q"> <div id="x" href="#">'),
                          [("입력란 name", "q"), ("입력란 id", "q"), ("입력란 id", "x")])
 
+    def test_link_targets_are_compared_whole(self):
+        # Codex 계획 리뷰 r1: 링크 값을 추가한 글의 부분 문자열로 찾으면 닫는 태그의 `/` 나 더 긴 경로에 걸려 놓친다
+        self.change({"src/Nav.html": '<a href="/">홈</a>\n<a href="/settings">설정</a>\n<a href="/help">도움말</a>\n'}, "기존")
+        sha = self.change({"src/Nav.html": '<p>다른 내용</p>\n<a href="/admin/settings">설정</a>\n'
+                                           '<Link to={"/help"}>도움말</Link>\n'})
+        self.assertEqual([x for x in self.lint(["src/Nav.html"], [sha]) if "보존 신호" in x], [
+            'src/Nav.html: 보존 신호 — 지운 링크 href "/"(같은 변경에 대신하는 것이 없다)',
+            'src/Nav.html: 보존 신호 — 지운 링크 href "/settings"(같은 변경에 대신하는 것이 없다)'])
+
     def test_markdown_is_not_a_target(self):
 ```
 
@@ -2756,6 +2852,21 @@ Run: `(cd herdr-team && python3 -m unittest tests.test_designdiff)`
 Expected: FAIL/ERROR(보존 신호가 없다, `kept_values` 가 없다).
 
 - [ ] **Step 3: 구현하고 문서를 맞춘다**
+
+**Edit** `herdr-team/lib/hteam/designdiff.py`
+
+```python
+from pathlib import Path
+
+from . import gitio
+```
+
+```python
+from pathlib import Path
+from typing import NamedTuple
+
+from . import gitio
+```
 
 **Edit** `herdr-team/lib/hteam/designdiff.py`
 
@@ -2790,6 +2901,14 @@ _INPUT_ATTR = re.compile(rf"(?<![\w-])(name|id)\s*=\s*{_QUOTED}")
 _EVENT = re.compile(r"""(?<![\w-])(onClick|onclick|@click(?:\.[\w-]+)*)\s*=\s*(?:"([^"\n]*)"|'([^'\n]*)'|\{([^{}\n]*)\})""")
 _LISTENER = re.compile(r"""\baddEventListener\(\s*["'`]([\w:-]+)["'`]""")
 _LISTENER_KIND = "이벤트 addEventListener"
+_LINK_TARGET = re.compile(rf"(?<![\w-])(?:href|to)\s*=\s*{_QUOTED}")  # 남은 링크: href 와 라우터 링크의 to 값 전체
+
+
+class _Added(NamedTuple):
+    """같은 변경(모든 대상 파일)의 추가한 줄에서 본 것."""
+    text: str  # 줄마다 공백을 하나로 줄여 이은 글(이벤트 처리 값을 찾는다)
+    kept: set[tuple[str, str]]  # kept_values 의 (종류, 값)
+    links: set[str]  # href·to 속성 값 전체(공백을 하나로 줄인 것)
 
 
 def _value(m: re.Match, first: int = 1) -> str:
@@ -2810,19 +2929,22 @@ def kept_values(line: str) -> list[tuple[str, str]]:
     return [(kind, v) for kind, v in out if v and not (kind == "링크 href" and v == "#")]
 
 
-def _present(kind: str, value: str, added: str, added_kept: set[tuple[str, str]]) -> bool:
-    """지운 보존 신호가 같은 변경에 남았나. 링크와 이벤트 처리 값(addEventListener 말고)은 추가한 줄(added, 줄마다 공백을
-    하나로 줄여 이은 글) 어디에 있어도 된다(라우터의 `to=`, 처리 함수를 감싼 화살표 함수). 낱말 글자로 시작·끝나는 값은 앞뒤가
-    낱말 글자·`$`·`-` 가 아니어야 한다(`save` 가 `saveAll` 에 든 것으로 보지 않는다). 입력란 name·id, addEventListener, 시험
-    ID 는 추가한 줄에서 같은 종류·값으로 다시 나와야 한다(added_kept)."""
-    if kind != "링크 href" and not (kind.startswith("이벤트 ") and kind != _LISTENER_KIND):
-        return (kind, value) in added_kept
+def _present(kind: str, value: str, added: _Added) -> bool:
+    """지운 보존 신호가 같은 변경에 남았나. 링크는 추가한 줄의 `href`·`to` 값 가운데 같은 값 전체가 있어야 한다(라우터 링크로
+    바뀐 것은 남은 것이다. `/settings` 가 `/admin/settings` 로 바뀌면 남지 않은 것이다). 이벤트 처리 값(addEventListener 말고)은
+    추가한 줄 어디에 있어도 된다(처리 함수를 감싼 화살표 함수). 낱말 글자로 시작·끝나는 처리 값은 앞뒤가 낱말 글자·`$`·`-` 가
+    아니어야 한다(`save` 가 `saveAll` 에 든 것으로 보지 않는다). 입력란 name·id, addEventListener, 시험 ID 는 추가한 줄에서
+    같은 종류·값으로 다시 나와야 한다."""
+    if kind == "링크 href":
+        return value in added.links
+    if not kind.startswith("이벤트 ") or kind == _LISTENER_KIND:
+        return (kind, value) in added.kept
     pattern = re.escape(value)
     if re.match(r"[\w$]", value):
         pattern = r"(?<![\w$-])" + pattern
     if re.search(r"[\w$]$", value):
         pattern += r"(?![\w$-])"
-    return re.search(pattern, added) is not None
+    return re.search(pattern, added.text) is not None
 
 
 def _short(text: str) -> str:
@@ -2830,7 +2952,7 @@ def _short(text: str) -> str:
     return " ".join(text.split())[:SNIPPET]
 
 
-def _kept_findings(rel: str, removed: list[str], added: str, added_kept: set[tuple[str, str]]) -> list[str]:
+def _kept_findings(rel: str, removed: list[str], added: _Added) -> list[str]:
     """지운 줄의 보존 신호 가운데 추가한 줄 어디에도 없는 것(지운 줄 차례, (종류, 값)마다 한 번)."""
     seen: set[tuple[str, str]] = set()
     found = []
@@ -2839,7 +2961,7 @@ def _kept_findings(rel: str, removed: list[str], added: str, added_kept: set[tup
             if (kind, value) in seen:
                 continue
             seen.add((kind, value))
-            if not _present(kind, value, added, added_kept):
+            if not _present(kind, value, added):
                 found.append(f'{rel}: 보존 신호 — 지운 {kind} "{_short(value)}"(같은 변경에 대신하는 것이 없다)')
     return found
 ```
@@ -2874,15 +2996,16 @@ def _kept_findings(rel: str, removed: list[str], added: str, added_kept: set[tup
 
 ```python
     removed_anywhere = set(all_removed)
-    added_text = "\n".join(" ".join(line.split()) for line in all_added)
-    added_kept = {kv for line in all_added for kv in kept_values(line)}
+    added_all = _Added(text="\n".join(" ".join(line.split()) for line in all_added),
+                       kept={kv for line in all_added for kv in kept_values(line)},
+                       links={_value(m) for line in all_added for m in _LINK_TARGET.finditer(line)})
     found: list[str] = []
     for rel, (added, removed) in diffs.items():
         for name, _ in SIGNALS:
             lost = gone[rel][name] - came[rel][name]
             if lost > 0 and net[name] > 0:
                 found.append(f"{rel}: 지운 줄에서 {name} {lost}개가 줄었다(대체가 있는지 확인)")
-        found += _kept_findings(rel, removed, added_text, added_kept)
+        found += _kept_findings(rel, removed, added_all)
 
 ```
 
@@ -3013,7 +3136,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- docs/superpowers/spe
 - 카탈로그의 과용 색은 Tailwind v3 hex 다. v4 는 색을 oklch 로 정의해 hex 일치 검사에 맞지 않고 조사 자료에 전체 값이 없어 넣지 않았다(v4 의 파랑·보라는 주 강조 hue 검사가 h 240–300° 로 본다). 그 밖의 hex 는 v3·v4 가 다르다.
 - 과용 글꼴의 한글 목록에 일반 글꼴 이름(`ui-sans-serif`·`sans-serif`·`ui-serif`·`serif`)과 `BlinkMacSystemFont` 를 더했다(스택에 한글 글꼴이 없을 때 시스템 글꼴이 그린다는 설계 11.10 의 규칙을 Tailwind 기본 스택에도 맞춘 것). `monospace` 는 넣지 않았다(코드 글꼴).
 - 색·글꼴 검사는 줄 단위다. 여러 줄에 걸친 토큰(DTCG `"$type": "fontFamily"` 와 `"$value"` 가 다른 줄), `font:` 줄임 속성, `var()` 로 이어진 값, 따옴표 없는 JS 키(`primary: '#…'`), Tailwind 설정 파일의 `fontFamily: { sans: [...] }` 여러 줄은 보지 않는다. 한 줄에 이름 붙은 값이 여럿이면 다음 이름 앞까지만 그 값으로 본다. hex 는 앞뒤 글자로 거르지만 `href="#add"` 같은 조각이 3자리 hex 로 읽힐 수 있다(과용 색·램프와 같을 때만 경고).
-- 보존 신호는 줄 단위다. 여러 줄에 걸친 입력 태그의 name·id 는 보지 않고, `v-on:click`·`(click)`(Angular)·`android:id` 는 보지 않는다. 링크·이벤트 값은 추가한 줄 어디에 있어도 남은 것으로 본다(값이 다른 용도로 남아도 조용하다). 입력란 id 가 여러 줄에 걸친 태그로 옮겨지면 거짓 경고가 난다.
+- 보존 신호는 줄 단위다. 여러 줄에 걸친 입력 태그의 name·id 는 보지 않고, `v-on:click`·`(click)`(Angular)·`android:id` 는 보지 않는다. 링크는 추가한 줄의 `href`·`to` 값 전체로만 견주므로 다른 꼴의 링크(`:to="'/x'"`, `router.push('/x')`, 변수에 든 경로)로 옮기면 거짓 경고가 난다. 이벤트 처리 값은 추가한 줄 어디에 있어도 남은 것으로 본다(값이 다른 용도로 남아도 조용하다). 입력란 id 가 여러 줄에 걸친 태그로 옮겨지면 거짓 경고가 난다.
+- 색·글꼴 검사는 `.herdr-team/palette.md` 가 있는 프로젝트(0.8.0 upgrade 뒤)에서만 돈다. upgrade 전에는 과용 색·글꼴 경고가 없다(인용할 규칙이 그 프로젝트 사본에 없다). palette.md 만 지운 프로젝트도 검사하지 않는다.
+- 글꼴 카탈로그의 `reserved_name` 은 원문을 읽은 글꼴만 적었다. 원문을 읽지 못한 글꼴(라이선스 "확인 못 함")은 null 이고 예약 이름이 없다는 뜻이 아니다(fonts-ko.md 가 그 글꼴은 바꾸지 말라고 적는다).
+- 배정의 결정성은 IEEE 754 배정밀도 위의 `math.fsum`·곱셈·나눗셈과 SHA-256 에 기댄다. 시험이 박아 둔 가중치·배정으로 지킨다.
 - 들여오기 스크립트는 raw.githubusercontent.com 에서 받는다. 시험은 네트워크 없이 스크립트의 순수 함수와 저장소 데이터의 꼴만 본다. 원본과 같은지는 `--check`(네트워크)로 본다.
 - taste-skill 의 `bg`·`ink`·`accent` 는 OKLCH 글로 바꾸며 반올림한다(L·C 소수 셋째, h 첫째 자리). 원 hex 는 싣지 않는다.
 - 검사 방식 표기 시험은 design-rules 안의 `## 자동 검사` 절이 `§N 의 M` 으로 적은 항목만 본다. p13d 의 `web-rules.md` 가 다른 파일의 항목을 가리키면 그 시험을 넓혀야 한다.
