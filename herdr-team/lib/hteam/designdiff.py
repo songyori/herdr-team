@@ -45,11 +45,16 @@ SIGNALS = (
     ("aria-labelledby", _text("aria-labelledby")),
     ("aria-describedby", _text("aria-describedby")),
     ("aria-live", _text("aria-live")),
+    ("aria-expanded", _text("aria-expanded")),  # 13단계 p13d: 토글 상태(web-rules §7 의 10)
+    ("aria-pressed", _text("aria-pressed")),
     ("role", _attr("role")),
     ("alt", _attr("alt")),
     ("lang", _attr("lang")),
     ("<label", re.compile(r"<label\b")),
     ("htmlFor", _word("htmlFor")),
+    ("<caption", re.compile(r"<caption\b")),  # 13단계 p13d: 표 머리(web-rules §7 의 3)
+    # scope 는 표 머리의 값(row·col·rowgroup·colgroup)이 있을 때만 센다(따옴표·따옴표 없음·`{"col"}`). `const scope = view` 는 아니다
+    ("scope", re.compile(r"""(?<![\w.$-])scope\s*=\s*(?:\{\s*)?["'`]?(?:row|col)(?:group)?\b""")),
     (":focus-visible", _text(":focus-visible")),
     (":focus", re.compile(r":focus(?!-)")),
     ("focus-visible:", _variant("focus-visible")),

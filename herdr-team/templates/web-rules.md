@@ -20,7 +20,7 @@
 
 ## §3 폼 검증 시점
 1. 입력하는 동안에는 이미 보인 오류를 지우기만 하고 새 오류를 띄우지 않는다. 고친 칸은 포커스가 떠날 때(blur) 검사해 보인다. 제출에서 막고 첫 틀린 칸으로 포커스를 옮긴다(design-rules §2 의 7). [판단] [렌더]
-2. 오류 모양은 `:invalid` 가 아니라 `:user-invalid` 에 건다(손대기 전의 빈 필수 칸이 처음부터 오류로 보이지 않게). [판단]
+2. 오류 모양은 `:invalid` 가 아니라 `:user-invalid` 에 건다(손대기 전의 빈 필수 칸이 처음부터 오류로 보이지 않게). [기계] [판단]
 3. 키 입력마다 `aria-live` 로 읽히게 하지 않는다. [판단]
 4. 유효하게 제출한 뒤에는 응답이 올 때까지 같은 제출을 다시 보내지 않게 막는다. [판단]
 5. 클라이언트 검증은 사용성을 위한 것이다. 보안과 데이터 검사는 서버가 한다. [판단]
@@ -30,32 +30,32 @@
 2. 단계 색(hover·눌림 등)은 시스템이 미리 정한 토큰을 먼저 쓴다. 만들어야 하면 `oklch(from …)` 로 명도만 바꾸지 않고 `color-mix(in oklab, …)` 로 섞는다. [판단]
 
 ## §5 움직임 구현
-1. `opacity`·`transform`(`translate`·`scale`)만 움직인다. `height`·`max-height`·`width`·`top`·`left` 와 `all` 을 transition 하지 않는다. 높이 펼침은 `interpolate-size: allow-keywords` 나 `<details>` 로 한다. [판단]
+1. `opacity`·`transform`(`translate`·`scale`)만 움직인다. `height`·`max-height`·`width`·`top`·`left` 와 `all` 을 transition 하지 않는다. 높이 펼침은 `interpolate-size: allow-keywords` 나 `<details>` 로 한다. [기계] [판단]
 2. 나타나고 사라지는 전환은 `@starting-style` 과 `transition-behavior: allow-discrete` 로 한다. 전환이 끝난 요소는 최종 상태로 남긴다(`opacity: 0` 으로 숨긴 채 두지 않는다). [판단]
 3. 1초에 3번 넘게 번쩍이지 않는다. 동작 줄이기 설정과 상관없이 지키는 즉시 차단 항목이다. [렌더] [판단]
 
 ## §6 성능
 1. LCP 이미지(첫 화면의 가장 큰 그림)는 `loading="lazy"` 를 쓰지 않고 초기 HTML 에 둔다. `fetchpriority="high"` 는 그 하나에만 둔다. [판단]
-2. 모든 `<img>`·`<video>` 에 `width`·`height` 나 `aspect-ratio` 를 둔다(늦게 온 그림이 레이아웃을 밀지 않게). `srcset` 에는 `sizes` 를 함께 둔다. [판단]
+2. 모든 `<img>`·`<video>` 에 `width`·`height` 나 `aspect-ratio` 를 둔다(늦게 온 그림이 레이아웃을 밀지 않게). `srcset` 에는 `sizes` 를 함께 둔다. [기계] [판단]
 3. 첫 화면에 필요 없는 스크립트는 `defer`·`async` 로 불러온다. [판단]
-4. CSS `@import` 로 스타일시트를 잇지 않는다(요청이 차례로 걸린다). 빌드 도구가 하나로 합치는 가져오기와 Sass 의 가져오기는 괜찮다. [판단]
+4. CSS `@import` 로 스타일시트를 잇지 않는다(요청이 차례로 걸린다). 빌드 도구가 하나로 합치는 가져오기와 Sass 의 가져오기는 괜찮다. [기계] [판단]
 5. 웹폰트는 쓰는 굵기만 불러오고, 첫 화면에 쓰는 글꼴 파일은 `preload` 한다(design-rules §4 의 2). [판단]
 6. `content-visibility: auto` 는 첫 화면 아래 영역에만 쓴다. [판단]
-7. `will-change` 는 움직이기 직전 그 요소에만 두고 끝나면 지운다. 늘 켜 두지 않는다. [판단]
+7. `will-change` 는 움직이기 직전 그 요소에만 두고 끝나면 지운다. 늘 켜 두지 않는다. [기계] [판단]
 8. 50ms 넘는 작업은 `scheduler.yield()`(없는 브라우저는 `setTimeout` 으로 대신한다)로 쪼개고, 250ms 넘는 계산은 Worker 로 보낸다. [판단]
 9. 레이아웃 값을 읽고 쓰는 일을 번갈아 해서 레이아웃을 거듭 계산하게 하지 않는다(읽기를 모은 뒤 쓴다). [판단]
 
 ## §7 구조·이름
 1. 제목 단계를 건너뛰지 않는다. `<h1>` 은 화면에 하나다(모달 `<dialog>` 안은 따로 센다). [판단]
 2. 큰 글자 `div` 로 제목을 흉내 내지 않는다. [판단]
-3. 데이터 표에는 `<caption>` 과 `<th scope>` 를 둔다. 레이아웃에 표를 쓰지 않는다. [판단]
+3. 데이터 표에는 `<caption>` 과 `<th scope>` 를 둔다. 레이아웃에 표를 쓰지 않는다. [기계] [판단]
 4. 내비게이션이 둘 이상이면 `<nav aria-label>` 로 가른다. [판단]
 5. 같은 모양의 "수정"·"삭제" 버튼이 여럿이면 접근 가능한 이름에 대상을 넣는다(예: "주문 1024 삭제"). [판단]
 6. 접근 가능한 이름에 역할 낱말("버튼", "링크")을 넣지 않는다. `title`·`placeholder` 로 이름을 대신하지 않는다. [판단]
 7. 인라인 `<svg>` 는 장식이면 `aria-hidden="true"`, 정보면 `role="img"` 와 이름을 둔다. [판단]
 8. 말이 있는 `<video>` 에는 자막 `<track>` 을 둔다. [판단]
-9. `<iframe>` 에는 내용을 말하는 `title` 을 둔다. [판단]
-10. 펼치는 토글은 `aria-expanded`, 켜고 끄는 토글 버튼은 `aria-pressed` 로 상태를 알린다. [판단]
+9. `<iframe>` 에는 내용을 말하는 `title` 을 둔다. [기계] [판단]
+10. 펼치는 토글은 `aria-expanded`, 켜고 끄는 토글 버튼은 `aria-pressed` 로 상태를 알린다. [기계] [판단]
 
 ## §8 아이콘 구현
 1. 아이콘은 `currentColor` 로 글자색을 따르고, 두 테마 모두에서 배경과 대비 3:1 이상이다. [렌더]

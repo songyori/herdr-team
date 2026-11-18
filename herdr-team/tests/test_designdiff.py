@@ -159,6 +159,26 @@ class DesignDiffTest(TeamCase):
         self.assertEqual(found, [f"src/b.tsx: 지운 줄에서 {name} 1개가 줄었다(대체가 있는지 확인)"
                                  for name in ("role", "alt", "lang", "focus:", "motion-safe:")])
 
+    def test_toggle_and_table_header_signals(self):  # 설계 11.13 의 2(13단계 p13d)
+        self.change({"src/Menu.tsx": '<button aria-expanded={open} aria-pressed="false">메뉴</button>\n',
+                     "src/Table.html": '<table><caption>주문</caption><tr><th scope="col">번호</th></tr></table>\n'}, "기존")
+        sha = self.change({"src/Menu.tsx": "<button>메뉴</button>\n",
+                           "src/Table.html": "<table><tr><th>번호</th></tr></table>\n"})
+        self.assertEqual(self.lint(["src/Menu.tsx", "src/Table.html"], [sha]),
+                         [f"{rel}: 지운 줄에서 {name} 1개가 줄었다(대체가 있는지 확인)"
+                          for rel, name in (("src/Menu.tsx", "aria-expanded"), ("src/Menu.tsx", "aria-pressed"),
+                                            ("src/Table.html", "<caption"), ("src/Table.html", "scope"))])
+        # 줄만 나눈 것은 상쇄된다
+        self.change({"src/Menu.tsx": "<button\n  aria-expanded={open}\n>메뉴</button>\n"}, "[T-001] 되살림")
+        again = self.change({"src/Menu.tsx": "<button aria-expanded={open}>\n  메뉴\n</button>\n"}, "[T-001] 줄 나눔")
+        self.assertEqual(self.lint(["src/Menu.tsx"], [again]), [])
+        # 같은 뜻의 HTML 정리(따옴표 없는 값)와 표가 아닌 JS 변수는 줄어든 것이 아니다(Codex 계획 리뷰 r1·r2)
+        self.change({"src/T.html": '<th scope="col">번호</th>\n<th scope={"row"}>합계</th>\n',
+                     "src/v.ts": "const scope = view\n"}, "기존 표")
+        tidy = self.change({"src/T.html": "<th scope=col>번호</th>\n<th scope='row'>합계</th>\n",
+                            "src/v.ts": "const area = view\n"}, "[T-001] 정리")
+        self.assertEqual(self.lint(["src/T.html", "src/v.ts"], [tidy]), [])
+
     def test_kept_signals_lost_in_a_redesign(self):  # 설계 11.13 의 2(13단계)
         old = ('<a href="/settings">설정</a><a href="#">맨 위</a>\n'
                '<input id="email" name="email" type="email" />\n'

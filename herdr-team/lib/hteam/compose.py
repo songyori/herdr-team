@@ -301,15 +301,17 @@ def findings_list(items: list[str]) -> str:
 
 
 def design_findings(p, files: list[str], shas: list[str]) -> list[str]:
-    """디자인 절의 경고 목록(설계 11.6·11.13): diff 검사(designdiff, 대상 커밋 shas 의 지운 줄·추가한 줄) 먼저, 내용 검사(lint,
-    files 는 시도 기록의 바뀐 파일)와 색·글꼴 검사(lint.style_findings) 뒤. 검사마다 guarded 로 따로 감싸고(카탈로그가 깨져도
-    다른 검사는 낸다) 합쳐서 MAX_FINDINGS 까지. `hteam lint --task` 의 findings 도 이것이다. 색·글꼴 검사는 프로젝트의
-    `.herdr-team/design-rules.md` 가 13단계 판일 때(lint.has_style_rules)만 돈다: 경고가 인용하는 design-rules §1 의 7·11, §3 의
-    11 이 옛 규칙 사본에는 없다(upgrade 전 프로젝트, 고친 규칙 사본을 건너뛴 upgrade)."""
+    """디자인 절의 경고 목록(설계 11.6·11.13): diff 검사(designdiff, 대상 커밋 shas 의 지운 줄·추가한 줄) 먼저, 그다음 내용 검사
+    (lint, files 는 시도 기록의 바뀐 파일), 웹 검사(lint.web_findings), 색·글꼴 검사(lint.style_findings) 차례. 검사마다
+    guarded 로 따로 감싸고(카탈로그가 깨져도 다른 검사는 낸다) 합쳐서 MAX_FINDINGS 까지. `hteam lint --task` 의 findings 도
+    이것이다. 색·글꼴 검사는 프로젝트의 `.herdr-team/design-rules.md` 가 13단계 판일 때(lint.has_style_rules)만 돈다: 경고가
+    인용하는 design-rules §1 의 7·11, §3 의 11 이 옛 규칙 사본에는 없다(upgrade 전 프로젝트, 고친 규칙 사본을 건너뛴 upgrade).
+    웹 검사는 프로젝트에 `.herdr-team/web-rules.md` 가 있을 때만 돈다(경고가 인용하는 web-rules 가 upgrade 전 프로젝트에는 없다)."""
     style = (guarded(lambda: lint.style_findings(p.work_root, files))
              if lint.has_style_rules(p.team / "design-rules.md") else [])
+    web = guarded(lambda: lint.web_findings(p.work_root, files)) if (p.team / lint.WEB_RULES_FILE).is_file() else []
     return lint.cap(guarded(lambda: designdiff.design_diff_lint(p.work_root, files, shas))
-                    + guarded(lambda: lint.design_findings(p.work_root, files)) + style)
+                    + guarded(lambda: lint.design_findings(p.work_root, files)) + web + style)
 
 
 def text_findings(p, files: list[str], shas: list[str]) -> list[str] | None:

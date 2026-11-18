@@ -9,8 +9,9 @@ from tests.helpers import ROOT, TeamCase
 from hteam import state
 from hteam import palette
 from hteam.errors import HteamError
-from hteam.lint import (DESIGN_ROLES, MAX_BYTES, MAX_FINDINGS, STYLE_RULES_MARKER, cap, design_findings, design_lint,
-                        font_stack, has_style_rules, hue_family, scan, style_findings, style_scan)
+from hteam.lint import (DESIGN_ROLES, MAX_BYTES, MAX_FINDINGS, STYLE_RULES_MARKER, WEB_SUFFIXES, cap, design_findings,
+                        design_lint, font_stack, has_style_rules, hue_family, scan, strip_comments, style_findings, style_scan,
+                        web_findings, web_scan)
 from hteam.paths import Project
 
 VS16 = chr(0xFE0F)  # 이모지 표시 선택자. 소스에서 보이지 않으므로 이름으로 쓴다
@@ -357,6 +358,272 @@ class StyleScanTest(unittest.TestCase):
         self.assertTrue(has_style_rules(root / "rules.md"))
 
 
+class WebScanTest(unittest.TestCase):
+    """13단계 웹 검사(설계 11.13 의 1 웹): 잡는 것과 잡지 않는 것(주석, 속성 값 안의 태그·비교식, 글 하나가 아닌 JS 값, JS 객체 키,
+    CSS 글, 크기를 알 수 없는 태그), CSS 템플릿 글, HTML 의 대문자 태그, 대상 파일, 1 MB 입력의 시간."""
+
+    def heads(self, rel, text):
+        """`파일:줄: 이름` 부분만(발췌 앞 첫 괄호까지)."""
+        return [item.split("(", 1)[0] for item in web_scan(rel, text)]
+
+    def test_transition_values(self):
+        css = (".a { transition: all .2s ease; }\n"
+               ".b { transition: opacity .2s, max-height .3s; }\n"
+               ".c { transition-property: width; }\n"
+               ".d { transition: opacity .2s, transform .2s; transition-behavior: allow-discrete; }\n"
+               ".e { transition: margin-left .2s, min-width .2s; }\n"
+               ".f:has(.top) { --fade-transition: top; }\n"
+               ".g { content: 'transition: all .2s'; }\n"
+               ".h { color: red;transition: top 1s }\n")
+        self.assertEqual(web_scan("src/a.css", css), [
+            "src/a.css:1: transition all(transition: all .2s ease; }) — design-rules §6 의 3, web-rules §5 의 1",
+            "src/a.css:2: transition max-height(transition: opacity .2s, max-height .3s; }) — design-rules §6 의 3, "
+            "web-rules §5 의 1",
+            "src/a.css:3: transition width(transition-property: width; }) — design-rules §6 의 3, web-rules §5 의 1",
+            "src/a.css:8: transition top(transition: top 1s }) — design-rules §6 의 3, web-rules §5 의 1"])
+        jsx = ("<div style={{ transition: 'opacity .2s', left: 0 }} />\n"
+               '<div style={{ transition: "height 0.3s" }} />\n'
+               "const s = { transitionProperty: 'top' }\n"
+               '<p className="transition-all duration-200">x</p>\n'
+               '<p className="transition-[max-height,opacity] transition-opacity">x</p>\n'
+               "<p transition:slide>Move left</p>\n"
+               '{"transition": "all 0.2s", "transition-duration": "200ms"}\n'
+               'const t = { transition: enabled ? "opacity .2s" : "none", left: 0 };\n'
+               "const u = { transition: theme.transitions.create('width'), top: 0 };\n"
+               'const v = { transition: `${prop} .2s`, w: { transition: "left .2s" } };\n'
+               'const x = "transition-all";\n'
+               '<div style="transition: width .3s">x</div>\n')
+        self.assertEqual(self.heads("src/a.tsx", jsx),
+                         ["src/a.tsx:2: transition height", "src/a.tsx:3: transition top", "src/a.tsx:4: transition all",
+                          "src/a.tsx:5: transition max-height", "src/a.tsx:7: transition all", "src/a.tsx:10: transition left",
+                          "src/a.tsx:12: transition width"])
+
+    def test_comments_are_not_code(self):
+        # Codex 계획 리뷰 r1·r2: 주석 안의 선언·태그·가져오기(여러 줄 주석 포함)는 경고하지 않는다. 줄 번호는 그대로다. 본문의
+        # 아포스트로피가 뒤의 주석을 가리지 않고, `//` 는 줄의 첫 글자일 때만 주석이라 `https://` 는 코드다
+        css = ('/* transition: all .2s;\n   @import "old.css"; */\n'
+               '.a { color: red; } /* will-change: transform */\n'
+               '@import "real.css";\n')
+        self.assertEqual(web_scan("src/a.css", css), ["src/a.css:4: CSS @import 1개 — web-rules §6 의 4"])
+        scss = ('.a {\n  // transition: all .2s;\n  color: red; }\n'
+                '.b { background: url(//cdn.example.com/a.png); transition: top .2s; }\n')
+        self.assertEqual(self.heads("src/a.scss", scss), ["src/a.scss:4: transition top"])
+        html = ('<!-- <img src="old.png"> -->\n'
+                '<!--\n<iframe src="x"></iframe>\n-->\n'
+                '<p>https://example.com 참고</p><img src="new.png">\n'
+                "<p>Don't worry</p><!-- <img src=x> -->\n")
+        self.assertEqual(self.heads("src/a.html", html), ["src/a.html:5: 크기 없는 <img>"])
+        tsx = ('// <div onClick={go}>\n'
+               '/* <div role="button">\n   <li tabindex="2"> */\n'
+               '{/* <span onClick={go}>열기</span> */}\n'
+               'const a = { transition: "left .2s" };\n'
+               '  // const b = { transition: "all .2s" };\n'
+               '<a href="https://example.com/a">링크</a><div tabIndex={3}>x</div>\n'
+               "<p>Don't worry</p>{/* <img src=x> */}\n"
+               'const u = "https://example.com"; const c = { transition: "top 1s" };\n')
+        self.assertEqual(self.heads("src/a.tsx", tsx),
+                         ["src/a.tsx:5: transition left", "src/a.tsx:7: 양수 tabindex", "src/a.tsx:9: transition top"])
+
+    def test_strip_comments_keeps_positions(self):
+        # 따옴표 글을 가리지 않는다: 글 안의 `/* */` 도 지우고(놓치는 쪽), 줄 가운데의 `//` 는 그대로 둔다
+        text = 'a /* x\ny */ b <!-- c\n--> "/* 글 */" // d\n  // e\n{/* f */}\n'
+        out = strip_comments(text)
+        self.assertEqual(len(out), len(text))
+        self.assertEqual(out.split("\n"), ["a     ", "     b       ", '    "       " // d', "      ", "{       }", ""])
+        self.assertEqual(strip_comments("  // a\nb", line_comments=False), "  // a\nb")
+
+    def test_css_import_once_per_file(self):
+        css = ('@import "tailwindcss";\n@import url("https://fonts.googleapis.com/css2?family=Gowun+Dodum");\n.a {}\n'
+               '  @import "./b.css";\n/* @import "c.css"; */\n')
+        self.assertEqual(web_scan("src/app.css", css), ["src/app.css:2: CSS @import 2개 — web-rules §6 의 4"])
+        self.assertEqual(web_scan("src/app.scss", '@import "vars";\n'), [])  # Sass 의 가져오기
+        self.assertEqual(web_scan("src/app.css", '@import "tailwindcss/preflight";\n'), [])
+        self.assertEqual(web_scan("src/a.html", '<style>@import "b.css";</style>\n'), [])  # .css 의 줄 머리만 본다
+
+    def test_media_without_size_and_frame_without_title(self):
+        html = ('<img src="a.png" alt="">\n'
+                '<img src="b.png" alt="" width="40" height="40">\n'
+                '<img src="c.png" alt="" width="40">\n'
+                '<img class="avatar" src="d.png" alt="">\n'
+                '<img className="w-full" src={u} alt="" />\n'
+                '<img style="aspect-ratio: 4 / 3" src="e.png" alt="">\n'
+                '<video controls :class="cls"></video><video src="m.mp4"></video>\n'
+                '<img {...props} />\n'
+                '<img alt="a > b" src="x.png"\n'
+                '<Img src="x" /><img src="x" onLoad={() => setReady(true)} />\n'
+                '<img\n  src="f.png"\n  alt=""\n/>\n'
+                '<div title="<img src=x>">x</div>\n'
+                '<iframe src="https://example.com/map"></iframe>\n'
+                '<iframe title="매장 지도" src="https://example.com/map"></iframe>\n'
+                '<iframe :title="t" src="x"></iframe><iframe aria-label="지도" src="y"></iframe>\n')
+        self.assertEqual(self.heads("src/a.html", html),
+                         ["src/a.html:1: 크기 없는 <img>", "src/a.html:3: 크기 없는 <img>", "src/a.html:7: 크기 없는 <video>",
+                          "src/a.html:10: 크기 없는 <img>", "src/a.html:16: title 없는 <iframe>",
+                          "src/a.html:18: title 없는 <iframe>"])
+        found = web_scan("src/a.html", html)
+        self.assertEqual(found[0], 'src/a.html:1: 크기 없는 <img>(<img src="a.png" alt="">) — web-rules §6 의 2')
+        self.assertEqual(found[-1],
+                         'src/a.html:18: title 없는 <iframe>(<iframe aria-label="지도" src="y"></iframe>) — web-rules §7 의 9')
+
+    def test_keyboard_and_native_controls(self):
+        jsx = ('<div tabIndex={2}>x</div>\n'
+               '<li tabindex="1">x</li><li tabindex="0">y</li><li tabindex="-1">z</li>\n'
+               'const [tabIndex, setTabIndex] = useState(0); tabIndex = 1; <p data-tabindex="3" />\n'
+               '<div role="button" tabIndex={0} onClick={go} onKeyDown={key}>열기</div>\n'
+               '<div\n  className="card"\n  onClick={() => open(item)}\n>\n'
+               '<button onClick={save}>저장</button><span>{a > b ? 1 : 2}</span>\n'
+               'el.onclick = go;\n'
+               '<span @click.stop="toggle">펼치기</span>\n'
+               '<div aria-hidden={count > 0} onClick={go}>x</div>\n'
+               '<div data-x={a<b} onClick={go}>y</div>\n'
+               "<p title=\"role='button'\">x</p><Box role={'button'} />\n"
+               '<div :role="button">a</div><div :role="\'button\'">b</div><i v-bind:tabindex="2" />\n'
+               "<p title={'it\\'s fine'} />\n<div onClick={go}>x</div>\n<img src=x>\n")
+        self.assertEqual(self.heads("src/a.tsx", jsx),
+                         ["src/a.tsx:1: 양수 tabindex", "src/a.tsx:2: 양수 tabindex", 'src/a.tsx:4: role="button"',
+                          "src/a.tsx:4: 클릭 처리기를 단 <div>", "src/a.tsx:7: 클릭 처리기를 단 <div>",
+                          "src/a.tsx:11: 클릭 처리기를 단 <span>", "src/a.tsx:12: 클릭 처리기를 단 <div>",
+                          "src/a.tsx:13: 클릭 처리기를 단 <div>", 'src/a.tsx:14: role="button"', 'src/a.tsx:15: role="button"',
+                          "src/a.tsx:15: 양수 tabindex", "src/a.tsx:17: 클릭 처리기를 단 <div>", "src/a.tsx:18: 크기 없는 <img>"])
+        found = web_scan("src/a.tsx", jsx)
+        self.assertEqual(found[0], "src/a.tsx:1: 양수 tabindex(tabIndex={2}>x</div>) — design-rules §2 의 3")
+        self.assertEqual(found[4], "src/a.tsx:7: 클릭 처리기를 단 <div>(onClick={() => open(item)}) — design-rules §2 의 1")
+
+    def test_html_tag_names_ignore_case(self):
+        # Codex 계획 리뷰 r2: .html 의 대문자 태그는 같은 네이티브 태그다. 컴포넌트 파일은 소문자 태그만 네이티브다
+        text = '<IMG src=x>\n<DIV onclick="go()">x</DIV>\n<Span ONCLICK="go()">y</Span>\n'
+        self.assertEqual(self.heads("src/a.html", text),
+                         ["src/a.html:1: 크기 없는 <img>", "src/a.html:2: 클릭 처리기를 단 <div>", "src/a.html:3: 클릭 처리기를 단 <span>"])
+        self.assertEqual(web_scan("src/A.tsx", text), [])
+
+    def test_css_in_js_templates(self):
+        # Codex 계획 리뷰 r2: styled-components·emotion 의 CSS 템플릿 글은 CSS 다. `${…}` 는 지우고 본다
+        tsx = ('const Box = styled.div`transition: all .2s; will-change: transform;`;\n'
+               'const B = styled(Button).attrs({ type: "button" })`\n'
+               '  transition: ${p => p.speed};\n'
+               '  will-change: ${(p) => (p.on ? "transform" : "auto")};\n'
+               '  &:invalid { color: red; }\n'
+               '`;\n'
+               'const fade = keyframes`from { opacity: 0 } to { opacity: 1 }`;\n'
+               'const c = css`\n  content: "transition: all";\n  transition: height ${d}ms;\n`;\n'
+               'const t = `transition: all .2s`;\n')
+        self.assertEqual(self.heads("src/a.tsx", tsx),
+                         ["src/a.tsx:1: transition all", "src/a.tsx:1: will-change", "src/a.tsx:5: user- 없는 :invalid",
+                          "src/a.tsx:10: transition height"])
+        self.assertEqual(web_scan("src/a.vue", "<script>const B = styled.div`transition: all .2s;`</script>\n"), [])
+        # Codex 계획 리뷰 r3: 머리와 백틱 사이의 TypeScript 타입 인수(겹친 `<…>`, 안의 `=>`)도 CSS 템플릿 글이다
+        typed = ('const A = styled.div<{ on: boolean; cb: () => void }>`transition: all .2s;`;\n'
+                 'const B = styled(Button)<Props>`transition: all .2s;`;\n'
+                 'const C = styled.div.attrs({ type: "button" })<P>`transition: all .2s;`;\n'
+                 'const D = styled.div<Map<string, Array<number>>>`will-change: transform;`;\n'
+                 'const E = a < b ? 1 : 2; const F = `transition: all`;\n')
+        self.assertEqual(self.heads("src/b.tsx", typed),
+                         ["src/b.tsx:1: transition all", "src/b.tsx:2: transition all", "src/b.tsx:3: transition all",
+                          "src/b.tsx:4: will-change"])
+
+    def test_invalid_and_will_change(self):
+        css = ('input:invalid { border-color: red; }\n'
+               'input:user-invalid { border-color: red; }\n'
+               'form :not(:invalid),\n.b:invalid:focus {\n  color: red;\n}\n'
+               '.c::before { content: ":invalid"; }\n'
+               '.a { will-change: transform; }\n.b { will-change: auto; }\n')
+        self.assertEqual(self.heads("src/a.css", css),
+                         ["src/a.css:1: user- 없는 :invalid", "src/a.css:3: user- 없는 :invalid", "src/a.css:4: user- 없는 :invalid",
+                          "src/a.css:8: will-change"])
+        tsx = ('<input className="invalid:border-red-500 user-invalid:border-red-500 aria-invalid:ring" />\n'
+               '<input className={cn("peer-invalid:block", ok && "group-invalid:flex")} />\n'
+               'const errors = {invalid:true};\n'
+               'form.querySelectorAll(":invalid, :out-of-range");\n'
+               'input:invalid { color: red }\n'
+               '<p className="will-change-transform will-change-auto">x</p>\n'
+               'const s = { willChange: "opacity", w: { willChange: "auto" } };\n'
+               'const t = { willChange: isOpen ? "transform" : "auto" };\n')
+        self.assertEqual(self.heads("src/a.tsx", tsx),
+                         ["src/a.tsx:1: user- 없는 :invalid", "src/a.tsx:2: user- 없는 :invalid", "src/a.tsx:6: will-change",
+                          "src/a.tsx:7: will-change"])
+        vue = ('<template><input :class="{ \'invalid:ring\': bad }" /></template>\n'
+               '<style scoped>\ninput:invalid { color: red }\n.x { transition: height .2s; will-change: top }\n</style>\n'
+               '<script>const s = { transition: open ? "height .2s" : "none" }</script>\n')
+        self.assertEqual(self.heads("src/a.vue", vue),
+                         ["src/a.vue:1: user- 없는 :invalid", "src/a.vue:3: user- 없는 :invalid", "src/a.vue:4: transition height",
+                          "src/a.vue:4: will-change"])
+        self.assertEqual(web_scan("src/a.css", "a:invalid{}\n"), ["src/a.css:1: user- 없는 :invalid(:invalid{}) — web-rules §3 의 2"])
+        self.assertEqual(web_scan("src/a.css", "a{will-change:opacity}\n"),
+                         ["src/a.css:1: will-change(will-change:opacity}) — web-rules §6 의 7"])
+
+    def test_targets(self):
+        root = Path(tempfile.mkdtemp(prefix="hteam-web-")).resolve()
+        self.addCleanup(shutil.rmtree, root, True)
+        for rel in ("src/a.html", "docs/design/system/README.md", "docs/planning/spec.md", "scripts/a.py",
+                    "docs/design/screens/h/artifact/project/x.html"):
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text('<div style="transition: all 1s"></div>\n<img src=x>\n', encoding="utf-8")
+        files = ["src/a.html", "docs/design/system/README.md", "docs/planning/spec.md", "scripts/a.py",
+                 "docs/design/screens/h/artifact/project/x.html", "../x.css", "src/gone.css"]
+        self.assertEqual([x.split("(")[0] for x in web_findings(root, files)],
+                         ["src/a.html:1: transition all", "src/a.html:2: 크기 없는 <img>"])
+        self.assertNotIn(".md", WEB_SUFFIXES)
+        self.assertEqual(design_lint(root, files), [])  # 이모지 등 내용 검사는 웹 경고를 섞지 않는다
+
+    def test_linear_on_hostile_input(self):
+        import time
+        mb = 1 << 20
+        cases = {
+            "a.css": "transition:" * (mb // 11),
+            "b.css": "/*" * (mb // 2),
+            "c.html": "<!--" * (mb // 4),
+            "d.tsx": "'a" * (mb // 2),
+            "e.tsx": "//" * (mb // 2),
+            "f.tsx": "`" + "a" * mb,
+            "g.html": "<img " * (mb // 5),
+            "h.html": "<img>" * (mb // 5),
+            "i.tsx": "<div {" * (mb // 6),
+            "j.tsx": '<div "' * (mb // 6),
+            "k.tsx": "<div " + "x onClick={a} " * (mb // 14),
+            "l.tsx": "<div\n onClick={a}\n>\n" * (mb // 18),
+            "m.tsx": '<div className={cn("' + "invalid:x " * (mb // 10) + '")}>',
+            "n.html": "<style" * (mb // 6),
+            "o.html": 'style="' * (mb // 7),
+            "p.html": "<style>" + "a{" * (mb // 2),
+            "q.css": ".a{transition:all 1s}\n" * (mb // 22),
+            "r.css": "@import x;\n" * (mb // 11),
+            "s.tsx": 'transition: "' * (mb // 13),
+            "t.tsx": "<a b=" * (mb // 5),
+            "u.css": "a:invalid " * (mb // 10),
+            "v.tsx": "styled.div`" * (mb // 11),
+            "w.tsx": "css`${" * (mb // 6),
+            "x.tsx": "styled.div.attrs((" * (mb // 18),
+            "y.tsx": "css`" + "${'\\" * (mb // 4),
+            "z.tsx": "\n  //" * (mb // 5),
+            "aa.css": ".a{content:'" * (mb // 12),
+            "ab.tsx": "<p title={'\\'" * (mb // 13),
+            "ac.css": " " * mb + "transition: all",
+            "ad.tsx": ('<div className={"\n' + r'\"a' * 1200 + '\n"} />\n') * 289,  # Codex 계획 리뷰 r3: 이스케이프 따옴표가 많은 깨진 JSX
+            "ae.tsx": "styled.div<<<" * (mb // 13),
+            "af.tsx": "styled(a)<" + "=" * mb,
+        }
+        for rel, text in cases.items():
+            start = time.monotonic()
+            web_scan(rel, text)
+            self.assertLess(time.monotonic() - start, 1.5, rel)
+
+    def test_rules_and_docs_name_the_checks(self):
+        # 경고가 인용하는 항목이 자동 검사 절에 있고(검사 방식 표기 시험이 [기계] 를 본다) 리뷰 디자인 절·README 가 웹 검사를 적는다
+        rules = (ROOT / "templates/design-rules.md").read_text(encoding="utf-8")
+        auto = rules[rules.index("## 자동 검사"):rules.index("## 출처")]
+        for needle in ("`role=\"button\"`(§2 의 1)", "양수 `tabindex`(§2 의 3)", "(§6 의 3)", "(web-rules §5 의 1)",
+                       "(web-rules §3 의 2)", "(web-rules §6 의 2)", "(web-rules §6 의 4", "(web-rules §6 의 7)",
+                       "(web-rules §7 의 9)", "(web-rules §7 의 10)", "(web-rules §7 의 3)", "web-rules.md 가 있을 때만",
+                       "주석은 보지 않는다", "클래스·style 이 있는 `<img>`·`<video>` 는 크기를 알 수 없어 보지 않는다"):
+            self.assertIn(needle, auto)
+        review = (ROOT / "templates/review-design.md").read_text(encoding="utf-8")
+        self.assertIn("웹 경고(`.herdr-team/web-rules.md` 가 있는 프로젝트에만 나오는", review)
+        self.assertIn("표 머리(`<caption>`·`scope`)", review)
+        readme = (ROOT.parent / "README.md").read_text(encoding="utf-8")
+        self.assertIn("`.herdr-team/web-rules.md` 가 있는 프로젝트만", readme)
+        self.assertIn("토글 `aria-expanded`·`aria-pressed`", readme)
+
+
 class LintCommandTest(TeamCase):
     def setUp(self):
         super().setUp()
@@ -415,6 +682,22 @@ class LintCommandTest(TeamCase):
         code, out = self.hteam("lint", "--task", "T-001", as_=None)
         self.assertEqual(out["findings"], ["src/app.css:1: 과용 글꼴 Pretendard — §1 의 7",
                                            "src/app.css:1: 과용 기본 색 1개(#1e3a8a Tailwind blue-900) — design-rules §1 의 11"],
+                         out)
+
+    def test_web_checks_only_with_web_rules(self):
+        # 13단계 p13d(설계 11.13 의 1 웹): 웹 경고는 web-rules·design-rules 의 웹 항목을 인용한다. 프로젝트에 web-rules.md 가
+        # 없으면(upgrade 전) 내지 않는다. 있으면 내용 검사 뒤에 붙는다
+        self.write_spec("T-001", "developer")
+        state.create(self.p, "T-001", "developer")
+        self.assertEqual(self.hteam("start", "T-001")[0], 0)
+        self.act_work("T-001", {"src/Menu.tsx": "<div onClick={open}>메뉴</div>\n<span>🚀</span>\n"})
+        code, out = self.hteam("lint", "--task", "T-001", as_=None)
+        self.assertEqual((code, out["findings"]), (0, ["src/Menu.tsx:2: 이모지(🚀)"]), out)
+        self.commit(".herdr-team/web-rules.md", (ROOT / "templates/web-rules.md").read_text(encoding="utf-8"),
+                    "chore: 0.8.0 upgrade")
+        code, out = self.hteam("lint", "--task", "T-001", as_=None)
+        self.assertEqual(out["findings"], ["src/Menu.tsx:2: 이모지(🚀)",
+                                           "src/Menu.tsx:1: 클릭 처리기를 단 <div>(onClick={open}>메뉴</div>) — design-rules §2 의 1"],
                          out)
 
     def test_lint_task_guard_findings(self):

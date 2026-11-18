@@ -33,9 +33,9 @@
 13. 템플릿 크롬을 쓰지 않는다: 제목 위 작은 눈썹 라벨, 가운뎃점으로 잇는 메타 줄, 링크·버튼 글 끝 `→`, 장식용 상태 점, 카드 속 카드, 둥근 타일에 넣은 아이콘 + 제목의 반복, 리터럴 근흑(`#000`·`#111`) 글자. [판단]
 
 ## §2 접근성 (WCAG 2.2 AA)
-1. 네이티브 요소를 먼저 쓴다. 동작은 `<button>`, 이동은 `<a href>` 이고 `<div onClick>` 을 쓰지 않는다. 네이티브 요소가 있으면 ARIA 로 흉내 내지 않는다. [판단]
+1. 네이티브 요소를 먼저 쓴다. 동작은 `<button>`, 이동은 `<a href>` 이고 `<div onClick>` 을 쓰지 않는다. 네이티브 요소가 있으면 ARIA 로 흉내 내지 않는다. [기계] [판단]
 2. 포커스 표시는 `:focus-visible` 에 둔다. 대체 표시 없이 `outline: none` 을 쓰지 않는다. 직접 만든 포커스 링은 맞닿는 색과 3:1 이상이다. [기계] [렌더]
-3. 포인터로 하는 모든 조작을 키보드로도 할 수 있다. Esc 는 겹친 창을 닫고, Tab 은 위젯 사이를, 화살표는 위젯 안을 움직이고, Enter·Space 가 버튼을 누른다. `tabindex` 는 `0` 과 `-1` 만 쓴다. [렌더]
+3. 포인터로 하는 모든 조작을 키보드로도 할 수 있다. Esc 는 겹친 창을 닫고, Tab 은 위젯 사이를, 화살표는 위젯 안을 움직이고, Enter·Space 가 버튼을 누른다. `tabindex` 는 `0` 과 `-1` 만 쓴다. [기계] [렌더]
 4. 모달은 `<dialog>` 와 `showModal()` 을 먼저 쓴다. 열면 포커스를 안으로 옮기고 닫으면 연 컨트롤로 돌려준다. 클라이언트 라우팅으로 화면이 바뀌면 문서 제목을 바꾸고 새 화면의 `<h1>` 이나 `<main>` 으로 포커스를 옮긴다. [판단] [렌더]
 5. 누를 수 있는 영역은 24×24px 이상이다. 터치 화면은 44×44px, 데스크톱은 40×40px 를 목표로 한다. 보이는 크기를 키울 수 없으면 가상 요소로 영역을 넓히되 이웃 영역과 겹치지 않는다. 끌기 조작에는 버튼이나 메뉴 같은 대안을 둔다. [렌더]
 6. 모든 입력란에 보이는 라벨(`<label for>`)을 둔다. 자리표시(placeholder)는 라벨이 아니다. 알맞은 `type`·`inputmode`·`autocomplete` 를 쓰고 붙여넣기를 막지 않는다. [기계] [판단]
@@ -90,7 +90,7 @@
 ## §6 표면·동작
 1. 겹친 면이 고른 안쪽 여백을 가지면 바깥 모서리는 안쪽 모서리 + 여백 + 테두리 두께다. 여백이 24px 를 넘거나 일부러 고르지 않으면 각자 모서리 토큰을 쓴다. [판단]
 2. 높이감은 그림자로, 구조(구분선·표·선택 상태·입력란 경계)는 테두리로 나타낸다. [판단]
-3. 상호작용 상태 변화는 keyframes 가 아니라 transition 으로 한다(중간에 되돌릴 수 있다). `transition-property` 에 바뀌는 속성만 적고 `all` 을 쓰지 않는다. [판단]
+3. 상호작용 상태 변화는 keyframes 가 아니라 transition 으로 한다(중간에 되돌릴 수 있다). `transition-property` 에 바뀌는 속성만 적고 `all` 을 쓰지 않는다. [기계] [판단]
 4. 누른 버튼은 150ms `ease-out` 으로 0.96배로 줄어든다. 비활성 버튼은 줄지 않는다. 동작 줄이기 설정에서는 줄이지 않는다(§2 의 10번). [판단]
 5. 입력, 행 hover, 탭 전환처럼 자주 하는 조작은 즉시 반응하거나 `opacity`·`background-color` 만 150ms 이하로 바꾼다. 큰 움직임은 첫 로드, 성공, 빈 상태처럼 드문 순간에만 쓴다. [판단]
 6. 나갈 때는 들어올 때보다 짧고 작게 움직인다(150ms, 12px 이내). 처음 렌더할 때 기본 상태를 애니메이션으로 띄우지 않는다. [판단]
@@ -124,12 +124,14 @@
 ## 자동 검사
 `hteam review` 는 리뷰어를 띄우기 전에 태스크가 바꾼 파일에서 다음 의심 위치를 찾아 리뷰 프롬프트에 넣는다. 정당한 쓰임이 있으므로 자동 불합격은 아니다. 나머지는 리뷰어가 화면과 코드를 직접 보고 판단한다.
 - §1 의 1(이모지), §1 의 2(왼쪽 줄 강조), §1 의 3(파랑·보라 그라디언트). Tailwind 조합은 한 줄 또는 한 클래스 목록 안에서 본다. 한 줄에 다른 요소가 섞이면 거짓 경고가 날 수 있다.
-- 지운 줄에서 줄어든 접근성·글자 신호: 접근 가능한 이름·대체 텍스트(§2 의 8), 포커스(§2 의 2), 라벨 연결(§2 의 6), 동작 줄이기(§2 의 10), 알림(§2 의 12), `lang`(§2 의 13), `keep-all`(§4 의 6), `tabular-nums`(§4 의 8)
+- 지운 줄에서 줄어든 접근성·글자 신호: 접근 가능한 이름·대체 텍스트(§2 의 8), 포커스(§2 의 2), 라벨 연결(§2 의 6), 동작 줄이기(§2 의 10), 알림(§2 의 12), `lang`(§2 의 13), `keep-all`(§4 의 6), `tabular-nums`(§4 의 8), 토글 상태 `aria-expanded`·`aria-pressed`(web-rules §7 의 10), 표 머리 `<caption`·`scope`(web-rules §7 의 3)
 - 추가한 줄의 확대 막기(`user-scalable=no`·`maximum-scale=1`, §2 의 14)와 `focus-visible` 없는 포커스 제거(`outline: none`, §2 의 2)
 - 과용 기본 색과 주 강조 hue(§1 의 11): 플러그인 카탈로그의 과용 색과 같은 hex(파일당 한 줄), 이름에 `primary`·`accent`·`brand` 가 든 CSS 변수·토큰의 색이 OKLCH h 240–300°·C 0.08 이상
 - 프레임워크 기본 램프(§3 의 11): Tailwind v3 기본 램프와 같은 hex 가 과용 색 말고 3개 이상(파일당 한 줄)
 - 과용 글꼴(§1 의 7): `font-family`·`fontFamily` 의 첫 글꼴이 라틴 과용 글꼴이거나, 한글을 그리는 글꼴이 과용 글꼴(`fonts-ko.md` 의 판정)
 - 지운 줄의 보존 신호: 링크 `href`, 입력란의 `name`·`id`, 이벤트(`onClick`·`@click` 의 값, `addEventListener` 의 이벤트 이름), `data-testid`·`testTag`·`accessibilityIdentifier` 의 값이 같은 변경의 추가한 줄에 없다(다시 그리면서 동작·시험 연결을 잃었는지 본다)
+- 웹: 클릭 처리기(`onClick`·`@click`)를 단 `<div>`·`<span>` 과 `role="button"`(§2 의 1), 양수 `tabindex`(§2 의 3), `transition` 의 `all`(§6 의 3). 아래 줄과 함께 프로젝트에 web-rules.md 가 있을 때만 찾고, Markdown 은 보지 않는다
+- web-rules 항목: `transition` 의 `height`·`max-height`·`width`·`top`·`left`(web-rules §5 의 1), CSS 선택자의 `:invalid` 와 클래스 값의 `invalid:` 변형(web-rules §3 의 2), 크기(`width`·`height`) 없는 `<img>`·`<video>`(web-rules §6 의 2), `.css` 의 `@import`(web-rules §6 의 4, 파일당 한 줄), `will-change`(web-rules §6 의 7), `title` 없는 `<iframe>`(web-rules §7 의 9). 주석은 보지 않는다. JS 객체의 값은 글 하나일 때만 읽고, styled-components·emotion 의 CSS 템플릿 글은 CSS 로 읽는다. JS 문자열 안의 예시 태그·선언도 잡는다. `<img>`·`<video>`·`<iframe>` 은 한 줄 안에서 닫힌 태그만 보고, 클래스·style 이 있는 `<img>`·`<video>` 는 크기를 알 수 없어 보지 않는다
 
 ## 출처
 §2–§7 과 리뷰 방식(변경분 분류, 지운 줄 읽기, 즉시 차단 항목, 싼 수정 순서)은 jakubkrehel/skills(https://github.com/jakubkrehel/skills, MIT, 2026-11-01 커밋 60bf140)의 better-accessibility·better-colors·better-typography·better-layout·better-ui·interface-review·better-interface·state-machine 에서 가져와 orca-team 흐름에 맞게 새로 압축했다. 한글 줄바꿈·기울임·웹폰트 서브셋, 앱 플랫폼 대응, 보고서·리뷰 연결은 orca-team 이 더했다. herdr-team 은 orca-team 0.5.2 에서 옮겼다.

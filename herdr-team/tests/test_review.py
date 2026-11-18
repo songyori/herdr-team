@@ -271,6 +271,23 @@ class DesignSectionTest(ReviewCase):
             found = compose.design_findings(self.p, ["src/b.css"], [])
         self.assertEqual(found, ["자동 검사 실패: OSError: git 이 멈췄다", *content[:2]])
 
+    def test_web_warnings_follow_content_and_precede_style(self):
+        # 13단계 p13d(설계 11.13 의 1 웹): 웹 검사는 프로젝트에 web-rules.md 가 있을 때만, 내용 검사 뒤·색·글꼴 검사 앞이다.
+        # 따로 감싸 실패해도 다른 검사는 낸다
+        with mock.patch.object(designdiff, "design_diff_lint", return_value=["d"]), \
+                mock.patch.object(lint, "design_findings", return_value=["c"]), \
+                mock.patch.object(lint, "web_findings", return_value=["w"]), \
+                mock.patch.object(lint, "style_findings", return_value=["s"]):
+            self.assertEqual(compose.design_findings(self.p, ["src/a.css"], []), ["d", "c"])
+            self.commit(".herdr-team/web-rules.md", "# 웹 플랫폼 규칙\n", "chore: 웹 규칙")
+            self.assertEqual(compose.design_findings(self.p, ["src/a.css"], []), ["d", "c", "w"])
+            self.commit(".herdr-team/design-rules.md", (ROOT / "templates/design-rules.md").read_text(encoding="utf-8"),
+                        "chore: 0.8.0 규칙")
+            self.assertEqual(compose.design_findings(self.p, ["src/a.css"], []), ["d", "c", "w", "s"])
+            with mock.patch.object(lint, "web_findings", side_effect=OSError("웹 검사가\n멈췄다")):
+                found = compose.design_findings(self.p, ["src/a.css"], [])
+        self.assertEqual(found, ["d", "c", "자동 검사 실패: OSError: 웹 검사가 멈췄다", "s"])
+
     def test_other_roles_have_no_design_section(self):
         text = self.prompt("T-001", "tester", {"tests/a.txt": "x\n"})
         self.assertNotIn("## 디자인 기준", text)

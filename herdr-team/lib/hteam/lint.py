@@ -7,6 +7,9 @@ palette.load_overused 이고 깨지면 그 검사만 실패한다(compose 가 �
 있다). 판정은 리뷰어가 한다.
 리뷰 프롬프트의 디자인 절(compose.review_prompt)이 시도 기록의 바뀐 파일로 부른다. 표준 라이브러리 정규식만 쓰고
 git·hc·horch·codex 를 부르지 않는다(명령 `lint --task` 만 review 의 대상 커밋 계산과 compose 의 절 목록을 거친다).
+13단계 웹 검사(web_findings)는 프로젝트에 web-rules.md 가 있을 때 design-rules·web-rules 의 웹 항목(클릭 처리기를 단 div·span,
+role="button", 양수 tabindex, transition 의 all·레이아웃 속성, user- 없는 :invalid, 크기 없는 img·video, title 없는 iframe,
+.css 의 @import, will-change)을 찾는다(compose 가 따로 감싼다).
 read_source·cap 은 문구 검사(textlint)도 함께 쓴다.
 """
 from __future__ import annotations
@@ -556,6 +559,397 @@ def style_findings(root: Path, files: list[str]) -> list[str]:
         if text is not None:
             overused = overused or load_overused()
             found += style_scan(rel, text, overused)
+    return found
+
+
+# 13단계 웹 검사(설계 11.13 의 1 웹). 경고가 가리키는 규칙(규칙 참조 시험이 이 글의 인용을 본다)
+RULE_TRANSITION = "design-rules §6 의 3, web-rules §5 의 1"
+RULE_MEDIA = "web-rules §6 의 2"
+RULE_IMPORT = "web-rules §6 의 4"
+RULE_WILL_CHANGE = "web-rules §6 의 7"
+RULE_IFRAME = "web-rules §7 의 9"
+RULE_INVALID = "web-rules §3 의 2"
+RULE_TABINDEX = "design-rules §2 의 3"
+RULE_CLICK = "design-rules §2 의 1"
+# Markdown 은 화면 코드가 아니다(README 배지의 <img>, 규칙을 옮겨 적은 설명 글). 그 밖의 대상·제외는 내용 검사와 같다
+WEB_SUFFIXES = SUFFIXES - {".md"}
+WEB_RULES_FILE = "web-rules.md"  # 프로젝트 .herdr-team/ 에 이 파일이 있을 때만 돈다(compose.design_findings)
+CSS_SUFFIXES = frozenset({".css", ".scss"})  # 파일 전체가 CSS 다. 그 밖은 <style> 블록·정적 style 값·CSS 템플릿 글만 CSS 다
+JS_SUFFIXES = frozenset({".js", ".jsx", ".ts", ".tsx"})  # styled-components·emotion 의 CSS 템플릿 글을 찾는 파일
+HTML_SUFFIXES = frozenset({".html", ".htm"})  # 태그 이름의 대소문자를 가리지 않는 파일(컴포넌트 파일은 소문자 태그만 본다)
+VALUE_WINDOW = 300  # 선언 값을 읽는 최대 글자 수(머리마다 줄 끝까지 읽지 않는다)
+EXCERPT_WINDOW = 200  # 발췌를 만들기 전에 자르는 글자 수(긴 줄에서 경고마다 줄 끝까지 복사하지 않는다)
+# 주석: `/* */`(JSX `{/* */}` 포함)·`<!-- -->` 는 어디서나, `//` 는 줄의 첫 글자(앞 공백 뒤)일 때만. 따옴표 글을 가리지 않는다
+_COMMENTS = re.compile(r"/\*.*?(?:\*/|\Z)|<!--.*?(?:-->|\Z)|(?:\A|(?<=\n))[ \t]*//[^\n]*", re.S)
+_COMMENTS_NO_LINE = re.compile(r"/\*.*?(?:\*/|\Z)|<!--.*?(?:-->|\Z)", re.S)
+_NOT_NEWLINE = re.compile(r"[^\n]")
+_STYLE_BLOCK = re.compile(r"<style\b[^<>]{0,500}>(.*?)(?:</style\s*>|\Z)", re.S | re.I)
+_STYLE_ATTR = re.compile(r"""(?<![\w:.-])style\s*=\s*(?:"([^"]*)"|'([^']*)')""", re.I)
+# CSS 템플릿 글의 머리: css`…`·keyframes`…`·createGlobalStyle`…`·injectGlobal`…`·styled.div`…`·styled(X)`…`. 머리와 백틱 사이에
+# TypeScript 타입 인수(`<Props>`, 세 겹까지의 `<…>`, 안의 `=>` 는 닫는 괄호가 아니다)와 `.attrs(…)` 가 올 수 있다. 반복은 모두 상한이
+# 있고 되돌아가지 않는다(possessive)
+_TYPE_ARGS = r"(?:\s*<(?:=>|[^<>`=]|=|<(?:=>|[^<>`=]|=|<(?:=>|[^<>`=]|=){0,200}+>){0,200}+>){0,300}+>)?"
+_CSS_TEMPLATE = re.compile(r"(?<![\w$.])(?:css|keyframes|createGlobalStyle|injectGlobal|styled\.[A-Za-z]\w*|styled\([^()\n]{0,200}\))"
+                           + _TYPE_ARGS + r"(?:\s*\.attrs\((?:[^()]|\([^()]{0,500}\)){0,500}\))?" + _TYPE_ARGS + r"\s*`")
+_TEMPLATE_STOP = re.compile(r"[`\\]|\$\{")
+_CSS_STRING = re.compile(r""""(?:\\.|[^"\\\n])*+"?|'(?:\\.|[^'\\\n])*+'?""")  # CSS 글(content: '…'). 닫히지 않으면 줄 끝까지
+# 선언 머리: CSS·JSON(`"transition":`)·JS 객체. 앞이 낱말 글자·`$`·`.`·`-` 면 아니다(`--fade-transition`, `.transition:hover`)
+_DECL = re.compile(r"""(?<![\w$.-])(transition(?:-property|Property)?|will-change|willChange)["']?\s*:\s*""")
+_CSS_VALUE = re.compile(r"""[^;{}<>\n"']*""")  # CSS 값의 끝. `"`·`'` 는 style 속성 값의 끝이다
+_JS_LITERAL = re.compile(r""""((?:\\.|[^"\\\n]){0,300})"|'((?:\\.|[^'\\\n]){0,300})'|`((?:\\.|[^`\\]){0,300})`""")
+_VALUE_END = re.compile(r"[ \t]*(?:[,;})\]\r\n]|\Z)")  # JS 값이 글 하나로 끝났다(뒤에 `+`·`?`·`.` 가 이어지지 않는다)
+_AUTO = re.compile(r"\s*auto\b")
+_TRANSITION_PROP = re.compile(r"(?<![\w-])(all|max-height|height|width|top|left)(?![\w-])")
+_SEGMENT = re.compile(r"[^{};]*[{};]?")  # CSS 를 `{`·`;`·`}` 로 끊은 조각. `{` 로 끝나면 선택자다
+_CSS_INVALID = re.compile(r"(?<!:):invalid(?![\w-])")  # `:user-invalid` 는 `:invalid` 를 담지 않는다
+_TW_TRANSITION = re.compile(r"(?<![\w-])transition-(all|\[[^\]\s]{0,100}\])(?![\w-])")
+_TW_WILL_CHANGE = re.compile(r"(?<![\w-])will-change-(?!auto(?![\w-]))[\w\[]")
+_TW_INVALID = re.compile(r"(?<![\w-])(?:peer-|group-)?invalid:(?=[\w!\[])")
+_CSS_IMPORT = re.compile(r"[ \t]*@import\b")
+_TW_IMPORT = re.compile(r"""[ \t]*@import\s+["']tailwindcss["'/]""")  # Tailwind v4 의 입구
+# 태그 머리: 앞이 ASCII 낱말 글자·`$`·`.`·`)`·`]` 면 비교식·제네릭(`a<b`, `useState<boolean>`)이라 태그가 아니다
+_TAG_OPEN = re.compile(r"(?<![A-Za-z0-9_$.)\]])<([A-Za-z][\w.:-]*)")
+_TAG_STOP = re.compile(r"""["'`{}>]|<(?=[A-Za-z/!])""")
+_BRACE_STOP = re.compile(r"""["'`{}]""")
+# 중괄호 안 JS 글의 나머지(역슬래시 이스케이프를 따른다, `'it\'s'`). 닫는 따옴표까지 맞는다
+_QUOTE_TAIL = {q: re.compile(r"(?:\\.|[^%s\\])*+%s" % (q, q), re.S) for q in "\"'`"}
+_ATTR_NAME = re.compile(r"""[^\s=/>"'`{}]+""")
+_ATTR_GAP = re.compile(r"[\s/]*")
+_WS = re.compile(r"\s*")
+_UNQUOTED = re.compile(r"[^\s>]*")
+_BUTTON = re.compile(r"""\s*(["'`])button\1\s*""")
+_POSITIVE = re.compile(r"\s*\+?0*[1-9]\d*\s*")
+_STRING_START = re.compile(r"""["'`]""")
+# 클래스 JS 식 안 따옴표 글의 나머지(이스케이프를 따른다). `"`·`'` 는 줄 끝에서 끝난다. 그룹 1 은 닫는 따옴표(없으면 None)
+_STRING_REST = {'"': re.compile(r'(?:\\.|[^"\\\n])*+(")?'), "'": re.compile(r"(?:\\.|[^'\\\n])*+(')?"),
+                "`": re.compile(r"(?:\\[\s\S]|[^`\\])*+(`)?")}
+_CLASS_NAMES = frozenset({"class", "classname", ":class", "v-bind:class", "class:list"})
+_STYLE_NAMES = frozenset({"style", ":style", "v-bind:style"})
+
+
+def _blank(text: str, spans: list[tuple[int, int]]) -> str:
+    """spans(차례, 겹치지 않는다)를 같은 길이의 공백으로 바꾼 글(줄바꿈은 둔다)."""
+    out: list[str] = []
+    last = 0
+    for a, b in spans:
+        out += [text[last:a], _NOT_NEWLINE.sub(" ", text[a:b])]
+        last = b
+    out.append(text[last:])
+    return "".join(out)
+
+
+def strip_comments(text: str, line_comments: bool = True) -> str:
+    """주석을 같은 길이의 공백으로 바꾼 글(줄바꿈은 두므로 줄 번호·위치가 그대로다): `/* */`(여러 줄, JSX `{/* */}` 포함)와
+    `<!-- -->` 는 어디서나, line_comments 면 줄의 첫 글자(앞 공백 뒤)인 `//` 줄(주석 처리한 코드 줄)도. 따옴표 글을 가리지
+    않는다(본문의 아포스트로피가 주석을 가리지 않게): 글 안의 `/*`(`"src/**/*.ts"`)는 다음 `*/` 까지 지운다. 닫히지 않은
+    주석은 파일 끝까지다."""
+    rx = _COMMENTS if line_comments else _COMMENTS_NO_LINE
+    return _blank(text, [m.span() for m in rx.finditer(text)])
+
+
+def _brace_end(code: str, i: int, end: int) -> int:
+    """code[i] 의 `{` 와 짝이 맞는 `}` 의 위치. 따옴표 글(이스케이프를 따른다) 안의 괄호는 건너뛴다. 없으면 end."""
+    depth = 0
+    while True:
+        m = _BRACE_STOP.search(code, i, end)
+        if m is None:
+            return end
+        c, i = m.group(0), m.end()
+        if c in "\"'`":
+            tail = _QUOTE_TAIL[c].match(code, i, end)
+            if tail is None:
+                return end
+            i = tail.end()
+        elif c == "{":
+            depth += 1
+        else:
+            depth -= 1
+            if depth <= 0:
+                return m.start()
+
+
+def _css_templates(code: str) -> tuple[str, list[tuple[int, int]]]:
+    """styled-components·emotion 의 CSS 템플릿 글(_CSS_TEMPLATE 뒤 `` `…` ``)의 범위들과, 그 안의 `${…}`(짝 맞는 중괄호)를
+    같은 길이의 공백으로 지운 글. 템플릿 글을 앞에서부터 한 번씩 읽는다."""
+    spans: list[tuple[int, int]] = []
+    holes: list[tuple[int, int]] = []
+    pos = 0
+    while (m := _CSS_TEMPLATE.search(code, pos)) is not None:
+        i, end = m.end(), len(code)
+        while (s := _TEMPLATE_STOP.search(code, i)) is not None:
+            if s.group(0) == "\\":
+                i = s.end() + 1
+            elif s.group(0) == "`":
+                end = s.start()
+                break
+            else:
+                close = min(_brace_end(code, s.start() + 1, len(code)) + 1, len(code))
+                holes.append((s.start(), close))
+                i = close
+        spans.append((m.end(), end))
+        pos = end + 1
+    return (_blank(code, holes) if holes else code), spans
+
+
+def _css_ranges(code: str, suffix: str, templates: list[tuple[int, int]]) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """(선택자를 읽는 범위, CSS 로 읽는 범위 전체). .css·.scss 는 파일 전체다. 그 밖은 `<style>` 블록 안과 CSS 템플릿 글
+    (선택자와 선언), 정적 `style="…"` 속성 값(선언만)이고, 둘째 목록은 겹친 범위를 합친 차례 목록이다."""
+    if suffix in CSS_SUFFIXES:
+        return [(0, len(code))], [(0, len(code))]
+    blocks = sorted([m.span(1) for m in _STYLE_BLOCK.finditer(code)] + templates)
+    merged: list[tuple[int, int]] = []
+    for a, b in sorted(blocks + [m.span(g) for m in _STYLE_ATTR.finditer(code) for g in (1, 2) if m.group(g) is not None]):
+        if merged and a <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+    return blocks, merged
+
+
+def _declarations(code: str, css: list[tuple[int, int]]) -> list[tuple[str, int, str]]:
+    """transition·transition-property·will-change 선언의 경고 (이름, 위치, 규칙). CSS 범위에서는 선언 머리(범위 처음, `{`·`;`·줄
+    처음 뒤. 사이 공백은 된다)이고 CSS 글(`content: 'transition: …'`) 밖일 때만, 값을 `;`·`{`·`}`·줄 끝까지 읽는다. 그 밖(JS
+    객체·JSON)은 값이 글 하나일 때만 그 글을 읽는다: 삼항식·함수 호출·이름·`${` 가 든 템플릿 글은 읽지 않는다. JS 문자열 안의
+    예시 선언(`"transition: 'all'"` 같은 글)은 가리지 않는다(경고 전용, 리뷰어가 판단한다)."""
+    starts = [a for a, _ in css]
+    strings = [m.span() for a, b in css for m in _CSS_STRING.finditer(code, a, b)]
+    string_starts = [a for a, _ in strings]
+    out = []
+    for m in _DECL.finditer(code):
+        v = m.end()
+        i = bisect.bisect_right(starts, m.start()) - 1
+        if i >= 0 and m.start() < css[i][1]:
+            k = bisect.bisect_right(string_starts, m.start()) - 1
+            if k >= 0 and m.start() < strings[k][1]:
+                continue
+            j = m.start() - 1
+            while j >= css[i][0] and code[j] in " \t":
+                j -= 1
+            if j >= css[i][0] and code[j] not in "{;\r\n":
+                continue
+            value = _CSS_VALUE.match(code, v, v + VALUE_WINDOW).group(0)
+        else:
+            lit = _JS_LITERAL.match(code, v)
+            if lit is None or not _VALUE_END.match(code, lit.end()) or (lit.group(3) is not None and "${" in lit.group(3)):
+                continue
+            value = next(g for g in lit.groups() if g is not None)
+        if m.group(1).startswith("will"):
+            if value.strip() and not _AUTO.match(value):
+                out.append(("will-change", m.start(), RULE_WILL_CHANGE))
+            continue
+        prop = _TRANSITION_PROP.search(value)
+        if prop:
+            out.append((f"transition {prop.group(1)}", m.start(), RULE_TRANSITION))
+    return out
+
+
+def _invalid_selectors(code: str, blocks: list[tuple[int, int]]) -> list[tuple[str, int, str]]:
+    """CSS 선택자(`{` 앞)의 `:invalid`. .css·.scss, `<style>` 블록, CSS 템플릿 글만 본다(JS 문자열
+    `querySelectorAll(":invalid")` 는 아니다)."""
+    out = []
+    for a, b in blocks:
+        for seg in _SEGMENT.finditer(code, a, b):
+            if seg.group(0).endswith("{"):
+                out += [("user- 없는 :invalid", m.start(), RULE_INVALID) for m in _CSS_INVALID.finditer(code, seg.start(), seg.end())]
+    return out
+
+
+def _read_tag(code: str, i: int, limit: int) -> tuple[int, bool]:
+    """태그 이름 뒤 i 부터 태그를 닫는 `>` 를 찾는다: (위치, 닫힘). 따옴표 값과 중괄호 값(`{count > 0}`, `{a<b}`) 안은 건너뛰고,
+    중괄호 안의 JS 글은 이스케이프(`'it\\'s'`)를 따른다. 중괄호 밖에서 다음 태그의 `<` 를 만나거나 limit 까지 닫히지 않으면
+    (멈춘 위치, False)."""
+    depth = 0
+    while True:
+        m = _TAG_STOP.search(code, i, limit)
+        if m is None:
+            return limit, False
+        c, i = m.group(0), m.end()
+        if c in "\"'`":
+            if depth:
+                tail = _QUOTE_TAIL[c].match(code, i, limit)
+                if tail is None:
+                    return limit, False
+                i = tail.end()
+            else:
+                close = code.find(c, i, limit)
+                if close < 0:
+                    return limit, False
+                i = close + 1
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth = max(depth - 1, 0)
+        elif c == "<":
+            if depth == 0:
+                return m.start(), False
+        elif depth == 0:
+            return m.start(), True
+
+
+def _attrs(code: str, i: int, end: int) -> list[tuple[str, int, str, int, int]]:
+    """태그 이름 뒤 i 부터 end(`>`) 앞까지의 속성 (이름, 이름 위치, 꼴, 값 시작, 값 끝). 꼴은 따옴표 `q`, 중괄호 `b`, 따옴표 없음
+    `u`, 값 없음 ``. 펼침(`{...props}`)은 이름 `{` 다. 값 안의 글자는 이름으로 읽지 않는다."""
+    out = []
+    while True:
+        i = _ATTR_GAP.match(code, i, end).end()
+        if i >= end:
+            return out
+        if code[i] == "{":
+            close = _brace_end(code, i, end)
+            out.append(("{", i, "b", i + 1, close))
+            i = close + 1
+            continue
+        m = _ATTR_NAME.match(code, i, end)
+        if m is None:
+            i += 1
+            continue
+        j = _WS.match(code, m.end(), end).end()
+        if j < end and code[j] == "=":
+            j = _WS.match(code, j + 1, end).end()
+            if j < end and code[j] in "\"'`":
+                close = code.find(code[j], j + 1, end)
+                close = end if close < 0 else close
+                out.append((m.group(0), m.start(), "q", j + 1, close))
+                i = close + 1
+            elif j < end and code[j] == "{":
+                close = _brace_end(code, j, end)
+                out.append((m.group(0), m.start(), "b", j + 1, close))
+                i = close + 1
+            else:
+                v = _UNQUOTED.match(code, j, end)
+                out.append((m.group(0), m.start(), "u", j, v.end()))
+                i = max(v.end(), j + 1)
+        else:
+            out.append((m.group(0), m.start(), "", m.end(), m.end()))
+            i = m.end()
+
+
+def _base(low: str) -> str:
+    """Vue 바인딩 머리(`:`·`v-bind:`)를 뗀 속성 이름."""
+    return low[1:] if low.startswith(":") else low[7:] if low.startswith("v-bind:") else low
+
+
+def _js_strings(code: str, a: int, b: int) -> list[tuple[int, int]]:
+    """code[a:b] 의 따옴표 글 안쪽 범위들. 앞에서부터 글마다 한 번씩 훑는다(닫히지 않은 글은 그 끝까지 건너뛰고 그 안에서 다시
+    찾지 않는다. 이스케이프 따옴표가 많은 깨진 JSX 에서도 선형이다)."""
+    out = []
+    i = a
+    while (m := _STRING_START.search(code, i, b)) is not None:
+        rest = _STRING_REST[m.group(0)].match(code, m.end(), b)
+        if rest.group(1) is not None:
+            out.append((m.end(), rest.end() - 1))
+        i = rest.end()
+    return out
+
+
+def _class_hits(code: str, low: str, kind: str, a: int, b: int) -> list[tuple[str, int, str]]:
+    """클래스 속성 값의 Tailwind transition·will-change·invalid 변형. 정적 값(`class="…"`)은 값 전체를, JS 식(`className={…}`,
+    `:class="…"`, `class:list={…}`)은 그 안의 따옴표 글만 본다(객체 키 `{invalid:true}` 는 클래스가 아니다)."""
+    if kind in ("q", "u") and low in ("class", "classname"):
+        spans = [(a, b)]
+    else:
+        spans = _js_strings(code, a, b)
+    out = []
+    for s, e in spans:
+        for m in _TW_TRANSITION.finditer(code, s, e):
+            prop = _TRANSITION_PROP.search(m.group(1))
+            if prop:
+                out.append((f"transition {prop.group(1)}", m.start(), RULE_TRANSITION))
+        out += [("will-change", m.start(), RULE_WILL_CHANGE) for m in _TW_WILL_CHANGE.finditer(code, s, e)]
+        out += [("user- 없는 :invalid", m.start(), RULE_INVALID) for m in _TW_INVALID.finditer(code, s, e)]
+    return out
+
+
+def _size_missing(attrs: list[tuple[str, int, str, int, int]]) -> bool:
+    """`<img>`·`<video>` 에 크기가 없다고 단정할 수 있나: 클래스·style·펼침이 있으면 크기를 알 수 없어 아니다. 아니면
+    `width`·`height` 속성 둘 다 없을 때."""
+    names = set()
+    for name, *_ in attrs:
+        low = name.lower()
+        if low == "{" or low in _CLASS_NAMES or low.startswith("class:") or low in _STYLE_NAMES:
+            return False
+        names.add(_base(low))
+    return not {"width", "height"} <= names
+
+
+def _tag_hits(code: str, fold: bool) -> list[tuple[str, int, str]]:
+    """태그를 앞에서부터 한 번씩 읽어(_read_tag, SCAN_WINDOW 안, 여러 줄) 속성으로 본다: 한 줄 안에서 닫힌 `<img>`·`<video>`
+    의 크기, `<iframe>` 의 `title`, `<div>`·`<span>` 의 클릭 처리기(onClick·onclick·@click), 모든 태그의 `role="button"`·양수
+    tabindex·클래스 값. fold 면(.html) 태그 이름의 대소문자를 가리지 않는다. 닫히지 않은 태그는 멈춘 곳부터 다시 찾는다(같은 글을
+    두 번 읽지 않는다). JS 문자열 안의 예시 태그도 태그로 읽는다(경고 전용, 리뷰어가 판단한다)."""
+    out = []
+    pos = 0
+    while (m := _TAG_OPEN.search(code, pos)) is not None:
+        end, closed = _read_tag(code, m.end(), min(len(code), m.start() + SCAN_WINDOW))
+        pos = end + 1 if closed else end
+        if not closed:
+            continue
+        tag, attrs = (m.group(1).lower() if fold else m.group(1)), _attrs(code, m.end(), end)
+        if tag in ("img", "video", "iframe") and code.find("\n", m.start(), end) < 0:
+            if tag == "iframe":
+                if all(a[0] != "{" for a in attrs) and "title" not in {_base(a[0].lower()) for a in attrs}:
+                    out.append(("title 없는 <iframe>", m.start(), RULE_IFRAME))
+            elif _size_missing(attrs):
+                out.append((f"크기 없는 <{tag}>", m.start(), RULE_MEDIA))
+        for name, at, kind, a, b in attrs:
+            low = name.lower()
+            if tag in ("div", "span") and (low == "onclick" or low == "@click" or low.startswith("@click.")):
+                out.append((f"클릭 처리기를 단 <{tag}>", at, RULE_CLICK))
+            elif ((low == "role" and (kind in ("q", "u") and code[a:b].strip() == "button"
+                                      or kind == "b" and _BUTTON.fullmatch(code, a, b)))
+                  or (low in (":role", "v-bind:role") and kind == "q" and _BUTTON.fullmatch(code, a, b))):
+                out.append(('role="button"', at, RULE_CLICK))
+            elif _base(low) == "tabindex" and kind in ("q", "u", "b") and _POSITIVE.fullmatch(code, a, b):
+                out.append(("양수 tabindex", at, RULE_TABINDEX))
+            elif low in _CLASS_NAMES:
+                out += _class_hits(code, low, kind, a, b)
+    return out
+
+
+def _excerpt(text: str, at: int) -> str:
+    """at 부터 그 줄 끝까지(EXCERPT_WINDOW 안)의 발췌."""
+    end = text.find("\n", at, at + EXCERPT_WINDOW)
+    return _short(text[at:end if end >= 0 else at + EXCERPT_WINDOW])
+
+
+def web_scan(rel: str, text: str) -> list[str]:
+    """한 파일의 웹 경고(설계 11.13 의 1 웹)를 줄 순서로 `파일:줄: 이름(발췌) — 규칙`. 주석을 지운 글(strip_comments)을 보고,
+    .js·.jsx·.ts·.tsx 는 CSS 템플릿 글의 `${…}` 도 지운다. 줄마다 이름 하나에 경고 하나. `.css` 의 `@import` 는 파일당 한 줄(첫
+    줄과 개수)이고 `@import "tailwindcss…"` 는 뺀다(`.scss` 는 Sass 의 가져오기라 보지 않는다). 태그는 .css·.scss·.json 이
+    아닌 파일에서만 읽는다."""
+    suffix = Path(rel).suffix.lower()
+    code = strip_comments(text, line_comments=suffix not in (".css", ".json"))
+    templates: list[tuple[int, int]] = []
+    if suffix in JS_SUFFIXES:
+        code, templates = _css_templates(code)
+    blocks, css = _css_ranges(code, suffix, templates)
+    hits = _declarations(code, css) + _invalid_selectors(code, blocks)
+    if suffix not in CSS_SUFFIXES and suffix != ".json":
+        hits += _tag_hits(code, fold=suffix in HTML_SUFFIXES)
+    starts = _line_starts(text)
+    found: list[tuple[int, str]] = []
+    seen: set[tuple[int, str]] = set()
+    for name, at, rule in sorted(hits, key=lambda h: h[1]):
+        number = bisect.bisect_right(starts, at)
+        if (number, name) not in seen:
+            seen.add((number, name))
+            found.append((number, f"{name}({_excerpt(text, at)}) — {rule}"))
+    if suffix == ".css":
+        imports = [n for n, line in enumerate(code.split("\n"), 1) if _CSS_IMPORT.match(line) and not _TW_IMPORT.match(line)]
+        if imports:
+            found.append((imports[0], f"CSS @import {len(imports)}개 — {RULE_IMPORT}"))
+    return [f"{rel}:{number}: {what}" for number, what in sorted(found, key=lambda x: x[0])]
+
+
+def web_findings(root: Path, files: list[str]) -> list[str]:
+    """files 가운데 웹 검사 대상(WEB_SUFFIXES, 제외는 design_findings 와 같다)의 웹 경고(상한 없음)."""
+    found: list[str] = []
+    for rel in files:
+        if rel.startswith("../") or Path(rel).suffix.lower() not in WEB_SUFFIXES or matches_any(rel, EXCLUDE):
+            continue
+        text = read_source(root, rel)
+        if text is not None:
+            found += web_scan(rel, text)
     return found
 
 
