@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import bisect
 import colorsys
+import json
 import re
 from pathlib import Path
 
@@ -402,6 +403,52 @@ def _font_values(text: str):
             yield number, font_stack(value)
 
 
+def _json_role_hues(text: str) -> list[tuple[int, float]] | None:
+    """JSON 토큰 파일(text)에서 주 강조 hue 경고를 (줄 번호, h)로 낸다. JSON 이 아니면 None(줄 단위 검사로 되돌아간다).
+    키 경로에 primary·accent·brand 가 든 문자열 값을 색으로 읽는다(`$value` 말고 `$` 로 시작하는 메타 키의 값은 뺀다).
+    역할 객체(경로에서 처음 역할 이름이 나온 키)마다 문서 순서의 첫 파랑·남색·보라 값 하나만, 그 값이 나온 줄에 단다."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    cursor = 0  # 문서 순서로 키·값을 찾아 나가는 위치(같은 값이 여러 번 나와도 차례대로 맞는다)
+
+    def locate(needle_src: str) -> int | None:
+        nonlocal cursor
+        for needle in (json.dumps(needle_src), json.dumps(needle_src, ensure_ascii=False)):
+            at = text.find(needle, cursor)
+            if at >= 0:
+                cursor = at + len(needle)
+                return at
+        return None
+
+    out: list[tuple[int, float]] = []
+    done: set[tuple] = set()  # 이미 단 역할 객체(경로 접두)
+
+    def walk(node, path: tuple, role: tuple | None, own: str | None, role_line: int) -> None:
+        if isinstance(node, dict):
+            for key, child in node.items():
+                at = locate(str(key))
+                line = text.count("\n", 0, at) + 1 if at is not None else role_line
+                is_role = role is None and _ROLE.search(str(key))
+                walk(child, path + (key,), path + (key,) if is_role else role, str(key),
+                     line if is_role else role_line)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child, path, role, own, role_line)
+        elif isinstance(node, str):
+            at = locate(node)
+            if role is None or role in done or (own or "").startswith("$") and own != "$value":
+                return
+            lch = color.parse(node)
+            if lch is not None and lch[1] >= BLUE_MIN_C and BLUE_HUE[0] <= lch[2] < BLUE_HUE[1]:
+                done.add(role)
+                out.append((text.count("\n", 0, at) + 1 if at is not None else role_line, lch[2]))
+
+    walk(data, (), None, None, 1)
+    return out
+
+
 def style_scan(rel: str, text: str, overused: dict) -> list[str]:
     """한 파일의 색·글꼴 경고(설계 11.13 의 1)를 줄 순서로. 과용 색·램프는 파일당 한 줄이고 그 첫 줄에 단다."""
     from .palette import font_key, hangul_font  # palette 가 color 를 쓴다. 이 모듈을 가져오는 차례가 꼬이지 않게 여기서 가져온다
@@ -412,6 +459,9 @@ def style_scan(rel: str, text: str, overused: dict) -> list[str]:
     hits: dict[str, int] = {}  # 과용 색 → 첫 줄(나온 차례)
     ramp_hits: dict[str, int] = {}
     found: list[tuple[int, str]] = []
+    json_hues = _json_role_hues(text) if rel.lower().endswith(".json") else None
+    for number, what in ((n, f"주 강조가 파랑·남색·보라 계열(h {round(h)}°) — 근거를 적는다(§1 의 11)") for n, h in json_hues or []):
+        found.append((number, what))
     for number, line in enumerate(text.split("\n"), 1):
         for m in _HEX.finditer(line):
             h = _hex6(m.group(1))
@@ -420,7 +470,7 @@ def style_scan(rel: str, text: str, overused: dict) -> list[str]:
             elif h in ramp:
                 ramp_hits.setdefault(h, number)
         blue = next((lch for lch in _role_colors(line)
-                     if lch[1] >= BLUE_MIN_C and BLUE_HUE[0] <= lch[2] < BLUE_HUE[1]), None)  # 줄에 하나만 단다
+                     if lch[1] >= BLUE_MIN_C and BLUE_HUE[0] <= lch[2] < BLUE_HUE[1]), None) if json_hues is None else None  # 줄에 하나만 단다
         if blue is not None:
             found.append((number, f"주 강조가 파랑·남색·보라 계열(h {round(blue[2])}°) — 근거를 적는다(§1 의 11)"))
     seen_lines: set[int] = set()  # 한 줄에 글꼴 경고는 하나만 단다

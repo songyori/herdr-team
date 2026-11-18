@@ -211,6 +211,25 @@ class StyleScanTest(unittest.TestCase):
         three = "x\n:root { --a: #fb923c; --b: #c2410c; --c: #fff1f2; --d: #fb923c }\n"
         self.assertEqual(self.scan("src/t.css", three), ["src/t.css:2: Tailwind 기본 램프 값 3개 — design-rules §3 의 11"])
 
+    def test_primary_hue_pretty_json_tokens(self):
+        import json
+        dtcg = json.dumps({"color": {"primary": {"$type": "color", "$value": "oklch(0.6 0.15 260)"}}}, indent=2)
+        self.assertEqual(self.scan("tokens.json", dtcg),
+                         ["tokens.json:5: 주 강조가 파랑·남색·보라 계열(h 260°) — 근거를 적는다(§1 의 11)"])
+        steps = json.dumps({"color": {"primary": {"500": "#2f6fed"}}}, indent=2)
+        got = self.scan("tokens.json", steps)
+        self.assertEqual(len(got), 1, got)
+        self.assertTrue(got[0].startswith("tokens.json:4: 주 강조가 파랑·남색·보라 계열(h 26"), got)
+        many = json.dumps({"color": {"primary": {"400": "#4a7df0", "500": "#2f6fed", "600": "#2a55c9"}}}, indent=2)
+        got = self.scan("tokens.json", many)
+        self.assertEqual(len(got), 1, got)
+        self.assertTrue(got[0].startswith("tokens.json:4:"), got)
+        warm = json.dumps({"color": {"primary": {"$type": "color", "$value": "oklch(0.6 0.15 40)"}}}, indent=2)
+        self.assertEqual(self.scan("tokens.json", warm), [])
+        self.assertEqual(self.scan("tokens.json", '{"color": {"primary": {\n  "x": "#2f6fed",\n}}}\n'), [])  # 깨진 JSON 은 줄 단위로
+        note = json.dumps({"primary": {"$type": "color", "$description": "#2f6fed 계열", "$value": "#c2410c"}}, indent=2)
+        self.assertEqual(self.scan("tokens.json", note), [])
+
     def test_primary_accent_brand_hue(self):
         text = (":root { --color-primary: #1e40af; --accent-ink: #ffffff; }\n"
                 '{"brand": {"value": "oklch(0.55 0.2 290)"}, "neutral": "#64748b"}\n'
