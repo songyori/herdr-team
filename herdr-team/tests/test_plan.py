@@ -222,6 +222,69 @@ class PlanCheckTest(TeamCase):
         self.assertEqual((code, out["error"]["code"]), (2, "plan_invalid"), out)
 
 
+class PlanWarningTest(TeamCase):
+    """plan check 의 warnings(설계 5.11 의 5): 크기와 voice.md. 막지 않는다(exit 0)."""
+
+    def setUp(self):
+        super().setUp()
+        self.init_project(config=APPROVAL)
+        self.path = self.proj / "docs/planning/tasks.toml"
+        self.path.parent.mkdir(parents=True)
+
+    def check(self, tasks):
+        self.path.write_text(toml(tasks), encoding="utf-8")
+        code, out = self.hteam("plan", "check", as_=None)
+        self.assertEqual(code, 0, out)
+        return out["warnings"]
+
+    def test_size(self):
+        five = [f"확인 {n}" for n in range(5)]
+        six = five + ["확인 5"]
+        self.assertEqual(self.check([task("a", owns=["src/a/**"], acceptance=five),
+                                     task("b", owns=["src/b/**"], title="로그인 화면")]), [])
+        big = [task("a", owns=["src/a/**"], acceptance=six), task("b", owns=["src/b/**"], title="로그인 및 가입"),
+               task("c", owns=["src/c/**"], title="저장 그리고 불러오기", acceptance=six),
+               task("d", "planner", ["docs/planning/**"], acceptance=six, title="기획 및 정리")]  # developer 만 본다
+        self.assertEqual(self.check(big), ["a: 태스크가 크다(acceptance 6개). 둘로 나눌지 본다",
+                                           "b: 태스크가 크다(제목에 '및'). 둘로 나눌지 본다",
+                                           "c: 태스크가 크다(acceptance 6개, 제목에 '그리고'). 둘로 나눌지 본다"])
+
+    def test_voice(self):
+        missing = "docs/planning/voice.md 가 없다. 서비스 문구가 있으면 문구 기준을 쓴다"
+        screens = [task("dir", "director", ["docs/design/system/**"]),
+                   task("s1", "designer", ["docs/design/screens/a/**"], deps=["dir"])]
+        self.assertEqual(self.check(screens), [missing])
+        terms = [task("terms", owns=["src/terms/**"], constraints="docs/planning/voice.md 와 text-rules 를 따른다")]
+        self.assertEqual(self.check(terms), [missing])
+        self.assertEqual(self.check([task("a", owns=["src/a/**"])]), [])  # 문구를 쓰는 태스크가 없다
+        (self.proj / "docs/planning/voice.md").write_text("# 문구 기준\n", encoding="utf-8")
+        self.assertEqual(self.check(screens), [])
+
+    def test_applied_tasks_are_not_size_warned(self):
+        # 이미 적용한 태스크는 나눌 수 없다(plan apply --append 가 바꾸지 못하게 한다)
+        six = [f"확인 {n}" for n in range(6)]
+        self.setup_run()
+        self.path.write_text(toml([task("a", owns=["src/a/**"], acceptance=six)]), encoding="utf-8")
+        code, out = self.hteam("plan", "apply")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.check([task("a", owns=["src/a/**"], acceptance=six),
+                                     task("b", owns=["src/b/**"], acceptance=six)]),
+                         ["b: 태스크가 크다(acceptance 6개). 둘로 나눌지 본다"])
+
+    def test_file_option_still_reads_the_project_voice(self):
+        # --file 은 검사할 계획 파일만 바꾼다. 문구 기준은 늘 프로젝트 작업 루트의 docs/planning/voice.md 다(Codex 계획 리뷰 p13c r1)
+        missing = "docs/planning/voice.md 가 없다. 서비스 문구가 있으면 문구 기준을 쓴다"
+        alt = self.proj / "alt/tasks.toml"
+        alt.parent.mkdir()
+        alt.write_text(toml([task("terms", owns=["src/terms/**"], constraints="voice.md 를 따른다")]), encoding="utf-8")
+        (self.proj / "alt/voice.md").write_text("# 문구 기준\n", encoding="utf-8")  # 계획 파일 옆의 voice.md 는 보지 않는다
+        code, out = self.hteam("plan", "check", "--file", "alt/tasks.toml", as_=None)
+        self.assertEqual((code, out["warnings"]), (0, [missing]), out)
+        (self.proj / "docs/planning/voice.md").write_text("# 문구 기준\n", encoding="utf-8")
+        code, out = self.hteam("plan", "check", "--file", "alt/tasks.toml", as_=None)
+        self.assertEqual((code, out["warnings"]), (0, []), out)
+
+
 class PlanApplyTest(TeamCase):
     def setUp(self):
         super().setUp()

@@ -54,6 +54,17 @@ class ReproDocTest(unittest.TestCase):
         self.assertIn("재현 시험 줄", row)
 
 
+class PlanWarningDocTest(unittest.TestCase):
+    def test_planner_reads_warnings_before_the_confirm_question(self):
+        text = read("roles/planner.md")
+        confirm = section(text, "확정 질문")
+        for needle in ("`plan check` 출력의 `warnings`", "나누지 않은 경고는 그 이유를 확정 질문 `context` 에 적는다"):
+            self.assertIn(needle, confirm)
+        tasks = section(text, "tasks.toml 형식")
+        for needle in ("`acceptance` 를 5개 이하로", "`title` 에 \"및\"·\"그리고\" 를 쓰지 않는다", "`warnings`"):
+            self.assertIn(needle, tasks)
+
+
 class ReproTaskTest(unittest.TestCase):
     def spec(self, constraints):
         body = VALID_BODY.replace("표준 라이브러리만.", constraints)

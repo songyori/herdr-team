@@ -201,6 +201,7 @@ Run 소유자가 Claude·Codex 워커를 Herdr pane 으로 띄우고, SQLite 메
 ### 묶음 검증
 
 - 묶음: 함께 끝내고 함께 검증하는 기능 단위. tester 태스크 하나와 그 `depends_on` 의 developer 태스크들(3–6개 권장)이고, 묶음 이름은 tester 태스크의 key 다. planner 가 `docs/planning/tasks.toml` 에 묶는다. `[test]` 표가 있으면 `hteam plan check` 가 묶음 규칙을 검사한다: tester owns 는 정확히 `["tests/<key>/**", "docs/qa/<key>.md"]`(`[test] tester_paths` 가 있으면 그 경로들의 `{key}` 를 key 로 채운 것과 `docs/qa/<key>.md`), tester 는 developer 에만 의존, developer 는 tester 에 의존하지 않음, 문서 전용이 아닌 developer 는 정확히 한 묶음.
+- `hteam plan check` 는 막지 않는 `warnings`(0.8.0)도 낸다: acceptance 가 5개를 넘거나 제목에 "및"·"그리고" 가 있는 developer 태스크(이미 적용한 태스크는 빼고), designer 태스크나 constraints 에 `voice.md` 가 나오는 태스크가 있는데 `docs/planning/voice.md` 가 없을 때. planner 는 확정 질문 전에 이 경고를 보고 나누거나 나누지 않은 이유를 적는다.
 - `[test]` 쓰는 법(`docs/planning/tasks.toml` 의 최상위 표, 커밋한 HEAD 의 것만 쓴다):
 
   ```toml

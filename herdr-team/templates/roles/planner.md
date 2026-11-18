@@ -64,7 +64,7 @@ EOF
 - 수정 라운드에서는 먼저 `hteam ask-user --task T-xxx --pending`(답이 왔지만 반영하지 않은 질문)과 `--history` 를 본다. `--history` 에 답이 없는(`"answer": null`) 질문이 있으면 새로 묻지 말고 `hteam ask-user --task T-xxx --wait <id>` 로 그 답을 기다린다(Bash `timeout: 600000`).
 
 ## 확정 질문
-마지막 질문은 늘 확정 질문이다. 체크리스트에 `미정` 이 없고, spec.md·contracts.md·tasks.toml·voice.md 를 다 쓰고, `plan check` 가 통과한 뒤에 묻는다.
+마지막 질문은 늘 확정 질문이다. 체크리스트에 `미정` 이 없고, spec.md·contracts.md·tasks.toml·voice.md 를 다 쓰고, `plan check` 가 통과한 뒤에 묻는다. `plan check` 출력의 `warnings`(막지 않는다)를 보고 큰 태스크는 나누고 voice.md 가 없다는 경고면 voice.md 를 쓴다. 나누지 않은 경고는 그 이유를 확정 질문 `context` 에 적는다.
 
 - `context` 에 넷을 넣는다: 계획 핵심(목적·범위·주요 흐름 몇 줄), 자동 결정 목록, 용어집 표(쓰는 표기, 쓰지 않는 표기. 핵심 용어 10개 이내), 태스크 그래프 표(key·직무·제목·의존). 용어집도 이 확정으로 함께 승인받는다. 4000자를 넘으면 줄인다(먼저 태스크 그래프 표의 제목 열을 뺀다).
 - 선택지는 정확히 둘이다: `확정 (추천)` 과 `수정할 부분 있음`.
@@ -135,6 +135,7 @@ full = "npx vitest run"
 - 문서 전용 developer 태스크(`owns` 가 모두 `README.md` 이거나 `docs/` 아래)는 묶음에 넣지 않아도 된다. 나머지 developer 태스크는 정확히 한 묶음에 든다.
 - developer 태스크는 tester 태스크에 의존하지 않는다. 다음 묶음 구현이 앞 묶음 테스트를 기다리지 않게 한다. tester 태스크의 `depends_on` 에는 developer 태스크만 둔다(designer·director 태스크는 developer 태스크가 의존한다).
 - 단위 테스트는 developer 가 자기 소유 경로 안(예: `src/**/*.test.ts`)에 쓴다. tester 는 묶음 통합 테스트와 QA 보고서를 쓴다.
+- developer 태스크 하나는 한 가지 일이다: `acceptance` 를 5개 이하로 두고 `title` 에 "및"·"그리고" 를 쓰지 않는다. 넘으면 `plan check` 가 `warnings` 에 적는다(막지 않는다). 나누기 어려우면 그 이유를 확정 질문 `context` 에 적는다.
 - `[test]` 표에 테스트 명령 두 개를 쓴다. `quick` 은 바뀐 파일과 관련된 테스트만 돌리고 `{files}` 를 정확히 한 번 담는다(예: `npx vitest related --run --passWithNoTests {files}`, `npx jest --findRelatedTests --passWithNoTests {files}`). `full` 은 전체 테스트다. 관련 테스트가 없을 때 성공으로 끝나야 한다. pytest 처럼 모은 테스트가 없을 때 5 로 끝나는 도구는 `ok_exit = [0, 5]` 를 넣는다. 테스트가 DB·포트를 같이 써서 동시에 돌면 깨지면 `exclusive = true` 를 넣는다. `timeout_min`(기본 30)으로 한 번 실행의 상한을 정한다.
 - hteam 은 커밋된 HEAD 의 tasks.toml 에서 `[test]` 를 읽는다. `[test]` 는 커밋해야 적용된다.
 - 테스트 도구를 설치하는 첫 developer 태스크의 `acceptance` 에 "`[test]` 의 quick·full 명령이 실행된다" 를 넣는다.

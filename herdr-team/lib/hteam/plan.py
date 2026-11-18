@@ -19,6 +19,11 @@ TEXT_FIELDS = ("title", "target", "change", "constraints")
 REQUIRED = ("key", "role", "title", "owns", "target", "change", "constraints", "acceptance")
 ALLOWED = frozenset(REQUIRED + ("depends_on", "issue"))
 NO_TEST = object()  # tasks.toml 에 [test] 가 없다(validate 의 test 기본값)
+# plan check 의 막지 않는 경고(설계 5.11 의 5)
+SIZE_ACCEPTANCE = 5  # developer 태스크의 acceptance 가 이보다 많으면 크다
+SIZE_WORDS = ("및", "그리고")  # developer 태스크 제목에 있으면 두 일을 묶었을 수 있다
+VOICE_FILE = "docs/planning/voice.md"  # 프로젝트 문구 기준. 작업 루트 기준이다(--file 과 상관없다)
+VOICE_WARNING = "docs/planning/voice.md 가 없다. 서비스 문구가 있으면 문구 기준을 쓴다"
 
 
 def read_plan_data(path: Path) -> dict:
@@ -232,10 +237,30 @@ def _checked(cfg, data: dict, applied=()) -> list[list[str]]:
     return groups
 
 
+def warnings(tasks: list[dict], voice: Path, applied=()) -> list[str]:
+    """막지 않는 경고(설계 5.11 의 5). tasks 는 검사를 통과한 것이다.
+    - 크기: developer 태스크의 acceptance 가 SIZE_ACCEPTANCE 개를 넘거나 title 에 SIZE_WORDS 가 있다. 이미 적용한 key(applied)는
+      나눌 수 없어 보지 않는다.
+    - voice.md: designer 태스크가 있거나 constraints 에 `voice.md` 가 나오는 태스크가 있는데 voice(프로젝트 작업 루트의
+      VOICE_FILE)가 없다."""
+    out = []
+    for t in tasks:
+        if t["role"] != "developer" or t["key"] in applied:
+            continue
+        why = [f"acceptance {len(t['acceptance'])}개"] if len(t["acceptance"]) > SIZE_ACCEPTANCE else []
+        why += [f"제목에 '{word}'" for word in SIZE_WORDS if word in t["title"]]
+        if why:
+            out.append(f"{t['key']}: 태스크가 크다({', '.join(why)}). 둘로 나눌지 본다")
+    if any(t["role"] == "designer" or "voice.md" in t["constraints"] for t in tasks) and not voice.is_file():
+        out.append(VOICE_WARNING)
+    return out
+
+
 def check(p, cfg, path: Path) -> dict:
     """읽기 전용. 파일 검사에 더해 이미 적용한 계획(plan.json)이 있으면 apply --append 가 받아들일지도 본다.
     그래서 기획 태스크의 사전 검사가 승인 전에 막는다(승인 뒤에는 고칠 라운드가 없다). 묶음 규칙은 적용한 key 를 빼고
-    본다(apply --append 와 같다). 출력 test 는 그 파일에 `[test]` 가 있는지다."""
+    본다(apply --append 와 같다). 출력 test 는 그 파일에 `[test]` 가 있는지, warnings 는 막지 않는 경고(warnings 함수, 없으면
+    빈 목록)다. voice.md 는 검사하는 파일 위치와 상관없이 그 작업 루트(p.work_root)의 VOICE_FILE 을 본다."""
     data = read_plan_data(path)
     tasks = plan_tasks(data)
     plan = read_json(p.plan_file, None)
@@ -243,7 +268,9 @@ def check(p, cfg, path: Path) -> dict:
     groups = _checked(cfg, data, known or {})
     if plan is not None:
         _keep_applied(known if known is not None else _surviving(p, plan), tasks)
-    return {"tasks": len(tasks), "groups": groups, "test": "test" in data}
+    applied = set(plan.get("tasks") or {}) if isinstance(plan, dict) else set()
+    return {"tasks": len(tasks), "groups": groups, "test": "test" in data,
+            "warnings": warnings(tasks, p.work_root / VOICE_FILE, applied)}
 
 
 def _surviving(p, plan: dict) -> dict:
