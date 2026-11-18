@@ -1,0 +1,1942 @@
+{
+ "sources": [
+  {
+   "id": "taste-skill",
+   "repo": "https://github.com/Leonxlnx/taste-skill",
+   "commit": "f6b76575f949707b4e3c37cd86cb44b0b98643e8",
+   "path": "skills/taste-skill/library/palettes.json",
+   "license": "MIT",
+   "date": "2026-11-18"
+  },
+  {
+   "id": "impeccable",
+   "repo": "https://github.com/pbakaus/impeccable",
+   "commit": "d41d9860b0094dcb68030657da63461212835aaa",
+   "path": "crates/context/src/palette_data.rs",
+   "license": "Apache-2.0",
+   "date": "2026-11-18"
+  }
+ ],
+ "palettes": [
+  {
+   "id": "taste:white-link-blue",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.490 0.231 264.6)",
+   "bg": "oklch(1.000 0.000 0.0)",
+   "ink": "oklch(0.178 0.000 0.0)",
+   "mood": "Sheet and biro — White holds the whole page with black type, one grey for secondary lines and a pale grey step for tiles and inputs; the footer may invert to black. Blue is the colour of text links and the one button, and nothing else is tinted.",
+   "hue": 264.6
+  },
+  {
+   "id": "taste:cool-white-slate",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.512 0.085 207.8)",
+   "bg": "oklch(0.981 0.003 228.8)",
+   "ink": "oklch(0.298 0.027 228.9)",
+   "mood": "Frost and slate — Cool white and one paler blue-grey step hold everything, with type in dark slate instead of black. Teal appears once per screen at most, as the primary button or one small detail beside the product photograph.",
+   "hue": 207.8
+  },
+  {
+   "id": "taste:rose-grey-green",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.519 0.127 153.8)",
+   "bg": "oklch(0.926 0.007 39.5)",
+   "ink": "oklch(0.273 0.010 61.0)",
+   "mood": "Rose grey, green — A single rosy grey covers the page from top to bottom with brown-black text and grey secondary lines; pictures keep the treatment section 0 deals, greyscale only where it deals black-and-white. Green appears only on the current-page link and on one button in the footer.",
+   "hue": 153.8
+  },
+  {
+   "id": "taste:paper-grey-brass",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.751 0.153 104.0)",
+   "bg": "oklch(0.930 0.007 106.5)",
+   "ink": "oklch(0.205 0.004 84.6)",
+   "mood": "Newsprint and brass — Warm paper grey with near-black type holds the upper page, then whole sections flip to near-black with paper-grey type; no section is tinted. Brass yellow marks one small detail per screen, such as the button or a single word.",
+   "hue": 104.0
+  },
+  {
+   "id": "taste:stone-blueprint",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.503 0.204 264.1)",
+   "bg": "oklch(0.901 0.004 91.4)",
+   "ink": "oklch(0.263 0.013 100.5)",
+   "mood": "Stone and blueprint — Stone paper carries the whole page with near-black and grey text. One image at a time is printed in the accent blue as its only ink, and the same blue fills the single button.",
+   "hue": 264.1
+  },
+  {
+   "id": "taste:white-navy-tab",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.754 0.165 62.8)",
+   "bg": "oklch(1.000 0.000 0.0)",
+   "ink": "oklch(0.297 0.064 267.7)",
+   "mood": "Navy on white — Pure white pages with navy type sit between full-bleed photographs, opening on near-black and closing on a warm grey footer. Tangerine is one small tab or button, never larger than a thumbnail.",
+   "hue": 62.8
+  },
+  {
+   "id": "taste:three-stones",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.508 0.040 134.8)",
+   "bg": "oklch(0.944 0.003 67.8)",
+   "ink": "oklch(0.318 0.002 67.7)",
+   "mood": "Three stones — Three close stone tones share the interface: the lightest for the page, the middle one for panels, the darkest for a single band, all with charcoal type. Saturated colour is left to the photographs and their backdrops; the grey-green fills the button only.",
+   "hue": 134.8
+  },
+  {
+   "id": "taste:putty-black-teal",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.505 0.077 218.3)",
+   "bg": "oklch(0.890 0.010 81.8)",
+   "ink": "oklch(0.145 0.000 0.0)",
+   "mood": "Putty and black — Warm putty covers the page and pure black handles all type and the main shapes. The only tint in the interface is teal, used for the one button or a single marker placed near the photographs.",
+   "hue": 218.3
+  },
+  {
+   "id": "taste:moss-sand",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.469 0.068 128.6)",
+   "bg": "oklch(0.877 0.023 87.2)",
+   "ink": "oklch(0.284 0.007 106.8)",
+   "mood": "Sand and moss — Sand grey holds the page with charcoal type, and one deep leaf-green band may close it. Moss green is reserved for buttons; brighter greens and blues arrive only through photographs.",
+   "hue": 128.6
+  },
+  {
+   "id": "taste:green-mat-chocolate",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.497 0.093 139.4)",
+   "bg": "oklch(0.910 0.013 86.8)",
+   "ink": "oklch(0.245 0.023 45.9)",
+   "mood": "Bone, green, chocolate — Bone ground with chocolate-brown text takes most of the page. The green is spent on one large flat block, about a third of a screen, and on the button; all other colour comes from photographs.",
+   "hue": 139.4
+  },
+  {
+   "id": "taste:lunar-grey-bronze",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.639 0.043 59.5)",
+   "bg": "oklch(0.178 0.000 0.0)",
+   "ink": "oklch(0.961 0.000 0.0)",
+   "mood": "Lunar and bronze — Soft black holds the page with panels one step lighter, white text and grey secondary lines, so photographs supply all the colour. Muted bronze goes on small markers and the one button only.",
+   "hue": 59.5
+  },
+  {
+   "id": "taste:blue-black-cornflower",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.756 0.132 242.1)",
+   "bg": "oklch(0.159 0.016 266.6)",
+   "ink": "oklch(0.945 0.009 258.3)",
+   "mood": "Night and sky blue — Blue-black ground and slate panels with silver-white text fill the page; no section changes colour. A sky blue marks the buttons and the links, nothing else.",
+   "hue": 242.1
+  },
+  {
+   "id": "taste:green-black-bone",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.796 0.048 170.2)",
+   "bg": "oklch(0.220 0.010 173.2)",
+   "ink": "oklch(0.911 0.011 100.8)",
+   "mood": "Green-black and bone — Bone type on green-black from top to bottom, with panels and drawn details barely lighter than the ground so photographs supply the colour. Pale jade is for the booking or contact button alone.",
+   "hue": 170.2
+  },
+  {
+   "id": "taste:black-crimson",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.486 0.187 23.3)",
+   "bg": "oklch(0.145 0.000 0.0)",
+   "ink": "oklch(0.952 0.000 0.0)",
+   "mood": "Black and crimson — Black with off-white text and mid-grey texture takes nearly the whole page, and the last sections may invert to off-white with black type. Deep crimson is scattered sparingly: a few characters in a heading, a slider fill, the one button.",
+   "hue": 23.3
+  },
+  {
+   "id": "taste:forest-pale-lime",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.908 0.118 130.5)",
+   "bg": "oklch(0.220 0.036 145.6)",
+   "ink": "oklch(1.000 0.000 0.0)",
+   "mood": "Forest and lime — Forest green, black and white sections alternate, with forest green holding the most; photographs stay in moss greens and stone browns. Pale lime sits on small squares only, such as arrow buttons and the closing wordmark.",
+   "hue": 130.5
+  },
+  {
+   "id": "taste:charcoal-room-sage",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.701 0.043 144.0)",
+   "bg": "oklch(0.226 0.000 0.0)",
+   "ink": "oklch(0.958 0.003 106.4)",
+   "mood": "Charcoal and sage — Charcoal holds the page with off-white text, and one section may flip to a pale concrete tone with dark text. Colour comes from the photographs; grey sage is used for the single button and the active state of a control.",
+   "hue": 144.0
+  },
+  {
+   "id": "taste:warm-black-gold",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.737 0.103 83.3)",
+   "bg": "oklch(0.146 0.006 69.2)",
+   "ink": "oklch(1.000 0.000 0.0)",
+   "mood": "Warm black, gold — Warm near-black fills the page and photographs sit bright against it, with pure white small type; panels warm to a brown-black. Gold is for one text link or small button per screen, never a field.",
+   "hue": 83.3
+  },
+  {
+   "id": "taste:graphite-safety-orange",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.666 0.223 34.0)",
+   "bg": "oklch(0.213 0.004 264.5)",
+   "ink": "oklch(0.955 0.002 247.8)",
+   "mood": "Graphite and orange — Graphite and cool light-grey sections alternate, graphite taking about two thirds, and photographs are chosen calm and low in colour so nothing competes (in full colour where the pictures carry the colour; greyscale only where section 0 deals black-and-white). Safety orange marks the buttons, one thick solid bar across the top of the page and the highlighted item in a list or chart.",
+   "hue": 34.0
+  },
+  {
+   "id": "taste:soot-pale-lime",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.941 0.124 124.1)",
+   "bg": "oklch(0.168 0.000 0.0)",
+   "ink": "oklch(1.000 0.000 0.0)",
+   "mood": "Soot and lime — A soot-black opening and close bracket white middle sections, all in black, white and grey. Pale lime is the single action colour: every button, and at most one headline set in it on the dark ground.",
+   "hue": 124.1
+  },
+  {
+   "id": "taste:plum-black-pink",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.681 0.223 3.1)",
+   "bg": "oklch(0.136 0.018 336.5)",
+   "ink": "oklch(1.000 0.000 0.0)",
+   "mood": "Plum-black and pink — Near-black and plum at the top and bottom bracket a white middle with navy-black text. Hot pink is reserved for primary buttons, bars in charts and map markers; it never fills a section.",
+   "hue": 3.1
+  },
+  {
+   "id": "taste:white-signal-red",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.574 0.210 29.0)",
+   "bg": "oklch(1.000 0.000 0.0)",
+   "ink": "oklch(0.145 0.000 0.0)",
+   "mood": "Signal red, white — White ground, black text and paper grey for filled panels, with one full black band allowed. Signal red is the only colour in the interface: the button and a few solid blocks, never a word in a headline.",
+   "hue": 29.0
+  },
+  {
+   "id": "taste:white-mint-tiles",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.927 0.115 158.9)",
+   "bg": "oklch(1.000 0.000 0.0)",
+   "ink": "oklch(0.256 0.000 0.0)",
+   "mood": "Greys and mint — White, near-black and two greys fill a board of flat tiles. Mint floods a few whole tiles (one statement, one figure, the closing call to action) and appears nowhere else.",
+   "hue": 158.9
+  },
+  {
+   "id": "taste:cool-grey-cobalt",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.455 0.265 267.2)",
+   "bg": "oklch(0.954 0.005 258.3)",
+   "ink": "oklch(0.154 0.005 264.4)",
+   "mood": "Cool grey, cobalt — Cool pale grey holds the page with near-black type and nothing else tinted. Cobalt starts as the button and one highlighted sentence, takes one whole section as a flat field with white text, then returns as a single button block.",
+   "hue": 267.2
+  },
+  {
+   "id": "taste:offwhite-bottle-yellow",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.897 0.185 102.1)",
+   "bg": "oklch(0.976 0.000 0.0)",
+   "ink": "oklch(0.258 0.044 159.9)",
+   "mood": "Bottle ink, yellow — Off-white ground with all type in a near-black bottle green instead of black. Yellow is the only saturated note: the button or one small object on most screens, and one later section that turns fully yellow.",
+   "hue": 102.1
+  },
+  {
+   "id": "taste:teal-on-paper",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.402 0.067 209.4)",
+   "bg": "oklch(0.980 0.002 165.1)",
+   "ink": "oklch(0.402 0.067 209.4)",
+   "mood": "Teal on paper — Cool white paper and a single teal used for every word, shape and button, with no black anywhere. The accent is that same teal filled solid, for the button and for one inverted band with paper-coloured type.",
+   "hue": 209.4
+  },
+  {
+   "id": "taste:navy-pink",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.808 0.107 358.0)",
+   "bg": "oklch(0.251 0.048 272.3)",
+   "ink": "oklch(0.808 0.107 358.0)",
+   "mood": "Navy and pink — One navy field runs the entire page. Pink does everything else, from the name and headings to body text, and fills one solid button.",
+   "hue": 358.0
+  },
+  {
+   "id": "taste:blush-aubergine",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.262 0.050 342.7)",
+   "bg": "oklch(0.869 0.042 44.3)",
+   "ink": "oklch(0.262 0.050 342.7)",
+   "mood": "Blush and aubergine — Blush pink and dark aubergine alternate as full fields and serve as each other's text colour, in roughly equal shares. There is no third colour: the button is a solid block of whichever of the two is not the ground.",
+   "hue": 342.7
+  },
+  {
+   "id": "taste:cobalt-on-sand",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.341 0.162 263.5)",
+   "bg": "oklch(0.895 0.029 82.6)",
+   "ink": "oklch(0.341 0.162 263.5)",
+   "mood": "Cobalt on sand — Sand paper and one cobalt do everything: text, drawings and solid shapes are all the same blue. The button is a cobalt block with sand-coloured type, and no black or second hue is used.",
+   "hue": 263.5
+  },
+  {
+   "id": "taste:oxblood-grey",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.378 0.144 25.3)",
+   "bg": "oklch(0.913 0.000 0.0)",
+   "ink": "oklch(0.378 0.144 25.3)",
+   "mood": "Oxblood and grey — Deep red text on grey paper holds most of the page, then pale grey text on a solid red field takes one long section and the footer. Photographs are chosen calm and low in colour so nothing breaks the pair (in full colour where the pictures carry the colour; greyscale only where section 0 deals black-and-white), and the button is a solid red block.",
+   "hue": 25.3
+  },
+  {
+   "id": "taste:olive-on-bone",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.367 0.078 122.1)",
+   "bg": "oklch(0.940 0.005 95.1)",
+   "ink": "oklch(0.367 0.078 122.1)",
+   "mood": "Olive on bone — A bone page with every word, large or small, in one olive green; the footer inverts to a solid olive field with bone text. Photography supplies all other colour, and the button is the same olive, filled.",
+   "hue": 122.1
+  },
+  {
+   "id": "taste:burgundy-bubblegum",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.805 0.140 345.5)",
+   "bg": "oklch(0.230 0.092 10.9)",
+   "ink": "oklch(0.805 0.140 345.5)",
+   "mood": "Burgundy and bubblegum — Deep burgundy is the ground for the whole page and bubblegum pink sets every word on it. The button and the active state of a control are solid pink with burgundy type; product photographs supply any other colour.",
+   "hue": 345.5
+  },
+  {
+   "id": "taste:bottle-green-gold",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.886 0.132 95.6)",
+   "bg": "oklch(0.300 0.056 154.7)",
+   "ink": "oklch(0.886 0.132 95.6)",
+   "mood": "Bottle green, gold — Bottle green covers the page and warm gold sets all the type, with panels one step lighter than the ground. The button is solid gold with green text, and photographs are kept dark and warm so the pair is not disturbed.",
+   "hue": 95.6
+  },
+  {
+   "id": "taste:cobalt-field",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.894 0.167 107.1)",
+   "bg": "oklch(0.463 0.269 264.0)",
+   "ink": "oklch(1.000 0.000 0.0)",
+   "mood": "Cobalt field — One electric cobalt fills everything, with white and pale type; photographs keep their own colour and are shown large. A single yellow dot or button is the only other colour on the page.",
+   "hue": 107.1
+  },
+  {
+   "id": "taste:mustard-field",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.372 0.152 270.0)",
+   "bg": "oklch(0.772 0.156 85.8)",
+   "ink": "oklch(0.150 0.000 0.0)",
+   "mood": "Mustard and black — One warm mustard field for the whole page with black ink only. Royal blue is the single interruption, kept to a sliver along one edge or one small button.",
+   "hue": 270.0
+  },
+  {
+   "id": "taste:carmine-field",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.918 0.043 12.6)",
+   "bg": "oklch(0.444 0.169 23.8)",
+   "ink": "oklch(1.000 0.000 0.0)",
+   "mood": "Carmine field — A deep red field bookends or fills the page, with white type and pale pink secondary lines; work shown in between sits on flat charcoal so it keeps its own colours. The button is a pale pink block with red type.",
+   "hue": 12.6
+  },
+  {
+   "id": "taste:pink-field-lime",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.930 0.213 117.5)",
+   "bg": "oklch(0.765 0.150 2.1)",
+   "ink": "oklch(0.145 0.000 0.0)",
+   "mood": "Bubblegum and lime — A flat bubblegum pink field with black type from top to bottom. Fluorescent lime is the action colour only: the menu button, one highlighter swipe behind a word and the main button.",
+   "hue": 117.5
+  },
+  {
+   "id": "taste:sky-field-navy",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.682 0.211 37.7)",
+   "bg": "oklch(0.745 0.112 244.1)",
+   "ink": "oklch(0.205 0.025 249.1)",
+   "mood": "Sky and navy — Sky blue sits behind everything, white cards lie on top of it, and navy handles all text and the footer. Orange is for buttons and one highlighted word, so orange against blue is the single clash on the page.",
+   "hue": 37.7
+  },
+  {
+   "id": "taste:orange-field-black",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.162 0.022 238.0)",
+   "bg": "oklch(0.724 0.186 48.4)",
+   "ink": "oklch(0.162 0.022 238.0)",
+   "mood": "Orange and black — Hot orange is the page: one flat field with blue-black type, flipping at a hard horizontal seam to a white section when the content needs a rest. The button is a solid block of the same blue-black with orange text, and every other colour comes from the objects shown.",
+   "hue": 238.0
+  },
+  {
+   "id": "taste:tobacco-olive",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.457 0.091 118.9)",
+   "bg": "oklch(0.314 0.056 55.2)",
+   "ink": "oklch(0.905 0.023 96.0)",
+   "mood": "Tobacco and olive — Tobacco brown fills the page with bone type, and photographs stay in browns and ochre. One olive block holds the main text or the button, and a single ochre band may break the brown once.",
+   "hue": 118.9
+  },
+  {
+   "id": "taste:poster-chapters",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.694 0.205 146.1)",
+   "bg": "oklch(0.908 0.020 87.5)",
+   "ink": "oklch(0.218 0.000 0.0)",
+   "mood": "Poster chapters — Each chapter takes one flat field in turn (coral red, near-black, bone, green, yellow) with black or bone type and no tints between them. Green doubles as the accent for the one button when the ground is bone or black.",
+   "hue": 146.1
+  },
+  {
+   "id": "taste:blue-red-black",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.451 0.256 267.2)",
+   "bg": "oklch(1.000 0.000 0.0)",
+   "ink": "oklch(0.145 0.000 0.0)",
+   "mood": "Blue, red, black — Three flat poster colours each own whole sections: electric blue, red-orange and black, with white for the areas that show the product. No tints sit between them, and blue is the button colour on white.",
+   "hue": 267.2
+  },
+  {
+   "id": "taste:charcoal-primaries",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.513 0.092 177.0)",
+   "bg": "oklch(0.213 0.000 0.0)",
+   "ink": "oklch(1.000 0.000 0.0)",
+   "mood": "Charcoal and primaries — A charcoal ground holds flat poster primaries assigned to whole panels: red, blue, teal green and yellow, each placed against a different one. Type is white, or black on yellow; teal green is the button colour on charcoal.",
+   "hue": 177.0
+  },
+  {
+   "id": "taste:ultramarine-yellow",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.719 0.164 157.2)",
+   "bg": "oklch(0.385 0.224 266.7)",
+   "ink": "oklch(1.000 0.000 0.0)",
+   "mood": "Ultramarine and yellow — Each section is one flat field in sequence: ultramarine, black, yellow, then ultramarine again, with white type on blue and black, and black type on yellow. Green is the only small accent and never grows larger than a button.",
+   "hue": 157.2
+  },
+  {
+   "id": "taste:candy-chapters",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.688 0.261 336.0)",
+   "bg": "oklch(0.880 0.156 90.1)",
+   "ink": "oklch(0.145 0.000 0.0)",
+   "mood": "Candy chapters — Each section owns one flat candy colour: yellow first, then white, pink, cyan and orange, with all type in black. Magenta is kept for buttons alone.",
+   "hue": 336.0
+  },
+  {
+   "id": "taste:orange-sky-lime",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.579 0.221 16.0)",
+   "bg": "oklch(0.735 0.180 50.4)",
+   "ink": "oklch(0.178 0.000 0.0)",
+   "mood": "Orange, sky, lime — The page ground changes as you read: orange first, then sky blue, then acid lime at the end, with one near-black band between; type stays black on all three colours. Crimson is one small button per field.",
+   "hue": 16.0
+  },
+  {
+   "id": "taste:post-red-mustard",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.522 0.054 234.1)",
+   "bg": "oklch(0.896 0.019 86.2)",
+   "ink": "oklch(0.215 0.042 23.5)",
+   "mood": "Post red, mustard — Post red and bone alternate as full section fields, with red holding the opening and the close. Mustard, slate blue and maroon are kept for whole card frames, and slate blue also fills the one button.",
+   "hue": 234.1
+  },
+  {
+   "id": "taste:mint-orange-grey",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.921 0.156 141.7)",
+   "bg": "oklch(1.000 0.000 0.0)",
+   "ink": "oklch(0.000 0.000 0.0)",
+   "mood": "Grey, mint, orange — Black on white to start, then whole sections flood with flat mid-grey, acid mint and orange in turn. Photographs inside a flooded section keep the treatment section 0 deals (black-and-white only where it deals that), and mint is also the button colour on white and black.",
+   "hue": 141.7
+  },
+  {
+   "id": "taste:report-blocks",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.712 0.183 38.8)",
+   "bg": "oklch(1.000 0.000 0.0)",
+   "ink": "oklch(0.000 0.000 0.0)",
+   "mood": "Report blocks — A white base with flat blocks of orange, sage, acid yellow and black assigned to whole modules: figure tiles, quote panels and chapter bands. Text is black on every colour and off-white on black, and orange is also the button colour.",
+   "hue": 38.8
+  },
+  {
+   "id": "taste:card-pastels",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.560 0.221 0.0)",
+   "bg": "oklch(0.976 0.003 106.4)",
+   "ink": "oklch(0.000 0.000 0.0)",
+   "mood": "Card pastels — Neutral paper ground and black type, with each card or tile given its own flat pastel (sky, lime, amber or cyan), never two alike side by side. Magenta is reserved for the logo, the email address and text links.",
+   "hue": 0.0
+  },
+  {
+   "id": "taste:mint-pink-accounts",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.469 0.108 151.4)",
+   "bg": "oklch(0.979 0.000 0.0)",
+   "ink": "oklch(0.145 0.000 0.0)",
+   "mood": "Mint and pink — Near-white base with black type; mint and pink are the only two colours and each stands for one side of the product. They first appear as small circles, then as full-screen section fields, and deep green is used only for the button.",
+   "hue": 151.4
+  },
+  {
+   "id": "taste:swap-pastels",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.402 0.063 202.6)",
+   "bg": "oklch(0.869 0.029 238.3)",
+   "ink": "oklch(0.191 0.000 0.0)",
+   "mood": "Swapping pastels — One flat pastel is the whole background and it swaps per project or chapter: pale sky, pink, sand, sage, peach. Type and one solid box stay near-black on all five, and dark teal is only for the button.",
+   "hue": 202.6
+  },
+  {
+   "id": "taste:blush-sage-slate",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.317 0.040 128.3)",
+   "bg": "oklch(0.759 0.019 237.9)",
+   "ink": "oklch(0.226 0.000 0.0)",
+   "mood": "Blush, sage, slate — Slate blue-grey, sage and blush share the page as soft flat blocks, one per chapter or menu tile, with dark type; one deep olive block anchors the close with pale type. Olive is also the button colour, and photographs of sea and sky do the rest.",
+   "hue": 128.3
+  },
+  {
+   "id": "taste:candy-on-black",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.902 0.090 200.9)",
+   "bg": "oklch(0.000 0.000 0.0)",
+   "ink": "oklch(1.000 0.000 0.0)",
+   "mood": "Candy on black — Black ground and dark photographs take nearly all of the surface. The only flat colour is a solid block behind each title, which takes a new candy pastel per project (mint, cyan, lemon, orange, sky); cyan is the default for the button.",
+   "hue": 200.9
+  },
+  {
+   "id": "taste:sky-sand",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.530 0.199 340.0)",
+   "bg": "oklch(0.905 0.033 232.2)",
+   "ink": "oklch(0.145 0.000 0.0)",
+   "mood": "Sky and sand — Sky blue and sand yellow are the constant ground, each holding whole sections, with black text throughout. Saturated colour arrives only as small solid objects, and magenta is kept for the contact card and its button.",
+   "hue": 340.0
+  },
+  {
+   "id": "taste:studio-grey",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.430 0.070 169.1)",
+   "bg": "oklch(0.732 0.003 286.3)",
+   "ink": "oklch(0.164 0.000 0.0)",
+   "mood": "Studio grey — One mid grey serves as both page and studio backdrop, so the photographed object seems to stand on the page itself; type is black and one black band comes late. Colour comes only from the product, and racing green is for the single button.",
+   "hue": 169.1
+  },
+  {
+   "id": "taste:walnut-tan",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.732 0.045 64.7)",
+   "bg": "oklch(0.259 0.025 74.3)",
+   "ink": "oklch(0.912 0.011 95.2)",
+   "mood": "Walnut and tan — Dark walnut holds the opening and the close with bone type, and the middle of the page may turn to flat tan around honey-lit photographs. There is no bright accent: tan is the fill for the one button on walnut.",
+   "hue": 64.7
+  },
+  {
+   "id": "taste:warm-paper-walnut",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.458 0.079 51.7)",
+   "bg": "oklch(0.965 0.010 81.8)",
+   "ink": "oklch(0.272 0.009 67.4)",
+   "mood": "Warm paper and walnut — Warm off-white holds the page with brown-black type and one darker paper step for the visit panel and the goods cards. Walnut brown is the one button, the focus ring and the links; photographs carry the rest of the colour.",
+   "hue": 51.7
+  },
+  {
+   "id": "taste:flour-terracotta",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.513 0.129 37.5)",
+   "bg": "oklch(0.959 0.014 84.6)",
+   "ink": "oklch(0.266 0.015 62.7)",
+   "mood": "Flour and terracotta — A flour-white ground with warm brown-black type and a sand step for panels. Terracotta red is the main button and the brand band, never a second fill; the photographs of ovens, tiles and bread bring the warmth.",
+   "hue": 37.5
+  },
+  {
+   "id": "taste:linen-harbour",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.443 0.071 241.5)",
+   "bg": "oklch(0.958 0.007 88.6)",
+   "ink": "oklch(0.262 0.024 256.4)",
+   "mood": "Linen and harbour blue — Linen white with blue-black type and one greyer linen step for the booking form and the room cards. A muted harbour blue is the one button and the brand band; nothing else is tinted.",
+   "hue": 241.5
+  },
+  {
+   "id": "taste:limewash-ochre",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.532 0.101 78.3)",
+   "bg": "oklch(0.953 0.014 84.6)",
+   "ink": "oklch(0.266 0.014 81.7)",
+   "mood": "Limewash and ochre — A limewashed off-white with near-black brown type and a straw step for panels. Ochre is the button and the focus ring, darkened so its white label reads; the ground stays quiet under warm photographs.",
+   "hue": 78.3
+  },
+  {
+   "id": "taste:clay-pine",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.432 0.063 159.8)",
+   "bg": "oklch(0.936 0.014 78.3)",
+   "ink": "oklch(0.262 0.014 131.7)",
+   "mood": "Clay and pine — Pale clay holds the page with green-black type and a darker clay step for panels. Pine green is the one button and may fill the brand band at the close; wood, stone and plants in the photographs match it.",
+   "hue": 159.8
+  },
+  {
+   "id": "taste:chalk-tomato",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.527 0.169 33.0)",
+   "bg": "oklch(0.971 0.009 84.6)",
+   "ink": "oklch(0.226 0.008 59.2)",
+   "mood": "Chalk and tomato — Chalk white with near-black type and one warm step for the menu panel. Tomato red is the order button and the brand band and appears nowhere else; the menu stays black type on the ground.",
+   "hue": 33.0
+  },
+  {
+   "id": "taste:plaster-rose",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.489 0.126 12.7)",
+   "bg": "oklch(0.958 0.009 62.6)",
+   "ink": "oklch(0.267 0.014 3.1)",
+   "mood": "Plaster and rose — Pale plaster with warm near-black type and a pinker plaster step for panels. A deep rose is the one button and the brand band; flowers and fabric in the photographs carry the softer colour.",
+   "hue": 12.7
+  },
+  {
+   "id": "taste:steel-orange",
+   "source": "taste-skill",
+   "license": "MIT",
+   "accent": "oklch(0.573 0.159 41.9)",
+   "bg": "oklch(0.948 0.004 106.5)",
+   "ink": "oklch(0.231 0.004 264.5)",
+   "mood": "Steel and orange — Light steel grey with graphite type and one darker grey step for panels and the price rows. Workshop orange is the one button and the focus ring; tools and bikes in the photographs bring their own colour.",
+   "hue": 41.9
+  },
+  {
+   "id": "impeccable:seed-200",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.36 0.137 0.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "Aesop apothecary shelf — oxblood bottle glass against linen, considered and unhurried",
+   "hue": 0.0
+  },
+  {
+   "id": "impeccable:seed-000",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.4 0.13 0.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "oxblood leather banquette in a 1940s steakhouse — low lamplight on dark wood and burgundy",
+   "hue": 0.0
+  },
+  {
+   "id": "impeccable:seed-002",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.45 0.15 0.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "darkroom red light — analog photography, blood-warm safelight glow on chemical trays",
+   "hue": 0.0
+  },
+  {
+   "id": "impeccable:seed-003",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.5 0.194 0.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "darkroom safelight — the deep oxblood glow of analog photography, chemical and contemplative",
+   "hue": 0.0
+  },
+  {
+   "id": "impeccable:seed-004",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.546 0.204 3.4)",
+   "bg": null,
+   "ink": null,
+   "mood": "midnight boudoir — velvet rose under low lamplight, perfumed and intimate",
+   "hue": 3.4
+  },
+  {
+   "id": "impeccable:seed-005",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.55 0.18 0.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "smoldering vermillion at dusk — the last red ember in a blacksmith's forge, iron-rich and quietly violent",
+   "hue": 0.0
+  },
+  {
+   "id": "impeccable:seed-201",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.647 0.262 0.3)",
+   "bg": null,
+   "ink": null,
+   "mood": "sealing-wax crimson — one confident stamp of red on pristine white paper",
+   "hue": 0.3
+  },
+  {
+   "id": "impeccable:seed-006",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.65 0.16 0.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "1960s Italian cinema — Technicolor lipstick red against a darkened theater",
+   "hue": 0.0
+  },
+  {
+   "id": "impeccable:seed-008",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.52 0.2 10.4)",
+   "bg": null,
+   "ink": null,
+   "mood": "Negroni hour at a Milanese bar — bittersweet crimson, vermouth and amaro under low tungsten",
+   "hue": 10.4
+  },
+  {
+   "id": "impeccable:seed-010",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.563 0.223 11.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "Negroni hour on a Milan rooftop — bittersweet crimson, aperitivo light, polished restraint",
+   "hue": 11.0
+  },
+  {
+   "id": "impeccable:seed-202",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.643 0.247 7.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "blush editorial pink — modern beauty-page confidence, current without sweetness",
+   "hue": 7.0
+  },
+  {
+   "id": "impeccable:seed-013",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.4 0.13 20.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "Tuscan cellar at dusk — aged terracotta, oxidized iron, the deep red of decanted Sangiovese",
+   "hue": 20.0
+  },
+  {
+   "id": "impeccable:seed-014",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.45 0.15 20.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "smoldering tannery — oxblood leather, cured under low workshop light",
+   "hue": 20.0
+  },
+  {
+   "id": "impeccable:seed-016",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.55 0.18 20.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "Negroni hour on a Roman terrace — bitter campari red, vermouth, late golden light spilling on white linen",
+   "hue": 20.0
+  },
+  {
+   "id": "impeccable:seed-205",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.634 0.254 17.6)",
+   "bg": null,
+   "ink": null,
+   "mood": "Aesop apothecary bottle — considered red-coral on a clinical white surface, the kind of brand restraint where one saturated object does all the work",
+   "hue": 17.6
+  },
+  {
+   "id": "impeccable:seed-011",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.639 0.207 13.5)",
+   "bg": null,
+   "ink": null,
+   "mood": "Aperitivo hour in Milan — Campari glow on a white marble bar, crisp and effervescent",
+   "hue": 13.5
+  },
+  {
+   "id": "impeccable:seed-015",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.527 0.202 22.7)",
+   "bg": null,
+   "ink": null,
+   "mood": "Negroni hour on a Milanese terrace — bittersweet vermillion, aperitivo glassware catching low sun",
+   "hue": 22.7
+  },
+  {
+   "id": "impeccable:seed-023",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.427 0.175 29.2)",
+   "bg": null,
+   "ink": null,
+   "mood": "blacksmith's forge at dusk — iron heated to ember red, the deep glow of oxidized metal and quenching oil",
+   "hue": 29.2
+  },
+  {
+   "id": "impeccable:seed-206",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.614 0.234 28.2)",
+   "bg": null,
+   "ink": null,
+   "mood": "Aesop apothecary bottle — considered red-orange on lab-white, calm utility with a single confident pigment",
+   "hue": 28.2
+  },
+  {
+   "id": "impeccable:seed-029",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.665 0.222 25.7)",
+   "bg": null,
+   "ink": null,
+   "mood": "Negroni hour at a Milanese bar — bittersweet orange-red liqueur catching late afternoon light on polished marble",
+   "hue": 25.7
+  },
+  {
+   "id": "impeccable:seed-022",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.418 0.155 27.2)",
+   "bg": null,
+   "ink": null,
+   "mood": "Pompeiian red fresco — oxidized cinnabar on a museum wall, archaeological gravity",
+   "hue": 27.2
+  },
+  {
+   "id": "impeccable:seed-024",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.464 0.169 26.9)",
+   "bg": null,
+   "ink": null,
+   "mood": "Mid-century darkroom under the safelight — developer trays, oxblood leather, the quiet patience of a print emerging",
+   "hue": 26.9
+  },
+  {
+   "id": "impeccable:seed-026",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.489 0.19 28.3)",
+   "bg": null,
+   "ink": null,
+   "mood": "smoldering ember in a blacksmith's forge — iron-hot rust, soot, and controlled fire",
+   "hue": 28.3
+  },
+  {
+   "id": "impeccable:seed-027",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.568 0.208 27.1)",
+   "bg": null,
+   "ink": null,
+   "mood": "Sicilian blood orange at golden hour — citrus rind, terracotta, sun on stucco",
+   "hue": 27.1
+  },
+  {
+   "id": "impeccable:seed-028",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.591 0.172 24.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "Sienna-fired ceramic studio at dusk — terracotta cooling on a wheel, hands still dusted with slip",
+   "hue": 24.0
+  },
+  {
+   "id": "impeccable:seed-033",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.544 0.169 31.3)",
+   "bg": null,
+   "ink": null,
+   "mood": "1960s Italian terracotta workshop — fired clay, espresso, late-afternoon Mediterranean dust",
+   "hue": 31.3
+  },
+  {
+   "id": "impeccable:seed-207",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.564 0.231 29.1)",
+   "bg": null,
+   "ink": null,
+   "mood": "Aesop apothecary bottle — considered red oxide, the calm authority of a well-made object on a white shelf",
+   "hue": 29.1
+  },
+  {
+   "id": "impeccable:seed-035",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.663 0.153 32.1)",
+   "bg": null,
+   "ink": null,
+   "mood": "apothecary bottle — clay-fired warmth, considered retail",
+   "hue": 32.1
+  },
+  {
+   "id": "impeccable:seed-037",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.59 0.188 35.8)",
+   "bg": null,
+   "ink": null,
+   "mood": "herbalist's bottle — considered terracotta, the warmth comes from the glass not the room",
+   "hue": 35.8
+  },
+  {
+   "id": "impeccable:seed-038",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.652 0.229 34.8)",
+   "bg": null,
+   "ink": null,
+   "mood": "blown-glass furnace at dusk — molten orange iron pulled from the kiln, a craftsman's signature heat",
+   "hue": 34.8
+  },
+  {
+   "id": "impeccable:seed-039",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.653 0.185 33.5)",
+   "bg": null,
+   "ink": null,
+   "mood": "potter's glaze terracotta — quiet shelf craft, considered and grounded",
+   "hue": 33.5
+  },
+  {
+   "id": "impeccable:seed-167",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.495 0.134 36.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "apothecary shelf — burnished terracotta on clinical white, considered craft pharmacy",
+   "hue": 36.0
+  },
+  {
+   "id": "impeccable:seed-147",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.5 0.151 40.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "pharmacy shelf — considered terracotta restraint, the color does the work against clinical white",
+   "hue": 40.0
+  },
+  {
+   "id": "impeccable:seed-040",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.66 0.201 40.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "amber bottle glass on a clean dispensary shelf — considered and clinical-warm",
+   "hue": 40.0
+  },
+  {
+   "id": "impeccable:seed-041",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.673 0.217 38.6)",
+   "bg": null,
+   "ink": null,
+   "mood": "chemist's shelf — considered orange glass, clinical restraint",
+   "hue": 38.6
+  },
+  {
+   "id": "impeccable:seed-042",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.688 0.133 35.8)",
+   "bg": null,
+   "ink": null,
+   "mood": "terracotta glass on a marble counter — considered, unhurried",
+   "hue": 35.8
+  },
+  {
+   "id": "impeccable:seed-043",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.781 0.119 38.1)",
+   "bg": null,
+   "ink": null,
+   "mood": "apothecary catalogue — considered terracotta, dermatological restraint, the warm color doing all the work against clinical white",
+   "hue": 38.1
+  },
+  {
+   "id": "impeccable:seed-168",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.4 0.103 50.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "amber glass on a clinical white shelf — considered and pharmaceutical",
+   "hue": 50.0
+  },
+  {
+   "id": "impeccable:seed-044",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.568 0.149 45.9)",
+   "bg": null,
+   "ink": null,
+   "mood": "1970s desert highway at golden hour — sun-faded terracotta, denim dust, the warmth of a Polaroid pulled from a glovebox",
+   "hue": 45.9
+  },
+  {
+   "id": "impeccable:seed-045",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.607 0.163 47.7)",
+   "bg": null,
+   "ink": null,
+   "mood": "dispensary shelf — considered amber glass, clinical restraint, craft pharmacy",
+   "hue": 47.7
+  },
+  {
+   "id": "impeccable:seed-046",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.653 0.175 45.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "amber glass in lamplight — quiet luxury, restrained craft",
+   "hue": 45.0
+  },
+  {
+   "id": "impeccable:seed-047",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.695 0.205 43.2)",
+   "bg": null,
+   "ink": null,
+   "mood": "botanical pharmacy label — sun-warmed amber glass on a clinical countertop, restrained",
+   "hue": 43.2
+  },
+  {
+   "id": "impeccable:seed-051",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.704 0.189 49.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "blacksmith's forge at dusk — glowing iron, hammered copper, ember light against cooling steel",
+   "hue": 49.0
+  },
+  {
+   "id": "impeccable:seed-171",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.55 0.124 60.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "Klim Type Foundry specimen page — considered ochre on paper, design-school-honest",
+   "hue": 60.0
+  },
+  {
+   "id": "impeccable:seed-148",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.65 0.146 60.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "editorial gold — late-afternoon paper light on a serif specimen sheet, considered and dry",
+   "hue": 60.0
+  },
+  {
+   "id": "impeccable:seed-052",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.7 0.13 60.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "late-afternoon terracotta studio — sun-warmed clay, hands-on craft, the hour before dusk",
+   "hue": 60.0
+  },
+  {
+   "id": "impeccable:seed-053",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.773 0.157 56.6)",
+   "bg": null,
+   "ink": null,
+   "mood": "late-summer apricot orchard at golden hour — sun-warmed fruit, considered Californian craft",
+   "hue": 56.6
+  },
+  {
+   "id": "impeccable:seed-149",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.6 0.124 70.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "1970s desert highway — late-afternoon amber light on chrome and asphalt",
+   "hue": 70.0
+  },
+  {
+   "id": "impeccable:seed-054",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.74 0.162 68.1)",
+   "bg": null,
+   "ink": null,
+   "mood": "late-afternoon honey on terracotta — Mediterranean stucco at golden hour, sun-baked amber",
+   "hue": 68.1
+  },
+  {
+   "id": "impeccable:seed-055",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.774 0.174 65.1)",
+   "bg": null,
+   "ink": null,
+   "mood": "late-summer honey hour — amber light slanting through a west-facing window, optimistic and golden",
+   "hue": 65.1
+  },
+  {
+   "id": "impeccable:seed-056",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.691 0.146 74.6)",
+   "bg": null,
+   "ink": null,
+   "mood": "small publishing house — late-afternoon paper warmth, considered editorial gold",
+   "hue": 74.6
+  },
+  {
+   "id": "impeccable:seed-150",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.75 0.148 80.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "Klim Type Foundry specimen page — late-summer editorial gold, considered and grown-up",
+   "hue": 80.0
+  },
+  {
+   "id": "impeccable:seed-058",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.764 0.12 77.1)",
+   "bg": null,
+   "ink": null,
+   "mood": "Klim Type Foundry specimen page — late-afternoon ochre, considered editorial typography",
+   "hue": 77.1
+  },
+  {
+   "id": "impeccable:seed-059",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.784 0.144 79.8)",
+   "bg": null,
+   "ink": null,
+   "mood": "late afternoon in a Tuscan limonaia — sun-cured amber on whitewashed plaster",
+   "hue": 79.8
+  },
+  {
+   "id": "impeccable:seed-061",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.817 0.161 75.1)",
+   "bg": null,
+   "ink": null,
+   "mood": "late-afternoon honey on Tuscan limestone — golden hour, slow and luminous",
+   "hue": 75.1
+  },
+  {
+   "id": "impeccable:seed-063",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.842 0.165 91.3)",
+   "bg": null,
+   "ink": null,
+   "mood": "late-afternoon Tuscan sun on limestone — golden hour, considered, optimistic",
+   "hue": 91.3
+  },
+  {
+   "id": "impeccable:seed-174",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.35 0.075 110.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "olive grove at late afternoon — sun-cured leaves, dust, and quiet Mediterranean weight",
+   "hue": 110.0
+  },
+  {
+   "id": "impeccable:seed-117",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.65 0.1 110.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "editorial sage — late-summer type-foundry catalogue, considered olive-yellow on paper",
+   "hue": 110.0
+  },
+  {
+   "id": "impeccable:seed-118",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.75 0.09 110.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "Klim Type Foundry specimen page — late-summer olive light on a working specimen, the honesty of a type designer showing their work",
+   "hue": 110.0
+  },
+  {
+   "id": "impeccable:seed-065",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.797 0.166 113.1)",
+   "bg": null,
+   "ink": null,
+   "mood": "late-summer olive grove at noon — sun-bleached leaves, dry stone, Mediterranean glare",
+   "hue": 113.1
+  },
+  {
+   "id": "impeccable:seed-176",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.3 0.071 120.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "moss-darkened apothecary jar — herbal, shadowed, mid-19th-century botanical study",
+   "hue": 120.0
+  },
+  {
+   "id": "impeccable:seed-155",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.55 0.142 130.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "moss-bed forest floor at noon — chlorophyll, lichen, sunlit fern",
+   "hue": 130.0
+  },
+  {
+   "id": "impeccable:seed-119",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.6 0.154 130.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "moss garden at Saihō-ji — damp stone, filtered green light through old cedar",
+   "hue": 130.0
+  },
+  {
+   "id": "impeccable:seed-179",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.3 0.096 140.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "moss on wet stone — forest floor at dusk, deep botanical hush",
+   "hue": 140.0
+  },
+  {
+   "id": "impeccable:seed-180",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.35 0.11 140.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "moss-darkened apothecary — herbal tinctures in amber glass, pressed botanicals, the deep green of a conservatory at dusk",
+   "hue": 140.0
+  },
+  {
+   "id": "impeccable:seed-120",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.65 0.1 140.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "moss on weathered stone — quiet botanical garden conservatory at midday",
+   "hue": 140.0
+  },
+  {
+   "id": "impeccable:seed-121",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.75 0.09 140.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "moss garden at Saihō-ji — diffuse green light filtered through wet stone and lichen",
+   "hue": 140.0
+  },
+  {
+   "id": "impeccable:seed-182",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.4 0.106 150.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "moss garden at Saiho-ji — deep cultivated green under wet stone shadow, contemplative and damp",
+   "hue": 150.0
+  },
+  {
+   "id": "impeccable:seed-157",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.55 0.145 150.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "moss garden at Saiho-ji — damp stone, filtered green light through cedar canopy",
+   "hue": 150.0
+  },
+  {
+   "id": "impeccable:seed-122",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.6 0.158 150.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "forest floor at first light — moss, lichen, and clean morning air",
+   "hue": 150.0
+  },
+  {
+   "id": "impeccable:seed-195",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.65 0.15 145.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "Considered horticulture brand — botanical research lab, the green of a healthy stem photographed in clean daylight",
+   "hue": 145.0
+  },
+  {
+   "id": "impeccable:seed-183",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.35 0.077 160.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "moss-stained apothecary — deep forest glass, herbal tinctures shelved in low candlelight",
+   "hue": 160.0
+  },
+  {
+   "id": "impeccable:seed-184",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.4 0.087 160.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "deep forest apothecary — moss, bottle glass, and herbal tincture under afternoon light",
+   "hue": 160.0
+  },
+  {
+   "id": "impeccable:seed-158",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.55 0.119 160.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "moss on wet stone — forest floor after rain, mineral and quiet",
+   "hue": 160.0
+  },
+  {
+   "id": "impeccable:seed-159",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.6 0.13 160.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "moss-covered forest apothecary — herbal tinctures in amber glass, eucalyptus shadow",
+   "hue": 160.0
+  },
+  {
+   "id": "impeccable:seed-185",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.45 0.086 170.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "weathered copper patina on a Pacific Northwest greenhouse — oxidized teal, glass light, botanical hush",
+   "hue": 170.0
+  },
+  {
+   "id": "impeccable:seed-124",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.75 0.08 170.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "sea-glass on a foggy Pacific shoreline — weathered, mineral, quietly oxidized",
+   "hue": 170.0
+  },
+  {
+   "id": "impeccable:seed-160",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.55 0.095 180.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "weathered copper patina on a museum bronze — oxidized teal, conservatorial quiet",
+   "hue": 180.0
+  },
+  {
+   "id": "impeccable:seed-161",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.72 0.1 188.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "field-station verdigris — calm oxidized green-blue on plain paper, the quiet confidence of an instrument that just works",
+   "hue": 188.0
+  },
+  {
+   "id": "impeccable:seed-186",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.45 0.074 200.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "deep hydrothermal vent — mineral teal under pressure, the cold blue-green of oxidized copper in submerged light",
+   "hue": 200.0
+  },
+  {
+   "id": "impeccable:seed-125",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.65 0.1 200.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "tide-gauge teal — calm working blue-green, the color of clean water and clear morning air",
+   "hue": 200.0
+  },
+  {
+   "id": "impeccable:seed-126",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.75 0.08 200.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "harbor-works teal — quiet competence, paint chosen for cranes and lock gates that face hard weather",
+   "hue": 200.0
+  },
+  {
+   "id": "impeccable:seed-162",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.55 0.091 210.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "weathered nautical instrument — patinated brass on oxidized steel, the cool blue-grey of a ship's chronometer at dawn",
+   "hue": 210.0
+  },
+  {
+   "id": "impeccable:seed-163",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.45 0.086 230.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "deep harbor at dusk — weathered nautical instruments, brass dials on oxidized steel",
+   "hue": 230.0
+  },
+  {
+   "id": "impeccable:seed-164",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.55 0.105 230.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "deep harbor at dawn — cold steel water, fog-muted light, the quiet before the boats leave",
+   "hue": 230.0
+  },
+  {
+   "id": "impeccable:seed-127",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.65 0.1 230.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "weather-station blue — clear-sky reading at altitude, calm working clarity",
+   "hue": 230.0
+  },
+  {
+   "id": "impeccable:seed-128",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.75 0.08 230.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "barometer sky-blue — a calm reading before the weather turns, considered and clear",
+   "hue": 230.0
+  },
+  {
+   "id": "impeccable:seed-187",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.35 0.078 240.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "deep harbor at blue hour — wet stone, cold steel, the quiet before night fully lands",
+   "hue": 240.0
+  },
+  {
+   "id": "impeccable:seed-077",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.578 0.13 241.7)",
+   "bg": null,
+   "ink": null,
+   "mood": "pre-dawn signal tower — cold blue solitude, instruments glowing against the dark",
+   "hue": 241.7
+  },
+  {
+   "id": "impeccable:seed-188",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.4 0.11 250.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "blueprint ink — the calm authority of a drafting table where every line is deliberate, drawn on a clean page",
+   "hue": 250.0
+  },
+  {
+   "id": "impeccable:seed-165",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.45 0.123 250.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "blueprint room at dusk — drafting table, graphite, civic-engineering blue",
+   "hue": 250.0
+  },
+  {
+   "id": "impeccable:seed-079",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.478 0.136 251.8)",
+   "bg": null,
+   "ink": null,
+   "mood": "twilight cartography — the blue of deep dusk over open water, precise and navigational",
+   "hue": 251.8
+  },
+  {
+   "id": "impeccable:seed-080",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.541 0.122 248.2)",
+   "bg": null,
+   "ink": null,
+   "mood": "surveyor's ink blue — the calm, exact register of a hand-ruled site plan where every line is intentional",
+   "hue": 248.2
+  },
+  {
+   "id": "impeccable:seed-166",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.55 0.149 250.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "pre-dawn flight deck — instrument glow against deep cobalt sky, precise and quietly intense",
+   "hue": 250.0
+  },
+  {
+   "id": "impeccable:seed-081",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.65 0.16 250.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "deep-sea research vessel at dawn — instrument glow against cold steel light",
+   "hue": 250.0
+  },
+  {
+   "id": "impeccable:seed-082",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.742 0.14 247.4)",
+   "bg": null,
+   "ink": null,
+   "mood": "high-altitude flight deck at dawn — cold cabin instruments glowing against a sky still holding night",
+   "hue": 247.4
+  },
+  {
+   "id": "impeccable:seed-210",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.36 0.14 260.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "printmaker's night sky — late-night focused work, the deep blue of a studio at 2am where everything else falls away",
+   "hue": 260.0
+  },
+  {
+   "id": "impeccable:seed-189",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.4 0.13 260.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "pre-dawn observatory — cold instrument blue, star-chart precision",
+   "hue": 260.0
+  },
+  {
+   "id": "impeccable:seed-211",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.42 0.161 260.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "workwear denim indigo — deep-dyed cloth made for focused hands, calm authority without coldness",
+   "hue": 260.0
+  },
+  {
+   "id": "impeccable:seed-129",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.45 0.15 260.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "pre-dawn observatory — deep cobalt sky just before astronomical twilight, instruments cool to the touch",
+   "hue": 260.0
+  },
+  {
+   "id": "impeccable:seed-084",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.476 0.207 261.2)",
+   "bg": null,
+   "ink": null,
+   "mood": "pre-dawn flight deck — instrument glow against deep cobalt sky, precise and awake",
+   "hue": 261.2
+  },
+  {
+   "id": "impeccable:seed-085",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.681 0.132 258.4)",
+   "bg": null,
+   "ink": null,
+   "mood": "pre-dawn flight deck — instrument glow against deep cobalt sky",
+   "hue": 258.4
+  },
+  {
+   "id": "impeccable:seed-086",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.767 0.106 255.9)",
+   "bg": null,
+   "ink": null,
+   "mood": "Scandinavian winter morning — quiet light through frost, pale sky over snow",
+   "hue": 255.9
+  },
+  {
+   "id": "impeccable:seed-083",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.34 0.159 262.4)",
+   "bg": null,
+   "ink": null,
+   "mood": "deep cobalt twilight — the moment after sunset when the sky goes electric blue and city windows start to glow",
+   "hue": 262.4
+  },
+  {
+   "id": "impeccable:seed-212",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.36 0.219 270.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "indigo dye vat — deep pigment worked by hands that care about craft",
+   "hue": 270.0
+  },
+  {
+   "id": "impeccable:seed-130",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.4 0.15 270.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "fountain-pen indigo — considered ink on paper, no theatrics",
+   "hue": 270.0
+  },
+  {
+   "id": "impeccable:seed-213",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.411 0.241 267.9)",
+   "bg": null,
+   "ink": null,
+   "mood": "night-study indigo — the kind of blue-violet that sits behind a desk lamp at 11pm without shouting",
+   "hue": 267.9
+  },
+  {
+   "id": "impeccable:seed-131",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.45 0.18 270.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "monastic indigo dusk — vespers light through stained glass, contemplative and severe",
+   "hue": 270.0
+  },
+  {
+   "id": "impeccable:seed-088",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.476 0.158 268.5)",
+   "bg": null,
+   "ink": null,
+   "mood": "pre-dawn astronomer's notebook — deep indigo sky just before the stars fade, ink and graphite",
+   "hue": 268.5
+  },
+  {
+   "id": "impeccable:seed-196",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.53 0.13 268.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "bookbinder's indigo — the deep-focus blue-violet of cloth-bound reference volumes, the color of a well-set line of type",
+   "hue": 268.0
+  },
+  {
+   "id": "impeccable:seed-132",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.7 0.12 270.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "observatory dusk — the quiet violet of a reading room at closing hour, late-afternoon thinking",
+   "hue": 270.0
+  },
+  {
+   "id": "impeccable:seed-090",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.445 0.206 279.1)",
+   "bg": null,
+   "ink": null,
+   "mood": "printmaker's violet — the ink of a limited-edition run, not a nightclub",
+   "hue": 279.1
+  },
+  {
+   "id": "impeccable:seed-133",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.5 0.16 280.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "study at blue hour — the considered violet of a room where thinking happens",
+   "hue": 280.0
+  },
+  {
+   "id": "impeccable:seed-137",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.7 0.12 290.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "violet ink at last light — late-evening focus, the desk of someone who cares about craft",
+   "hue": 290.0
+  },
+  {
+   "id": "impeccable:seed-100",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.45 0.15 330.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "velvet boudoir at last call — bruised orchid and lipstick traces under low lamplight",
+   "hue": 330.0
+  },
+  {
+   "id": "impeccable:seed-103",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.65 0.16 330.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "1980s Memphis boudoir — powder-pink neon humming against lacquered black, lipstick and lacquer",
+   "hue": 330.0
+  },
+  {
+   "id": "impeccable:seed-228",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.36 0.147 340.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "riso-printed plum — the inky violet of a small-press poster, considered and current",
+   "hue": 340.0
+  },
+  {
+   "id": "impeccable:seed-107",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.5 0.2 340.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "orchid-house plum — hothouse confidence, considered magenta with modern poise",
+   "hue": 340.0
+  },
+  {
+   "id": "impeccable:seed-198",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.6 0.21 340.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "silkscreen plum — confident, considered, pulled by hand",
+   "hue": 340.0
+  },
+  {
+   "id": "impeccable:seed-112",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.754 0.193 343.4)",
+   "bg": null,
+   "ink": null,
+   "mood": "neon signage pink — one confident tube of light doing all the work against a clean night wall",
+   "hue": 343.4
+  },
+  {
+   "id": "impeccable:seed-229",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.42 0.163 350.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "crushed-berry rose — deep magenta pressed like ink from dark fruit, confident and current",
+   "hue": 350.0
+  },
+  {
+   "id": "impeccable:seed-113",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.47 0.173 354.8)",
+   "bg": null,
+   "ink": null,
+   "mood": "1960s velvet rope nightclub — crushed magenta, low light, cigarette smoke catching a spotlight",
+   "hue": 354.8
+  },
+  {
+   "id": "impeccable:seed-114",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.57 0.158 353.3)",
+   "bg": null,
+   "ink": null,
+   "mood": "fin-de-siècle Parisian rose — velvet curtain, theatre program, lipstick blotted on linen",
+   "hue": 353.3
+  },
+  {
+   "id": "impeccable:seed-199",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.65 0.18 350.0)",
+   "bg": null,
+   "ink": null,
+   "mood": "fresh-cut peony rose — considered pink, confident and current without nostalgia",
+   "hue": 350.0
+  },
+  {
+   "id": "impeccable:seed-115",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.636 0.218 355.3)",
+   "bg": null,
+   "ink": null,
+   "mood": "backstage at a cabaret — velvet rope, lipstick mark on a champagne glass",
+   "hue": 355.3
+  },
+  {
+   "id": "impeccable:seed-230",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.65 0.249 354.5)",
+   "bg": null,
+   "ink": null,
+   "mood": "neon rose at dusk — a considered pink, confident, alive, and clear-headed",
+   "hue": 354.5
+  },
+  {
+   "id": "impeccable:seed-231",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.682 0.241 353.2)",
+   "bg": null,
+   "ink": null,
+   "mood": "riso ink pink-magenta — one confident pigment that feels alive without shouting",
+   "hue": 353.2
+  },
+  {
+   "id": "impeccable:seed-116",
+   "source": "impeccable",
+   "license": "Apache-2.0",
+   "accent": "oklch(0.734 0.183 356.8)",
+   "bg": null,
+   "ink": null,
+   "mood": "modern beauty counter — fresh rose-pink, confident and current without being saccharine",
+   "hue": 356.8
+  }
+ ]
+}
