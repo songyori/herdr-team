@@ -370,7 +370,8 @@ _ANGLE_SUFFIXES = MARKUP | frozenset({".vue", ".svelte"})
 
 _HTML_LIKE = frozenset({".html", ".htm", ".vue", ".svelte"})  # <script>·<style> 블록이 있는 마크업
 _SPECIAL = re.compile(r"[\"'`/\\#<{}$\n]")
-_BLOCK_TAG = re.compile(r"<(script|style)\b([^>]*)>", re.I)
+_TAG_LIMIT = 2000  # 여는 태그 하나를 읽는 최대 글자 수(속성 값 안의 따옴표를 따라 `>` 를 찾는다)
+_OPEN_TAG = re.compile(r"""<([A-Za-z][\w.:-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>""")
 _SCSS_LANG = re.compile(r"""lang\s*=\s*["']?(scss|less|sass)""", re.I)
 
 
@@ -379,7 +380,7 @@ def comment_free_lines(rel: str, text: str) -> list[str] | None:
     줄을 넘는 백틱 템플릿 문자열(`${…}` 안은 코드로 읽고 중첩한다). `'`·`\"` 는 줄 끝에서 닫힌다. 줄 주석은 `//`(앞이 `:` 면 주소라
     아니다)와 `#`(`.py .sh .rb .yml .yaml .toml`, 줄 머리나 공백 뒤). `.html .htm .vue .svelte` 는 `<script>`·`<style>` 밖(마크업
     본문)에서 `<!-- -->` 만 주석이고 그 안은 JS·CSS 규칙이다. `.jsx .tsx` 는 JSX 글을 가려내지 못한다(알려진 한계). 지운 주석은 공백
-    하나로 바꾸고 줄 수는 그대로다(줄 i 의 글은 반환값 [i-1]). 대상이 아닌 확장자는 None."""
+    하나로 바꾸고 줄 수는 그대로다(여러 줄 태그의 줄바꿈도 모두 남긴다. 마크업의 여는 태그는 따옴표 속성 값까지 통째로 읽어 그 안의 `<!--` 는 글이다. 줄 i 의 글은 반환값 [i-1]). 대상이 아닌 확장자는 None."""
     suffix = Path(rel).suffix.lower()
     if suffix in _HASH_SUFFIXES:
         region = "hash"
@@ -396,6 +397,18 @@ def comment_free_lines(rel: str, text: str) -> list[str] | None:
     quote = ""
     stack: list[list] = []  # ["T"] 템플릿 문자열, ["E", 깊이] 그 안의 ${ … }
     i, n = 0, len(text)
+
+    def emit(piece: str) -> None:
+        """piece 를 그대로 쓰되 안의 줄바꿈마다 줄을 닫는다(태그가 여러 줄이어도 줄 수가 맞는다)."""
+        parts = piece.split("\n")
+        buf.append(parts[0])
+        for part in parts[1:]:
+            out.append("".join(buf))
+            buf.clear()
+            buf.append(part)
+
+    gt = -1  # 다음 `>` 위치의 기억(없으면 n): 닫는 `>` 가 멀면 태그를 읽지 않는다
+    fail_budget = 4 * n + _TAG_LIMIT  # 닫히지 않은 태그를 읽다 만 글자 합계의 상한
 
     def drop(end: int) -> int:
         """i 부터 end 까지가 주석이다: 공백 하나를 남기고 안의 줄바꿈마다 줄을 닫는다."""
@@ -438,14 +451,24 @@ def comment_free_lines(rel: str, text: str) -> list[str] | None:
                 end = text.find("-->", j + 4)
                 i = drop(n if end < 0 else end + 3)
                 continue
-            tag = _BLOCK_TAG.match(text, j) if detect_tags and c == "<" else None
-            if tag and not tag.group(0).endswith("/>"):
-                region = tag.group(1).lower()
-                line_ok = region == "script" or bool(_SCSS_LANG.search(tag.group(2)))
-                buf.append(tag.group(0))
-                i = tag.end()
-            else:
+            tag = None
+            if c == "<" and text[i:i + 1].isalpha():
+                if gt < j:
+                    gt = text.find(">", j)
+                    gt = n if gt < 0 else gt
+                if gt - j <= _TAG_LIMIT and fail_budget > 0:
+                    tag = _OPEN_TAG.match(text, j, min(n, j + _TAG_LIMIT))
+                    if tag is None:
+                        fail_budget -= _TAG_LIMIT
+            if tag is None:
                 buf.append(c)
+                continue
+            name = tag.group(1).lower()
+            if detect_tags and name in ("script", "style") and not tag.group(0).endswith("/>"):
+                region = name
+                line_ok = name == "script" or bool(_SCSS_LANG.search(tag.group(2)))
+            emit(tag.group(0))
+            i = tag.end()
             continue
         if region in ("script", "style") and c == "<" and text[j + 2:j + 2 + len(region)].lower() == region \
                 and text.startswith("</", j):  # HTML 은 따옴표 안이어도 </script 에서 블록이 끝난다

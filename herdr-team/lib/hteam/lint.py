@@ -317,9 +317,11 @@ def font_stack(value: str) -> list[str]:
 
 
 def _value_end(line: str, start: int) -> int:
-    """start 에서 시작하는 값의 끝 위치: 괄호 밖의 `;`·`}`·`,` 앞, 아니면 줄 끝. `rgb(1, 2, 3)` 안의 쉼표는 값 안이다."""
+    """start 에서 시작하는 값의 끝 위치: 괄호 밖의 `;`·`}`·`,` 앞, 아니면 줄 끝(최대 SCAN_WINDOW 글자 뒤). `rgb(1, 2, 3)` 안의
+    쉼표는 값 안이다."""
     depth = 0
-    for i in range(start, len(line)):
+    stop = min(len(line), start + SCAN_WINDOW)
+    for i in range(start, stop):
         c = line[i]
         if c == "(":
             depth += 1
@@ -327,7 +329,7 @@ def _value_end(line: str, start: int) -> int:
             depth = max(0, depth - 1)
         elif depth == 0 and c in ";},":
             return i
-    return len(line)
+    return stop
 
 
 def _object_end(line: str, start: int) -> int:
@@ -386,7 +388,11 @@ def _role_colors(line: str) -> list[tuple[float, float, float]]:
             base = start + key
         else:
             base = start
-        found = _COLOR_LITERAL.search(line, base, _value_end(line, base))
+        end = _value_end(line, base)
+        budget -= end - base + 1  # 값마다 읽은 글자도 합계에 넣는다(역할 이름이 구분 없이 되풀이되는 줄)
+        if budget < 0:
+            break
+        found = _COLOR_LITERAL.search(line, base, end)
         lch = color.parse(found.group(0)) if found else None
         if lch is not None:
             out.append(lch)

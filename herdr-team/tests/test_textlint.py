@@ -380,6 +380,55 @@ class GitTextLintTest(TeamCase):
         sha = self.commit("src/s2.vue", "<script>\nrun(); /* 설명\n여러 줄 */\n</script>\n<p>/* 저장 */</p>\n", "[T-001] 혼합")
         self.assertEqual(ts(self.proj, ["src/s2.vue"], [sha]), ["src/s2.vue"])
 
+    def test_comment_scan_keeps_one_entry_per_line(self):
+        ts = textlint.added_text_files
+        samples = [
+            "<script\n lang=\"ts\">\nrun();\n</script>\n<p>저장</p>\n",
+            "<script\n  lang=\"ts\"\n  setup>\nrun();\n</script>\n<p>저장</p>\n",
+            "<style\n scoped>\na{}\n</style>\n<p>저장</p>\n",
+            "<script\n lang=\"ts\"\n",
+            "<div\nclass=\"a\n b\"\n>x</div>\n",
+            "<!-- a\nb\nc --><p>저장</p>\n",
+            "<p>a</p><!-- 끝나지 않는\n\n",
+            "<input placeholder=\"<!-- 저장\n -->\">\n<p>저장</p>",
+            "<script \n<script \n",
+        ]
+        for rel in ("a.html", "a.vue", "a.svelte"):
+            for text in samples:
+                lines = textlint.comment_free_lines(rel, text)
+                self.assertEqual(len(lines), text.count("\n") + 1, (rel, text))
+        lines = textlint.comment_free_lines("a.vue", samples[0])
+        self.assertEqual(lines[4], "<p>저장</p>")
+        sha = self.commit("src/ml.vue", samples[0], "[T-001] 여러 줄 태그")
+        self.assertEqual(ts(self.proj, ["src/ml.vue"], [sha]), ["src/ml.vue"])
+        three = "<script\n  lang=\"ts\"\n  setup>\nrun();\n</script>\n<p>저장</p>\n"
+        sha = self.commit("src/ml3.vue", three, "[T-001] 세 줄 태그")
+        self.assertEqual(ts(self.proj, ["src/ml3.vue"], [sha]), ["src/ml3.vue"])
+
+    def test_comment_marks_inside_attribute_values_are_text(self):
+        ts = textlint.added_text_files
+        sha = self.commit("src/a.html", '<input placeholder="<!-- 저장 -->">\n', "[T-001] 속성")
+        self.assertEqual(ts(self.proj, ["src/a.html"], [sha]), ["src/a.html"])
+        sha = self.commit("src/b.html", '<a title="<!--">x</a>\n<p>저장</p>\n', "[T-001] 홀로 연")
+        self.assertEqual(ts(self.proj, ["src/b.html"], [sha]), ["src/b.html"])
+        sha = self.commit("src/c.html", '<p title="<script>">저장</p>\n<p>저장 방법</p>\n', "[T-001] 속성 안 script")
+        self.assertEqual(ts(self.proj, ["src/c.html"], [sha]), ["src/c.html"])
+        lines = textlint.comment_free_lines("a.html", "<a title='<!--'>x</a>\n<p>저장</p>")
+        self.assertEqual(lines[1], "<p>저장</p>")
+        # 본문의 아포스트로피는 따옴표가 아니다
+        lines = textlint.comment_free_lines("a.html", "<p>it's</p><!-- 주석 --><p>저장</p>")
+        self.assertEqual(lines[0], "<p>it's</p> <p>저장</p>")
+
+    def test_unclosed_block_tags_are_linear(self):
+        import time
+        for rel in ("a.html", "a.vue"):
+            for unit in ("<script ", "<style ", "<a \"", "<div "):
+                text = unit * (1_000_000 // len(unit))
+                start = time.monotonic()
+                lines = textlint.comment_free_lines(rel, text)
+                self.assertLess(time.monotonic() - start, 1.5, (rel, unit))
+                self.assertEqual(len(lines), text.count("\n") + 1)
+
     def test_comment_scan_is_linear(self):
         import time
         text = "'\"`/*//<!--#${}\\\n" * (1_000_000 // 16)

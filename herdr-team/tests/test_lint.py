@@ -212,6 +212,17 @@ class StyleScanTest(unittest.TestCase):
         three = "x\n:root { --a: #fb923c; --b: #c2410c; --c: #fff1f2; --d: #fb923c }\n"
         self.assertEqual(self.scan("src/t.css", three), ["src/t.css:2: Tailwind 기본 램프 값 3개 — design-rules §3 의 11"])
 
+    def test_role_color_scan_is_bounded(self):
+        import time
+        from hteam import lint
+        self.assertEqual(len(lint._role_colors(":root { --primary: #2f6fed; }")), 1)
+        start = time.monotonic()
+        lint._role_colors("--primary: " * 100000)
+        self.assertLess(time.monotonic() - start, 1.5)
+        start = time.monotonic()
+        self.scan("src/a.css", "--primary: " * 100000 + "\n")
+        self.assertLess(time.monotonic() - start, 1.5)
+
     def test_primary_hue_pretty_json_tokens(self):
         import json
         dtcg = json.dumps({"color": {"primary": {"$type": "color", "$value": "oklch(0.6 0.15 260)"}}}, indent=2)
