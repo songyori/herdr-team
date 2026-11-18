@@ -515,7 +515,7 @@ def _resolve_ref(value: str, theme, names: dict, data) -> str | None:
         if not isinstance(target, str) or len(target) > REF_VALUE_MAX:
             return None  # 색 글은 짧다: 큰 글을 여러 참조가 가리켜도 참조마다 그 글을 다루지 않는다
         value = target
-    return None
+    return None if _TOKEN_REF.fullmatch(value.strip()) else value  # REF_DEPTH 번째 참조로 닿은 값까지 쓴다
 
 
 def _json_role_hues(text: str, starts: list[int] | None = None):

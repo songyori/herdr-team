@@ -371,6 +371,18 @@ class StyleScanTest(unittest.TestCase):
         self.assertEqual(self.scan("t.json", text),
                          [f"t.json:{line('{color.blue.500}')}: 주 강조가 파랑·남색·보라 계열(h 260°) — 근거를 적는다(§1 의 11)"])
 
+    def test_reference_depth_boundary(self):
+        # 참조는 8단계까지 따라간다(Codex commit-885c071: 정확히 8단계에서 닿은 색이 빠졌다)
+        def chain(steps):
+            tokens = [{"name": "brand-primary", "value": "{c0}"}]
+            tokens += [{"name": f"c{i}", "value": f"{{c{i + 1}}}"} for i in range(steps - 1)]
+            tokens.append({"name": f"c{steps - 1}", "value": "oklch(0.6 0.15 260)"})
+            import json
+            return json.dumps({"color": {"tokens": tokens}})
+        self.assertEqual(len(self.scan("t.json", chain(7))), 1)
+        self.assertEqual(len(self.scan("t.json", chain(8))), 1)
+        self.assertEqual(self.scan("t.json", chain(9)), [])
+
     def test_font_custom_properties(self):
         css = (":root {\n  --font-body: \"Pretendard\", sans-serif;\n  --font-size-lg: 1.25rem;\n"
                "  --bs-font-sans-serif: Inter, sans-serif;\n  --color-accent: #c2410c;\n  --fonts: Roboto;\n"
