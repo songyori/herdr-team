@@ -38,6 +38,8 @@ SAMPLE_ATTR = "data-sample"
 VOID_TAGS = frozenset({"area", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"})
 TAG_WINDOW = 2000  # 여는 태그 하나를 읽는 최대 글자 수(닫히지 않은 따옴표에서 파일 끝까지 읽지 않게)
 _SCAN = re.compile(r"<!--|<([A-Za-z][\w.:-]*)(?=[\s/>])")  # 주석 시작 또는 여는 태그(이름은 묶음 1)
+_HTML_COMMENT_END = re.compile(r"-->")
+_JSX_COMMENT_END = re.compile(r"\*/\s*\}")
 _SCAN_JSX = re.compile(r"<!--|\{/\*|<([A-Za-z][\w.:-]*)(?=[\s/>])")
 _CLOSE_TAG = re.compile(r"</([A-Za-z][\w.:-]*)\s*>")
 _TAG_SPACE = re.compile(r"\s*")
@@ -143,21 +145,20 @@ def mask_samples(text: str, suffix: str = ".html") -> str:
         if m is None:
             break
         if m.group(1) is None:  # 주석
-            end_mark = "-->" if m.group(0) == "<!--" else "*/}"
-            end = text.find(end_mark, m.end())
-            if end < 0:  # 닫히지 않은 주석은 브라우저처럼 파일 끝까지다
+            # JSX 주석은 `*/` 뒤에 공백·줄바꿈이 있어도 `}` 로 닫힌다
+            end = _JSX_COMMENT_END.search(text, m.end()) if m.group(0) == "{/*" else _HTML_COMMENT_END.search(text, m.end())
+            if end is None:  # 닫히지 않은 주석은 브라우저처럼 파일 끝까지다
                 break
-            i = end + len(end_mark)
+            i = end.end()
             continue
         name = m.group(1).lower() if html else m.group(1)
         i = m.end()
-        if name in VOID_TAGS:  # 내용이 없는 빈 요소(컴포넌트 확장자에서는 소문자 이름만 해당한다)
-            continue
+        # 빈 요소도 먼저 읽어 속성 값 안의 `<!--` 를 주석으로 보지 않는다
         tag = open_tag(text, m.end(), min(len(text), m.start() + TAG_WINDOW))
         if tag is None:
             continue
         i = tag[0]
-        if tag[1] or not tag[2]:
+        if name in VOID_TAGS or tag[1] or not tag[2]:  # 빈 요소(컴포넌트 확장자에서는 소문자 이름만)·스스로 닫는 태그·표시 없음
             continue
         starts = closes.get(name, [])
         k = bisect.bisect_left(starts, tag[0])

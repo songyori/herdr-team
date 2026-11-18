@@ -167,6 +167,13 @@ class ScanTest(unittest.TestCase):
         self.assertEqual(len(self.found("<!-- 닫지 않음 <p data-sample>\n<p>저장됬어요</p>\n", "a.html")), 1)
         self.assertEqual(self.found("<!-- 메모 --><p data-sample>가짜됬</p>\n", "a.html"), [])  # 주석 뒤 진짜 표시는 지운다
 
+    def test_comment_end_whitespace_and_void_attribute_values(self):
+        # JSX 주석은 `*/` 와 `}` 사이 공백·줄바꿈이 있어도 닫힌다. 빈 요소 속성 값 안의 `<!--` 는 주석이 아니다(Codex 회귀)
+        for comment in ("{/* c */ }", "{/* c */\n}"):
+            self.assertEqual(self.found(comment + "\n<p data-sample>가짜됬</p>\n", "src/app.tsx"), [])
+        self.assertEqual(self.found('<input value="<!--">\n<p data-sample>가짜됬</p>\n', "a.html"), [])
+        self.assertEqual(len(self.found("{/* c */ }\n<p>저장됬어요</p>\n", "src/app.tsx")), 1)
+
     def test_component_names_are_case_sensitive(self):
         self.assertEqual(self.found('<Link href="/profile" data-sample>댓글이 등록됬어요</Link>\n', "src/app.tsx"), [])
         self.assertEqual(self.found("<Input data-sample>가짜됬</Input>\n", "src/app.tsx"), [])
