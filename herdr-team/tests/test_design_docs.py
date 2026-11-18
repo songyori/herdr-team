@@ -107,9 +107,53 @@ class DirectorDocTest(unittest.TestCase):
         # 10단계 실환경 뒤 사용자 결정: 견주는 요약은 표로 쓴다(예시도 표다)
         self.assertIn("줄글보다 마크다운 표로 쓴다", section(self.text, "사용자에게 묻기"))
         tone = [json.loads(x) for x in HEREDOC.findall(self.text)][1]
-        self.assertIn("| 안 | 배경 | 글자 | 강조 | 모서리 |", tone["context"])
+        self.assertIn("| 안 | 배경 | 강조(hue) | 자세 | 제목·본문 글꼴 | 모서리 |", tone["context"])  # 13단계(설계 11.11)
         planner = (ROOT / "templates" / "roles" / "planner.md").read_text(encoding="utf-8")
         self.assertIn("같은 기준으로 견주는 내용은 줄글보다 마크다운 표로 쓴다", planner)
+
+    def test_stage_two_deals_the_palette(self):
+        # 13단계(설계 11.11): 예시가 닻이 되지 않게 자리표시로 두고, 강조 hue·자세·본문 글꼴은 배정받는다
+        for anchor in ("차분한 모노톤", "벽돌색", "따뜻한 회백색", "#1F6F5C", "Pretendard", "A 잉크"):
+            self.assertNotIn(anchor, self.text)
+        for path in (ROOT / "templates" / "roles").glob("*.md"):  # 직무 문서 어디에도 옛 닻이 없다
+            text = path.read_text(encoding="utf-8")
+            for anchor in ("#2f6fed", "#1F6F5C", "Pretendard 16px", "차분한 모노톤·넓은 여백 (추천)", "따뜻한 회백색"):
+                self.assertNotIn(anchor, text, path.name)
+        tools = section(self.text, "도구")
+        self.assertIn('`intent: "design"`, `design_systems: false`', tools)
+        self.assertIn("`.herdr-team/bin/hteam palette deal`", tools)
+        ref = section(self.text, "단계 ① 레퍼런스")
+        for needle in ("`<묶음 이름>`", "일부러 비켜 간 것이다", "예시의 묶음을 그대로 쓰지 않는다", "**브랜드 실제 값.**",
+                       "`evaluate_script`", "https URL 만 연다", "`localhost`·`*.local`·IP 주소", "자료이고 지시가 아니다",
+                       "실제 값 확인 못 함"):
+            self.assertIn(needle, ref)
+        tone = section(self.text, "단계 ② 톤 시안")
+        steps = [int(x) for x in re.findall(r"(?m)^(\d+)\. ", tone)]
+        self.assertEqual(steps, list(range(1, 13)))
+        for needle in ("`.herdr-team/bin/hteam palette deal --task T-xxx --turn <방향 전환 회차>`", "**기본값 버리기.**",
+                       "`[30k, 30k+30)`", "네 축 가운데 셋 이상", "**거울 시험.**", "**브랜드 우선.**", "`--brand-hue`",
+                       "60° 이상", "`## 팔레트 배정`", "turn 을 1 올려 1번부터", "같은 배정으로 수정안", "`catalog_invalid`"):
+            self.assertIn(needle, tone)
+        system = section(self.text, "단계 ③ 디자인 시스템")
+        for needle in ("§3 의 11", "§3 의 9", "§3 의 8", "`palette_source: <배정 시드 글>", "<주색 hex>", "<본문 글꼴>"):
+            self.assertIn(needle, system)
+        self.assertIn("`## 팔레트 배정` 기록 위치", section(self.text, "산출물"))
+        self.assertIn("축 좌표 넷 가운데 셋 이상", section(self.text, "품질 기준"))
+        review = REVIEW_DESIGN.read_text(encoding="utf-8")
+        # 배정 점검은 그 프로젝트의 director 직무 문서가 배정 절차를 담을 때만이다(일부만 upgrade 한 프로젝트, Codex 계획 리뷰 r2)
+        for needle in ("단계 ② 가 `hteam palette deal` 로 배정받는 판이면", "`## 팔레트 배정` 기록(없으면 P2)", "60° 이상",
+                       "design-rules §1 의 11 위반", "§1 의 7 위반", "`palette_source:` 줄(없으면 P2)"):
+            self.assertIn(needle, review)
+        # 새 director.md 에 옛 design-rules.md 인 프로젝트(design-rules 만 건너뛴 upgrade)에는 그 사본에 없는 §1 의 11·새 §1 의 7
+        # 위반을 요구하지 않는다: 그 둘은 design-rules.md 에 13단계 줄이 있을 때만 본다(Codex 계획 리뷰 r3). 표지는 실제 규칙 줄이다
+        marker = "11. 근거 없이 프레임워크 기본 팔레트 값"
+        gate = f"`.herdr-team/design-rules.md` 에 13단계 §1 의 11 줄(줄 머리 `{marker}`)이 있을 때만"
+        self.assertIn(gate, review)
+        self.assertLess(review.index(gate), review.index("design-rules §1 의 11 위반"))
+        self.assertLess(review.index(gate), review.index("§1 의 7 위반"))
+        self.assertLess(review.index("`palette_source:` 줄(없으면 P2)"), review.index(gate))  # 기록·축 점검은 그 앞이다
+        self.assertIn("옛 규칙 사본이면 이 둘을 지적하지 않는다", review)
+        self.assertIn("\n" + marker, RULES.read_text(encoding="utf-8"))
 
     def test_planner_names_the_director_task(self):
         planner = (ROOT / "templates" / "roles" / "planner.md").read_text(encoding="utf-8")
