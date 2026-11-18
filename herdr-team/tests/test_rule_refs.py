@@ -100,12 +100,12 @@ def problems(root: Path, stats: dict | None = None) -> list[str]:
 METHOD = re.compile(r"(?: \[(?:기계|렌더|판단)\])+$")
 
 
-def method_problems(path: Path) -> list[str]:
-    """검사 방식 표기(설계 11.9): `## §N` 절의 번호 항목마다 끝에 [기계]·[렌더]·[판단] 이 하나 이상 있다. `## 자동 검사` 절이
-    `§N 의 M` 으로 가리키는 항목은 [기계] 이고, [기계] 항목은 모두 자동 검사 절이 가리킨다. 펜스 코드 블록 안은 보지 않는다."""
+def _methods(path: Path) -> tuple[dict[tuple[int, int], set[str]], dict[str, set[tuple[int, int]]], list[str]]:
+    """한 규칙 파일의 (번호 항목 → 표기, 자동 검사 절이 가리키는 항목을 가리키는 규칙 파일별로, 표기가 없는 항목의 문제)."""
     name = path.name
+    own = default_target(name)
     items: dict[tuple[int, int], set[str]] = {}
-    auto: set[tuple[int, int]] = set()
+    auto: dict[str, set[tuple[int, int]]] = {}
     found = []
     cur, in_auto, fence = None, False, None
     for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
@@ -126,7 +126,12 @@ def method_problems(path: Path) -> list[str]:
             cur, in_auto = None, line.strip() == "## 자동 검사"
             continue
         if in_auto:
-            auto |= {(int(c.group(1)), int(c.group(4))) for c in CITE.finditer(line) if c.group(4)}
+            for c in CITE.finditer(line):
+                if c.group(4):
+                    names = NAME.findall(line[:c.start()])
+                    later = LATER.match(line[c.end():])
+                    target = names[-1] if names else (later.group(1) if later else own)
+                    auto.setdefault(target, set()).add((int(c.group(1)), int(c.group(4))))
             continue
         item = re.match(r"(\d+)\. ", line)
         if item and cur is not None:
@@ -134,14 +139,32 @@ def method_problems(path: Path) -> list[str]:
             if not tag:
                 found.append(f"{name}:{n}: 검사 방식 표기가 없다: §{cur} 의 {item.group(1)}")
             items[(cur, int(item.group(1)))] = set(re.findall(r"기계|렌더|판단", tag.group(0))) if tag else set()
-    for key in sorted(auto):
-        if key not in items:
-            found.append(f"{name}: 자동 검사 절이 가리키는 항목이 없다: §{key[0]} 의 {key[1]}")
-        elif "기계" not in items[key]:
-            found.append(f"{name}: 자동 검사 절이 가리키는 항목이 [기계] 가 아니다: §{key[0]} 의 {key[1]}")
-    for key, tags in sorted(items.items()):
-        if "기계" in tags and key not in auto:
-            found.append(f"{name}: 자동 검사 절이 가리키지 않는 [기계] 항목: §{key[0]} 의 {key[1]}")
+    return items, auto, found
+
+
+def method_problems(*paths: Path) -> list[str]:
+    """검사 방식 표기(설계 11.9): 규칙 파일마다 `## §N` 절의 번호 항목 끝에 [기계]·[렌더]·[판단] 이 하나 이상 있다. 주어진
+    파일들의 `## 자동 검사` 절이 `§N 의 M` 으로 가리키는 항목은 [기계] 이고, [기계] 항목은 모두 어느 자동 검사 절이 가리킨다.
+    인용이 가리키는 파일은 problems 와 같이 고른다(같은 줄 앞의 마지막 규칙 파일 이름, 인용 바로 뒤 괄호의 이름, 없으면 그 파일의
+    기본 대상): design-rules 의 자동 검사 절이 `web-rules §5 의 1` 처럼 web-rules 의 항목을 가리킨다(13단계 p13d). 주어지지
+    않은 파일을 가리키는 인용은 보지 않는다(그 항목이 있는지는 problems 가 본다). 펜스 코드 블록 안은 보지 않는다."""
+    parsed = [(path.name, default_target(path.name), *_methods(path)) for path in paths]
+    cited: dict[str, set[tuple[int, int]]] = {}
+    for _, _, _, auto, _ in parsed:
+        for target, keys in auto.items():
+            cited.setdefault(target, set()).update(keys)
+    found = []
+    for name, own, items, _, missing in parsed:
+        found += missing
+        mine = cited.get(own, set())
+        for key in sorted(mine):
+            if key not in items:
+                found.append(f"{name}: 자동 검사 절이 가리키는 항목이 없다: §{key[0]} 의 {key[1]}")
+            elif "기계" not in items[key]:
+                found.append(f"{name}: 자동 검사 절이 가리키는 항목이 [기계] 가 아니다: §{key[0]} 의 {key[1]}")
+        for key, tags in sorted(items.items()):
+            if "기계" in tags and key not in mine:
+                found.append(f"{name}: 자동 검사 절이 가리키지 않는 [기계] 항목: §{key[0]} 의 {key[1]}")
     return found
 
 
@@ -153,11 +176,26 @@ class RuleRefTest(unittest.TestCase):
         self.assertGreater(stats["cites"], 0)
 
     def test_rule_items_have_check_methods(self):
-        checked = [ROOT / "templates" / name for name in ("design-rules.md", "web-rules.md")
-                   if (ROOT / "templates" / name).is_file()]
-        self.assertIn(ROOT / "templates" / "design-rules.md", checked)
+        checked = [ROOT / "templates" / name for name in ("design-rules.md", "web-rules.md")]
         for path in checked:
-            self.assertEqual(method_problems(path), [], path.name)
+            self.assertTrue(path.is_file(), path.name)  # 13단계 p13d: 웹 규칙도 본다
+        self.assertEqual(method_problems(*checked), [])
+
+    def test_method_checker_follows_auto_citations_into_other_rule_files(self):
+        # 13단계 p13d(설계 11.9, 13장): design-rules 의 자동 검사 절이 web-rules 항목을 가리킨다. 그 항목도 [기계] 여야 하고
+        # web-rules 의 [기계] 항목은 어느 자동 검사 절이 가리켜야 한다. 같은 줄 앞의 마지막 규칙 파일 이름이 대상이다
+        with tempfile.TemporaryDirectory() as tmp:
+            design, web = Path(tmp) / "design-rules.md", Path(tmp) / "web-rules.md"
+            design.write_text("# 규칙\n\n## §1 금지\n1. 하나 [기계]\n2. 둘 [판단]\n\n## 자동 검사\n"
+                              "- §1 의 1(하나), web-rules §5 의 1·web-rules §5 의 2, web-rules §6 의 9\n", encoding="utf-8")
+            web.write_text("# 웹\n\n## §5 움직임\n1. 하나 [기계]\n2. 둘 [판단]\n3. 셋 [기계] [판단]\n\n## §6 성능\n1. 하나 [판단]\n",
+                           encoding="utf-8")
+            self.assertEqual(method_problems(design, web), [
+                "web-rules.md: 자동 검사 절이 가리키는 항목이 [기계] 가 아니다: §5 의 2",
+                "web-rules.md: 자동 검사 절이 가리키는 항목이 없다: §6 의 9",
+                "web-rules.md: 자동 검사 절이 가리키지 않는 [기계] 항목: §5 의 3",
+            ])
+            self.assertEqual(method_problems(design), [])  # 주어지지 않은 파일을 가리키는 인용은 보지 않는다
 
     def test_method_checker_catches_missing_and_mismatched_tags(self):
         with tempfile.TemporaryDirectory() as tmp:

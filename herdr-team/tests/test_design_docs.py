@@ -289,7 +289,7 @@ class DesignRulesTest(unittest.TestCase):
         self.assertEqual(heads, ["# 디자인 규칙", "## §0 범위", "## §1 금지 목록 (AI 티)", "## §2 접근성 (WCAG 2.2 AA)",
                                  "## §3 색", "## §4 글자", "## §5 레이아웃", "## §6 표면·동작", "## §7 상태",
                                  "## 즉시 차단 항목", "## 자동 검사", "## 출처"])
-        counts = {"§1 금지 목록 (AI 티)": 13, "§2 접근성 (WCAG 2.2 AA)": 14, "§3 색": 12, "§4 글자": 10, "§5 레이아웃": 10,
+        counts = {"§1 금지 목록 (AI 티)": 13, "§2 접근성 (WCAG 2.2 AA)": 15, "§3 색": 12, "§4 글자": 10, "§5 레이아웃": 10,
                   "§6 표면·동작": 11, "§7 상태": 5}
         for title, n in counts.items():
             found = re.findall(r"(?m)^(\d+)\. ", section(self.rules, title))
@@ -315,7 +315,7 @@ class DesignRulesTest(unittest.TestCase):
         rules = blocks(section(self.rules, "즉시 차단 항목"))
         grade = self.review[self.review.index("6. 디자인 지적의 심각도"):self.review.index("   - P2:")]
         review = [b for b in blocks(grade) if not b.startswith("P1:")]
-        self.assertEqual(len(rules), 10)
+        self.assertEqual(len(rules), 11)  # 13단계 p13d: 1초에 3번 넘는 번쩍임
         self.assertEqual(set(rules), set(review))
         self.assertIn("보고서에 예외를 적었어도 리뷰어는 P1(REQUEST_CHANGES)로 판정한다", section(self.rules, "즉시 차단 항목"))
 
@@ -438,6 +438,87 @@ class PaletteDocTest(unittest.TestCase):
         self.assertIn("`--color-primary: <주색 값>`", section(self.read("roles/designer.md"), "시스템이 없을 때"))
         for path in (ROOT / "templates" / "roles").glob("*.md"):
             self.assertNotIn("#2f6fed", path.read_text(encoding="utf-8"), path.name)
+
+
+class WebRulesDocTest(unittest.TestCase):
+    """13단계 웹 규칙(설계 11.9·11.12 의 1·4·5): web-rules.md, design-rules 의 웹 항목, 직무 문서·리뷰 디자인 절."""
+
+    def read(self, rel):
+        return (ROOT / "templates" / rel).read_text(encoding="utf-8")
+
+    def test_web_rules_sections_and_items(self):
+        text = self.read("web-rules.md")
+        heads = [line for line in text.split("\n") if line.startswith("#")]
+        self.assertEqual(heads, ["# 웹 플랫폼 규칙", "## §0 범위", "## §1 Baseline", "## §2 오버레이", "## §3 폼 검증 시점",
+                                 "## §4 테마·색 구현", "## §5 움직임 구현", "## §6 성능", "## §7 구조·이름", "## §8 아이콘 구현",
+                                 "## 리뷰 등급", "## 출처"])
+        counts = {"§1 Baseline": 3, "§2 오버레이": 5, "§3 폼 검증 시점": 5, "§4 테마·색 구현": 2, "§5 움직임 구현": 3,
+                  "§6 성능": 9, "§7 구조·이름": 10, "§8 아이콘 구현": 2}
+        for title, n in counts.items():
+            found = re.findall(r"(?m)^(\d+)\. ", section(text, title))
+            self.assertEqual([int(x) for x in found], list(range(1, n + 1)), title)
+        head = text[:text.index("## §0 범위")]
+        for needle in ("designer·developer·tester", "디자인 리뷰어", "`.herdr-team/design-rules.md`", "앱(iOS·Android·Flutter)만",
+                       "`### 디자인 점검`"):
+            self.assertIn(needle, head)
+        self.assertIn("검사 방식 표기는 design-rules §0 과 같다", section(text, "§0 범위"))
+        for title, needles in (
+                ("§1 Baseline", ("Baseline Widely available", "`@supports`", "Origin Trial", "`### 시스템 추가 제안`",
+                                 "`<dialog>`", "`popover`", "`<details>`", "`:user-invalid`", "`light-dark()`", "`text-wrap`")),
+                ("§2 오버레이", ("`showModal()`", "`popover` 속성", "`<details>`·`<summary>`", "스크롤되지 않는다", "폴백 위치")),
+                ("§3 폼 검증 시점", ("이미 보인 오류를 지우기만", "(blur)", "첫 틀린 칸으로 포커스", "`:user-invalid` 에 건다",
+                                  "`aria-live`", "다시 보내지 않게", "서버가 한다")),
+                ("§4 테마·색 구현", ("`<meta name=\"color-scheme\">`", "`light-dark()`", "`oklch(from …)`",
+                                  "`color-mix(in oklab, …)`")),
+                ("§5 움직임 구현", ("`opacity`·`transform`", "`max-height`", "`interpolate-size", "`@starting-style`",
+                                  "`transition-behavior: allow-discrete`", "`opacity: 0` 으로 숨긴 채",
+                                  "1초에 3번 넘게 번쩍이지 않는다", "동작 줄이기 설정과 상관없이")),
+                ("§6 성능", ("`loading=\"lazy\"`", "`fetchpriority=\"high\"`", "`aspect-ratio`", "`sizes`", "`defer`·`async`",
+                           "CSS `@import`", "`preload`", "`content-visibility: auto`", "`will-change`", "`scheduler.yield()`",
+                           "Worker")),
+                ("§7 구조·이름", ("`<h1>` 은 화면에 하나", "큰 글자 `div`", "`<caption>`", "`<th scope>`", "`<nav aria-label>`",
+                                "대상을 넣는다", "역할 낱말", "`aria-hidden=\"true\"`", "`role=\"img\"`", "`<track>`",
+                                "`<iframe>` 에는 내용을 말하는 `title`", "`aria-expanded`", "`aria-pressed`")),
+                ("§8 아이콘 구현", ("`currentColor`", "3:1", "CSS `mask`", "CSS 필터"))):
+            for needle in needles:
+                self.assertIn(needle, section(text, title), title)
+        grade = section(text, "리뷰 등급")
+        for needle in ("§5 의 3 번쩍임", "P1(REQUEST_CHANGES)", "design-rules `## 즉시 차단 항목`", "P2",
+                       "`### 디자인 점검`"):
+            self.assertIn(needle, grade)
+        for needle in ("GoogleChrome/modern-web-guidance", "CC-BY 4.0", "addyosmani/agent-skills", "MIT"):
+            self.assertIn(needle, section(text, "출처"))
+
+    def test_design_rules_web_items(self):
+        rules = self.read("design-rules.md")
+        head = rules[:rules.index("## §0 범위")]
+        self.assertIn("`.herdr-team/web-rules.md`", head)
+        self.assertIn("앱(iOS·Android·Flutter)만 만드는 태스크는 읽지 않는다", head)
+        a11y = section(rules, "§2 접근성 (WCAG 2.2 AA)")
+        self.assertIn("고친 칸은 blur 에서 검사해도 된다(`.herdr-team/web-rules.md` §3)", a11y)
+        self.assertIn("15. 그림자·그라디언트·배경 이미지만으로 경계·구분·상태를 나타내지 않는다", a11y)
+        self.assertIn("`forced-color-adjust: none`", a11y)
+        self.assertIn("사용자 환경 설정 축(동작 줄이기, 밝은·어두운 테마, 대비 높임, 강제 색, 데이터 절약)", section(rules, "§7 상태"))
+        self.assertIn("- 1초에 3번 넘게 번쩍이는 것", section(rules, "즉시 차단 항목"))
+        for needle in ("GoogleChrome/modern-web-guidance", "CC-BY 4.0", "addyosmani/agent-skills"):
+            self.assertIn(needle, section(rules, "출처"))
+
+    def test_role_docs_review_and_readme(self):
+        for role in ("designer", "developer", "tester"):
+            self.assertIn("`.herdr-team/web-rules.md`", section(self.read(f"roles/{role}.md"), "입력"), role)
+        for role in ("director", "planner"):
+            self.assertNotIn("web-rules.md", self.read(f"roles/{role}.md"), role)
+        quality = section(self.read("roles/tester.md"), "품질 기준")
+        for needle in ("키보드만으로(Tab·Shift+Tab·화살표·Enter·Space·Esc) 전 흐름", "`lighthouse_audit`", "접근성 범주",
+                       "합격 기준이 아니라 단서"):
+            self.assertIn(needle, quality)
+        review = self.read("review-design.md")
+        first = review[review.index("1. UI 를 바꾼 태스크면"):review.index("\n2. ")]
+        for needle in ("`.herdr-team/web-rules.md` 가 있으면 그 파일로도 본다", "`## 리뷰 등급`", "6번의 P1"):
+            self.assertIn(needle, first)
+        readme = (ROOT.parent / "README.md").read_text(encoding="utf-8")
+        for needle in ("`.herdr-team/web-rules.md`(0.8.0", "즉시 차단 항목 11개", "`lighthouse_audit`"):
+            self.assertIn(needle, readme)
 
 
 class TextRulesDocTest(unittest.TestCase):

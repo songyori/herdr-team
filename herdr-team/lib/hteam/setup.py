@@ -31,6 +31,7 @@ FILES = {
     "text-rules.md": ".herdr-team/text-rules.md",
     "palette.md": ".herdr-team/palette.md",
     "fonts-ko.md": ".herdr-team/fonts-ko.md",
+    "web-rules.md": ".herdr-team/web-rules.md",
     "roles/planner.md": ".herdr-team/roles/planner.md",
     "roles/director.md": ".herdr-team/roles/director.md",
     "roles/designer.md": ".herdr-team/roles/designer.md",

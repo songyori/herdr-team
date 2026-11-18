@@ -185,8 +185,9 @@ Run 소유자가 Claude·Codex 워커를 Herdr pane 으로 띄우고, SQLite 메
 
 ### 디자인 규칙과 리뷰
 
-- `.herdr-team/design-rules.md`: §1 AI 티 금지 목록 13개, §2–§7(접근성 WCAG 2.2 AA, 색, 글자, 레이아웃, 표면·동작, 상태), 즉시 차단 항목 10개(보고서에 예외를 적어도 리뷰가 P1). 번호 항목마다 검사 방식(`[기계]`·`[렌더]`·`[판단]`)이 붙는다. UI 를 바꾼 태스크는 보고서에 `### 디자인 점검` 을 둔다.
+- `.herdr-team/design-rules.md`: §1 AI 티 금지 목록 13개, §2–§7(접근성 WCAG 2.2 AA, 색, 글자, 레이아웃, 표면·동작, 상태), 즉시 차단 항목 11개(보고서에 예외를 적어도 리뷰가 P1). 번호 항목마다 검사 방식(`[기계]`·`[렌더]`·`[판단]`)이 붙는다. UI 를 바꾼 태스크는 보고서에 `### 디자인 점검` 을 둔다.
 - `.herdr-team/palette.md`(director): 톤 시안의 팔레트 배정 절차. 디렉터는 강조 hue 칸·색 자세·한글 본문 글꼴을 `.herdr-team/bin/hteam palette deal --task T-xxx --turn N` 으로 배정받는다(240–300° 칸은 배정하지 않는다, 브랜드 색이 있으면 `--brand-hue`). `.herdr-team/fonts-ko.md`(director·designer): 한글 글꼴 후보와 과용 글꼴. 카탈로그(taste-skill MIT·impeccable Apache-2.0 팔레트, 한글 글꼴, 과용 색·글꼴)는 플러그인 `lib/hteam/data/` 에 있다.
+- `.herdr-team/web-rules.md`(0.8.0, 웹 UI 를 만들거나 시험하는 designer·developer·tester 와 디자인 리뷰어): Baseline(새 기능은 폴백과 함께), 오버레이(`<dialog>`·`popover`·`<details>`), 폼 검증 시점(`:user-invalid`), 테마·색 구현(`light-dark()`), 움직임 구현(`opacity`·`transform` 만), 성능, 구조·이름, 아이콘 구현. 1초에 3번 넘는 번쩍임은 즉시 차단이다. 앱만 만드는 태스크는 읽지 않는다.
 - 리뷰 디자인 절(director 직무가 있는 프로젝트의 director·designer·developer 태스크): 기준 1–9. 이 태스크가 만든 문제만 `(새로 생김)`·`(회귀)`·`(기존)` 으로 나눠 지적하고, diff 의 지운 줄을 읽고, 빠진 상태를 찾고, 즉시 차단 항목은 P1, 고칠 방향은 싼 것부터.
 - 자동 검사(경고): diff 의 지운 줄에서 줄어든 접근성·글자 신호, 지운 줄의 보존 신호(링크·입력란 이름·이벤트·`data-testid` 값이 같은 변경에 없다)와 추가한 줄의 확대 막기·`focus-visible` 없는 포커스 제거(designdiff) 먼저, 바뀐 파일의 이모지·왼쪽 강조 테두리·파랑·보라 그라디언트(내용 검사)와 과용 기본 색·Tailwind 기본 램프·파랑·남색·보라 주 강조·과용 글꼴(색·글꼴 검사. `.herdr-team/design-rules.md` 가 0.8.0 판인 프로젝트만) 뒤, 합쳐 50건까지. 리뷰어가 볼 경고는 `.herdr-team/bin/hteam lint --task T` 로 미리 본다(`findings` 는 디자인, `text_findings` 는 문구, `guard_findings` 는 아래 "검사 약화 의심").
 
@@ -202,6 +203,7 @@ Run 소유자가 Claude·Codex 워커를 Herdr pane 으로 띄우고, SQLite 메
 
 - 묶음: 함께 끝내고 함께 검증하는 기능 단위. tester 태스크 하나와 그 `depends_on` 의 developer 태스크들(3–6개 권장)이고, 묶음 이름은 tester 태스크의 key 다. planner 가 `docs/planning/tasks.toml` 에 묶는다. `[test]` 표가 있으면 `hteam plan check` 가 묶음 규칙을 검사한다: tester owns 는 정확히 `["tests/<key>/**", "docs/qa/<key>.md"]`(`[test] tester_paths` 가 있으면 그 경로들의 `{key}` 를 key 로 채운 것과 `docs/qa/<key>.md`), tester 는 developer 에만 의존, developer 는 tester 에 의존하지 않음, 문서 전용이 아닌 developer 는 정확히 한 묶음.
 - `hteam plan check` 는 막지 않는 `warnings`(0.8.0)도 낸다: acceptance 가 5개를 넘거나 제목에 "및"·"그리고" 가 있는 developer 태스크(이미 적용한 태스크는 빼고), designer 태스크나 constraints 에 `voice.md` 가 나오는 태스크가 있는데 `docs/planning/voice.md` 가 없을 때. planner 는 확정 질문 전에 이 경고를 보고 나누거나 나누지 않은 이유를 적는다.
+- UI 가 있는 묶음의 tester(0.8.0)는 QA 시나리오에 키보드만으로 전 흐름을 지나는 시나리오와 Chrome DevTools MCP `lighthouse_audit`(있으면)의 접근성 결과를 넣는다. 점수는 합격 기준이 아니라 단서다.
 - `[test]` 쓰는 법(`docs/planning/tasks.toml` 의 최상위 표, 커밋한 HEAD 의 것만 쓴다):
 
   ```toml

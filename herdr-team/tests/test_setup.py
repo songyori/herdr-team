@@ -104,7 +104,7 @@ class ScaffoldTest(TeamCase):
         for rel in (".herdr-team/config.toml", ".herdr-team/roles/planner.md",
                     ".herdr-team/roles/director.md", ".herdr-team/roles/designer.md", ".herdr-team/roles/developer.md",
                     ".herdr-team/roles/tester.md", ".herdr-team/design-rules.md", ".herdr-team/text-rules.md",
-                    ".herdr-team/palette.md", ".herdr-team/fonts-ko.md", ".herdr-team/bin/hteam",
+                    ".herdr-team/palette.md", ".herdr-team/fonts-ko.md", ".herdr-team/web-rules.md", ".herdr-team/bin/hteam",
                     ".herdr-team/project.md", "CLAUDE.md", "AGENTS.md", ".gitignore"):
             self.assertIn(rel, out["created"])
         claude = (self.proj / "CLAUDE.md").read_text()
@@ -237,12 +237,12 @@ class UpgradeTest(TeamCase):
     MOVED_NEXT = " moved 의 절은 직무 문서에서 .herdr-team/project-rules/ 로 옮겼다. 두 파일을 함께 커밋한다."
 
     def test_new_rule_files_are_created(self):  # 설계 11.9(13단계): 이미 세팅한 프로젝트에 새 규칙 파일이 생긴다
-        self.git("rm", "-q", "--", ".herdr-team/palette.md", ".herdr-team/fonts-ko.md")
+        new = [".herdr-team/palette.md", ".herdr-team/fonts-ko.md", ".herdr-team/web-rules.md"]  # 13단계 새 규칙 파일 셋
+        self.git("rm", "-q", "--", *new)
         self.git("commit", "-q", "-m", "0.7.2 처럼 새 규칙 파일이 없다")
         code, out = self.upgrade()
-        self.assertEqual((code, out["created"], out["updated"]), (0, [".herdr-team/palette.md", ".herdr-team/fonts-ko.md"], []),
-                         out)
-        for name in ("palette.md", "fonts-ko.md"):
+        self.assertEqual((code, out["created"], out["updated"]), (0, new, []), out)
+        for name in ("palette.md", "fonts-ko.md", "web-rules.md"):
             self.assertEqual((self.team / name).read_text(encoding="utf-8"), self.template(name))
 
     def test_project_sections_move_to_project_rules(self):  # 설계 9.7 의 1(13단계)

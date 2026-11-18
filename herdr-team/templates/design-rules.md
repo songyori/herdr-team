@@ -7,7 +7,7 @@
 
 `hteam review` 는 기계적으로 찾을 수 있는 의심 위치를 리뷰 프롬프트에 넣는다(아래 "자동 검사"). 판정은 리뷰어가 한다.
 
-직무별 참고 파일: director 는 `.herdr-team/palette.md`(팔레트 배정 절차)와 `.herdr-team/fonts-ko.md`(한글 글꼴)를, 디자인 시스템 없이 글꼴을 고르는 designer 는 `.herdr-team/fonts-ko.md` 를 함께 읽는다.
+직무별 참고 파일: director 는 `.herdr-team/palette.md`(팔레트 배정 절차)와 `.herdr-team/fonts-ko.md`(한글 글꼴)를, 디자인 시스템 없이 글꼴을 고르는 designer 는 `.herdr-team/fonts-ko.md` 를 함께 읽는다. 웹 UI(브라우저에서 도는 화면과 그 시안)를 만들거나 시험하는 designer·developer·tester 는 `.herdr-team/web-rules.md`(웹 플랫폼 기능으로 만드는 법)도 읽는다. 앱(iOS·Android·Flutter)만 만드는 태스크는 읽지 않는다.
 
 ## §0 범위
 - 값은 웹(CSS) 기준이다. 앱(iOS·Android·Flutter)은 같은 원칙을 플랫폼 기능으로 지킨다: 접근성 라벨(`accessibilityLabel`·`contentDescription`·`Semantics`), 글자 크기 설정(Dynamic Type·글꼴 배율), 동작 줄이기 설정, 터치 영역 44pt(iOS)·48dp(Android).
@@ -39,7 +39,7 @@
 4. 모달은 `<dialog>` 와 `showModal()` 을 먼저 쓴다. 열면 포커스를 안으로 옮기고 닫으면 연 컨트롤로 돌려준다. 클라이언트 라우팅으로 화면이 바뀌면 문서 제목을 바꾸고 새 화면의 `<h1>` 이나 `<main>` 으로 포커스를 옮긴다. [판단] [렌더]
 5. 누를 수 있는 영역은 24×24px 이상이다. 터치 화면은 44×44px, 데스크톱은 40×40px 를 목표로 한다. 보이는 크기를 키울 수 없으면 가상 요소로 영역을 넓히되 이웃 영역과 겹치지 않는다. 끌기 조작에는 버튼이나 메뉴 같은 대안을 둔다. [렌더]
 6. 모든 입력란에 보이는 라벨(`<label for>`)을 둔다. 자리표시(placeholder)는 라벨이 아니다. 알맞은 `type`·`inputmode`·`autocomplete` 를 쓰고 붙여넣기를 막지 않는다. [기계] [판단]
-7. 오류는 제출할 때 검사한다. 유효할 때까지 제출 버튼을 비활성화하지 않는다. 틀린 칸에 `aria-invalid="true"` 와 오류 문구를 가리키는 `aria-describedby` 를 두고, 첫 틀린 칸으로 포커스를 옮긴다. [판단] [렌더]
+7. 오류는 제출할 때 검사한다. 유효할 때까지 제출 버튼을 비활성화하지 않는다. 틀린 칸에 `aria-invalid="true"` 와 오류 문구를 가리키는 `aria-describedby` 를 두고, 첫 틀린 칸으로 포커스를 옮긴다. 고친 칸은 blur 에서 검사해도 된다(`.herdr-team/web-rules.md` §3). [판단] [렌더]
 8. 아이콘만 있는 버튼에 `aria-label` 을 둔다. 보이는 라벨 글자는 접근 가능한 이름에 들어간다. 장식 요소는 `aria-hidden="true"` 로 숨기되 포커스를 받는 요소에는 쓰지 않는다. 이미지 대체 텍스트는 목적에 따라 쓴다: 장식은 `alt=""`, 정보 이미지는 뜻, 기능 이미지는 동작. [기계] [판단]
 9. 상태를 색만으로 알리지 않는다. 아이콘·글자·밑줄을 함께 쓴다. [판단]
 10. 움직임은 `@media (prefers-reduced-motion: no-preference)` 안에서만 쓴다. 동작 줄이기 설정에서는 이동·확대를 투명도 전환으로 바꾸고 시차 효과(parallax)와 자동 재생을 끈다. [기계] [렌더]
@@ -47,6 +47,7 @@
 12. 화면 갱신을 알린다. 입력란 검증은 `aria-describedby`, 급하지 않은 알림(토스트·결과 수)은 `role="status"`, 급한 오류만 `role="alert"` 로 알린다. [기계] [판단]
 13. 제목은 문서 개요를 이루고, 화면마다 `<main>` 을 하나 둔다. 반복 내비게이션이 본문 앞에 있으면 "본문 바로가기" 링크를 첫 포커스 요소로 둔다. 문서에 `lang="ko"` 를 둔다. [기계] [판단]
 14. 글자 200% 확대와 320px 폭에서 가로 스크롤 없이 내용과 컨트롤이 다 보인다. 뷰포트 메타에 `maximum-scale=1`·`user-scalable=no` 를 쓰지 않는다. [기계] [렌더]
+15. 그림자·그라디언트·배경 이미지만으로 경계·구분·상태를 나타내지 않는다(강제 색 모드에서 사라진다). `forced-color-adjust: none` 은 색 자체가 정보인 곳(색 견본)에만 쓴다. [판단] [렌더]
 
 ## §3 색
 1. 램프는 중립 하나, 강조, 실제로 화면에 쓰는 상태(성공·경고·위험 등)만 둔다. 강조의 수와 면적은 색 자세가 정한다(§3 의 8). [판단]
@@ -100,7 +101,7 @@
 11. 테마를 바꿀 때는 전환 효과를 잠시 끈다. [판단]
 
 ## §7 상태
-1. 화면과 컴포넌트마다 해당하는 상태를 모두 만든다: 기본, hover, focus, 눌림, 비활성, 로딩, 빈 상태, 오류, 좁은 폭(320px), 긴 글(긴 이름, 번역으로 늘어난 라벨). [판단] [렌더]
+1. 화면과 컴포넌트마다 해당하는 상태를 모두 만든다: 기본, hover, focus, 눌림, 비활성, 로딩, 빈 상태, 오류, 좁은 폭(320px), 긴 글(긴 이름, 번역으로 늘어난 라벨), 사용자 환경 설정 축(동작 줄이기, 밝은·어두운 테마, 대비 높임, 강제 색, 데이터 절약) 가운데 해당하는 것. [판단] [렌더]
 2. designer 는 이 상태를 시안에 넣는다. director 는 디자인 시스템 컴포넌트마다 상태별 미리보기를 둔다. [판단]
 3. developer 는 구현한 상태를 실제로 렌더해 확인한다. 프로젝트에 상태 미리보기 도구(Storybook 등)나 E2E 도구가 있으면 그것을 쓴다. 없으면 임시 확인 페이지를 만들어 상태마다 데이터를 바꿔 보고, 확인한 뒤 지운다(커밋하지 않는다). 추적 파일(라우트 등록 등)을 고쳐 임시 페이지를 연결했다면 확인 뒤 되돌린다. 보고서에 확인한 상태, 확인 방법(명령·화면), 확인하지 못한 상태와 이유를 적는다. [렌더]
 4. 삭제처럼 되돌리기 어려운 동작에는 확인 단계, 되돌리기, 다른 동작과 구별되는 표시(위험 색·떨어진 자리) 중 하나 이상을 둔다. [판단]
@@ -118,6 +119,7 @@
 - 전체를 볼 방법이 없는 잘린 내용, 단서 없이 스크롤 끝이나 접힘 뒤에 숨은 내용·컨트롤
 - 복구 방법을 알려 주지 않는 오류
 - 움직임으로만 알리는 상태 변화
+- 1초에 3번 넘게 번쩍이는 것
 
 ## 자동 검사
 `hteam review` 는 리뷰어를 띄우기 전에 태스크가 바꾼 파일에서 다음 의심 위치를 찾아 리뷰 프롬프트에 넣는다. 정당한 쓰임이 있으므로 자동 불합격은 아니다. 나머지는 리뷰어가 화면과 코드를 직접 보고 판단한다.
@@ -133,3 +135,5 @@
 §2–§7 과 리뷰 방식(변경분 분류, 지운 줄 읽기, 즉시 차단 항목, 싼 수정 순서)은 jakubkrehel/skills(https://github.com/jakubkrehel/skills, MIT, 2026-11-01 커밋 60bf140)의 better-accessibility·better-colors·better-typography·better-layout·better-ui·interface-review·better-interface·state-machine 에서 가져와 orca-team 흐름에 맞게 새로 압축했다. 한글 줄바꿈·기울임·웹폰트 서브셋, 앱 플랫폼 대응, 보고서·리뷰 연결은 orca-team 이 더했다. herdr-team 은 orca-team 0.5.2 에서 옮겼다.
 
 §1 의 7·10–13, §3 의 1·8–12 와 팔레트 배정(`palette.md`)·한글 글꼴(`fonts-ko.md`)은 13단계(2026-11-16 조사)에 Anthropic frontend-design(https://github.com/anthropics/skills, Apache-2.0), impeccable(https://github.com/pbakaus/impeccable, Apache-2.0, 커밋 d41d986), taste-skill(https://github.com/Leonxlnx/taste-skill, MIT, 커밋 f6b7657), nutlope/hallmark(https://github.com/nutlope/hallmark, MIT, 2026-11-11 커밋)의 생각을 가져와 새로 썼다. 들여온 팔레트·과용 색 데이터의 라이선스 원문은 플러그인의 `lib/hteam/data/LICENSES.md` 에 있다.
+
+§2 의 7 의 blur 검사, §2 의 15, §7 의 1 의 사용자 환경 설정 축, 번쩍임 즉시 차단과 `web-rules.md` 는 13단계(2026-11-16 조사)에 GoogleChrome/modern-web-guidance(원본 저장소 https://github.com/GoogleChrome/modern-web-guidance-src, 가이드 문서 CC-BY 4.0, 2026-11-13 커밋)를 요약·재작성하고 addyosmani/agent-skills(https://github.com/addyosmani/agent-skills, MIT, 2026-11-13 커밋)를 참고해 더했다.
