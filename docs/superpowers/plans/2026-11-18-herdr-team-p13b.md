@@ -64,9 +64,15 @@ def deal(seed: str, brand_hue: float | None = None, turn: int = 0) -> dict     #
 def font_stack(value: str) -> list[str]
 def style_scan(rel: str, text: str, overused: dict) -> list[str]
 def style_findings(root: Path, files: list[str]) -> list[str]       # compose.design_findings 가 셋째 guarded 로 부른다
+STYLE_RULES_MARKER = "11. 근거 없이 프레임워크 기본 팔레트 값"      # 13단계 design-rules 의 §1 의 11 줄 머리
+def has_style_rules(rules: Path) -> bool                           # 프로젝트 design-rules.md 에 그 줄이 있나(색·글꼴 검사 조건)
+
+# herdr-team/lib/hteam/gitio.py (Task 6)
+def file_text(root, commit: str, rel: str) -> str | None             # 커밋의 파일 글. 없거나(지움) 일반 파일 아님·git 실패·UTF-8 아님은 None
 
 # herdr-team/lib/hteam/designdiff.py (Task 6)
-def kept_values(line: str) -> list[tuple[str, str]]   # (종류, 값): "링크 href", "입력란 name|id", "이벤트 <속성>", "이벤트 addEventListener", "data-testid", "testTag", "accessibilityIdentifier"
+def kept_values(line: str) -> list[tuple[str, str]]   # (종류, 값 전체): "링크 href", "입력란 name|id", "이벤트 <속성>", "이벤트 addEventListener", "data-testid", "testTag", "accessibilityIdentifier"
+def final_values(text: str) -> set[tuple[str, str]]    # 마지막 커밋 파일 글의 (견주는 종류, 값). 링크(href·to)·이벤트 처리 값(onClick·onclick·@click)은 한 종류로 본다
 ```
 
 배정 출력(`deal` 의 dict, CLI 는 앞에 `"ok": true`):
@@ -87,7 +93,7 @@ def kept_values(line: str) -> list[tuple[str, str]]   # (종류, 값): "링크 h
 ---
 ### Task 1: 카탈로그와 들여오기 스크립트(설계 11.10)
 
-들여오기 스크립트는 고정한 커밋의 원본 다섯 파일을 받아(SHA-256 확인) 형식만 바꿔 `palettes.json`·`overused.json`·`LICENSES.md` 를 쓴다. `fonts-ko.json` 은 조사(2026-11-18, `deal: true` 는 OFL 원문을 확인한 본문용 돋움·부리이고 과용 목록이 아닌 것)로 고른 손 목록이다. 항목마다 `reserved_name` 에 라이선스 원문의 예약 이름(Reserved Font Name, 저작권 줄 뒤 "with Reserved Font Name …")을 그대로 적는다(없으면 null, 원문을 읽지 못한 글꼴도 null). 조사 폴더의 원문(`.superpowers/sdd/p13b-data/dl/fonts/`)에서 SUIT·SUITE·Spoqa Han Sans Neo·IBM Plex Sans KR·Nanum Myeongjo 다섯만 예약 이름이 있다. `palette.py` 는 이 데이터를 읽고 검사한다: 글꼴 항목마다 `verified`·`reserved_name` 이 있어야 하고, `deal: true` 는 `verified: true`·`OFL` 로 시작하는 라이선스·본문 계열(돋움·부리)이어야 한다(아니면 `catalog_invalid`. 손상된 카탈로그가 확인 못 한 글꼴을 배정하지 않게). 생성한 세 파일은 커밋한다(플러그인이 싣고 간다). 시험은 네트워크 없이 본다: 스크립트의 순수 함수(작은 원본 조각), 저장소 데이터가 스크립트의 직렬화 꼴 그대로인지, 데이터의 스키마·출처·라이선스·칸 덮기.
+들여오기 스크립트는 고정한 커밋의 원본 다섯 파일을 받아(SHA-256 확인) 형식만 바꿔 `palettes.json`·`overused.json`·`LICENSES.md` 를 쓴다. `fonts-ko.json` 은 조사(2026-11-18, `deal: true` 는 OFL 원문을 확인한 본문용 돋움·부리이고 과용 목록이 아닌 것)로 고른 손 목록이다. 항목마다 `reserved_name` 에 라이선스 원문의 예약 이름(Reserved Font Name, 저작권 줄 뒤 "with Reserved Font Name …")을 그대로 적는다(없으면 null, 원문을 읽지 못한 글꼴도 null). 조사 폴더의 원문(`.superpowers/sdd/p13b-data/dl/fonts/`)에서 SUIT·SUITE·Spoqa Han Sans Neo·IBM Plex Sans KR·Nanum Myeongjo 다섯만 예약 이름이 있다. `palette.py` 는 이 데이터를 읽고 검사한다: 글꼴 항목마다 `verified`·`reserved_name` 이 있어야 하고, `deal: true` 는 `verified: true`·`OFL` 로 시작하는 라이선스·본문 계열(돋움·부리)이어야 한다(아니면 `catalog_invalid`. 손상된 카탈로그가 확인 못 한 글꼴을 배정하지 않게). 배정 대상의 이름이 과용 글꼴(`overused.json` 의 `fonts_ko`·`fonts_latin`, `font_key` 로 견준다)이어도 `catalog_invalid` 다. 팔레트는 유채색 강조(C ≥ `color.ACHROMATIC_C`)면 저장한 `hue` 와 `color.parse(accent)` 의 h 가 원형 거리 0.5° 안이어야 한다(틀리면 엉뚱한 칸의 후보가 된다. 들여온 카탈로그는 0° 차이다). 둘 다 실제 카탈로그를 망가뜨린 사본으로 시험한다(Codex 계획 리뷰 r2). 생성한 세 파일은 커밋한다(플러그인이 싣고 간다). 시험은 네트워크 없이 본다: 스크립트의 순수 함수(작은 원본 조각), 저장소 데이터가 스크립트의 직렬화 꼴 그대로인지, 데이터의 스키마·출처·라이선스·칸 덮기.
 
 **Files:**
 - Create: `scripts/import-palettes.py`, `scripts/test_import_palettes.py`
@@ -602,6 +608,7 @@ ALLOWED = tuple(k for k in range(360 // BUCKET) if not EXCLUDED[0] <= k * BUCKET
 CHROMATIC_C = 0.03  # 강조 C 가 이보다 작으면 무채색이라 칸에 넣지 않는다(획일도 측정의 유효 강조와 같다)
 FONT_CLASSES = ("돋움", "부리", "표시", "손글씨")
 BODY_CLASSES = ("돋움", "부리")  # 본문 글꼴로 배정하는 계열
+HUE_TOLERANCE = 0.5  # 팔레트의 hue 와 accent 의 OKLCH h 가 이보다 멀면 깨진 카탈로그다(들여오기는 h 를 소수 첫째 자리로 적는다)
 _HEX6 = re.compile(r"#[0-9a-f]{6}")
 
 
@@ -647,6 +654,9 @@ def _palette_problem(p) -> str | None:
             return f"{key} 는 null 이나 색이다"
     if not _real(p.get("hue")) or not 0 <= p["hue"] < 360:
         return "hue 는 0 이상 360 미만의 수다"
+    lch = color.parse(p["accent"])
+    if lch[1] >= color.ACHROMATIC_C and color.hue_distance(lch[2], p["hue"]) > HUE_TOLERANCE:
+        return f"hue {p['hue']} 가 accent 의 OKLCH h {lch[2]:.1f} 와 다르다(칸이 틀린다)"
     return None
 
 
@@ -656,7 +666,8 @@ def chromatic(p: dict) -> bool:
 
 
 def load_palettes() -> list[dict]:
-    """palettes.json 의 팔레트 목록. 무채색이 아닌 팔레트가 2개보다 적어도 catalog_invalid."""
+    """palettes.json 의 팔레트 목록. 항목의 hue 가 accent 의 OKLCH h 와 HUE_TOLERANCE 안이어야 하고(유채색일 때), 무채색이 아닌
+    팔레트가 2개보다 적어도 catalog_invalid."""
     data = _read("palettes.json")
     if not isinstance(data, dict) or not isinstance(data.get("sources"), list) or not isinstance(data.get("palettes"), list):
         raise _invalid("palettes.json 은 sources·palettes 목록을 가진 객체다")
@@ -691,8 +702,8 @@ def _font_problem(f) -> str | None:
 
 
 def load_fonts() -> list[dict]:
-    """fonts-ko.json 의 글꼴 목록. 항목마다 verified·reserved_name 이 있고, 배정 대상(deal: true)은 확인한 OFL 본문 글꼴이며
-    3개 이상이다. 아니면 catalog_invalid."""
+    """fonts-ko.json 의 글꼴 목록. 항목마다 verified·reserved_name 이 있고, 배정 대상(deal: true)은 확인한 OFL 본문 글꼴이고
+    과용 글꼴(overused.json, font_key 로 견준다)이 아니며 3개 이상이다. 아니면 catalog_invalid."""
     data = _read("fonts-ko.json")
     if not isinstance(data, list):
         raise _invalid("fonts-ko.json 은 목록이다")
@@ -704,6 +715,11 @@ def load_fonts() -> list[dict]:
         if why:
             raise _invalid(f"fonts-ko.json[{i}]: {why}")
         seen.add(f["id"])
+    over = load_overused()
+    overused = {font_key(n) for n in over["fonts_ko"] + over["fonts_latin"]}
+    for i, f in enumerate(data):
+        if f["deal"] and font_key(f["name"]) in overused:
+            raise _invalid(f"fonts-ko.json[{i}]: 배정 대상(deal: true) {f['name']} 이 과용 글꼴이다(overused.json)")
     if sum(1 for f in data if f["deal"]) < 3:
         raise _invalid("fonts-ko.json 에 배정 대상(deal: true) 글꼴이 3개보다 적다")
     return data
@@ -890,6 +906,14 @@ class BrokenCatalogTest(unittest.TestCase):
         self.assertIn("겹친다", self.broken("palettes.json", dup, palette.load_palettes))
         grey = json.dumps({"sources": [], "palettes": [good, {**good, "id": "x:2", "accent": "#777777"}]})
         self.assertIn("2개보다 적다", self.broken("palettes.json", grey, palette.load_palettes))
+        # 저장한 hue 가 accent 의 실제 h 와 다르면 엉뚱한 칸의 후보가 된다(Codex 계획 리뷰 r2): 실제 카탈로그를 망가뜨린 사본
+        real = json.loads((DATA / "palettes.json").read_text(encoding="utf-8"))
+        real["palettes"][0].update(accent="oklch(0.6 0.15 265)", hue=35.0)
+        self.assertIn("다르다", self.broken("palettes.json", json.dumps(real, ensure_ascii=False), palette.load_palettes))
+        near = json.loads((DATA / "palettes.json").read_text(encoding="utf-8"))
+        near["palettes"][0].update(accent="oklch(0.6 0.15 265)", hue=265.4)  # 0.5° 안은 받는다
+        (self.tmp / "palettes.json").write_text(json.dumps(near, ensure_ascii=False), encoding="utf-8")
+        self.assertEqual(palette.load_palettes()[0]["hue"], 265.4)
         self.assertIn("sources", self.broken("palettes.json", "[]", palette.load_palettes))
 
     def test_fonts_and_overused(self):
@@ -905,12 +929,13 @@ class BrokenCatalogTest(unittest.TestCase):
         # 배정 대상은 확인한 OFL 본문 글꼴이어야 한다: 실제 카탈로그의 배정 대상 하나를 망가뜨린 사본
         real = json.loads((DATA / "fonts-ko.json").read_text(encoding="utf-8"))
         i = next(n for n, f in enumerate(real) if f["deal"])
-        for change in ({"verified": False}, {"license": "확인 못 함"}, {"class": "표시"}):
+        for change in ({"verified": False}, {"license": "확인 못 함"}, {"class": "표시"}, {"name": "Pretendard"},
+                       {"name": "Inter Variable"}):
             with self.subTest(change=change):
                 bad = [dict(f) for f in real]
                 bad[i].update(change)
                 self.assertIn("배정 대상", self.broken("fonts-ko.json", json.dumps(bad, ensure_ascii=False),
-                                                     palette.load_fonts))
+                                                     palette.load_fonts))  # 과용 글꼴 이름(Pretendard 등)도 받지 않는다
         bad = {"colors": [{"hex": "#ABC", "name": "x"}], "tailwind_ramp": [], "fonts_ko": ["a"], "fonts_latin": ["b"]}
         self.assertIn("overused.json", self.broken("overused.json", json.dumps(bad), palette.load_overused))
         self.assertIn("overused.json", self.broken("overused.json", json.dumps({**bad, "colors": [], "fonts_ko": []}),
@@ -2087,7 +2112,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/templates
 ---
 ### Task 4: director.md 단계 보완과 review-design 의 director 점검(설계 11.11, 11.12 의 5)
 
-director.md 의 닻(묶음 예시 "차분한 모노톤·넓은 여백", 시안 표의 B "따뜻한 회백색·세리프·벽돌색", 시스템 예시 "#1F6F5C·Pretendard")을 자리표시로 바꾸고, 보드·시안 quickstart 에 `design_systems: false` 를 넣고, 단계 ① 에 분야 반사를 비켜 간 묶음과 브랜드 실제 값, 단계 ② 에 배정 절차(1–7)와 기록(10), 단계 ③ 에 OKLCH 램프·중립·자세·`palette_source:` 를 더한다. review-design 의 2번 director 점검에 팔레트 배정을 더한다(`.herdr-team/palette.md` 가 있는 프로젝트만. 옛 프로젝트의 director 를 P2 로 잡지 않는다). 시험은 직무 문서 다섯 어디에도 옛 닻(`#2f6fed`, `#1F6F5C`, `Pretendard 16px`, `차분한 모노톤·넓은 여백 (추천)`, `따뜻한 회백색`)이 없는지 본다. `## ` 제목은 그대로다. 단계 ② 의 번호는 1 배정 … 7 브랜드 우선(설계 11.11 의 번호와 같다), 8 캔버스, 9 원본, 10 기록, 11 질문, 12 답 처리다.
+director.md 의 닻(묶음 예시 "차분한 모노톤·넓은 여백", 시안 표의 B "따뜻한 회백색·세리프·벽돌색", 시스템 예시 "#1F6F5C·Pretendard")을 자리표시로 바꾸고, 보드·시안 quickstart 에 `design_systems: false` 를 넣고, 단계 ① 에 분야 반사를 비켜 간 묶음과 브랜드 실제 값, 단계 ② 에 배정 절차(1–7)와 기록(10), 단계 ③ 에 OKLCH 램프·중립·자세·`palette_source:` 를 더한다. review-design 의 2번 director 점검에 팔레트 배정을 더한다(프로젝트의 director 직무 문서 단계 ② 가 `hteam palette deal` 로 배정받는 판일 때만. 옛 프로젝트나 director.md 를 건너뛴 upgrade 의 director 를 P2 로 잡지 않는다, Codex 계획 리뷰 r2). 시험은 직무 문서 다섯 어디에도 옛 닻(`#2f6fed`, `#1F6F5C`, `Pretendard 16px`, `차분한 모노톤·넓은 여백 (추천)`, `따뜻한 회백색`)이 없는지 본다. `## ` 제목은 그대로다. 단계 ② 의 번호는 1 배정 … 7 브랜드 우선(설계 11.11 의 번호와 같다), 8 캔버스, 9 원본, 10 기록, 11 질문, 12 답 처리다.
 
 **Files:**
 - Modify: `herdr-team/templates/roles/director.md`, `herdr-team/templates/review-design.md`
@@ -2145,7 +2170,8 @@ director.md 의 닻(묶음 예시 "차분한 모노톤·넓은 여백", 시안 �
         self.assertIn("`## 팔레트 배정` 기록 위치", section(self.text, "산출물"))
         self.assertIn("축 좌표 넷 가운데 셋 이상", section(self.text, "품질 기준"))
         review = REVIEW_DESIGN.read_text(encoding="utf-8")
-        for needle in ("`.herdr-team/palette.md` 가 있는 프로젝트", "`## 팔레트 배정` 기록(없으면 P2)", "60° 이상",
+        # 배정 점검은 그 프로젝트의 director 직무 문서가 배정 절차를 담을 때만이다(일부만 upgrade 한 프로젝트, Codex 계획 리뷰 r2)
+        for needle in ("단계 ② 가 `hteam palette deal` 로 배정받는 판이면", "`## 팔레트 배정` 기록(없으면 P2)", "60° 이상",
                        "design-rules §1 의 11 위반", "§1 의 7 위반", "`palette_source:` 줄(없으면 P2)"):
             self.assertIn(needle, review)
 
@@ -2348,7 +2374,7 @@ director 는 design-rules §3 의 7번 대비(본문 4.5:1, 24px 이상 글자·
 ```
 
 ```markdown
-director 는 design-rules §3 의 7번 대비(본문 4.5:1, 24px 이상 글자·아이콘·테두리 3:1), 컴포넌트의 상태별 미리보기(기본·hover·focus·눌림·disabled·로딩·error 중 해당하는 것), 아이콘 세트 하나를 지켰는가. `.herdr-team/palette.md` 가 있는 프로젝트의 director 톤 시안·시스템이면 팔레트 배정도 본다: `docs/design/direction.md` 의 `## 팔레트 배정` 기록(없으면 P2), A·B·C 의 축 좌표 넷 가운데 셋 이상 다름과 주 강조 hue 사이 거리(브랜드 우선이 아니면 60° 이상), 주 강조가 과용 색(`palette.md` 의 과용 색)이거나 OKLCH h 240–300° 면 근거(없으면 design-rules §1 의 11 위반), 한글 본문 글꼴이 과용 글꼴이면 근거(없으면 §1 의 7 위반), 시스템 README 의 `palette_source:` 줄(없으면 P2).
+director 는 design-rules §3 의 7번 대비(본문 4.5:1, 24px 이상 글자·아이콘·테두리 3:1), 컴포넌트의 상태별 미리보기(기본·hover·focus·눌림·disabled·로딩·error 중 해당하는 것), 아이콘 세트 하나를 지켰는가. 프로젝트의 director 직무 문서(`.herdr-team/roles/director.md`) 단계 ② 가 `hteam palette deal` 로 배정받는 판이면(13단계 upgrade 뒤) director 톤 시안·시스템의 팔레트 배정도 본다: `docs/design/direction.md` 의 `## 팔레트 배정` 기록(없으면 P2), A·B·C 의 축 좌표 넷 가운데 셋 이상 다름과 주 강조 hue 사이 거리(브랜드 우선이 아니면 60° 이상), 주 강조가 과용 색(`palette.md` 의 과용 색)이거나 OKLCH h 240–300° 면 근거(없으면 design-rules §1 의 11 위반), 한글 본문 글꼴이 과용 글꼴이면 근거(없으면 §1 의 7 위반), 시스템 README 의 `palette_source:` 줄(없으면 P2).
 ```
 
 - [ ] **Step 4: 시험이 통과하는지 본다**
@@ -2369,7 +2395,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/templates
 ---
 ### Task 5: 색·글꼴 내용 검사(설계 11.13 의 1 앞 넷)
 
-`lint.style_findings` 가 바뀐 파일(기존 내용 검사와 같은 확장자·제외)에서 넷을 찾는다. 과용 색(`overused.json` 의 `colors` 와 같은 hex, 3·4자리는 펼치고 알파는 버린다, 파일당 한 줄), Tailwind 기본 램프(과용 색 말고 서로 다른 값 3개 이상, 파일당 한 줄), 주 강조 hue(이름에 `primary`·`accent`·`brand` 가 든 CSS·Sass 변수나 따옴표 키의 첫 색이 h 240–300°, C ≥ 0.08), 과용 글꼴(`font-family`·`fontFamily` 의 첫 글꼴이 `fonts_latin`, 또는 한글을 그리는 글꼴이 `fonts_ko`). `compose.design_findings` 가 셋째 `guarded` 로 부른다: designdiff → 기존 내용 검사 → 색·글꼴, 합쳐 50건. 색·글꼴 검사는 13단계 규칙을 받은 프로젝트(`.herdr-team/palette.md` 가 있다, Task 4 의 리뷰 점검과 같은 조건)에서만 돈다: 경고가 인용하는 §1 의 7(새 문장)·§1 의 11·§3 의 11 이 upgrade 전 프로젝트의 규칙 사본에는 없다. 주 강조 hue 는 한 줄의 역할 토큰을 모두 본다(앞 토큰이 괜찮아도 뒤 토큰을 놓치지 않는다, 줄에 경고 하나). 기존 `scan`·`design_findings`·`design_lint` 는 그대로라 기존 시험의 기대값이 바뀌지 않는다. design-rules 의 §1 의 7·11, §3 의 11 을 `[기계] [판단]` 으로 바꾸고 자동 검사 절에 넷을 적는다.
+`lint.style_findings` 가 바뀐 파일(기존 내용 검사와 같은 확장자·제외)에서 넷을 찾는다. 과용 색(`overused.json` 의 `colors` 와 같은 hex, 3·4자리는 펼치고 알파는 버린다, 파일당 한 줄), Tailwind 기본 램프(과용 색 말고 서로 다른 값 3개 이상, 파일당 한 줄), 주 강조 hue(이름에 `primary`·`accent`·`brand` 가 든 CSS·Sass 변수나 따옴표 키의 첫 색이 h 240–300°, C ≥ 0.08), 과용 글꼴(`font-family`·`fontFamily` 의 첫 글꼴이 `fonts_latin`, 또는 한글을 그리는 글꼴이 `fonts_ko`). `compose.design_findings` 가 셋째 `guarded` 로 부른다: designdiff → 기존 내용 검사 → 색·글꼴, 합쳐 50건. 색·글꼴 검사는 프로젝트의 `.herdr-team/design-rules.md` 가 13단계 판일 때만 돈다(줄 머리가 `STYLE_RULES_MARKER` = Task 3 이 쓴 §1 의 11 의 머리인 줄이 있다. `palette.md` 만 생기고 고친 design-rules.md 는 건너뛴 upgrade 도 걸러진다, Codex 계획 리뷰 r2): 경고가 인용하는 §1 의 7(새 문장)·§1 의 11·§3 의 11 이 upgrade 전 프로젝트의 규칙 사본에는 없다. 주 강조 hue 는 한 줄의 역할 토큰을 모두 본다(앞 토큰이 괜찮아도 뒤 토큰을 놓치지 않는다, 줄에 경고 하나). 기존 `scan`·`design_findings`·`design_lint` 는 그대로라 기존 시험의 기대값이 바뀌지 않는다. design-rules 의 §1 의 7·11, §3 의 11 을 `[기계] [판단]` 으로 바꾸고 자동 검사 절에 넷을 적는다.
 
 **Files:**
 - Modify: `herdr-team/lib/hteam/lint.py`, `herdr-team/lib/hteam/compose.py`(`design_findings`)
@@ -2378,7 +2404,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/templates
 
 **Interfaces:**
 - Consumes: Task 1 의 `palette.load_overused`·`font_key`·`hangul_font`, `color.parse`.
-- Produces: `lint.font_stack`, `lint.style_scan`, `lint.style_findings`, `compose.design_findings` 의 색·글꼴 검사 조건(`p.team / "palette.md"` 가 있을 때만). 카탈로그가 깨지면 `style_findings` 가 HteamError 를 올리고 디자인 절에는 `자동 검사 실패: HteamError: …` 한 줄만 남는다(다른 검사는 그대로).
+- Produces: `lint.font_stack`, `lint.style_scan`, `lint.style_findings`, `lint.STYLE_RULES_MARKER`·`lint.has_style_rules`, `compose.design_findings` 의 색·글꼴 검사 조건(`has_style_rules(p.team / "design-rules.md")`). 카탈로그가 깨지면 `style_findings` 가 HteamError 를 올리고 디자인 절에는 `자동 검사 실패: HteamError: …` 한 줄만 남는다(다른 검사는 그대로).
 
 - [ ] **Step 1: 실패하는 시험을 쓴다**
 
@@ -2413,8 +2439,8 @@ from hteam.paths import Project
 ```python
 from hteam import palette
 from hteam.errors import HteamError
-from hteam.lint import (DESIGN_ROLES, MAX_BYTES, MAX_FINDINGS, cap, design_findings, design_lint, font_stack, hue_family,
-                        scan, style_findings, style_scan)
+from hteam.lint import (DESIGN_ROLES, MAX_BYTES, MAX_FINDINGS, STYLE_RULES_MARKER, cap, design_findings, design_lint,
+                        font_stack, has_style_rules, hue_family, scan, style_findings, style_scan)
 from hteam.paths import Project
 ```
 
@@ -2495,6 +2521,11 @@ class StyleScanTest(unittest.TestCase):
                 style_findings(root, files)
             self.assertEqual(style_findings(root, ["docs/planning/spec.md"]), [])  # 볼 파일이 없으면 카탈로그를 읽지 않는다
         self.assertEqual(design_lint(root, files), [])  # 이모지 등 내용 검사는 색·글꼴 경고를 섞지 않는다
+        self.assertFalse(has_style_rules(root / "없는 파일.md"))
+        (root / "rules.md").write_bytes(b"\xff\xfe")
+        self.assertFalse(has_style_rules(root / "rules.md"))
+        (root / "rules.md").write_text("x\n" + STYLE_RULES_MARKER + "(…) [기계] [판단]\n", encoding="utf-8")
+        self.assertTrue(has_style_rules(root / "rules.md"))
 
 
 class LintCommandTest(TeamCase):
@@ -2508,15 +2539,22 @@ class LintCommandTest(TeamCase):
 
 ```python
     def test_style_checks_only_with_13th_stage_rules(self):
-        # 색·글꼴 검사의 경고는 13단계 design-rules(§1 의 7·11, §3 의 11)를 인용한다. 그 규칙을 받지 않은 프로젝트(palette.md
-        # 가 없다)에는 내지 않는다(Codex 계획 리뷰 r1)
+        # 색·글꼴 검사의 경고는 13단계 design-rules(§1 의 7·11, §3 의 11)를 인용한다. 프로젝트의 design-rules.md 가 그 판이
+        # 아니면 내지 않는다: 옛 프로젝트(Codex 계획 리뷰 r1), palette.md 는 생겼는데 design-rules.md 는 건너뛴 upgrade(r2)
+        rules = (ROOT / "templates/design-rules.md").read_text(encoding="utf-8")
+        self.assertEqual(sum(line.startswith(STYLE_RULES_MARKER) for line in rules.split("\n")), 1)  # Task 3 이 쓴 표지
         self.write_spec("T-001", "developer")
         state.create(self.p, "T-001", "developer")
         self.assertEqual(self.hteam("start", "T-001")[0], 0)
         self.act_work("T-001", {"src/app.css": ".a { color: #1e3a8a; font-family: Pretendard, sans-serif; }\n"})
         code, out = self.hteam("lint", "--task", "T-001", as_=None)
+        self.assertEqual((code, out["findings"]), (0, []), out)  # design-rules.md 가 없다
+        old = rules[:rules.index("11. 근거 없이 프레임워크")]  # 0.7.2 처럼 §1 의 11 이 없는 사본
+        self.commit(".herdr-team/design-rules.md", old, "chore: 옛 규칙")
+        self.commit(".herdr-team/palette.md", "# 팔레트 배정\n", "chore: palette.md 만 생긴 upgrade")
+        code, out = self.hteam("lint", "--task", "T-001", as_=None)
         self.assertEqual((code, out["findings"]), (0, []), out)
-        self.commit(".herdr-team/palette.md", "# 팔레트 배정\n", "chore: 0.8.0 upgrade")
+        self.commit(".herdr-team/design-rules.md", rules, "chore: 0.8.0 upgrade")
         code, out = self.hteam("lint", "--task", "T-001", as_=None)
         self.assertEqual(out["findings"], ["src/app.css:1: 과용 글꼴 Pretendard — §1 의 7",
                                            "src/app.css:1: 과용 기본 색 1개(#1e3a8a Tailwind blue-900) — design-rules §1 의 11"],
@@ -2585,6 +2623,18 @@ _FONT_DECL = re.compile(r"""(?:font-family|fontFamily)["']?\s*:\s*(\[[^\]\n]*\]|
                         re.I)
 BLUE_HUE = (240, 300)  # 주 강조로 근거가 필요한 OKLCH h(파랑·남색·보라, 설계 11.12 의 1 §1 의 11)
 BLUE_MIN_C = 0.08
+# 프로젝트의 design-rules.md 가 13단계 판인지 가르는 줄(Task 3 이 쓰는 §1 의 11 의 머리). 색·글꼴 경고가 인용하는 규칙이다
+STYLE_RULES_MARKER = "11. 근거 없이 프레임워크 기본 팔레트 값"
+
+
+def has_style_rules(rules: Path) -> bool:
+    """프로젝트의 design-rules.md(rules)에 13단계 색·글꼴 규칙이 있나: 줄 머리가 STYLE_RULES_MARKER 인 줄. 읽지 못하면(없음,
+    UTF-8 아님) 없다고 본다."""
+    try:
+        text = rules.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    return any(line.startswith(STYLE_RULES_MARKER) for line in text.split("\n"))
 
 
 def _hex6(digits: str) -> str:
@@ -2691,10 +2741,11 @@ def design_lint(root: Path, files: list[str]) -> list[str]:
 ```python
     """디자인 절의 경고 목록(설계 11.6·11.13): diff 검사(designdiff, 대상 커밋 shas 의 지운 줄·추가한 줄) 먼저, 내용 검사(lint,
     files 는 시도 기록의 바뀐 파일)와 색·글꼴 검사(lint.style_findings) 뒤. 검사마다 guarded 로 따로 감싸고(카탈로그가 깨져도
-    다른 검사는 낸다) 합쳐서 MAX_FINDINGS 까지. `hteam lint --task` 의 findings 도 이것이다. 색·글꼴 검사는 13단계 규칙을 받은
-    프로젝트(`.herdr-team/palette.md` 가 있다)에서만 돈다: 경고가 인용하는 design-rules §1 의 7·11, §3 의 11 이 옛 규칙 사본에는
-    없다(upgrade 전 프로젝트)."""
-    style = guarded(lambda: lint.style_findings(p.work_root, files)) if (p.team / "palette.md").is_file() else []
+    다른 검사는 낸다) 합쳐서 MAX_FINDINGS 까지. `hteam lint --task` 의 findings 도 이것이다. 색·글꼴 검사는 프로젝트의
+    `.herdr-team/design-rules.md` 가 13단계 판일 때(lint.has_style_rules)만 돈다: 경고가 인용하는 design-rules §1 의 7·11, §3 의
+    11 이 옛 규칙 사본에는 없다(upgrade 전 프로젝트, 고친 규칙 사본을 건너뛴 upgrade)."""
+    style = (guarded(lambda: lint.style_findings(p.work_root, files))
+             if lint.has_style_rules(p.team / "design-rules.md") else [])
     return lint.cap(guarded(lambda: designdiff.design_diff_lint(p.work_root, files, shas))
                     + guarded(lambda: lint.design_findings(p.work_root, files)) + style)
 ```
@@ -2749,7 +2800,7 @@ def design_lint(root: Path, files: list[str]) -> list[str]:
 ```
 
 ```markdown
-"지운 줄에서 … 줄었다" 는 4번, "확대 막기"·"포커스 표시 제거" 는 6번의 즉시 차단 항목 후보다. "과용 기본 색"·"주 강조가 파랑·남색·보라"·"과용 글꼴"·"Tailwind 기본 램프" 는 13단계 규칙을 받은 프로젝트(`.herdr-team/palette.md` 가 있다)에만 나오는 design-rules §1 의 7·11, §3 의 11 후보이고 근거(브랜드 자산, 사용자 선택, `### 디자인 점검` 의 예외)가 있으면 지적하지 않는다.
+"지운 줄에서 … 줄었다" 는 4번, "확대 막기"·"포커스 표시 제거" 는 6번의 즉시 차단 항목 후보다. "과용 기본 색"·"주 강조가 파랑·남색·보라"·"과용 글꼴"·"Tailwind 기본 램프" 는 `.herdr-team/design-rules.md` 가 13단계 판(§1 의 11 이 있다)인 프로젝트에만 나오는 design-rules §1 의 7·11, §3 의 11 후보이고 근거(브랜드 자산, 사용자 선택, `### 디자인 점검` 의 예외)가 있으면 지적하지 않는다.
 ```
 
 **Edit** `README.md`
@@ -2759,7 +2810,7 @@ def design_lint(root: Path, files: list[str]) -> list[str]:
 ```
 
 ```markdown
-바뀐 파일의 이모지·왼쪽 강조 테두리·파랑·보라 그라디언트(내용 검사)와 과용 기본 색·Tailwind 기본 램프·파랑·남색·보라 주 강조·과용 글꼴(색·글꼴 검사. `.herdr-team/palette.md` 가 있는 프로젝트만, 0.8.0 upgrade 뒤) 뒤, 합쳐 50건까지.
+바뀐 파일의 이모지·왼쪽 강조 테두리·파랑·보라 그라디언트(내용 검사)와 과용 기본 색·Tailwind 기본 램프·파랑·남색·보라 주 강조·과용 글꼴(색·글꼴 검사. `.herdr-team/design-rules.md` 가 0.8.0 판인 프로젝트만) 뒤, 합쳐 50건까지.
 ```
 
 - [ ] **Step 4: 시험이 통과하는지 본다**
@@ -2781,16 +2832,16 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam
 ---
 ### Task 6: designdiff 보존 신호(설계 11.13 의 2 둘째)
 
-리디자인·수정 라운드에서 링크·입력란·이벤트·시험 ID 를 지우고 대신하는 것을 두지 않았는지 본다. 지운 줄에서 값을 뽑는다: `href`(빈 값·`#` 빼고), 입력 요소(`<input`·`<select`·`<textarea` 가 든 줄)의 `name`·`id`, `onClick=`·`onclick=`·`@click(.수식어)=` 의 값, `addEventListener('<이름>'`, `data-testid`, `testTag("…")`, `accessibilityIdentifier`. 남았는지는 그 태스크의 모든 대상 파일의 추가한 줄에서 본다: 링크는 추가한 줄의 `href`·`to`(라우터 링크) 값 가운데 같은 값 전체가 있어야 한다(부분 문자열로 찾지 않는다: `/` 는 닫는 태그에, `/settings` 는 `/admin/settings` 에 들어 있다. Codex 계획 리뷰 r1). 이벤트 처리 값은 추가한 줄 어디에 있어도 된다(화살표 함수로 감싼 처리기. 낱말 글자로 시작·끝나면 낱말 경계), 입력란 name·id·addEventListener·시험 ID 는 같은 종류·값으로 다시 나와야 한다(id 를 바꾸면 잡는다). 순서는 파일마다 지운 줄 신호 → 보존 신호 → 추가한 줄이다. designer.md 품질 기준에 "지우면 이유를 적는다" 를 더한다(설계 11.12 의 5).
+리디자인·수정 라운드에서 링크·입력란·이벤트·시험 ID 를 지우고 대신하는 것을 두지 않았는지 본다. 지운 줄에서 값을 뽑는다: `href`(빈 값·`#` 빼고), 입력 요소(`<input`·`<select`·`<textarea` 가 든 줄)의 `name`·`id`, `onClick=`·`onclick=`·`@click(.수식어)=` 의 값, `addEventListener('<이름>'`, `data-testid`, `testTag("…")`, `accessibilityIdentifier`. 이벤트 처리 값은 같은 줄에서 짝이 맞는 `{…}` 전체를 읽는다(`onClick={() => { save(); }}`, 줄 안에서 닫히지 않으면 읽지 않는다). 남았는지는 추가한 줄이 아니라 마지막 리뷰 대상 커밋(`shas[-1]`)의 대상 파일 내용(`gitio.file_text`, 새 도우미. 지운 파일은 아무것도 남기지 않는다)으로 본다: 커밋마다 합친 추가한 줄로 보면 첫 커밋이 고친 링크를 둘째 커밋이 지워도 남은 것으로 본다(Codex 계획 리뷰 r2). 같은 종류·값 전체로 견준다(부분 문자열로 찾지 않는다: `/` 는 닫는 태그에, `/settings` 는 `/admin/settings` 에 들어 있다, r1). 링크는 `href` 와 라우터 링크의 `to` 를, 이벤트 처리 값은 `onClick`·`onclick`·`@click` 을 한 종류로 본다. 처리 값이 바뀌면(`{save}` → `{() => save()}` 도) 경고다. 대상 파일 어디에 있어도 되므로 다른 파일로 옮긴 컴포넌트는 조용하다. 순서는 파일마다 지운 줄 신호 → 보존 신호 → 추가한 줄이다. designer.md 품질 기준에 "지우면 이유를 적는다" 를 더한다(설계 11.12 의 5).
 
 **Files:**
-- Modify: `herdr-team/lib/hteam/designdiff.py`
+- Modify: `herdr-team/lib/hteam/designdiff.py`, `herdr-team/lib/hteam/gitio.py`(`file_text`)
 - Modify: `herdr-team/templates/design-rules.md`(자동 검사 절), `herdr-team/templates/review-design.md`(4번), `herdr-team/templates/roles/designer.md`(품질 기준), `README.md`(자동 검사 줄)
 - Modify: `herdr-team/tests/test_designdiff.py`
 
 **Interfaces:**
-- Consumes: `gitio.diff_lines`(지금 그대로).
-- Produces: `designdiff.kept_values(line) -> list[tuple[str, str]]`, 경고 `<파일>: 보존 신호 — 지운 <종류> "<값>"(같은 변경에 대신하는 것이 없다)`(값은 공백을 줄이고 60자).
+- Consumes: `gitio.diff_lines`·`tree_entry`·`top_prefix`·`to_top`(지금 그대로).
+- Produces: `gitio.file_text(root, commit, rel) -> str | None`, `designdiff.kept_values(line) -> list[tuple[str, str]]`, `designdiff.final_values(text) -> set[tuple[str, str]]`, 경고 `<파일>: 보존 신호 — 지운 <종류> "<값>"(같은 변경에 대신하는 것이 없다)`(값은 공백을 줄이고 60자).
 
 - [ ] **Step 1: 실패하는 시험을 쓴다**
 
@@ -2812,7 +2863,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam
                      "ios/Row.swift": 'view.accessibilityIdentifier = "row-cell"\n'}, "기존")
         new = ('<Link to="/settings">설정</Link>\n'  # 값이 남았다
                '<input id="mail" name="email" type="email" />\n'  # id 가 바뀌었다
-               '<button onClick={() => handleSave()} data-testid="save-button-2">저장</button>\n'  # 시험 ID 가 바뀌었다
+               '<button onClick={() => handleSave()} data-testid="save-button-2">저장</button>\n'  # 처리 값·시험 ID 가 바뀌었다
                "<button>삭제</button>\n"
                '<label for="email">메일</label>\n')
         sha = self.change({"src/Form.vue": new, "app/Row.kt": "Modifier\n",
@@ -2821,6 +2872,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam
         self.assertEqual(found, [
             'app/Row.kt: 보존 신호 — 지운 testTag "row"(같은 변경에 대신하는 것이 없다)',
             'src/Form.vue: 보존 신호 — 지운 입력란 id "email"(같은 변경에 대신하는 것이 없다)',
+            'src/Form.vue: 보존 신호 — 지운 이벤트 onClick "handleSave"(같은 변경에 대신하는 것이 없다)',  # 값 전체로 견준다
             'src/Form.vue: 보존 신호 — 지운 data-testid "save-button"(같은 변경에 대신하는 것이 없다)',
             'src/Form.vue: 보존 신호 — 지운 이벤트 @click.prevent "remove(item)"(같은 변경에 대신하는 것이 없다)',
             'src/Form.vue: 보존 신호 — 지운 이벤트 addEventListener "keydown"(같은 변경에 대신하는 것이 없다)'])
@@ -2843,6 +2895,37 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam
             'src/Nav.html: 보존 신호 — 지운 링크 href "/"(같은 변경에 대신하는 것이 없다)',
             'src/Nav.html: 보존 신호 — 지운 링크 href "/settings"(같은 변경에 대신하는 것이 없다)'])
 
+    def test_link_edited_then_deleted_in_later_commit(self):
+        # Codex 계획 리뷰 r2: 첫 커밋이 링크의 class 를 바꾸고 둘째 커밋이 지우면, 커밋마다 합친 추가한 줄에는 그 링크가 남아
+        # 보인다. 남았는지는 마지막 리뷰 대상 커밋의 파일 내용으로 본다
+        self.change({"src/Nav.html": '<a class="a" href="/settings">설정</a>\n<p>x</p>\n'}, "기존")
+        first = self.change({"src/Nav.html": '<a class="b" href="/settings">설정</a>\n<p>x</p>\n'})
+        second = self.change({"src/Nav.html": "<p>x</p>\n"})
+        self.assertEqual([x for x in self.lint(["src/Nav.html"], [first, second]) if "보존 신호" in x],
+                         ['src/Nav.html: 보존 신호 — 지운 링크 href "/settings"(같은 변경에 대신하는 것이 없다)'])
+        self.assertEqual([x for x in self.lint(["src/Nav.html"], [first]) if "보존 신호" in x], [])  # 첫 커밋만이면 남았다
+        gone = self.change({}, delete=["src/Nav.html"])  # 지운 파일은 아무것도 남기지 않는다
+        self.change({"src/Other.html": '<a href="/x">x</a>\n'}, "기존 2")
+        moved = self.change({"src/Other.html": "<p>y</p>\n", "src/New.html": '<a href="/x">x</a>\n'})
+        self.assertEqual([x for x in self.lint(["src/Nav.html"], [gone]) if "보존 신호" in x], [])  # 지운 줄에 신호가 없다
+        self.assertEqual([x for x in self.lint(["src/New.html", "src/Other.html"], [moved]) if "보존 신호" in x], [])
+        self.change({"src/Old.html": '<a href="/old">옛</a>\n'}, "기존 3")
+        dropped = self.change({}, delete=["src/Old.html"])
+        self.assertEqual([x for x in self.lint(["src/Old.html"], [dropped]) if "보존 신호" in x],
+                         ['src/Old.html: 보존 신호 — 지운 링크 href "/old"(같은 변경에 대신하는 것이 없다)'])
+
+    def test_block_handlers_are_read_whole(self):
+        # Codex 계획 리뷰 r2: 중첩 중괄호가 든 한 줄 JSX 처리기도 값 전체로 읽는다
+        block = '<button onClick={() => { handleSave(); }}>저장</button>\n'
+        self.assertEqual(designdiff.kept_values(block), [("이벤트 onClick", "() => { handleSave(); }")])
+        self.assertEqual(designdiff.kept_values('<b onClick={() => { x(); }>\n'), [])  # 줄 안에서 닫히지 않는다
+        self.change({"src/Save.tsx": block + "<p>a</p>\n"}, "기존")
+        kept = self.change({"src/Save.tsx": "<p>b</p>\n" + block})  # 처리기 줄을 옮겼다
+        self.assertEqual([x for x in self.lint(["src/Save.tsx"], [kept]) if "보존 신호" in x], [])
+        dropped = self.change({"src/Save.tsx": "<button>저장</button>\n<p>b</p>\n"})
+        self.assertEqual([x for x in self.lint(["src/Save.tsx"], [dropped]) if "보존 신호" in x],
+                         ['src/Save.tsx: 보존 신호 — 지운 이벤트 onClick "() => { handleSave(); }"(같은 변경에 대신하는 것이 없다)'])
+
     def test_markdown_is_not_a_target(self):
 ```
 
@@ -2853,19 +2936,27 @@ Expected: FAIL/ERROR(보존 신호가 없다, `kept_values` 가 없다).
 
 - [ ] **Step 3: 구현하고 문서를 맞춘다**
 
-**Edit** `herdr-team/lib/hteam/designdiff.py`
+**Edit** `herdr-team/lib/hteam/gitio.py`
 
 ```python
-from pathlib import Path
-
-from . import gitio
+def _ref_present(root, ref: str) -> bool:
 ```
 
 ```python
-from pathlib import Path
-from typing import NamedTuple
+def file_text(root, commit: str, rel: str) -> str | None:
+    """commit 에 있는 파일 rel(root 기준, `../` 가능)의 글(CRLF 는 LF 로). 그 커밋에 없거나(지운 파일) 일반 파일이 아니거나,
+    git 이 읽지 못하거나 UTF-8 이 아니면 None(designdiff 의 보존 신호가 쓴다)."""
+    try:
+        found = tree_entry(root, commit, to_top(top_prefix(root), rel))
+        if found is None or not found.startswith(("100644:", "100755:")):
+            return None
+        data = run(root, "cat-file", "blob", found.split(":", 1)[1], raw=True).stdout
+        return data.decode("utf-8").replace("\r\n", "\n")
+    except (HteamError, UnicodeDecodeError):
+        return None
 
-from . import gitio
+
+def _ref_present(root, ref: str) -> bool:
 ```
 
 **Edit** `herdr-team/lib/hteam/designdiff.py`
@@ -2893,35 +2984,51 @@ def _short(text: str) -> str:
 # 보존 신호(설계 11.13 의 2, 13단계). 값은 큰따옴표·작은따옴표, 또는 JSX `{"…"}`·`{'…'}`·`` {`…`} `` 안의 글이다.
 _QUOTED = r"""(?:"([^"\n]*)"|'([^'\n]*)'|\{\s*["'`]([^"'`\n]*)["'`]\s*\})"""
 _HREF = re.compile(rf"(?<![\w-])href\s*=\s*{_QUOTED}")
+_LINK_TO = re.compile(rf"(?<![\w-])to\s*=\s*{_QUOTED}")  # 라우터 링크의 to: 남은 링크로만 본다
 _TESTID = re.compile(rf"(?<![\w-])data-testid\s*=\s*{_QUOTED}")
 _TEST_TAG = re.compile(r"""\btestTag\(\s*"([^"\n]*)"\s*\)""")
 _A11Y_ID = re.compile(r'\baccessibilityIdentifier\s*(?:=\s*|\(\s*)"([^"\n]*)"')
 _INPUT_TAG = re.compile(r"<(?:input|select|textarea)\b", re.I)
 _INPUT_ATTR = re.compile(rf"(?<![\w-])(name|id)\s*=\s*{_QUOTED}")
-_EVENT = re.compile(r"""(?<![\w-])(onClick|onclick|@click(?:\.[\w-]+)*)\s*=\s*(?:"([^"\n]*)"|'([^'\n]*)'|\{([^{}\n]*)\})""")
+_EVENT = re.compile(r"(?<![\w-])(onClick|onclick|@click(?:\.[\w-]+)*)\s*=\s*")
 _LISTENER = re.compile(r"""\baddEventListener\(\s*["'`]([\w:-]+)["'`]""")
 _LISTENER_KIND = "이벤트 addEventListener"
-_LINK_TARGET = re.compile(rf"(?<![\w-])(?:href|to)\s*=\s*{_QUOTED}")  # 남은 링크: href 와 라우터 링크의 to 값 전체
-
-
-class _Added(NamedTuple):
-    """같은 변경(모든 대상 파일)의 추가한 줄에서 본 것."""
-    text: str  # 줄마다 공백을 하나로 줄여 이은 글(이벤트 처리 값을 찾는다)
-    kept: set[tuple[str, str]]  # kept_values 의 (종류, 값)
-    links: set[str]  # href·to 속성 값 전체(공백을 하나로 줄인 것)
 
 
 def _value(m: re.Match, first: int = 1) -> str:
     return " ".join(next((g for g in m.groups()[first - 1:] if g is not None), "").split())
 
 
+def _event_value(line: str, start: int) -> str | None:
+    """line[start] 에서 시작하는 이벤트 속성 값: 따옴표 글, 또는 같은 줄에서 짝이 맞는 `{…}` 의 안(중첩 중괄호 포함,
+    `{() => { save(); }}`). 줄 안에서 닫히지 않으면 None(여러 줄 처리기는 놓친다)."""
+    quote = line[start:start + 1]
+    if quote in ('"', "'"):
+        end = line.find(quote, start + 1)
+        return line[start + 1:end] if end >= 0 else None
+    if quote != "{":
+        return None
+    depth = 0
+    for i in range(start, len(line)):
+        if line[i] == "{":
+            depth += 1
+        elif line[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return line[start + 1:i]
+    return None
+
+
 def kept_values(line: str) -> list[tuple[str, str]]:
-    """한 줄의 보존 신호 (종류, 값). 빈 값과 `href="#"` 는 뺀다. 입력란 name·id 는 `<input`·`<select`·`<textarea` 가 든
-    줄에서만 본다(여러 줄에 걸친 태그는 놓친다)."""
+    """한 줄의 보존 신호 (종류, 값). 값은 공백을 하나로 줄인 속성 값 전체다. 빈 값과 `href="#"` 는 뺀다. 입력란 name·id 는
+    `<input`·`<select`·`<textarea` 가 든 줄에서만 본다(여러 줄에 걸친 태그는 놓친다)."""
     out = [("링크 href", _value(m)) for m in _HREF.finditer(line)]
     if _INPUT_TAG.search(line):
         out += [(f"입력란 {m.group(1)}", _value(m, 2)) for m in _INPUT_ATTR.finditer(line)]
-    out += [(f"이벤트 {m.group(1)}", _value(m, 2)) for m in _EVENT.finditer(line)]
+    for m in _EVENT.finditer(line):
+        value = _event_value(line, m.end())
+        if value is not None:
+            out.append((f"이벤트 {m.group(1)}", " ".join(value.split())))
     out += [(_LISTENER_KIND, m.group(1)) for m in _LISTENER.finditer(line)]
     out += [("data-testid", _value(m)) for m in _TESTID.finditer(line)]
     out += [("testTag", m.group(1)) for m in _TEST_TAG.finditer(line)]
@@ -2929,22 +3036,22 @@ def kept_values(line: str) -> list[tuple[str, str]]:
     return [(kind, v) for kind, v in out if v and not (kind == "링크 href" and v == "#")]
 
 
-def _present(kind: str, value: str, added: _Added) -> bool:
-    """지운 보존 신호가 같은 변경에 남았나. 링크는 추가한 줄의 `href`·`to` 값 가운데 같은 값 전체가 있어야 한다(라우터 링크로
-    바뀐 것은 남은 것이다. `/settings` 가 `/admin/settings` 로 바뀌면 남지 않은 것이다). 이벤트 처리 값(addEventListener 말고)은
-    추가한 줄 어디에 있어도 된다(처리 함수를 감싼 화살표 함수). 낱말 글자로 시작·끝나는 처리 값은 앞뒤가 낱말 글자·`$`·`-` 가
-    아니어야 한다(`save` 가 `saveAll` 에 든 것으로 보지 않는다). 입력란 name·id, addEventListener, 시험 ID 는 추가한 줄에서
-    같은 종류·값으로 다시 나와야 한다."""
+def _key(kind: str) -> str:
+    """같은 것으로 보는 종류: 링크(href·라우터 to), 이벤트 처리 값(onClick·onclick·@click), 그 밖은 종류 그대로."""
     if kind == "링크 href":
-        return value in added.links
-    if not kind.startswith("이벤트 ") or kind == _LISTENER_KIND:
-        return (kind, value) in added.kept
-    pattern = re.escape(value)
-    if re.match(r"[\w$]", value):
-        pattern = r"(?<![\w$-])" + pattern
-    if re.search(r"[\w$]$", value):
-        pattern += r"(?![\w$-])"
-    return re.search(pattern, added.text) is not None
+        return "링크"
+    if kind.startswith("이벤트 ") and kind != _LISTENER_KIND:
+        return "이벤트"
+    return kind
+
+
+def final_values(text: str) -> set[tuple[str, str]]:
+    """파일 글(마지막 리뷰 대상 커밋의 내용)에 있는 보존 신호 (_key 종류, 값 전체). 라우터 링크의 to 값도 링크다."""
+    out: set[tuple[str, str]] = set()
+    for line in text.split("\n"):
+        out |= {(_key(kind), value) for kind, value in kept_values(line)}
+        out |= {("링크", _value(m)) for m in _LINK_TO.finditer(line)}
+    return out
 
 
 def _short(text: str) -> str:
@@ -2952,8 +3059,9 @@ def _short(text: str) -> str:
     return " ".join(text.split())[:SNIPPET]
 
 
-def _kept_findings(rel: str, removed: list[str], added: _Added) -> list[str]:
-    """지운 줄의 보존 신호 가운데 추가한 줄 어디에도 없는 것(지운 줄 차례, (종류, 값)마다 한 번)."""
+def _kept_findings(rel: str, removed: list[str], final: set[tuple[str, str]]) -> list[str]:
+    """지운 줄의 보존 신호 가운데 마지막 커밋의 대상 파일 어디에도 같은 종류·값 전체로 남지 않은 것(지운 줄 차례, (종류,
+    값)마다 한 번). 중간 커밋이 더했다가 지운 줄은 남은 것이 아니다."""
     seen: set[tuple[str, str]] = set()
     found = []
     for line in removed:
@@ -2961,7 +3069,7 @@ def _kept_findings(rel: str, removed: list[str], added: _Added) -> list[str]:
             if (kind, value) in seen:
                 continue
             seen.add((kind, value))
-            if not _present(kind, value, added):
+            if (_key(kind), value) not in final:
                 found.append(f'{rel}: 보존 신호 — 지운 {kind} "{_short(value)}"(같은 변경에 대신하는 것이 없다)')
     return found
 ```
@@ -2977,8 +3085,9 @@ def _kept_findings(rel: str, removed: list[str], added: _Added) -> list[str]:
     """files(시도 기록의 바뀐 파일) 가운데 대상 파일의 diff 경고. 파일 순서, 파일 안에서 지운 줄 신호(SIGNALS 순서) →
     보존 신호(지운 줄 차례) → 추가한 줄(줄 번호 순).
 
-    보존 신호: 그 파일의 지운 줄에 있는 링크·입력란 name·id·이벤트·시험 ID 값이 모든 대상 파일의 추가한 줄 어디에도 없을 때
-    알린다(옮긴 줄·다른 파일로 옮긴 컴포넌트는 걸러진다).
+    보존 신호: 그 파일의 지운 줄에 있는 링크·입력란 name·id·이벤트·시험 ID 값이, 마지막 리뷰 대상 커밋(shas 의 끝)의 대상 파일
+    어디에도 같은 종류·값 전체로 없을 때 알린다(gitio.file_text. 옮긴 줄·다른 파일로 옮긴 컴포넌트는 걸러지고, 지운 파일은 아무
+    것도 남기지 않는다. 커밋마다 합친 추가한 줄로 보면 중간 커밋이 고쳤다가 다음 커밋이 지운 링크를 남은 것으로 본다).
 ```
 
 **Edit** `herdr-team/lib/hteam/designdiff.py`
@@ -2996,16 +3105,18 @@ def _kept_findings(rel: str, removed: list[str], added: _Added) -> list[str]:
 
 ```python
     removed_anywhere = set(all_removed)
-    added_all = _Added(text="\n".join(" ".join(line.split()) for line in all_added),
-                       kept={kv for line in all_added for kv in kept_values(line)},
-                       links={_value(m) for line in all_added for m in _LINK_TARGET.finditer(line)})
+    final: set[tuple[str, str]] = set()
+    for rel in diffs if shas else ():
+        text = gitio.file_text(root, shas[-1], rel)
+        if text is not None:
+            final |= final_values(text)
     found: list[str] = []
     for rel, (added, removed) in diffs.items():
         for name, _ in SIGNALS:
             lost = gone[rel][name] - came[rel][name]
             if lost > 0 and net[name] > 0:
                 found.append(f"{rel}: 지운 줄에서 {name} {lost}개가 줄었다(대체가 있는지 확인)")
-        found += _kept_findings(rel, removed, added_all)
+        found += _kept_findings(rel, removed, final)
 
 ```
 
@@ -3059,12 +3170,12 @@ Expected: OK.
 - [ ] **Step 5: 커밋한다**
 
 ```bash
-python3 -m py_compile herdr-team/lib/hteam/designdiff.py
+python3 -m py_compile herdr-team/lib/hteam/designdiff.py herdr-team/lib/hteam/gitio.py
 git grep -n -I -P '/[U]sers/|/private/[t]mp|~[/]Workspace' -- . ':!.codex-reviews'
-git add -- herdr-team/lib/hteam/designdiff.py herdr-team/templates/design-rules.md herdr-team/templates/review-design.md herdr-team/templates/roles/designer.md README.md herdr-team/tests/test_designdiff.py
+git add -- herdr-team/lib/hteam/designdiff.py herdr-team/lib/hteam/gitio.py herdr-team/templates/design-rules.md herdr-team/templates/review-design.md herdr-team/templates/roles/designer.md README.md herdr-team/tests/test_designdiff.py
 git commit -m "feat(herdr-team): designdiff 보존 신호 — 지운 링크·입력란·이벤트·시험 ID(설계 11.13 의 2)
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam/designdiff.py herdr-team/templates/design-rules.md herdr-team/templates/review-design.md herdr-team/templates/roles/designer.md README.md herdr-team/tests/test_designdiff.py
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- herdr-team/lib/hteam/designdiff.py herdr-team/lib/hteam/gitio.py herdr-team/templates/design-rules.md herdr-team/templates/review-design.md herdr-team/templates/roles/designer.md README.md herdr-team/tests/test_designdiff.py
 ```
 
 ---
@@ -3133,11 +3244,11 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- docs/superpowers/spe
 ## 알려진 한계(설계 13장에 더할 후보)
 
 - 배정: 칸마다 뽑힐 확률은 같지만(0.3) 칸 쌍이 함께 나올 확률은 같지 않다(가중치는 칸 하나의 확률만 맞춘다). `--brand-hue` 면 B·C 쌍을 고르게 고르므로 B·C 칸의 확률은 칸마다 다르다. 300–330° 칸은 두 출처 모두 비어 있어 그 칸이 배정되면(배정의 약 30%) 후보는 가까운 차례로 정해지는 같은 둘(`impeccable:seed-100`·`impeccable:seed-103`, h 330.0, `near`)이다.
-- 카탈로그의 과용 색은 Tailwind v3 hex 다. v4 는 색을 oklch 로 정의해 hex 일치 검사에 맞지 않고 조사 자료에 전체 값이 없어 넣지 않았다(v4 의 파랑·보라는 주 강조 hue 검사가 h 240–300° 로 본다). 그 밖의 hex 는 v3·v4 가 다르다.
+- 과용 색은 Tailwind v3 hex 만이다(설계 11.10). v4 는 OKLCH 로 정의돼 코드에 hex 로 나오지 않아 넣지 않았다. v4 의 파랑·보라 주 강조는 11.13 의 hue 검사(이름에 primary·accent·brand 가 든 토큰의 h 240–300°)가 본다. v4 의 그 밖의 색(sky·emerald·중립 등)과 역할 이름이 없는 색 선언의 v4 값은 잡지 않는다.
 - 과용 글꼴의 한글 목록에 일반 글꼴 이름(`ui-sans-serif`·`sans-serif`·`ui-serif`·`serif`)과 `BlinkMacSystemFont` 를 더했다(스택에 한글 글꼴이 없을 때 시스템 글꼴이 그린다는 설계 11.10 의 규칙을 Tailwind 기본 스택에도 맞춘 것). `monospace` 는 넣지 않았다(코드 글꼴).
 - 색·글꼴 검사는 줄 단위다. 여러 줄에 걸친 토큰(DTCG `"$type": "fontFamily"` 와 `"$value"` 가 다른 줄), `font:` 줄임 속성, `var()` 로 이어진 값, 따옴표 없는 JS 키(`primary: '#…'`), Tailwind 설정 파일의 `fontFamily: { sans: [...] }` 여러 줄은 보지 않는다. 한 줄에 이름 붙은 값이 여럿이면 다음 이름 앞까지만 그 값으로 본다. hex 는 앞뒤 글자로 거르지만 `href="#add"` 같은 조각이 3자리 hex 로 읽힐 수 있다(과용 색·램프와 같을 때만 경고).
-- 보존 신호는 줄 단위다. 여러 줄에 걸친 입력 태그의 name·id 는 보지 않고, `v-on:click`·`(click)`(Angular)·`android:id` 는 보지 않는다. 링크는 추가한 줄의 `href`·`to` 값 전체로만 견주므로 다른 꼴의 링크(`:to="'/x'"`, `router.push('/x')`, 변수에 든 경로)로 옮기면 거짓 경고가 난다. 이벤트 처리 값은 추가한 줄 어디에 있어도 남은 것으로 본다(값이 다른 용도로 남아도 조용하다). 입력란 id 가 여러 줄에 걸친 태그로 옮겨지면 거짓 경고가 난다.
-- 색·글꼴 검사는 `.herdr-team/palette.md` 가 있는 프로젝트(0.8.0 upgrade 뒤)에서만 돈다. upgrade 전에는 과용 색·글꼴 경고가 없다(인용할 규칙이 그 프로젝트 사본에 없다). palette.md 만 지운 프로젝트도 검사하지 않는다.
+- 보존 신호는 줄 단위다. 여러 줄에 걸친 입력 태그의 name·id 와 여러 줄 처리기(`{` 가 줄 안에서 닫히지 않는다)는 보지 않고, `v-on:click`·`(click)`(Angular)·`android:id` 는 보지 않는다. 처리 값 안의 문자열에 든 중괄호(`"}"`)는 짝 세기를 틀리게 한다. 남았는지는 마지막 리뷰 대상 커밋의 대상 파일(이 태스크가 바꾼 파일) 내용으로 같은 종류·값 전체를 견주므로, 다른 꼴의 링크(`:to="'/x'"`, `router.push('/x')`, 변수에 든 경로)나 처리 값을 감싼 것(`{save}` → `{() => save()}`)도 경고하고, 태스크가 바꾸지 않은 파일로 옮긴 것도 경고한다. 같은 값이 그 파일들의 다른 곳에 남아 있으면 조용하다.
+- 색·글꼴 검사는 프로젝트의 `.herdr-team/design-rules.md` 에 13단계 §1 의 11 줄(줄 머리 `11. 근거 없이 프레임워크 기본 팔레트 값`)이 있을 때만 돈다. upgrade 전이나 design-rules.md 를 건너뛴 upgrade 에는 과용 색·글꼴 경고가 없다(인용할 규칙이 그 사본에 없다). 사용자가 그 줄을 고쳐 머리가 달라져도 검사하지 않는다. 리뷰의 director 배정 점검은 director 직무 문서가 배정 절차를 담을 때만이다.
 - 글꼴 카탈로그의 `reserved_name` 은 원문을 읽은 글꼴만 적었다. 원문을 읽지 못한 글꼴(라이선스 "확인 못 함")은 null 이고 예약 이름이 없다는 뜻이 아니다(fonts-ko.md 가 그 글꼴은 바꾸지 말라고 적는다).
 - 배정의 결정성은 IEEE 754 배정밀도 위의 `math.fsum`·곱셈·나눗셈과 SHA-256 에 기댄다. 시험이 박아 둔 가중치·배정으로 지킨다.
 - 들여오기 스크립트는 raw.githubusercontent.com 에서 받는다. 시험은 네트워크 없이 스크립트의 순수 함수와 저장소 데이터의 꼴만 본다. 원본과 같은지는 `--check`(네트워크)로 본다.
