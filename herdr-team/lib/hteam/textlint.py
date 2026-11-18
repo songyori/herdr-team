@@ -371,7 +371,7 @@ _ANGLE_SUFFIXES = MARKUP | frozenset({".vue", ".svelte"})
 _HTML_LIKE = frozenset({".html", ".htm", ".vue", ".svelte"})  # <script>·<style> 블록이 있는 마크업
 _SPECIAL = re.compile(r"[\"'`/\\#<{}$\n]")
 _TAG_LIMIT = 2000  # 여는 태그 하나를 읽는 최대 글자 수(속성 값 안의 따옴표를 따라 `>` 를 찾는다)
-_OPEN_TAG = re.compile(r"""<([A-Za-z][\w.:-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>""")
+_OPEN_TAG = re.compile(r"""<([A-Za-z][\w.:-]*+)((?:[^>"']++|"[^"]*+"|'[^']*+')*+)>""")  # 소유 한정자: 실패해도 되짚지 않는다(선형)
 _SCSS_LANG = re.compile(r"""lang\s*=\s*["']?(scss|less|sass)""", re.I)
 
 

@@ -428,6 +428,12 @@ class GitTextLintTest(TeamCase):
                 lines = textlint.comment_free_lines(rel, text)
                 self.assertLess(time.monotonic() - start, 1.5, (rel, unit))
                 self.assertEqual(len(lines), text.count("\n") + 1)
+        # 긴 태그 이름 뒤의 닫히지 않은 따옴표(Codex commit-c1b249b: 이름과 속성이 같은 글자를 두고 되짚어 20초)
+        text = ("<" + "a" * 1800 + "\">") * 550 + "\n<p>저장</p>"
+        start = time.monotonic()
+        lines = textlint.comment_free_lines("a.html", text)
+        self.assertLess(time.monotonic() - start, 1.5)
+        self.assertEqual(lines[-1], "<p>저장</p>")
 
     def test_comment_scan_is_linear(self):
         import time
